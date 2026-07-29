@@ -236,13 +236,25 @@ class BindingGame:
         fails its audit is disqualified. Fail-closed direction is preserved:
         an unclear audit keeps the variant and the method is rejected.
         """
+        # An obligation is a FUNCTION of the claim, not a constant: "3 | n^5-n"
+        # compiled for the original claim is a fact of arithmetic and holds no
+        # matter what variant it is checked against. The exam must therefore
+        # transport the obligation PATTERN onto the variant — check the
+        # analogous instance, not the original text verbatim.
+        exam_obligation = Obligation(
+            obligation.claim_id,
+            "【考题模式移植】下面是原 claim 的一条义务模式；当前 claim 是原 claim 的一个"
+            "变体。把这条义务的同构实例应用到当前 claim 上执行检查（检查的是当前 claim"
+            "的对应性质，不是原义务的字面内容）：\n" + obligation.text,
+            obligation.failure_looks_like,
+        )
         sat = 0
         for i, variant in enumerate(variants):
             if not self._variant_usable(variant):
                 continue
             variant_row = {"id": row["id"], "text": variant["text"]}
             result = self.discharger.discharge(
-                variant_row, obligation, method=method, tag=f"exam{i}"
+                variant_row, exam_obligation, method=method, tag=f"exam{i}"
             )
             attempt.discrimination.append(
                 {"variant": variant["text"], "outcome": result.outcome,
