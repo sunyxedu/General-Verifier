@@ -1,0 +1,15 @@
+Range checked: n = 1..1000
+Even-n group: count=500, max remainder=0
+Odd-n group:  count=500, max remainder=0
+Counterexamples found: 0
+No counterexamples.
+
+============================================================
+Range checked: n = 1..1000000
+Even-n group: count=500000, max remainder=0
+Odd-n group:  count=500000, max remainder=0
+Counterexamples found: 0
+No counterexamples.
+
+============================================================
+OVERALL RESULT: HOLDS

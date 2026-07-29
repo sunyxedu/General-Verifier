@@ -33,6 +33,9 @@ EVENT_TYPES = (
     # coverage audit (M1, loop 3)
     "coverage_exam",
     "obligations_added",
+    # search support (M3)
+    "dedup_hit",
+    "branch_pruned",
 )
 
 

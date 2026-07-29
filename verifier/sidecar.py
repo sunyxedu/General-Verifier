@@ -141,6 +141,13 @@ class Sidecar:
             for label, cid in self.builder.labels.items()
         }
 
+    def branches(self) -> Dict[str, Any]:
+        """Search bookkeeping (M3): per-branch statuses + which branches are
+        dead (touched by a refutation cone). Advisory for the searcher."""
+        self.drain_hooks()
+        return {"branches": self.store.branches(),
+                "dead": self.store.dead_branches()}
+
 
 def _default_kernel(sc: Sidecar, model, seats, game, coverage) -> Kernel:
     if seats == "agent":
@@ -201,6 +208,11 @@ def build_server(sidecar: Sidecar):
     def status(label: str = "") -> str:
         """查询单个 label 或全部 label 的状态。"""
         return json.dumps(sidecar.status(label or None), ensure_ascii=False)
+
+    @server.tool()
+    def branches() -> str:
+        """并行假设分支的状态与死分支列表（refuted 剪枝，建议性）。"""
+        return json.dumps(sidecar.branches(), ensure_ascii=False)
 
     return server
 

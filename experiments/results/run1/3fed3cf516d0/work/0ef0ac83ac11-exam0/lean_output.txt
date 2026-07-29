@@ -1,0 +1,4 @@
+Check.lean:8:71: error: Tactic `decide` proved that the proposition
+  ∀ (n : Fin 300), 60 ∣ (↑n + 1) ^ 5 - (↑n + 1)
+is false
+EXIT:1

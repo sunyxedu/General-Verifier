@@ -1,0 +1,29 @@
+{
+ "claim": "2^11-1 = 2047 是素数",
+ "is_true": false,
+ "slug": "652ad623f722",
+ "judge": {
+  "verdict": "false",
+  "reason": "2^11 - 1 = 2047 = 23 × 89，是合数而非素数，因此命题为假。",
+  "seconds": 3.7
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "unverified",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "3a7c799f159b2d6f1cc062861349a71f3b2b7c9d94b397b8ff2717c632725026",
+    "evidence_id": "d42f8bacd5811e76e0c07d3da6da7f9296a1c81ca02d1da90259c5481bc3a857",
+    "grade": "corroborated",
+    "instrument": "binding-game",
+    "obligation": "必须正确计算 2^11 - 1 的数值，确认其等于 2047（2048 - 1 = 2047）",
+    "obligation_id": "511de4849980b565bf27d9cbbc6d51294771a06b9b8a5cebb4ce01ec5b23c4c6",
+    "outcome": "failed",
+    "witness": "all candidate methods rejected"
+   }
+  ],
+  "seconds": 90.6
+ },
+ "verifier_outcome": "abstain"
+}

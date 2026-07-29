@@ -1,0 +1,29 @@
+{
+ "claim": "对所有 1≤n≤1000，12 整除 n^3-n",
+ "is_true": false,
+ "slug": "d3835074f57a",
+ "judge": {
+  "verdict": "false",
+  "reason": "命题声称对所有 1≤n≤1000，12 整除 n³−n。但取 n=2 时 n³−n=6，6 不能被 12 整除，构成反例。更一般地，n³−n=(n−1)n(n+1) 总能被 6 整除，但要被 12 整除还需额外一个 2 因子；当 n≡2 (mod 4) 时（如 n=2,6,10,...），该额外因子缺失，导致 12 不整除 n³−n。因此该命题为假。",
+  "seconds": 11.5
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "refuted",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "736122a921ef5d7fa96b8eeb485741e8d26938a007864e1d0a2d6c2ef438240f",
+    "evidence_id": "5b64190e58bb4c3e2537188b3f34c4958635ec767aeba3f782c2b135434d6a21",
+    "grade": "proven",
+    "instrument": "z3(4.15.4, /opt/homebrew/bin/z3)",
+    "obligation": "论证必须覆盖 1≤n≤1000 范围内的每一个 n，不能仅验证个别样本后外推为全称结论。",
+    "obligation_id": "76e94e4befc5624b9eba688e7cff4cc3a919a39f32ce590f42b3046bae7e70dc",
+    "outcome": "refuted",
+    "witness": "n=2: 2^3-2=6, 6 mod 12 = 6 ≠ 0 (not divisible by 12). z3 found 250 counterexamples in [1,1000], all n ≡ 2 (mod 4): 2,6,10,14,18,...,998. Direct arithmetic confirms n=2 is genuine. (n^3-n is always divisible by 6, but only divisible by 12 when n ≡ 0,1,3 mod 4.)"
+   }
+  ],
+  "seconds": 440.4
+ },
+ "verifier_outcome": "ok"
+}

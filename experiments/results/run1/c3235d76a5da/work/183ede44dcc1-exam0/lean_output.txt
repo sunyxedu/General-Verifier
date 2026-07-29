@@ -1,0 +1,5 @@
+5050
+SumCheck.lean:6:50: error: Tactic `decide` proved that the proposition
+  sumTo 100 = 5051
+is false
+EXIT_CODE=1

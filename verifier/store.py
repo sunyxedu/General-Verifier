@@ -200,3 +200,46 @@ class ClaimStore:
     def parents(self, claim_id: str) -> List[str]:
         cur = self.db.execute("SELECT parent FROM deps WHERE child=?", (claim_id,))
         return [r[0] for r in cur.fetchall()]
+
+    # ---- search support (M3) -------------------------------------------------
+
+    def find_equivalent(self, claim_id: str) -> Optional[str]:
+        """A settled claim with identical (kind, text, dep set) on ANOTHER
+        branch. Claim identity includes the branch, so parallel hypotheses that
+        re-derive the same lemma are distinct nodes — but verification work is
+        content-addressed and transfers."""
+        row = self._row(claim_id)
+        my_deps = set(self.parents(claim_id))
+        cur = self.db.execute(
+            "SELECT id FROM claims WHERE kind=? AND text=? AND id!=? "
+            "AND status IN (?, ?)",
+            (row["kind"], row["text"], claim_id, VERIFIED, REFUTED),
+        )
+        for (other,) in cur.fetchall():
+            if set(self.parents(other)) == my_deps:
+                return other
+        return None
+
+    def branches(self) -> Dict[str, List[Dict]]:
+        cur = self.db.execute(
+            "SELECT branch, id, status FROM claims WHERE branch IS NOT NULL"
+        )
+        out: Dict[str, List[Dict]] = {}
+        for branch, cid, status in cur.fetchall():
+            out.setdefault(branch, []).append({"id": cid, "status": status})
+        return out
+
+    def dead_branches(self) -> List[str]:
+        """Branches touched by a refutation or its downstream cone — pruning
+        is advisory bookkeeping for the searcher; soundness never relied on it
+        (the taint guard already blocks anything built on a refuted claim)."""
+        cur = self.db.execute("SELECT id FROM claims WHERE status=?", (REFUTED,))
+        dead_ids: Set[str] = set()
+        for (cid,) in cur.fetchall():
+            dead_ids.add(cid)
+            dead_ids.update(self.downstream(cid))
+        dead: Set[str] = set()
+        for branch, members in self.branches().items():
+            if any(m["id"] in dead_ids for m in members):
+                dead.add(branch)
+        return sorted(dead)

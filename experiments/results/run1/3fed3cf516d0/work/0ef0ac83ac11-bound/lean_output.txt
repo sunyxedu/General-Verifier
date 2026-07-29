@@ -1,0 +1,2 @@
+'thirty_dvd_pow5_sub_self' depends on axioms: [propext]
+EXIT_CODE=0

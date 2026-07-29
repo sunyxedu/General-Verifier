@@ -1,0 +1,39 @@
+{
+ "claim": "对所有 1≤n≤1000，6 整除 n^3-n",
+ "is_true": true,
+ "slug": "c3ab2d7ac85d",
+ "judge": {
+  "verdict": "true",
+  "reason": "n^3 - n = (n-1)·n·(n+1) 是三个连续整数的乘积。任意三个连续整数中必含至少一个偶数（能被2整除）和恰好一个能被3整除的数，因此乘积必被 2×3=6 整除。这一性质对所有整数 n 成立，自然包含 1≤n≤1000 的情形。验证示例：n=2 时 8-2=6=6×1；n=10 时 1000-10=990=6×165，均成立。</parameter>\n</invoke>\n",
+  "seconds": 8.2
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "unverified",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "1369418049688d830a624cfa731715e26f68a5031b9a83b0895434f18b452ae9",
+    "evidence_id": "5eb4bee84fac4e4c436770ed290177c4523ca3eb54d6727d5e4665921010a64c",
+    "grade": "proven",
+    "instrument": "lean4-core (elan default stable v4.32.2, 无需 mathlib)",
+    "obligation": "论证必须是对区间内任意 n 都成立的一般性机制（代数恒等式、模运算分类、归纳法或穷举），而不是仅对少数几个 n 抽样验证后外推到 1≤n≤1000 全体。",
+    "obligation_id": "68765aee45fafc39d7749eb368fcac860369ba0273c7a298173684503a56822f",
+    "outcome": "holds",
+    "witness": null
+   },
+   {
+    "artifact": "8f1ddc765b900081d0edd76ac067bf0e049d5a7d2419638a790d552d7d2ef8e6",
+    "evidence_id": "a6279fbe836d7fa8acfbb76c154f58f00baebd7f423719f1d85bf9a1bee5e8b6",
+    "grade": "corroborated",
+    "instrument": "binding-game",
+    "obligation": "必须证明 2 整除 n^3-n（即 n^3-n 是偶数），且证明本身要覆盖 n 为奇数和偶数两种情形。",
+    "obligation_id": "25e1034ceadca650ab40493bea108a79ce3f4c016b979b3e70744dbb291cf6f8",
+    "outcome": "failed",
+    "witness": "all candidate methods rejected"
+   }
+  ],
+  "seconds": 681.2
+ },
+ "verifier_outcome": "abstain"
+}
