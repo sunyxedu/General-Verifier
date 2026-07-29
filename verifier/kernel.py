@@ -12,18 +12,24 @@ from __future__ import annotations
 
 from typing import Dict, List
 
+from .discharge import SandboxDischarger
 from .events import EventLog
 from .instruments import ArtifactStore, LedgerInstrument, PythonSandbox
 from .model import (
-    Claim, Evidence, Obligation,
+    Claim, Evidence, Obligation, weakest_grade,
     KIND_EFFECT, UNVERIFIED, STALE, REFUTED,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED,
 )
-from .roles import COMPILE_OBLIGATIONS, WRITE_CHECK
+from .roles import COMPILE_OBLIGATIONS
 from .store import ClaimStore
 
 
 class Kernel:
+    """Role seats (obligations compiler, discharger) are injectable: the same
+    kernel runs on fixture-backed text roles (offline, deterministic) or on
+    Claude Agent SDK agents (see verifier.agents / verifier.discharge) without
+    knowing which is seated."""
+
     def __init__(
         self,
         store: ClaimStore,
@@ -32,6 +38,8 @@ class Kernel:
         artifacts: ArtifactStore,
         sandbox: PythonSandbox = None,
         memory_hits: str = "[]",
+        obligations_role=None,
+        discharger=None,
     ):
         self.store = store
         self.log = log
@@ -40,6 +48,10 @@ class Kernel:
         self.sandbox = sandbox or PythonSandbox()
         self.ledger = LedgerInstrument(log)
         self.memory_hits = memory_hits
+        self.obligations_role = obligations_role or COMPILE_OBLIGATIONS
+        self.discharger = discharger or SandboxDischarger(
+            backend, self.sandbox, artifacts
+        )
         store.on_trigger(self.verify)  # the single rule wires straight in
 
     # ---- entry ---------------------------------------------------------------
@@ -111,15 +123,17 @@ class Kernel:
             return
 
         outcomes: List[str] = []
+        grades: List[str] = []
         for obligation in obligations:
-            outcome = self._discharge(row, obligation)
+            outcome, grade = self._discharge(row, obligation)
             outcomes.append(outcome)
+            grades.append(grade)
             if outcome != OUTCOME_HOLDS:
                 break  # refuted or failed: no point burning further checks
-        self._settle(row["id"], outcomes, grade="demonstrated")
+        self._settle(row["id"], outcomes, grade=weakest_grade(grades))
 
     def _compile_obligations(self, row: Dict):
-        payload = COMPILE_OBLIGATIONS.call(
+        payload = self.obligations_role.call(
             self.backend, {"claim_text": row["text"], "memory_hits": self.memory_hits}
         )
         all_obligations = [
@@ -134,18 +148,13 @@ class Kernel:
         )
         return kept, dropped
 
-    def _discharge(self, row: Dict, obligation: Obligation) -> str:
-        check = WRITE_CHECK.call(
-            self.backend,
-            {"claim_text": row["text"], "obligation_text": obligation.text},
-        )
-        result = self.sandbox.run(check["check_source"])
-        digest = self.artifacts.put(result.artifacts)
+    def _discharge(self, row: Dict, obligation: Obligation):
+        result = self.discharger.discharge(row, obligation)
         evidence = Evidence(
             obligation_id=obligation.id,
-            instrument=self.sandbox.name,
+            instrument=result.instrument,
             outcome=result.outcome,
-            artifacts={"artifact": digest},
+            artifacts={"artifact": result.artifact},
             witness=result.witness,
         )
         self.store.record_evidence(
@@ -153,19 +162,20 @@ class Kernel:
             {
                 "obligation": obligation.text,
                 "obligation_id": obligation.id,
-                "instrument": self.sandbox.name,
+                "instrument": result.instrument,
                 "outcome": result.outcome,
-                "artifact": digest,
+                "artifact": result.artifact,
                 "witness": result.witness,
+                "grade": result.grade,
                 "evidence_id": evidence.id,
             },
         )
         self.log.append(
             "discharge",
             {"claim": row["id"], "obligation": obligation.id,
-             "instrument": self.sandbox.name, "outcome": result.outcome},
+             "instrument": result.instrument, "outcome": result.outcome},
         )
-        return result.outcome
+        return result.outcome, result.grade
 
     # ---- settlement ----------------------------------------------------------
 
