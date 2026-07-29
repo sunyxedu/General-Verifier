@@ -1,0 +1,13 @@
+{
+ "claim": "2^13-1 = 8191 是素数",
+ "is_true": true,
+ "slug": "4730f03192b5",
+ "judge": {
+  "error": "direct_judge: failed twice: direct_judge: sdk failure: Claude Code returned an error result: success"
+ },
+ "judge_outcome": "error",
+ "verifier": {
+  "error": "obligations: failed twice: obligations: sdk failure: Claude Code returned an error result: success"
+ },
+ "verifier_outcome": "error"
+}

@@ -75,7 +75,7 @@ def run_judge(text: str, model: str) -> dict:
 
 
 def run_verifier(text: str, model: str, workdir: str,
-                 n_variants: int = 1, max_methods: int = 2) -> dict:
+                 n_variants: int = 2, max_methods: int = 2) -> dict:
     """Full pipeline on one claim: commit A, verify A via the single rule."""
     from verifier.agents import ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT
     from verifier.builder import Builder

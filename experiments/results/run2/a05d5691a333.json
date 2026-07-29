@@ -4,26 +4,26 @@
  "slug": "a05d5691a333",
  "judge": {
   "verdict": "false",
-  "reason": "命题不成立。反例 n=2：2^5-2=30，30 不能被 60 整除。虽然 n^5-n 对所有整数恒被 30 整除（费马小定理保证被5整除，再结合被2、3整除的初等论证），但被 4 整除并不总成立（例如 n=2 时 n^5-n=30 只含一个因子2），因此不能保证被 60 整除。",
-  "seconds": 13.5
+  "reason": "n^5-n 总是被30整除（由费马小定理，2、3、5 均整除 n^5-n），但不总被60整除。反例：n=2 时，n^5-n = 32-2 = 30，而 30 不能被 60 整除。因此命题为假。",
+  "seconds": 8.4
  },
  "judge_outcome": "ok",
  "verifier": {
-  "status": "refuted",
+  "status": "unverified",
   "grade": null,
   "evidence": [
    {
-    "artifact": "066045c5a64a17da2c3c5da4668e2c84860557861584cc9ab6b394e01a9088a7",
-    "evidence_id": "ec41e70301e63cc6faac7c317d5751346d07bbb48f38be69276652e571cd6985",
-    "grade": "proven",
-    "instrument": "lean4-cli-4.32.2",
-    "obligation": "答案必须对命题给出明确的真假判定（对 1≤n≤300 是否全部满足 60 | n^5-n），不能停留在含糊或部分陈述。",
-    "obligation_id": "2bd81ec4e21b3d1fce8f1c066bd9bbec779283d28573ac267f62e90b77f93ad2",
-    "outcome": "refuted",
-    "witness": "n=2: n^5-n = 32-2 = 30, 30 % 60 = 30 ≠ 0，60 不整除 30。Lean #eval 求值 check = false，counterexamples 列表首项即为 2（完整反例列表见 output.txt，共 75 个反例：2,6,10,14,...,298，即所有 ≡2 mod 4 的偶数）。"
+    "artifact": "5a389ddf5440ff87f98c84dff7c583c638b1bdf90244934a05b06f19ab4ae112",
+    "evidence_id": "8274f57a8cf2ba47f6e193a624ffe405b580ab193ded0cc3cf7fc93f0047f334",
+    "grade": "corroborated",
+    "instrument": "binding-game",
+    "obligation": "答案必须对「对所有 1≤n≤300，60 整除 n^5-n」这一全称命题给出明确的真/假判定，不能仅罗列若干算例或泛泛讨论而不下结论。",
+    "obligation_id": "3f58500d75f1e0802875558559abb50bf754d3d0774ea51ff80b874551621879",
+    "outcome": "failed",
+    "witness": "no candidate methods"
    }
   ],
-  "seconds": 205.1
+  "seconds": 137.8
  },
- "verifier_outcome": "ok"
+ "verifier_outcome": "abstain"
 }

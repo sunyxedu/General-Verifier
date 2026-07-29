@@ -212,6 +212,66 @@ def test_run_wraps_sdk_exceptions(monkeypatch):
         _run(backend, TRIVIAL)
 
 
+def test_transient_status_backs_off_then_succeeds(monkeypatch):
+    backend = AgentBackend(roles={})
+    backend.transient_delays = (0, 0, 0)
+    calls = {"n": 0}
+
+    async def flaky(prompt, options):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            yield _mk_result(subtype="error_during_execution", is_error=True,
+                             api_error_status=429)
+        else:
+            yield _mk_result(structured_output={"answer": "ok"})
+
+    monkeypatch.setattr(agents, "query", flaky)
+    assert _run(backend, TRIVIAL) == {"answer": "ok"}
+    assert calls["n"] == 3
+
+
+def test_transient_exhaustion_raises_role_error(monkeypatch):
+    backend = AgentBackend(roles={})
+    backend.transient_delays = (0, 0)
+    monkeypatch.setattr(agents, "query", _fake_query(
+        {"subtype": "error_during_execution", "is_error": True,
+         "api_error_status": 529}
+    ))
+    with pytest.raises(RoleError, match="transient sdk failure persisted"):
+        _run(backend, TRIVIAL)
+
+
+def test_opaque_cli_placeholder_is_treated_transient(monkeypatch):
+    backend = AgentBackend(roles={})
+    backend.transient_delays = (0, 0)
+    calls = {"n": 0}
+
+    async def opaque_then_good(prompt, options):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("Claude Code returned an error result: success")
+        yield _mk_result(structured_output={"answer": "ok"})
+
+    monkeypatch.setattr(agents, "query", opaque_then_good)
+    assert _run(backend, TRIVIAL) == {"answer": "ok"}
+
+
+def test_non_transient_error_fails_fast(monkeypatch):
+    backend = AgentBackend(roles={})
+    backend.transient_delays = (0, 0, 0)
+    calls = {"n": 0}
+
+    async def hard_fail(prompt, options):
+        calls["n"] += 1
+        raise RuntimeError("invalid api key")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(agents, "query", hard_fail)
+    with pytest.raises(RoleError, match="sdk failure"):
+        _run(backend, TRIVIAL)
+    assert calls["n"] == 1                       # no pointless retries
+
+
 # ---- options construction ----------------------------------------------------
 
 def test_build_options_enforce_palette_and_official_output_format():

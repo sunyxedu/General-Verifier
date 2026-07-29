@@ -4,8 +4,8 @@
  "slug": "c3ab2d7ac85d",
  "judge": {
   "verdict": "true",
-  "reason": "n^3-n = (n-1)n(n+1)，是三个连续整数的乘积。三个连续整数中必有一个是3的倍数，也必有至少一个是偶数（2的倍数），所以乘积必被2×3=6整除。这对所有整数n都成立，自然对1≤n≤1000范围内的所有n也成立。",
-  "seconds": 3.5
+  "reason": "n³-n = (n-1)n(n+1)，是三个连续整数的乘积。三个连续整数中必有一个是3的倍数，且至少有一个是2的倍数，因此乘积必被2×3=6整除。该结论对所有整数n成立，自然涵盖1≤n≤1000的情形。",
+  "seconds": 6.0
  },
  "judge_outcome": "ok",
  "verifier": {
@@ -13,37 +13,17 @@
   "grade": null,
   "evidence": [
    {
-    "artifact": "c97aee732b47e4f2e5f501dba1fbfeb9d311adb8a4ca7b990a711cd571f6b75a",
-    "evidence_id": "e6bc49816058517abd551116a930f6f4132716f2b767b5847186a0bae4296e63",
-    "grade": "proven",
-    "instrument": "python3+sympy(1.14.0, /usr/bin/python3, 已探测确认已安装)",
-    "obligation": "必须给出（或等价于）正确的代数恒等式 n^3 - n = n(n-1)(n+1)，即证明依赖的因式分解/展开必须与原表达式代数等价。",
-    "obligation_id": "b38819004208d54392b482b723de3f23ed8c99f4ea5b3e2942d9137b83be03d7",
-    "outcome": "holds",
-    "witness": null
-   },
-   {
-    "artifact": "f0fc5340b8b9e4e3a736e50514acc7f1899c354feaa97b6fa7c26a3d0e032443",
-    "evidence_id": "baf1789ee0066e58f8a0b8e8c09793a8bd0f90d8186102f38104aea4c03569a0",
-    "grade": "proven",
-    "instrument": "lean4+lake (v4.32.2, 已探测确认可用, native_decide 编译通过)",
-    "obligation": "必须证明三个连续整数 n-1, n, n+1（或其乘积）中至少有一个被 2 整除，且该论证需覆盖 n 为奇数和偶数两种情形。",
-    "obligation_id": "069a9d0ecc3fa3d12718543e0e54b7cb8ae0c87c04a2b5df84a5a25403dfbe48",
-    "outcome": "holds",
-    "witness": null
-   },
-   {
-    "artifact": "c3a544c585f5202da67154b6c6fdb31382280f9f523c4888f870f061a2ffbbc2",
-    "evidence_id": "6ce557fa486a0743257015f46e3a87095465703a058e00be4c3b9987776f3e24",
+    "artifact": "2da1dcf6dcd4b8ddba4af2e678dca76e36ffbcbf25d97638d0b813502797a3cd",
+    "evidence_id": "73f19419a1592ae65c98d563c61414aa6519851639c30117fb2c38774bc50966",
     "grade": "corroborated",
     "instrument": "binding-game",
-    "obligation": "必须证明三个连续整数 n-1, n, n+1 中恰有一个被 3 整除，且该论证需覆盖 n mod 3 ∈ {0,1,2} 三种剩余类。",
-    "obligation_id": "008cc8dc0fbcd2bc6afc00c3b5c15e6d986b5012cb49493386b6950a96aa71e1",
+    "obligation": "验证/证明必须覆盖 n=1 到 n=1000 的全部 1000 个整数，不能仅抽样若干值或仅验证部分子集后外推。",
+    "obligation_id": "1c557faf15d514f74447fb512f8d20fcc8e76fb95d3b48b256e9e0cf934b844d",
     "outcome": "failed",
     "witness": "all candidate methods rejected"
    }
   ],
-  "seconds": 1006.6
+  "seconds": 770.2
  },
  "verifier_outcome": "abstain"
 }

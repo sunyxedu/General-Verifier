@@ -4,8 +4,8 @@
  "slug": "d3835074f57a",
  "judge": {
   "verdict": "false",
-  "reason": "n^3-n = (n-1)n(n+1) 是三个连续整数之积，必被 6 整除，但不一定被 12 整除。反例：n=2 时，n^3-n = 8-2 = 6，6 不能被 12 整除。因此命题为假。",
-  "seconds": 4.7
+  "reason": "反例：n=2 时，n^3-n = 8-2 = 6，而 12 不整除 6。故命题不成立。（一般地，n^3-n=(n-1)n(n+1) 保证被 6 整除，但不保证被 12 整除，因为三个连续整数中不一定含有 4 的因子。）",
+  "seconds": 6.1
  },
  "judge_outcome": "ok",
  "verifier": {
@@ -13,17 +13,17 @@
   "grade": null,
   "evidence": [
    {
-    "artifact": "de79fa0bab74cf83e7a5810676cedf23549714dfec7bdc53c0abd72e1b6d5bbb",
-    "evidence_id": "a2483c0dd37a4feb1291f0b891abdec6777c587db58aa2a0c41a053a907a701a",
+    "artifact": "18021da5169ddfd0417f42bfc0ce411eee538fc380849412ab28b6caae3605da",
+    "evidence_id": "6a4309234342669277873ed835abe2eea701ad585963797ed78561138a038317",
     "grade": "proven",
-    "instrument": "lean4 v4.32.2 + lake（已探测：`lean --version` 返回 4.32.2；已实测 `lean check12.lean`（内容为 `example : ¬ (12 ∣ ((2:Int)^3 - 2)) := by decide`）编译通过，exit 0，全程无需网络/mathlib，避开历史磁盘事故）",
-    "obligation": "论证必须给出对任意 n（或穷尽所有同余类，尤其是 mod 4 意义下的情形）成立的一般性证明，不能仅通过有限样本值（如 n=1,3,5 等）外推归纳后直接断言对 1≤n≤1000 全部成立。",
-    "obligation_id": "0b2a2da5d68a3906acce4368425ab29bc371d491cf1e6ff03b64e7e6cf042e94",
+    "instrument": "lean4-cli(4.32.2, native_decide)",
+    "obligation": "结论必须覆盖声明的全部范围：若判定为真，须对1≤n≤1000内全部1000个整数成立（通用证明或完整穷举），不能仅用若干样例n值代表全称；若判定为假，则整体判定应为假而非真。",
+    "obligation_id": "9a32c0d3aabb24229cecaa67204e6724bd98db222eec2bd08d93f5d970bd6aab",
     "outcome": "refuted",
-    "witness": "n = 2：满足 1 ≤ 2 ≤ 1000，但 n^3 - n = 6，12 不整除 6。机检 example : ¬ (12 ∣ ((2:Int)^3 - 2)) := by decide 编译通过（exit 0）确认此事实。"
+    "witness": "n=2: 2^3-2=6，6 不被 12 整除（native_decide 求值该全称命题为 false；进一步枚举显示 [1,1000] 内共 250 个反例，形如 n ≡ 2 (mod 4)）"
    }
   ],
-  "seconds": 365.6
+  "seconds": 614.4
  },
  "verifier_outcome": "ok"
 }

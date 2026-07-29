@@ -1,0 +1,13 @@
+{
+ "claim": "组合数 C(10,3) 等于 120",
+ "is_true": true,
+ "slug": "b87dce665f62",
+ "judge": {
+  "error": "direct_judge: failed twice: direct_judge: sdk failure: Claude Code returned an error result: success"
+ },
+ "judge_outcome": "error",
+ "verifier": {
+  "error": "obligations: failed twice: obligations: sdk failure: Claude Code returned an error result: success"
+ },
+ "verifier_outcome": "error"
+}

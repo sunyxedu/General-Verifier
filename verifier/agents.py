@@ -37,6 +37,10 @@ except ImportError:  # pragma: no cover - exercised only without the SDK
     SDK_AVAILABLE = False
 
 
+class _TransientSDKError(RuntimeError):
+    """Infrastructure failure worth backing off and retrying (internal)."""
+
+
 def to_json_schema(spec: Any) -> Dict[str, Any]:
     """Mini-DSL (roles.validate) -> JSON Schema draft-07.
 
@@ -142,7 +146,27 @@ class AgentBackend:
         with ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(asyncio.run, self.run(role, prompt)).result()
 
+    # statuses worth waiting out (rate limit / overload / gateway); the CLI
+    # sometimes reports these only as the opaque "error result: success"
+    TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
+    transient_delays = (0, 20, 60, 120)   # seconds before each attempt
+
     async def run(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
+        """One role run with backoff on transient infrastructure failures.
+        Immediate re-prompts against a rate limit are useless (the Role-level
+        retry exists for GENERATION failures); infrastructure failures back
+        off and retry here, and only then surface as RoleError."""
+        last: Optional[str] = None
+        for delay in self.transient_delays:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                return await self._attempt(role, prompt)
+            except _TransientSDKError as err:
+                last = str(err)
+        raise RoleError(f"{role.name}: transient sdk failure persisted: {last}")
+
+    async def _attempt(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
         stderr_tail: List[str] = []
 
         def keep_stderr(line: str) -> None:
@@ -152,13 +176,13 @@ class AgentBackend:
         options = self._build_options(role, keep_stderr)
 
         result: Optional[ResultMessage] = None
+        error: Optional[Exception] = None
         try:
             async for message in query(prompt=prompt, options=options):
                 if isinstance(message, ResultMessage):
                     result = message
-        except Exception as err:  # noqa: BLE001 - anything here is a failed generation
-            if result is None or result.structured_output is None:
-                raise RoleError(f"{role.name}: sdk failure: {err}") from err
+        except Exception as err:  # noqa: BLE001 - classified below
+            error = err
 
         self.transcripts.append(
             {
@@ -168,20 +192,33 @@ class AgentBackend:
                 "num_turns": getattr(result, "num_turns", None),
                 "total_cost_usd": getattr(result, "total_cost_usd", None),
                 "usage": getattr(result, "usage", None),
+                "api_error_status": getattr(result, "api_error_status", None),
                 "stderr_tail": list(stderr_tail),
             }
         )
 
-        if result is None:
-            raise RoleError(f"{role.name}: run produced no result message")
-        if result.subtype != "success" or result.structured_output is None:
-            raise RoleError(
-                f"{role.name}: no structured output "
-                f"(subtype={result.subtype}, errors={getattr(result, 'errors', None)})"
-            )
-        payload = result.structured_output
-        validate(role.schema, payload)  # our gate, independent of the SDK's
-        return payload
+        if result is not None and result.structured_output is not None \
+                and result.subtype == "success":
+            payload = result.structured_output
+            validate(role.schema, payload)  # our gate, independent of the SDK's
+            return payload
+
+        status = getattr(result, "api_error_status", None)
+        detail = (
+            f"subtype={getattr(result, 'subtype', None)}, "
+            f"api_error_status={status}, "
+            f"errors={getattr(result, 'errors', None)}, exception={error}"
+        )
+        if status in self.TRANSIENT_STATUSES:
+            raise _TransientSDKError(f"{role.name}: {detail}")
+        if status is None and error is not None \
+                and "error result: success" in str(error):
+            # the CLI's opaque placeholder — usually a rate limit; retrying
+            # then failing also covers the non-transient (e.g. auth) case
+            raise _TransientSDKError(f"{role.name}: {detail}")
+        if error is not None:
+            raise RoleError(f"{role.name}: sdk failure: {detail}") from error
+        raise RoleError(f"{role.name}: no structured output ({detail})")
 
     def _build_options(self, role: AgentRole, stderr_cb) -> "ClaudeAgentOptions":
         system_prompt: Any = {"type": "preset", "preset": "claude_code"}

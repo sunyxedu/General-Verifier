@@ -1,0 +1,13 @@
+{
+ "claim": "对所有 1≤n≤200，11 整除 10^n-1",
+ "is_true": false,
+ "slug": "8735c4c71fc5",
+ "judge": {
+  "error": "direct_judge: failed twice: direct_judge: sdk failure: Claude Code returned an error result: success"
+ },
+ "judge_outcome": "error",
+ "verifier": {
+  "error": "obligations: failed twice: obligations: sdk failure: Claude Code returned an error result: success"
+ },
+ "verifier_outcome": "error"
+}

@@ -3,27 +3,11 @@
  "is_true": false,
  "slug": "c3235d76a5da",
  "judge": {
-  "verdict": "false",
-  "reason": "1到100所有整数之和 = 100×101/2 = 5050，而非5051，因此该命题为假。",
-  "seconds": 3.1
+  "error": "direct_judge: failed twice: direct_judge: sdk failure: Claude Code returned an error result: success"
  },
- "judge_outcome": "ok",
+ "judge_outcome": "error",
  "verifier": {
-  "status": "refuted",
-  "grade": null,
-  "evidence": [
-   {
-    "artifact": "3b1f04d29cc041f6035ccf667f22b48324c1adf42a7456e97d24e76604928de0",
-    "evidence_id": "d406fae40648463517a7a78a67e53fd980a9148e91fefddc89a3833fba0132a1",
-    "grade": "proven",
-    "instrument": "none (paper/pencil formal derivation)",
-    "obligation": "声称的总和数值必须与 1 到 100 所有整数的真实算术和相等（即等于 5050，而非其他值）。",
-    "obligation_id": "15801053bb1c026147ea846c8898aaf2431c6000bc8ed74ae77e23f51078f1c8",
-    "outcome": "refuted",
-    "witness": "真实值 S(100) = 100·101/2 = 5050 ≠ 声称值 5051（两者相差 1）。由高斯配对法与数学归纳法两种独立证明得出的通用公式 S(n)=n(n+1)/2，代入 n=100 后严格化简得 5050；直接分组配对（50 组，每组和 101）交叉验证同为 5050；Python 暴力枚举 sum(range(1,101)) 亦为 5050。三种方法一致，均与 claim 的 5051 不符。"
-   }
-  ],
-  "seconds": 186.7
+  "error": "obligations: failed twice: obligations: sdk failure: Claude Code returned an error result: success"
  },
- "verifier_outcome": "ok"
+ "verifier_outcome": "error"
 }
