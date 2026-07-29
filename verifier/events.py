@@ -23,6 +23,13 @@ EVENT_TYPES = (
     "discharge",
     "status_change",
     "certificate",
+    # binding game (M1)
+    "methods_enumerated",
+    "variants_generated",
+    "discrimination",
+    "entailment_audit",
+    "method_rejected",
+    "method_bound",
 )
 
 

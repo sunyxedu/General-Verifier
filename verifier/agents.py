@@ -227,8 +227,10 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
     system=(
         "你是 oracle 枚举器。方法想象归你，存在性判断归探测：一种仪器是否就绪，"
         "必须实际探测环境确认（比如用 Bash 检查命令与库是否存在），不许凭印象。"
+        "仪器未就绪但可以安装时，直接安装并确认——安装是一次性成本，不构成不可达。"
     ),
     template=(
+        "claim：{claim_text}\n"
         "义务：{obligation_text}\n"
         "claim 特征：{features}\n"
         "已知就绪仪器（可为空）：{registry}\n\n"

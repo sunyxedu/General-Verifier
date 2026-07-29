@@ -40,6 +40,7 @@ class Kernel:
         memory_hits: str = "[]",
         obligations_role=None,
         discharger=None,
+        binder=None,
     ):
         self.store = store
         self.log = log
@@ -52,6 +53,7 @@ class Kernel:
         self.discharger = discharger or SandboxDischarger(
             backend, self.sandbox, artifacts
         )
+        self.binder = binder  # M1 binding game; None -> direct discharge
         store.on_trigger(self.verify)  # the single rule wires straight in
 
     # ---- entry ---------------------------------------------------------------
@@ -149,7 +151,10 @@ class Kernel:
         return kept, dropped
 
     def _discharge(self, row: Dict, obligation: Obligation):
-        result = self.discharger.discharge(row, obligation)
+        if self.binder is not None:
+            result = self.binder.run(row, obligation)
+        else:
+            result = self.discharger.discharge(row, obligation)
         evidence = Evidence(
             obligation_id=obligation.id,
             instrument=result.instrument,

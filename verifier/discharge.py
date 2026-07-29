@@ -46,7 +46,12 @@ class SandboxDischarger:
         self.artifacts = artifacts
         self.role = role
 
-    def discharge(self, row: Dict, obligation: Obligation) -> DischargeResult:
+    def discharge(self, row: Dict, obligation: Obligation,
+                  method: Optional[Dict[str, str]] = None,
+                  tag: str = "") -> DischargeResult:
+        # method/tag are part of the shared discharger contract (used by the
+        # binding game); the sandbox path has a fixed instrument, so both are
+        # accepted and ignored.
         check = self.role.call(
             self.backend,
             {"claim_text": row["text"], "obligation_text": obligation.text},
@@ -81,8 +86,10 @@ class AgentDischarger:
         self.workdir_base = workdir_base or tempfile.mkdtemp(prefix="gv-discharge-")
 
     def discharge(self, row: Dict, obligation: Obligation,
-                  method: Optional[Dict[str, str]] = None) -> DischargeResult:
-        workdir = os.path.join(self.workdir_base, obligation.id[:12])
+                  method: Optional[Dict[str, str]] = None,
+                  tag: str = "") -> DischargeResult:
+        subdir = obligation.id[:12] + (f"-{tag}" if tag else "")
+        workdir = os.path.join(self.workdir_base, subdir)
         os.makedirs(workdir, exist_ok=True)
         method = method or {
             "procedure": "未绑定方法（oracle 绑定在 M1 接入）：自行选择最强可达的检查手段，"
