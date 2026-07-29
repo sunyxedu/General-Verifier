@@ -1,0 +1,29 @@
+{
+ "claim": "组合数 C(10,3) 等于 125",
+ "is_true": false,
+ "slug": "6d4689fe8ad5",
+ "judge": {
+  "verdict": "false",
+  "reason": "C(10,3) = 10!/(3!·7!) = (10×9×8)/(3×2×1) = 720/6 = 120，而非125，故命题为假。",
+  "seconds": 3.0
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "refuted",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "306464c75d0e032e04e3ddce9bf65dada8cc08899a6dcdb0b8ce49953da72a1a",
+    "evidence_id": "de8493cd2264a6fca3084fe4e2f0e376d660e7cdb561115201725447dda87d1e",
+    "grade": "demonstrated",
+    "instrument": "python3 (math.comb, 已确认: /usr/bin/python3, Python 3.9.6)",
+    "obligation": "C(10,3) 的值等于 125",
+    "obligation_id": "02ff57b4f059cb5e4539408b876362c98d25118df4fa90c679b5f6ead23a404c",
+    "outcome": "refuted",
+    "witness": "math.comb(10,3) = 120 ≠ 125（Python 3.9.6, /usr/bin/python3 精确整数运算，无浮点误差）"
+   }
+  ],
+  "seconds": 138.0
+ },
+ "verifier_outcome": "ok"
+}

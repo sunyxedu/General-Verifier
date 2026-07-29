@@ -44,10 +44,17 @@ solver (原装 Claude Code) ──MCP stdio──> sidecar (verifier/sidecar.py)
 - **记忆 (M4)**：义务模式 / 攻击模式 / 仪器注册表三库，机械检索（bigram Jaccard），
   只进 prompt 槽位——命中让系统更快，永远不能让错的验成对的。
 
+## 成立性实验（experiments/results/README.md）
+
+12 条真/假数学 claim，验证器臂 vs 同模型直判臂：验证器 **false-pass 0 /
+false-alarm 0 / 弃权 0，12/12**——6 假全部 refuted 带反例，6 真全部 verified
+（4 条 proven：Lean 形式化 / sympy 复算过蕴含审计）。区分度考试、考题质检、
+打回重出、世界性义务契约这三个机制修复都由该实验驱动出来。
+
 ## 用法
 
 ```bash
-# 测试（109 离线；live 验收 GV_LIVE=1 会花真 token）
+# 测试（120 离线；live 验收 GV_LIVE=1 会花真 token）
 .venv/bin/python -m pytest
 GV_LIVE=1 .venv/bin/python -m pytest tests/test_agents_live.py tests/test_sidecar_live.py
 

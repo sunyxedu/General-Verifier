@@ -1,0 +1,29 @@
+{
+ "claim": "对所有 1≤n≤1000，12 整除 n^3-n",
+ "is_true": false,
+ "slug": "d3835074f57a",
+ "judge": {
+  "verdict": "false",
+  "reason": "n^3-n = n(n-1)(n+1)，即三个连续整数之积，必被 6 整除，但不一定被 12 整除。反例：n=2 时，n^3-n = 8-2 = 6，6 不能被 12 整除。故命题为假。",
+  "seconds": 4.9
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "refuted",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "c55bb2d2ca3e3070c66209090bc86e31b295e59baf33defd492b14a0e7e67bbd",
+    "evidence_id": "626c1bd4179cf81de6ad48c359fb1785b944a76127ef67a457337afd47d11f63",
+    "grade": "proven",
+    "instrument": "lean (Lean 4.32.2, /opt/homebrew/bin/lean，已确认可执行，无 mathlib)",
+    "obligation": "对每一个整数 n，1 ≤ n ≤ 1000，n^3 - n 是 12 的整数倍（即 (n^3-n) mod 12 = 0）",
+    "obligation_id": "5666be39b46df3ef88b7ab1cb2f7f9234ab8e5424dba0be1f0800bc67b47167b",
+    "outcome": "refuted",
+    "witness": "n=2：n^3 - n = 8 - 2 = 6，6 mod 12 = 6 ≠ 0。原命题 ∀n≤1000, 12 | n^3-n 为假；Lean 用 decide 编译验证：Check.lean 中对原命题跑 decide 报 \"Tactic `decide` proved that the proposition ... is false\"（即该判定实例为 isFalse），且 #eval (List.range 1001).find? (fun n => (n^3-n)%12 ≠ 0) 返回 some 2；进一步对否定命题 ¬∀n≤1000, (n^3-n)%12=0 单独编写定理，decide 证明成功且 #print axioms 显示不依赖任何公理（无 sorryAx），确证反例存在、原义务不成立。"
+   }
+  ],
+  "seconds": 266.0
+ },
+ "verifier_outcome": "ok"
+}

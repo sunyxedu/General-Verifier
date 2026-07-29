@@ -1,0 +1,29 @@
+{
+ "claim": "对所有 1≤n≤300，30 整除 n^5-n",
+ "is_true": true,
+ "slug": "3fed3cf516d0",
+ "judge": {
+  "verdict": "true",
+  "reason": "n^5 - n = n(n-1)(n+1)(n²+1). By Fermat's little theorem, for each prime p ∈ {2,3,5}, n^p ≡ n (mod p). Since 5 ≡ 1 (mod p-1) for p=2 (5≡1 mod1, trivial), p=3 (5≡2≡... let's verify directly): \n- mod 2: n^2≡n ⇒ n^5=(n^2)^2·n≡n^2·n=n^3≡n·n^2≡n·n=n^2≡n (mod 2)\n- mod 3: n^3≡n ⇒ n^5=n^3·n^2≡n·n^2=n^3≡n (mod 3)\n- mod 5: n^5≡n directly by Fermat's little theorem.\n\nSo n^5≡n mod 2, mod 3, and mod 5 for every integer n, hence n^5≡n mod 30 (since 2,3,5 are pairwise coprime and 2·3·5=30). This holds for all integers n, in particular for all 1≤n≤300. The proposition is true.",
+  "seconds": 8.9
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "verified",
+  "grade": "proven",
+  "evidence": [
+   {
+    "artifact": "6b1ef11407ead849315a514a5c4988342ce22f0f12190d438dafa17eed9f0101",
+    "evidence_id": "cef85b68c3ec6b0a1830d4300317c951aa0c8aba0fde9883f40dc7525a2f0d5c",
+    "grade": "proven",
+    "instrument": "python3+sympy(1.14.0, 已探测确认已安装)",
+    "obligation": "对区间 [1,300] 内的每一个整数 n，n^5-n 都能被 30 整除（即 (n^5-n) mod 30 = 0 对该区间内所有 n 成立，可逐一计算验证）",
+    "obligation_id": "59d84d13386d70d3d97658df4c76c951cc7d3b4cfb1a395ad2ce93049af3e460",
+    "outcome": "holds",
+    "witness": null
+   }
+  ],
+  "seconds": 319.9
+ },
+ "verifier_outcome": "ok"
+}

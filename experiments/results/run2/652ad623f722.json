@@ -1,0 +1,39 @@
+{
+ "claim": "2^11-1 = 2047 是素数",
+ "is_true": false,
+ "slug": "652ad623f722",
+ "judge": {
+  "verdict": "false",
+  "reason": "2047 = 23 × 89，不是素数（它是一个著名的例子，说明 2^p-1 中 p 为素数并不保证 2^p-1 也是素数；2047 是最小的费马伪素数之一）。",
+  "seconds": 4.7
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "refuted",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "1acc19c5010f36ccba089f765aa9fe64cc1e2e88691054503cc07f1ca67115f4",
+    "evidence_id": "5bbd53b44450ca3cc24bc3158b628ddc630a632ea490a344a68dfff4befc53e6",
+    "grade": "demonstrated",
+    "instrument": "python3 (已探测确认: /usr/bin/python3, v3.9.6)",
+    "obligation": "2^11 - 1 的算术值等于 2047",
+    "obligation_id": "adf640a34b5ae21434445acc2c8ca7c78490e54e1a9267f1fa4f4a30f72344ae",
+    "outcome": "holds",
+    "witness": null
+   },
+   {
+    "artifact": "d1c4e17b09a10b513a74ed708ffb595d46b453199dca8079b978bd0744743a2a",
+    "evidence_id": "b4d000a257af37d8a1dde462527534a315aeef1cc216ff350856a1b8334d2c06",
+    "grade": "demonstrated",
+    "instrument": "python3 (system, /usr/bin/python3, v3.9.6, 无需第三方库)",
+    "obligation": "2047 是素数，即除 1 和自身外没有其他正因数",
+    "obligation_id": "9ce699045f82752053e75498899cf772307c9d79f7cba5ed4a30f47ea3b3c659",
+    "outcome": "refuted",
+    "witness": "2047 = 23 × 89（首个除数 d=23，穷举范围 [2,45] 内找到），故 2047 非素数"
+   }
+  ],
+  "seconds": 315.4
+ },
+ "verifier_outcome": "ok"
+}

@@ -4,26 +4,26 @@
  "slug": "c3ab2d7ac85d",
  "judge": {
   "verdict": "true",
-  "reason": "n^3 - n = (n-1)n(n+1) 是三个连续整数的乘积。三个连续整数中必有一个是3的倍数，也必有至少一个是2的倍数，因此乘积必被 2×3=6 整除。这对所有整数 n（包括 1≤n≤1000 范围内）都成立。",
-  "seconds": 3.9
+  "reason": "n^3 - n = n(n-1)(n+1)，是三个连续整数的乘积。三个连续整数中必有一个是3的倍数，且至少有一个是2的倍数，因此乘积必能被 2×3=6 整除。该性质对所有整数 n 成立，自然对 1≤n≤1000 也成立。",
+  "seconds": 5.5
  },
  "judge_outcome": "ok",
  "verifier": {
-  "status": "unverified",
-  "grade": null,
+  "status": "verified",
+  "grade": "proven",
   "evidence": [
    {
-    "artifact": "899176cd15e964a27ad90fe843215bbc7dae59dd4dd1b2d6106f3cd6fc9c48bb",
-    "evidence_id": "4f9c796246b298f72b30aabc554315cb5559ce14d40df5d6604601b76ea9df6b",
-    "grade": "corroborated",
-    "instrument": "binding-game",
-    "obligation": "必须给出 n^3 - n 的正确代数恒等变形，尤其是因式分解 n^3 - n = (n-1)·n·(n+1)（三个连续整数之积），且展开/化简过程无代数错误。",
-    "obligation_id": "9ce5f7791b898ed04b24a62f1d17fc8dac39ad302ae3452a3c38c8c454c72ee5",
-    "outcome": "failed",
-    "witness": "all candidate methods rejected"
+    "artifact": "d982c6a0212671d945e43f4a8d2dc2eff6e8a48e80831a027ad8b64103e961f1",
+    "evidence_id": "38af5ac6aa85392bb2dbec5680bda35b6871ccaac7cf0fefa7d486dc06468188",
+    "grade": "proven",
+    "instrument": "lean4-core(v4.32.2, no mathlib, native_decide)",
+    "obligation": "对每个整数 n，1 ≤ n ≤ 1000，都有 n^3 - n 是 6 的整数倍（即 (n^3-n) mod 6 = 0）",
+    "obligation_id": "7f9f1835f0e2ba251a78b94de85af5ab70211877098e3350c8e41b3f7c63f714",
+    "outcome": "holds",
+    "witness": null
    }
   ],
-  "seconds": 653.5
+  "seconds": 218.9
  },
- "verifier_outcome": "abstain"
+ "verifier_outcome": "ok"
 }

@@ -1,0 +1,29 @@
+{
+ "claim": "对所有 1≤n≤300，60 整除 n^5-n",
+ "is_true": false,
+ "slug": "a05d5691a333",
+ "judge": {
+  "verdict": "false",
+  "reason": "n^5-n 对所有整数都能被 30 整除（由费马小定理知 2,3,5 都整除它），但不一定被 60 整除。反例：n=2 时，n^5-n=32-2=30，而 30 不能被 60 整除（30/60 不是整数）。因此命题为假。",
+  "seconds": 7.1
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "refuted",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "ad511d9cb003cdfb06e269d2e577eee2589826a59a3ebcc787228d93887c30ea",
+    "evidence_id": "78e03f60736e05b374830c104c07f5bd51476e397d2473489c5d752ede577cba",
+    "grade": "proven",
+    "instrument": "lean+lake (v4.32.2, 已探测确认可运行 decide)",
+    "obligation": "对每一个整数 n，1≤n≤300，60 整除 n^5-n（即 n^5-n mod 60 = 0）",
+    "obligation_id": "c6747969739159e296e321fa06eaff36234bc60fbffae9fa3423ef1ef5accdd0",
+    "outcome": "refuted",
+    "witness": "n=2：2^5-2=30，30 mod 60 = 30 ≠ 0，故 60 不整除 2^5-2。Lean `decide` 战术形式化证实命题 ∀ n∈[0,300], 60|(n^5-n) 为假；进一步枚举得 1..300 内共75个反例，均满足 n ≡ 2 (mod 4)：2,6,10,14,...,298。"
+   }
+  ],
+  "seconds": 227.1
+ },
+ "verifier_outcome": "ok"
+}

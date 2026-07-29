@@ -1,0 +1,390 @@
+{
+ "model": "claude-sonnet-5",
+ "n_pairs": 6,
+ "summary": {
+  "judge": {
+   "n": 12,
+   "false_pass": 0,
+   "false_alarm": 0,
+   "abstain": 0,
+   "ok": 12
+  },
+  "verifier": {
+   "n": 12,
+   "false_pass": 0,
+   "false_alarm": 0,
+   "abstain": 0,
+   "ok": 12
+  }
+ },
+ "records": [
+  {
+   "claim": "对所有 1≤n≤1000，6 整除 n^3-n",
+   "is_true": true,
+   "slug": "c3ab2d7ac85d",
+   "judge": {
+    "verdict": "true",
+    "reason": "n^3 - n = n(n-1)(n+1)，是三个连续整数的乘积。三个连续整数中必有一个是3的倍数，且至少有一个是2的倍数，因此乘积必能被 2×3=6 整除。该性质对所有整数 n 成立，自然对 1≤n≤1000 也成立。",
+    "seconds": 5.5
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "verified",
+    "grade": "proven",
+    "evidence": [
+     {
+      "artifact": "d982c6a0212671d945e43f4a8d2dc2eff6e8a48e80831a027ad8b64103e961f1",
+      "evidence_id": "38af5ac6aa85392bb2dbec5680bda35b6871ccaac7cf0fefa7d486dc06468188",
+      "grade": "proven",
+      "instrument": "lean4-core(v4.32.2, no mathlib, native_decide)",
+      "obligation": "对每个整数 n，1 ≤ n ≤ 1000，都有 n^3 - n 是 6 的整数倍（即 (n^3-n) mod 6 = 0）",
+      "obligation_id": "7f9f1835f0e2ba251a78b94de85af5ab70211877098e3350c8e41b3f7c63f714",
+      "outcome": "holds",
+      "witness": null
+     }
+    ],
+    "seconds": 218.9
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "对所有 1≤n≤1000，12 整除 n^3-n",
+   "is_true": false,
+   "slug": "d3835074f57a",
+   "judge": {
+    "verdict": "false",
+    "reason": "n^3-n = n(n-1)(n+1)，即三个连续整数之积，必被 6 整除，但不一定被 12 整除。反例：n=2 时，n^3-n = 8-2 = 6，6 不能被 12 整除。故命题为假。",
+    "seconds": 4.9
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "c55bb2d2ca3e3070c66209090bc86e31b295e59baf33defd492b14a0e7e67bbd",
+      "evidence_id": "626c1bd4179cf81de6ad48c359fb1785b944a76127ef67a457337afd47d11f63",
+      "grade": "proven",
+      "instrument": "lean (Lean 4.32.2, /opt/homebrew/bin/lean，已确认可执行，无 mathlib)",
+      "obligation": "对每一个整数 n，1 ≤ n ≤ 1000，n^3 - n 是 12 的整数倍（即 (n^3-n) mod 12 = 0）",
+      "obligation_id": "5666be39b46df3ef88b7ab1cb2f7f9234ab8e5424dba0be1f0800bc67b47167b",
+      "outcome": "refuted",
+      "witness": "n=2：n^3 - n = 8 - 2 = 6，6 mod 12 = 6 ≠ 0。原命题 ∀n≤1000, 12 | n^3-n 为假；Lean 用 decide 编译验证：Check.lean 中对原命题跑 decide 报 \"Tactic `decide` proved that the proposition ... is false\"（即该判定实例为 isFalse），且 #eval (List.range 1001).find? (fun n => (n^3-n)%12 ≠ 0) 返回 some 2；进一步对否定命题 ¬∀n≤1000, (n^3-n)%12=0 单独编写定理，decide 证明成功且 #print axioms 显示不依赖任何公理（无 sorryAx），确证反例存在、原义务不成立。"
+     }
+    ],
+    "seconds": 266.0
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "对所有 1≤n≤300，30 整除 n^5-n",
+   "is_true": true,
+   "slug": "3fed3cf516d0",
+   "judge": {
+    "verdict": "true",
+    "reason": "n^5 - n = n(n-1)(n+1)(n²+1). By Fermat's little theorem, for each prime p ∈ {2,3,5}, n^p ≡ n (mod p). Since 5 ≡ 1 (mod p-1) for p=2 (5≡1 mod1, trivial), p=3 (5≡2≡... let's verify directly): \n- mod 2: n^2≡n ⇒ n^5=(n^2)^2·n≡n^2·n=n^3≡n·n^2≡n·n=n^2≡n (mod 2)\n- mod 3: n^3≡n ⇒ n^5=n^3·n^2≡n·n^2=n^3≡n (mod 3)\n- mod 5: n^5≡n directly by Fermat's little theorem.\n\nSo n^5≡n mod 2, mod 3, and mod 5 for every integer n, hence n^5≡n mod 30 (since 2,3,5 are pairwise coprime and 2·3·5=30). This holds for all integers n, in particular for all 1≤n≤300. The proposition is true.",
+    "seconds": 8.9
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "verified",
+    "grade": "proven",
+    "evidence": [
+     {
+      "artifact": "6b1ef11407ead849315a514a5c4988342ce22f0f12190d438dafa17eed9f0101",
+      "evidence_id": "cef85b68c3ec6b0a1830d4300317c951aa0c8aba0fde9883f40dc7525a2f0d5c",
+      "grade": "proven",
+      "instrument": "python3+sympy(1.14.0, 已探测确认已安装)",
+      "obligation": "对区间 [1,300] 内的每一个整数 n，n^5-n 都能被 30 整除（即 (n^5-n) mod 30 = 0 对该区间内所有 n 成立，可逐一计算验证）",
+      "obligation_id": "59d84d13386d70d3d97658df4c76c951cc7d3b4cfb1a395ad2ce93049af3e460",
+      "outcome": "holds",
+      "witness": null
+     }
+    ],
+    "seconds": 319.9
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "对所有 1≤n≤300，60 整除 n^5-n",
+   "is_true": false,
+   "slug": "a05d5691a333",
+   "judge": {
+    "verdict": "false",
+    "reason": "n^5-n 对所有整数都能被 30 整除（由费马小定理知 2,3,5 都整除它），但不一定被 60 整除。反例：n=2 时，n^5-n=32-2=30，而 30 不能被 60 整除（30/60 不是整数）。因此命题为假。",
+    "seconds": 7.1
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "ad511d9cb003cdfb06e269d2e577eee2589826a59a3ebcc787228d93887c30ea",
+      "evidence_id": "78e03f60736e05b374830c104c07f5bd51476e397d2473489c5d752ede577cba",
+      "grade": "proven",
+      "instrument": "lean+lake (v4.32.2, 已探测确认可运行 decide)",
+      "obligation": "对每一个整数 n，1≤n≤300，60 整除 n^5-n（即 n^5-n mod 60 = 0）",
+      "obligation_id": "c6747969739159e296e321fa06eaff36234bc60fbffae9fa3423ef1ef5accdd0",
+      "outcome": "refuted",
+      "witness": "n=2：2^5-2=30，30 mod 60 = 30 ≠ 0，故 60 不整除 2^5-2。Lean `decide` 战术形式化证实命题 ∀ n∈[0,300], 60|(n^5-n) 为假；进一步枚举得 1..300 内共75个反例，均满足 n ≡ 2 (mod 4)：2,6,10,14,...,298。"
+     }
+    ],
+    "seconds": 227.1
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "1 到 100 的所有整数之和等于 5050",
+   "is_true": true,
+   "slug": "5d923e8c7a5c",
+   "judge": {
+    "verdict": "true",
+    "reason": "利用等差数列求和公式 S = n(n+1)/2，代入 n=100 得 S = 100×101/2 = 5050，与命题一致，故命题为真。",
+    "seconds": 2.7
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "verified",
+    "grade": "proven",
+    "evidence": [
+     {
+      "artifact": "6baa31e711914519c61d09a0a6c698368cea16d70a4365ee1ab5af87ee0a39ae",
+      "evidence_id": "c3e711f575c534b844f24f1747b719fce3dae4c759188171834ce74216aabef3",
+      "grade": "proven",
+      "instrument": "lean-4.32.2",
+      "obligation": "对 1 到 100 的所有整数求和，结果等于 5050",
+      "obligation_id": "5bac7566950583f4a33b46737d1f5119c0f9a3de6f3ca387c2a6667cb77cb0e4",
+      "outcome": "holds",
+      "witness": null
+     }
+    ],
+    "seconds": 210.6
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "1 到 100 的所有整数之和等于 5051",
+   "is_true": false,
+   "slug": "c3235d76a5da",
+   "judge": {
+    "verdict": "false",
+    "reason": "1到100的整数之和 = 100×101/2 = 5050，而非5051，因此该命题为假。",
+    "seconds": 3.2
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "4296f89f99fb1ef98e889c50dbda04cd76989633b8ccd68105fcb4a18c778448",
+      "evidence_id": "503e6211dd0c9362e554776f4710ebaa0ccd4367630c16730739eff8813054db",
+      "grade": "proven",
+      "instrument": "formal-derivation",
+      "obligation": "1 到 100 的所有整数之和的计算结果等于 5051",
+      "obligation_id": "bfda9e057ced10eee1cb1ea76b952fbda814077270a05dd99e521f8c650ab502",
+      "outcome": "refuted",
+      "witness": "高斯配对法：将1..100首尾配对(1+100),(2+99),...,(50+51)，共50对，每对之和恒为101，故总和=50×101=5050。经逐对枚举、直接累加、公式n(n+1)/2三种方法交叉验证均得5050，而非义务声称的5051，相差1，义务不成立。"
+     }
+    ],
+    "seconds": 147.6
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "2^13-1 = 8191 是素数",
+   "is_true": true,
+   "slug": "4730f03192b5",
+   "judge": {
+    "verdict": "true",
+    "reason": "2^13 - 1 = 8191。经试除验证：√8191 ≈ 90.5，检查所有小于等于90的素数（2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89）均不能整除8191，故8191为素数。此外，8191也是已知的梅森素数（M13，因13是素数且2^13-1恰为素数），该命题为真。",
+    "seconds": 8.2
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "verified",
+    "grade": "corroborated",
+    "evidence": [
+     {
+      "artifact": "1a1cfb6229bd609abd7b0e8ea76ab05949ce6f3c74c4b4f2af31198960b4ec00",
+      "evidence_id": "9daee632d1fbdc736fc308ca9c548d38c992897ae4ad10748c217c329c86b242",
+      "grade": "proven",
+      "instrument": "lean (v4.32.2, /opt/homebrew/bin/lean)",
+      "obligation": "2^13 - 1 的算术值等于 8191",
+      "obligation_id": "9b21eb424088b8fe46b14f02a4f7453e4bc87cd5a43fbbcacd6dfd20a1308251",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "70c681e9cb280531afd0d4ea3cddfacdf6874143d75ab4b162dcc69f67d408e9",
+      "evidence_id": "1e985b04a2941896b8b4995361a67ea214d79193e961605312f51ef6f70badbb",
+      "grade": "corroborated",
+      "instrument": "python3(/usr/bin/python3, v3.9.6, 已探测可执行)",
+      "obligation": "8191 是素数，即除 1 和 8191 外没有正整数因子（等价于对所有满足 2 ≤ p ≤ ⌊√8191⌋≈90.5 的整数 p，8191 mod p ≠ 0）",
+      "obligation_id": "915f656e5efe373934edb7519db39ddaa17910b64938e3c44559096f3d61a88a",
+      "outcome": "holds",
+      "witness": null
+     }
+    ],
+    "seconds": 494.5
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "2^11-1 = 2047 是素数",
+   "is_true": false,
+   "slug": "652ad623f722",
+   "judge": {
+    "verdict": "false",
+    "reason": "2047 = 23 × 89，不是素数（它是一个著名的例子，说明 2^p-1 中 p 为素数并不保证 2^p-1 也是素数；2047 是最小的费马伪素数之一）。",
+    "seconds": 4.7
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "1acc19c5010f36ccba089f765aa9fe64cc1e2e88691054503cc07f1ca67115f4",
+      "evidence_id": "5bbd53b44450ca3cc24bc3158b628ddc630a632ea490a344a68dfff4befc53e6",
+      "grade": "demonstrated",
+      "instrument": "python3 (已探测确认: /usr/bin/python3, v3.9.6)",
+      "obligation": "2^11 - 1 的算术值等于 2047",
+      "obligation_id": "adf640a34b5ae21434445acc2c8ca7c78490e54e1a9267f1fa4f4a30f72344ae",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "d1c4e17b09a10b513a74ed708ffb595d46b453199dca8079b978bd0744743a2a",
+      "evidence_id": "b4d000a257af37d8a1dde462527534a315aeef1cc216ff350856a1b8334d2c06",
+      "grade": "demonstrated",
+      "instrument": "python3 (system, /usr/bin/python3, v3.9.6, 无需第三方库)",
+      "obligation": "2047 是素数，即除 1 和自身外没有其他正因数",
+      "obligation_id": "9ce699045f82752053e75498899cf772307c9d79f7cba5ed4a30f47ea3b3c659",
+      "outcome": "refuted",
+      "witness": "2047 = 23 × 89（首个除数 d=23，穷举范围 [2,45] 内找到），故 2047 非素数"
+     }
+    ],
+    "seconds": 315.4
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "对所有 1≤n≤200，9 整除 10^n-1",
+   "is_true": true,
+   "slug": "68bc5e774094",
+   "judge": {
+    "verdict": "true",
+    "reason": "10 ≡ 1 (mod 9)，所以对任意正整数 n，10^n ≡ 1^n = 1 (mod 9)，即 9 | (10^n - 1)。这对所有 n（包括 1≤n≤200）都成立，与具体上界无关，命题为真。",
+    "seconds": 4.3
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "verified",
+    "grade": "proven",
+    "evidence": [
+     {
+      "artifact": "7c97a92c4215d11234d75247f7f70aed21cfba544fbb92426f3ce810fb89e707",
+      "evidence_id": "d69416efcf02e9c2240b5110cd6de38380f6b68e5a51079ed6d36bd192420ae9",
+      "grade": "proven",
+      "instrument": "lean4-kernel-decide",
+      "obligation": "对每个整数 n，1≤n≤200，10^n - 1 除以 9 余数为 0（即 10^n ≡ 1 (mod 9)）",
+      "obligation_id": "2f0cdc638423998fe192d60e39ce263787adac57855cf72f9f69f3df51265a89",
+      "outcome": "holds",
+      "witness": null
+     }
+    ],
+    "seconds": 267.1
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "对所有 1≤n≤200，11 整除 10^n-1",
+   "is_true": false,
+   "slug": "8735c4c71fc5",
+   "judge": {
+    "verdict": "false",
+    "reason": "10 ≡ -1 (mod 11)，所以 10^n - 1 ≡ (-1)^n - 1 (mod 11)。当 n 为奇数时，(-1)^n - 1 ≡ -2 ≡ 9 (mod 11) ≠ 0，即 11 不整除 10^n - 1。例如 n=1：10^1-1=9，9/11 不整除；n=3：10^3-1=999=11×90+9，同样不整除。因此该命题对所有奇数 n（如 n=1,3,5,...）均不成立，故命题为假（只对偶数 n 成立）。",
+    "seconds": 4.9
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "8780cfb1da0b9a431d5df3fcd19c0a1373ff32f56b11aea0c99820f4d8c5e601",
+      "evidence_id": "bcf14e60c28305a6a13332e2e6dbedd8633068d6f7d7a69b5bb0b1bf378809ff",
+      "grade": "proven",
+      "instrument": "lean4",
+      "obligation": "对每一个整数 n，1≤n≤200，都有 11 整除 (10^n - 1)，即 10^n mod 11 = 1",
+      "obligation_id": "437e583d8c3f3ec16c1b1f2f28c25664e5ee516f6cd95a8ad31272c29f2506a2",
+      "outcome": "refuted",
+      "witness": "n = 1（满足 1 ≤ n ≤ 200）：10^1 - 1 = 9，而 11 ∤ 9，故义务「11 ∣ (10^n - 1)」在 n=1 处不成立。Lean 4 中定理 obligation_fails_at_n1 : ¬((11:ℤ) ∣ (10^1 - 1)) 编译通过，#print axioms 仅显示 propext（无 sorry）。"
+     }
+    ],
+    "seconds": 470.8
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "组合数 C(10,3) 等于 120",
+   "is_true": true,
+   "slug": "b87dce665f62",
+   "judge": {
+    "verdict": "true",
+    "reason": "C(10,3) = 10×9×8 / (3×2×1) = 720/6 = 120，计算正确。",
+    "seconds": 3.0
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "verified",
+    "grade": "demonstrated",
+    "evidence": [
+     {
+      "artifact": "3e562bcf886cfb3243139917012dd774fbb49ecb054a75e1b81aca22703760b6",
+      "evidence_id": "199bb0581296cbf0d3ab2fc8e92e3b21f9078056a888642d38b727f6c2cf66f9",
+      "grade": "demonstrated",
+      "instrument": "python3(itertools)",
+      "obligation": "C(10,3) 的值等于 120",
+      "obligation_id": "323944a619c7bffbb2792948898fdd8209ebc7b07c2d32b55130c1dda821dc6a",
+      "outcome": "holds",
+      "witness": null
+     }
+    ],
+    "seconds": 171.9
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "组合数 C(10,3) 等于 125",
+   "is_true": false,
+   "slug": "6d4689fe8ad5",
+   "judge": {
+    "verdict": "false",
+    "reason": "C(10,3) = 10!/(3!·7!) = (10×9×8)/(3×2×1) = 720/6 = 120，而非125，故命题为假。",
+    "seconds": 3.0
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "306464c75d0e032e04e3ddce9bf65dada8cc08899a6dcdb0b8ce49953da72a1a",
+      "evidence_id": "de8493cd2264a6fca3084fe4e2f0e376d660e7cdb561115201725447dda87d1e",
+      "grade": "demonstrated",
+      "instrument": "python3 (math.comb, 已确认: /usr/bin/python3, Python 3.9.6)",
+      "obligation": "C(10,3) 的值等于 125",
+      "obligation_id": "02ff57b4f059cb5e4539408b876362c98d25118df4fa90c679b5f6ead23a404c",
+      "outcome": "refuted",
+      "witness": "math.comb(10,3) = 120 ≠ 125（Python 3.9.6, /usr/bin/python3 精确整数运算，无浮点误差）"
+     }
+    ],
+    "seconds": 138.0
+   },
+   "verifier_outcome": "ok"
+  }
+ ]
+}
