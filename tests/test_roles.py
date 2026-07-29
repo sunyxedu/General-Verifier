@@ -1,8 +1,47 @@
 import pytest
 
 from verifier.roles import (
-    Role, RoleError, FixtureBackend, validate, COMPILE_OBLIGATIONS,
+    Role, RoleError, FixtureBackend, OpenAIBackend, validate,
+    COMPILE_OBLIGATIONS,
 )
+
+
+class FakeChatClient:
+    """Duck-typed openai.OpenAI: client.chat.completions.create(...)"""
+
+    def __init__(self, text):
+        outer = self
+
+        class Completions:
+            def create(self, **kwargs):
+                outer.last_kwargs = kwargs
+                message = type("M", (), {"content": outer_text})
+                choice = type("C", (), {"message": message})
+                return type("R", (), {"choices": [choice]})
+
+        outer_text = text
+        self.chat = type("Chat", (), {"completions": Completions()})
+
+
+def test_openai_backend_extracts_json_from_prose():
+    client = FakeChatClient('好的，结果如下：\n{"check_source": "print(1)"} 完毕')
+    backend = OpenAIBackend(model="m", client=client)
+    out = backend.complete("write_check", "prompt", {})
+    assert out == {"check_source": "print(1)"}
+    assert client.last_kwargs["model"] == "m"
+    assert client.last_kwargs["messages"][0]["content"] == "prompt"
+
+
+def test_openai_backend_fails_closed_without_json():
+    backend = OpenAIBackend(model="m", client=FakeChatClient("没有对象"))
+    with pytest.raises(RoleError, match="no JSON object"):
+        backend.complete("r", "p", {})
+
+
+def test_openai_backend_fails_closed_on_malformed_json():
+    backend = OpenAIBackend(model="m", client=FakeChatClient('{"a": nope}'))
+    with pytest.raises(RoleError, match="malformed JSON"):
+        backend.complete("r", "p", {})
 
 
 def test_validate_accepts_and_rejects():

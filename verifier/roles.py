@@ -2,7 +2,10 @@
 
 Every role = a generic prompt template + an output schema. Backends are
 injectable: FixtureBackend gives deterministic outputs for tests and replay;
-AnthropicBackend does real structured-output calls when an API key exists.
+OpenAIBackend does real single-shot calls (OpenAI SDK, provider-agnostic via
+base_url — works against OpenAI, Anthropic's compat endpoint, local vLLM…).
+Roles that must ACT (probe, execute, open artifacts) live in verifier.agents
+on the Claude Agent SDK instead; this module is for pure text-in/JSON-out.
 Schema validation failures retry once with the error attached, then raise —
 a role that cannot produce well-formed output is a FAILED generation, and per
 the master principle that must surface, not be papered over.
@@ -10,7 +13,6 @@ the master principle that must surface, not be papered over.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Callable, Dict, List
 
 
@@ -65,28 +67,44 @@ class FixtureBackend:
         return fixture(variables) if callable(fixture) else fixture
 
 
-class AnthropicBackend:
-    """Real backend. Imported lazily; requires ANTHROPIC_API_KEY."""
+class OpenAIBackend:
+    """Single-shot backend on the OpenAI SDK — provider-agnostic.
 
-    def __init__(self, model: str = "claude-sonnet-5"):
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise RoleError("ANTHROPIC_API_KEY not set")
-        import anthropic  # lazy: not a test-time dependency
+    base_url/api_key select the provider (OpenAI, Anthropic's OpenAI-compat
+    endpoint, DeepSeek, a local vLLM, …); the SDK also honors OPENAI_BASE_URL
+    and OPENAI_API_KEY from the environment. No response_format is sent, for
+    maximum provider compatibility — the JSON is extracted from the text and
+    the role-level validate()+retry is the gate, as everywhere else.
+    """
 
-        self.client = anthropic.Anthropic()
+    def __init__(self, model: str, base_url: str = None, api_key: str = None,
+                 client=None, max_tokens: int = 4096):
+        if client is not None:
+            self.client = client  # injectable for tests
+        else:
+            import openai  # lazy: not a test-time dependency
+
+            self.client = openai.OpenAI(
+                **({"base_url": base_url} if base_url else {}),
+                **({"api_key": api_key} if api_key else {}),
+            )
         self.model = model
+        self.max_tokens = max_tokens
 
     def complete(self, role_name: str, prompt: str, variables: Dict[str, Any]) -> Any:
-        message = self.client.messages.create(
+        response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=2048,
+            max_tokens=self.max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = "".join(b.text for b in message.content if b.type == "text")
+        text = response.choices[0].message.content or ""
         start, end = text.find("{"), text.rfind("}")
         if start < 0 or end < 0:
             raise RoleError(f"{role_name}: no JSON object in model output")
-        return json.loads(text[start : end + 1])
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError as err:
+            raise RoleError(f"{role_name}: malformed JSON in model output: {err}")
 
 
 # ---- role --------------------------------------------------------------------
