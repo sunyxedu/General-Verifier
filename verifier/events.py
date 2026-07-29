@@ -28,6 +28,7 @@ EVENT_TYPES = (
     "variants_generated",
     "discrimination",
     "entailment_audit",
+    "variant_disqualified",
     "method_rejected",
     "method_bound",
     # coverage audit (M1, loop 3)

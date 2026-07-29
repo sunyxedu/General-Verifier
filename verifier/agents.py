@@ -283,6 +283,25 @@ GENERATE_VARIANTS_AGENT = AgentRole(
     tools=["Bash", "Write", "Read"],
 )
 
+VALIDATE_VARIANT_AGENT = AgentRole(
+    name="validate_variant",
+    system=(
+        "你是考题质检员。一道\"错误变体\"考题把所有候选方法都放行了——要么全体方法"
+        "共享盲区，要么这个变体根本不假（生成器错了）。你必须实际重跑检查来确认"
+        "它的真假，不许只看文字。拿不准就判 actually_false=yes（宁可冤枉方法，"
+        "不可放过盲区）。"
+    ),
+    template=(
+        "原 claim：{claim_text}\n针对的义务：{obligation_text}\n"
+        "变体：{variant_text}\n生成器给的假性证据（disproof）：{disproof}\n\n"
+        "实际运行检查，确认该变体是否真的为假、且假在违反这条义务上。\n"
+        "  actually_false: yes | no\n"
+        "  reason: 你的检查过程与结论"
+    ),
+    schema={"actually_false": ("yes", "no"), "reason": str},
+    tools=["Bash", "Read", "Write"],
+)
+
 DISCHARGE_AGENT = AgentRole(
     name="discharge",
     system=(
@@ -328,6 +347,7 @@ ALL_AGENT_ROLES = {
         COMPILE_OBLIGATIONS_AGENT,
         ENUMERATE_ORACLES_AGENT,
         GENERATE_VARIANTS_AGENT,
+        VALIDATE_VARIANT_AGENT,
         DISCHARGE_AGENT,
         ENTAILMENT_AUDIT_AGENT,
     )

@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional
 
 from .agents import (
     ENTAILMENT_AUDIT_AGENT, ENUMERATE_ORACLES_AGENT, GENERATE_VARIANTS_AGENT,
+    VALIDATE_VARIANT_AGENT,
 )
 from .discharge import DischargeResult
 from .events import EventLog
@@ -78,6 +79,7 @@ class BindingGame:
         oracles_role=ENUMERATE_ORACLES_AGENT,
         variants_role=GENERATE_VARIANTS_AGENT,
         entailment_role=ENTAILMENT_AUDIT_AGENT,
+        validate_variant_role=VALIDATE_VARIANT_AGENT,
         n_variants: int = 2,
         max_methods: int = 3,
         registry: str = "[]",
@@ -91,6 +93,7 @@ class BindingGame:
         self.oracles_role = oracles_role
         self.variants_role = variants_role
         self.entailment_role = entailment_role
+        self.validate_variant_role = validate_variant_role
         self.n_variants = n_variants
         self.max_methods = max_methods
         self.registry = registry
@@ -103,6 +106,7 @@ class BindingGame:
         attempts: List[Attempt] = []
         methods = self._enumerate(row, obligation)
         variants = self._exam(row, obligation)
+        self._variant_verdicts: Dict[str, bool] = {}   # exam quality memo
 
         if not methods:
             return self._fail(row, obligation, attempts, [],
@@ -112,6 +116,9 @@ class BindingGame:
                               "no discrimination exam")
 
         for method in methods:
+            if not [v for v in variants if self._variant_usable(v)]:
+                return self._fail(row, obligation, attempts, variants,
+                                  "no usable discrimination exam")
             attempt = Attempt(method=method, discrimination=[])
             attempts.append(attempt)
 
@@ -152,6 +159,9 @@ class BindingGame:
             return self._settle(row, obligation, attempts, variants,
                                 method, result, audit=verdict, grade=grade)
 
+        if not [v for v in variants if self._variant_usable(v)]:
+            return self._fail(row, obligation, attempts, variants,
+                              "no usable discrimination exam")
         return self._fail(row, obligation, attempts, variants,
                           "all candidate methods rejected")
 
@@ -216,8 +226,20 @@ class BindingGame:
         return variants
 
     def _gate1(self, row, obligation, method, variants, attempt) -> Optional[str]:
-        """Discrimination: the method must refute every known-false variant."""
+        """Discrimination: the method must refute every USABLE false variant.
+
+        When a method holds on a variant, there are two suspects: the method
+        (blind spot) or the exam question itself (the generator misconfirmed
+        its falsity, or made it false in a way this obligation does not
+        watch). Before rejecting the method, the question is audited ONCE by
+        an independent agent that re-runs the disproof; only a question that
+        fails its audit is disqualified. Fail-closed direction is preserved:
+        an unclear audit keeps the variant and the method is rejected.
+        """
+        sat = 0
         for i, variant in enumerate(variants):
+            if not self._variant_usable(variant):
+                continue
             variant_row = {"id": row["id"], "text": variant["text"]}
             result = self.discharger.discharge(
                 variant_row, obligation, method=method, tag=f"exam{i}"
@@ -233,6 +255,8 @@ class BindingGame:
                  "variant": variant["text"], "outcome": result.outcome},
             )
             if result.outcome == OUTCOME_HOLDS:
+                if not self._audit_variant(row, obligation, variant):
+                    continue   # question disqualified, not the method's fault
                 if self.memory is not None:
                     # yesterday's escape becomes tomorrow's exam question
                     self.memory.record_attack(
@@ -242,7 +266,42 @@ class BindingGame:
                 return "false pass on a known-false variant"
             if result.outcome == OUTCOME_FAILED:
                 return "could not sit the discrimination exam"
+            sat += 1
+        if sat == 0:
+            # every question evaporated mid-exam: no exam == nothing binds
+            return "no usable discrimination exam"
         return None
+
+    def _variant_usable(self, variant) -> bool:
+        return self._variant_verdicts.get(variant["text"], True)
+
+    def _audit_variant(self, row, obligation, variant) -> bool:
+        """-> True if the exam question stands (variant really is false)."""
+        text = variant["text"]
+        if text in self._variant_verdicts:
+            return self._variant_verdicts[text]
+        try:
+            verdict = self.validate_variant_role.call(
+                self.backend,
+                {
+                    "claim_text": row["text"],
+                    "obligation_text": obligation.text,
+                    "variant_text": text,
+                    "disproof": variant["disproof"],
+                },
+            )
+            stands = verdict["actually_false"] == "yes"
+            reason = verdict["reason"]
+        except RoleError as err:
+            stands, reason = True, f"audit failed, question kept: {err}"
+        self._variant_verdicts[text] = stands
+        if not stands:
+            self.log.append(
+                "variant_disqualified",
+                {"claim": row["id"], "obligation": obligation.id,
+                 "variant": text, "reason": reason},
+            )
+        return stands
 
     def _gate2(self, obligation, method, result, attempt) -> Dict[str, str]:
         evidence = {

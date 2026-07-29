@@ -199,6 +199,81 @@ def test_methods_mechanically_resorted_and_capped(tmp_path):
     assert sorted(KIND_RANK, key=KIND_RANK.get)[0] == "formal"
 
 
+def test_bogus_exam_question_disqualified_not_the_method(tmp_path):
+    """All candidates hold on V1; the audit finds V1 is not actually false ->
+    V1 is disqualified, methods are judged on V2 only, strongest binds."""
+    def fn(text, method, tag):
+        if text == "V1（假）":
+            return ("holds", "")          # every method holds on the bogus one
+        if text == "V2（假）":
+            return ("refuted", "")
+        return ("holds", "")
+
+    audits = []
+
+    def validate(v):
+        audits.append(v["variant_text"])
+        return {"actually_false": "no", "reason": "复跑发现它其实为真"}
+
+    game, log, artifacts = make(
+        tmp_path,
+        {"oracles": METHODS, "variants": VARIANTS, "entailment": AUDIT_YES,
+         "validate_variant": validate},
+        fn,
+    )
+    result = game.run(ROW, OB)
+    assert result.outcome == "holds"
+    assert result.instrument == "strong"          # method NOT blamed
+    assert audits == ["V1（假）"]                  # audited exactly once (memo)
+    types = [e["type"] for e in log.replay()]
+    assert "variant_disqualified" in types
+    assert "method_rejected" not in types
+
+
+def test_confirmed_exam_question_still_rejects_method(tmp_path):
+    """Audit says the variant IS false -> the hold was a real blind spot."""
+    def fn(text, method, tag):
+        if text.startswith("V"):
+            return ("holds", "") if method["instrument_id"] == "strong" else ("refuted", "")
+        return ("holds", "")
+
+    game, log, _ = make(
+        tmp_path,
+        {"oracles": METHODS, "variants": VARIANTS, "entailment": AUDIT_YES,
+         "validate_variant": {"actually_false": "yes", "reason": "确实假"}},
+        fn,
+    )
+    result = game.run(ROW, OB)
+    assert result.instrument == "weak"            # strong rejected as before
+    rejected = [e for e in log.replay() if e["type"] == "method_rejected"]
+    assert "false pass" in rejected[0]["payload"]["reason"]
+
+
+def test_all_questions_disqualified_fails_closed(tmp_path):
+    game, log, _ = make(
+        tmp_path,
+        {"oracles": METHODS, "variants": VARIANTS, "entailment": AUDIT_YES,
+         "validate_variant": {"actually_false": "no", "reason": "都不假"}},
+        lambda text, method, tag: ("holds", ""),
+    )
+    result = game.run(ROW, OB)
+    assert result.outcome == "failed"
+    assert result.witness == "no usable discrimination exam"
+
+
+def test_audit_failure_keeps_question_fail_closed(tmp_path):
+    """No validate_variant fixture -> RoleError -> question kept -> reject."""
+    game, log, _ = make(
+        tmp_path,
+        {"oracles": METHODS, "variants": VARIANTS, "entailment": AUDIT_YES},
+        lambda text, method, tag: ("holds", "") if text.startswith("V")
+        else ("holds", ""),
+    )
+    result = game.run(ROW, OB)
+    assert result.outcome == "failed"             # every method rejected
+    assert result.witness == "all candidate methods rejected"
+
+
 def test_kernel_with_binder_seat_end_to_end(tmp_path):
     log = EventLog(str(tmp_path / "e.jsonl"))
     log.append("commit", {"label": "A", "kind": "assertion",
