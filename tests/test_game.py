@@ -249,7 +249,41 @@ def test_confirmed_exam_question_still_rejects_method(tmp_path):
     assert "false pass" in rejected[0]["payload"]["reason"]
 
 
-def test_all_questions_disqualified_fails_closed(tmp_path):
+def test_disqualified_exam_regenerated_with_feedback_then_binds(tmp_path):
+    """Round 1's questions all disqualified -> generator gets the reasons back
+    and produces a proper question -> the method binds on round 2."""
+    rounds = []
+
+    def variants_fixture(v):
+        rounds.append(v["memory_hits"])
+        if len(rounds) == 1:
+            return {"variants": [{"text": "V-偏题（假）", "disproof": "假但不违反义务"}]}
+        return {"variants": [{"text": "V-对题（假）", "disproof": "违反义务而假"}]}
+
+    def fn(text, method, tag):
+        if text == "V-偏题（假）":
+            return ("holds", "")           # correct method passes off-topic exam
+        if text == "V-对题（假）":
+            return ("refuted", "")
+        return ("holds", "")
+
+    game, log, artifacts = make(
+        tmp_path,
+        {"oracles": METHODS, "variants": variants_fixture,
+         "entailment": AUDIT_YES,
+         "validate_variant": {"actually_false": "no", "reason": "不违反该义务"}},
+        fn,
+    )
+    result = game.run(ROW, OB)
+    assert result.outcome == "holds" and result.instrument == "strong"
+    assert len(rounds) == 2
+    assert "被质检剔除" in rounds[1] and "不违反该义务" in rounds[1]
+    types = [e["type"] for e in log.replay()]
+    assert types.count("variants_generated") == 2
+    assert "method_rejected" not in types
+
+
+def test_all_questions_disqualified_twice_fails_closed(tmp_path):
     game, log, _ = make(
         tmp_path,
         {"oracles": METHODS, "variants": VARIANTS, "entailment": AUDIT_YES,
@@ -259,6 +293,9 @@ def test_all_questions_disqualified_fails_closed(tmp_path):
     result = game.run(ROW, OB)
     assert result.outcome == "failed"
     assert result.witness == "no usable discrimination exam"
+    # exactly one regeneration was attempted before giving up
+    types = [e["type"] for e in log.replay()]
+    assert types.count("variants_generated") == 2
 
 
 def test_audit_failure_keeps_question_fail_closed(tmp_path):

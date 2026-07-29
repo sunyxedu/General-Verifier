@@ -102,30 +102,55 @@ class BindingGame:
 
     # ---- entry ---------------------------------------------------------------
 
+    NO_EXAM = "no usable discrimination exam"
+
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
         attempts: List[Attempt] = []
         methods = self._enumerate(row, obligation)
-        variants = self._exam(row, obligation)
         self._variant_verdicts: Dict[str, bool] = {}   # exam quality memo
+        self._disqualified: List[Dict[str, str]] = []
 
         if not methods:
             return self._fail(row, obligation, attempts, [],
                               "no candidate methods")
+        variants = self._exam(row, obligation)
         if not variants:
             return self._fail(row, obligation, attempts, [],
                               "no discrimination exam")
 
-        for method in methods:
+        rejected = [False] * len(methods)
+        exam_regens = 0
+        while True:
             if not [v for v in variants if self._variant_usable(v)]:
+                # exam evaporated: every question was disqualified. Send the
+                # reasons back to the generator ONCE (打回重出) — a bounded
+                # round of loop-2 applied to the exam itself.
+                if exam_regens < 1:
+                    exam_regens += 1
+                    fresh = self._exam(row, obligation,
+                                       feedback=self._exam_feedback())
+                    if fresh:
+                        variants = variants + fresh
+                        continue
                 return self._fail(row, obligation, attempts, variants,
-                                  "no usable discrimination exam")
+                                  self.NO_EXAM)
+
+            idx = next((i for i, r in enumerate(rejected) if not r), None)
+            if idx is None:
+                return self._fail(row, obligation, attempts, variants,
+                                  "all candidate methods rejected")
+            method = methods[idx]
             attempt = Attempt(method=method, discrimination=[])
             attempts.append(attempt)
 
             reason = self._gate1(row, obligation, method, variants, attempt)
+            if reason == self.NO_EXAM:
+                attempts.pop()     # not the method's fault; regenerate first
+                continue
             if reason:
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
+                rejected[idx] = True
                 continue
 
             result = self.discharger.discharge(
@@ -138,6 +163,7 @@ class BindingGame:
                 reason = "execution failure at retry limit"
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
+                rejected[idx] = True
                 continue
 
             if result.outcome == OUTCOME_REFUTED:
@@ -151,6 +177,7 @@ class BindingGame:
                 reason = f"entailment audit: {verdict['reason']}"
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
+                rejected[idx] = True
                 continue
 
             grade = weakest_grade(
@@ -159,11 +186,9 @@ class BindingGame:
             return self._settle(row, obligation, attempts, variants,
                                 method, result, audit=verdict, grade=grade)
 
-        if not [v for v in variants if self._variant_usable(v)]:
-            return self._fail(row, obligation, attempts, variants,
-                              "no usable discrimination exam")
-        return self._fail(row, obligation, attempts, variants,
-                          "all candidate methods rejected")
+    def _exam_feedback(self) -> str:
+        import json as _json
+        return _json.dumps(self._disqualified, ensure_ascii=False)
 
     # ---- stages --------------------------------------------------------------
 
@@ -198,9 +223,16 @@ class BindingGame:
         )
         return methods
 
-    def _exam(self, row: Dict, obligation: Obligation) -> List[Dict[str, str]]:
+    def _exam(self, row: Dict, obligation: Obligation,
+              feedback: str = "") -> List[Dict[str, str]]:
         memory_hits = (self.memory.hits_for_attacks(row["text"])
                        if self.memory is not None else self.memory_hits)
+        if feedback:
+            memory_hits = (
+                "【上一轮考题被质检剔除——它们虽为假，但不违反本条义务。"
+                "新变体必须恰好以违反这条义务的方式为假。被剔理由：】"
+                + feedback + "\n" + memory_hits
+            )
         try:
             payload = self.variants_role.call(
                 self.backend,
@@ -281,7 +313,7 @@ class BindingGame:
             sat += 1
         if sat == 0:
             # every question evaporated mid-exam: no exam == nothing binds
-            return "no usable discrimination exam"
+            return self.NO_EXAM
         return None
 
     def _variant_usable(self, variant) -> bool:
@@ -308,6 +340,7 @@ class BindingGame:
             stands, reason = True, f"audit failed, question kept: {err}"
         self._variant_verdicts[text] = stands
         if not stands:
+            self._disqualified.append({"variant": text, "reason": reason})
             self.log.append(
                 "variant_disqualified",
                 {"claim": row["id"], "obligation": obligation.id,

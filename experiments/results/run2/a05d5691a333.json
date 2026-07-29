@@ -1,0 +1,29 @@
+{
+ "claim": "对所有 1≤n≤300，60 整除 n^5-n",
+ "is_true": false,
+ "slug": "a05d5691a333",
+ "judge": {
+  "verdict": "false",
+  "reason": "命题不成立。反例 n=2：2^5-2=30，30 不能被 60 整除。虽然 n^5-n 对所有整数恒被 30 整除（费马小定理保证被5整除，再结合被2、3整除的初等论证），但被 4 整除并不总成立（例如 n=2 时 n^5-n=30 只含一个因子2），因此不能保证被 60 整除。",
+  "seconds": 13.5
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "refuted",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "066045c5a64a17da2c3c5da4668e2c84860557861584cc9ab6b394e01a9088a7",
+    "evidence_id": "ec41e70301e63cc6faac7c317d5751346d07bbb48f38be69276652e571cd6985",
+    "grade": "proven",
+    "instrument": "lean4-cli-4.32.2",
+    "obligation": "答案必须对命题给出明确的真假判定（对 1≤n≤300 是否全部满足 60 | n^5-n），不能停留在含糊或部分陈述。",
+    "obligation_id": "2bd81ec4e21b3d1fce8f1c066bd9bbec779283d28573ac267f62e90b77f93ad2",
+    "outcome": "refuted",
+    "witness": "n=2: n^5-n = 32-2 = 30, 30 % 60 = 30 ≠ 0，60 不整除 30。Lean #eval 求值 check = false，counterexamples 列表首项即为 2（完整反例列表见 output.txt，共 75 个反例：2,6,10,14,...,298，即所有 ≡2 mod 4 的偶数）。"
+   }
+  ],
+  "seconds": 205.1
+ },
+ "verifier_outcome": "ok"
+}

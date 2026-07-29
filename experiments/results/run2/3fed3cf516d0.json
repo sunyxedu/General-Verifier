@@ -1,0 +1,39 @@
+{
+ "claim": "对所有 1≤n≤300，30 整除 n^5-n",
+ "is_true": true,
+ "slug": "3fed3cf516d0",
+ "judge": {
+  "verdict": "true",
+  "reason": "对任意整数 n，n^5-n 恒被30整除，这是费马小定理的推论：\n- mod 2：n^2≡n (mod2) ⇒ n^5=(n^2)^2·n≡n^2·n≡n mod2，故2 | n^5-n\n- mod 3：费马小定理给 n^3≡n (mod3) ⇒ n^5=n^3·n^2≡n·n^2=n^3≡n mod3，故3 | n^5-n\n- mod 5：费马小定理直接给 n^5≡n (mod5)，故5 | n^5-n\n\n2、3、5两两互质，故30 = 2·3·5 | n^5-n 对所有整数n成立，自然对1≤n≤300也成立。命题为真。",
+  "seconds": 9.7
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "unverified",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "abc51c5992766de4d4a201a990c375eaa71e12896366cbf0c78e6a095dfc68cd",
+    "evidence_id": "56e87afddf6a3d9571877ebf96d37d90d2c4a2256d2c7271f3eb5fbd76c32f03",
+    "grade": "proven",
+    "instrument": "lean4+mathlib(/private/tmp/leancheck/proj, lean 4.32.2)",
+    "obligation": "对区间 1≤n≤300 内的每一个整数 n，都必须使 30 | (n^5-n) 成立（不能只验证子集或典型情形）",
+    "obligation_id": "092880851c394070840da4d97d21cb06a5d4f3a191d7db63585176464c4f6906",
+    "outcome": "holds",
+    "witness": null
+   },
+   {
+    "artifact": "5aa9f4d6832417b5ddc36c3ff9209ddc9d88f1512cfe93346fa5b42f82a15e9e",
+    "evidence_id": "303730273ce52f701697036c0392be07203f4a529973af2e1a6c0e6c9dc60e3f",
+    "grade": "corroborated",
+    "instrument": "binding-game",
+    "obligation": "必须证明或验证 2 | (n^5-n) 对所有 1≤n≤300 成立",
+    "obligation_id": "38f755e8a1a9f9c3c510d445eb0f6391886b2d4e5f3efdda5541bacadb21690b",
+    "outcome": "failed",
+    "witness": "no usable discrimination exam"
+   }
+  ],
+  "seconds": 689.9
+ },
+ "verifier_outcome": "abstain"
+}
