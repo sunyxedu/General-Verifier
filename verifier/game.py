@@ -82,6 +82,7 @@ class BindingGame:
         max_methods: int = 3,
         registry: str = "[]",
         memory_hits: str = "[]",
+        memory=None,
     ):
         self.backend = backend
         self.artifacts = artifacts
@@ -94,6 +95,7 @@ class BindingGame:
         self.max_methods = max_methods
         self.registry = registry
         self.memory_hits = memory_hits
+        self.memory = memory  # M4: advisory; feeds registry + attack hits
 
     # ---- entry ---------------------------------------------------------------
 
@@ -156,6 +158,8 @@ class BindingGame:
     # ---- stages --------------------------------------------------------------
 
     def _enumerate(self, row: Dict, obligation: Obligation) -> List[Dict[str, str]]:
+        registry = (self.memory.registry_summary()
+                    if self.memory is not None else self.registry)
         try:
             payload = self.oracles_role.call(
                 self.backend,
@@ -163,7 +167,7 @@ class BindingGame:
                     "claim_text": row["text"],
                     "obligation_text": obligation.text,
                     "features": _features(row),
-                    "registry": self.registry,
+                    "registry": registry,
                 },
             )
         except RoleError as err:
@@ -185,13 +189,15 @@ class BindingGame:
         return methods
 
     def _exam(self, row: Dict, obligation: Obligation) -> List[Dict[str, str]]:
+        memory_hits = (self.memory.hits_for_attacks(row["text"])
+                       if self.memory is not None else self.memory_hits)
         try:
             payload = self.variants_role.call(
                 self.backend,
                 {
                     "claim_text": row["text"],
                     "obligation_text": obligation.text,
-                    "memory_hits": self.memory_hits,
+                    "memory_hits": memory_hits,
                     "n": self.n_variants,
                 },
             )
@@ -227,6 +233,12 @@ class BindingGame:
                  "variant": variant["text"], "outcome": result.outcome},
             )
             if result.outcome == OUTCOME_HOLDS:
+                if self.memory is not None:
+                    # yesterday's escape becomes tomorrow's exam question
+                    self.memory.record_attack(
+                        row["text"], variant["text"],
+                        f"false-passed by {method['instrument_id']}",
+                        kind="false_pass_caught")
                 return "false pass on a known-false variant"
             if result.outcome == OUTCOME_FAILED:
                 return "could not sit the discrimination exam"
@@ -286,6 +298,10 @@ class BindingGame:
         bound = {"method": method, "audit": audit,
                  "discharge_artifact": result.artifact}
         digest = self._record(obligation, attempts, variants, bound)
+        if self.memory is not None:
+            self.memory.record_instrument(
+                method["instrument_id"], method["evidence_kind"],
+                method["procedure"])
         self.log.append(
             "method_bound",
             {"claim": row["id"], "obligation": obligation.id,

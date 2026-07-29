@@ -1,0 +1,149 @@
+⚠ [8655/8657] Replayed Proj.Basic
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `open Finset`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `def s : Finset ℕ :=
+  Finset.Icc 1 100`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `theorem s_nonempty : s.Nonempty :=
+  by
+  refine ⟨1, ?_⟩
+  simp [s]`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `theorem coverage :
+    s.card = 100 ∧ s.min' s_nonempty = 1 ∧ s.max' s_nonempty = 100 :=
+  by
+  refine ⟨?_, ?_, ?_⟩
+  · simp [s, Nat.card_Icc]
+  · apply le_antisymm
+    · exact Finset.min'_le s 1 (by simp [s])
+    · exact Finset.le_min' s s_nonempty 1 (fun x hx => (Finset.mem_Icc.mp (by simpa [s] using hx)).1)
+  · apply le_antisymm
+    · exact Finset.max'_le s s_nonempty 100 (fun x hx => (Finset.mem_Icc.mp (by simpa [s] using hx)).2)
+    · exact Finset.le_max' s 100 (by simp [s])`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:28:100: This line exceeds the 100 character limit, please shorten it!
+
+Note: This linter can be disabled with `set_option linter.style.longLine false`
+warning: Proj/Basic.lean:30:100: This line exceeds the 100 character limit, please shorten it!
+
+Note: This linter can be disabled with `set_option linter.style.longLine false`
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `theorem sum_eq_5050 : ∑ i ∈ s, i = 5050 :=
+  by
+  have hins : Finset.range 101 = insert 0 s := by
+    ext x
+    simp only [Finset.mem_range, Finset.mem_insert, s, Finset.mem_Icc]
+    omega
+  have h0 : (0 : ℕ) ∉ s := by simp [s]
+  have hsum : ∑ i ∈ Finset.range 101, i = ∑ i ∈ s, i := by rw [hins, Finset.sum_insert h0, zero_add]
+  have h101 : ∑ i ∈ Finset.range 101, i = 5050 := by rw [Finset.sum_range_id]
+  rw [← hsum, h101]`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `theorem sum_eq_5050_native : ∑ i ∈ s, i = 5050 := by native_decide`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:48:2: Using `native_decide` is not allowed in mathlib: because it trusts the entire Lean compiler (not just the Lean kernel), it could quite possibly be used to prove false.
+
+Note: This linter can be disabled with `set_option linter.style.nativeDecide false`
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `theorem claim_holds :
+    s.card = 100 ∧ s.min' s_nonempty = 1 ∧ s.max' s_nonempty = 100 ∧ ∑ i ∈ s, i = 5050 :=
+  ⟨coverage.1, coverage.2.1, coverage.2.2, sum_eq_5050⟩`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+info: Proj/Basic.lean:56:0: 'coverage' depends on axioms: [propext, Classical.choice, Quot.sound]
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `#print axioms coverage`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+info: Proj/Basic.lean:57:0: 'sum_eq_5050' depends on axioms: [propext, Classical.choice, Quot.sound]
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `#print axioms sum_eq_5050`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+info: Proj/Basic.lean:58:0: 'claim_holds' depends on axioms: [propext, Classical.choice, Quot.sound]
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `#print axioms claim_holds`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+info: Proj/Basic.lean:60:0: "PROOF_CHECK_DONE"
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before `#eval "PROOF_CHECK_DONE"`.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:1:1: * '-/':
+Copyright too short!
+
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+warning: Proj/Basic.lean:13:0: The module doc-string for a file should be the first command after the imports.
+Please, add a module doc-string before ``.
+
+Note: This linter can be disabled with `set_option linter.style.header false`
+Build completed successfully (8657 jobs).
+EXIT CODE: 0

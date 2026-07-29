@@ -36,6 +36,8 @@ EVENT_TYPES = (
     # search support (M3)
     "dedup_hit",
     "branch_pruned",
+    # memory (M4, advisory)
+    "memory_recorded",
 )
 
 

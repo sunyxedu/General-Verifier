@@ -47,9 +47,14 @@ HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 class Sidecar:
     def __init__(self, state_dir: str, kernel_factory=None,
                  model: Optional[str] = None, seats: str = "agent",
-                 game: bool = True, coverage: bool = False):
+                 game: bool = True, coverage: bool = False,
+                 memory_dir: Optional[str] = None):
         os.makedirs(state_dir, exist_ok=True)
         self.state_dir = state_dir
+        self.memory = None
+        if memory_dir:
+            from .memory import Memory
+            self.memory = Memory(memory_dir)
         self.log = EventLog(os.path.join(state_dir, "events.jsonl"))
         self.store = ClaimStore(os.path.join(state_dir, "claims.sqlite"))
         self.artifacts = ArtifactStore(os.path.join(state_dir, "artifacts"))
@@ -163,12 +168,13 @@ def _default_kernel(sc: Sidecar, model, seats, game, coverage) -> Kernel:
         discharger = AgentDischarger(
             backend, sc.artifacts,
             workdir_base=os.path.join(sc.state_dir, "work"))
-        binder = BindingGame(backend, sc.artifacts, sc.log,
-                             discharger) if game else None
+        binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
+                             memory=sc.memory) if game else None
         audit = CoverageAudit(backend, sc.log) if coverage else None
         return Kernel(sc.store, sc.log, backend, sc.artifacts,
                       obligations_role=COMPILE_OBLIGATIONS_AGENT,
-                      discharger=discharger, binder=binder, coverage=audit)
+                      discharger=discharger, binder=binder, coverage=audit,
+                      memory=sc.memory)
     if seats == "sandbox":
         from .roles import OpenAIBackend
 
@@ -225,9 +231,11 @@ def main() -> None:
     ap.add_argument("--game", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--coverage", action=argparse.BooleanOptionalAction,
                     default=False)
+    ap.add_argument("--memory-dir", default=None)
     args = ap.parse_args()
     sidecar = Sidecar(args.state_dir, model=args.model, seats=args.seats,
-                      game=args.game, coverage=args.coverage)
+                      game=args.game, coverage=args.coverage,
+                      memory_dir=args.memory_dir)
     build_server(sidecar).run()   # stdio
 
 

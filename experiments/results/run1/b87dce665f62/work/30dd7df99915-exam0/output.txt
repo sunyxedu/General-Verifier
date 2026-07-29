@@ -1,0 +1,14 @@
+n = 10, k = 3
+Hand-derived combination formula C(n,k) = n!/(k!(n-k)!) evaluated: 120
+Sympy built-in binomial(n,k) evaluated: 120
+(For reference only) permutation formula P(n,k) = n!/(n-k)! evaluated: 720
+Claimed value in the claim under test: 720
+
+Assertion: hand-derived formula == sympy built-in binomial -> True
+Assertion: combination value (120) == claimed value (720) -> False
+Sanity check: claimed value (720) == permutation P(10,3) result (720) -> True
+
+=== FINAL RESULT ===
+CLAIM REFUTED: C(10,3) = 120, which does NOT equal the claimed value 720.
+Note: 720 matches the PERMUTATION formula P(10,3) = 720 instead, suggesting the claim likely confused C(n,k) with P(n,k).
+EXIT_CODE=1

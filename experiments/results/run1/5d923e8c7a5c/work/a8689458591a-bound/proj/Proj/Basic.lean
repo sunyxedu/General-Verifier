@@ -32,24 +32,16 @@ theorem coverage :
 
 -- Main claim: the sum over the covering range equals 5050, via the Gauss formula.
 theorem sum_eq_5050 : ∑ i ∈ s, i = 5050 := by
-  have hgauss : ∀ n : ℕ, (∑ i ∈ Finset.range (n + 1), i) * 2 = n * (n + 1) := by
-    intro n
-    induction n with
-    | zero => simp
-    | succ k ih =>
-      rw [Finset.sum_range_succ, add_mul, ih]
-      ring
-  have hs : s = Finset.range 101 \ {0} := by
+  have hins : Finset.range 101 = insert 0 s := by
     ext x
-    simp [s, Finset.mem_Icc, Finset.mem_range, Nat.lt_succ_iff, Nat.one_le_iff_ne_zero]
-    tauto
+    simp only [Finset.mem_range, Finset.mem_insert, s, Finset.mem_Icc]
+    omega
+  have h0 : (0 : ℕ) ∉ s := by simp [s]
   have hsum : ∑ i ∈ Finset.range 101, i = ∑ i ∈ s, i := by
-    rw [hs]
-    rw [Finset.sum_sdiff_eq_sub (by simp)]
-    simp
-  have h2 : (∑ i ∈ Finset.range 101, i) * 2 = 100 * 101 := hgauss 100
-  have h3 : (∑ i ∈ Finset.range 101, i) = 5050 := by omega
-  rw [← hsum, h3]
+    rw [hins, Finset.sum_insert h0, zero_add]
+  have h101 : ∑ i ∈ Finset.range 101, i = 5050 := by
+    rw [Finset.sum_range_id]
+  rw [← hsum, h101]
 
 -- Cross-check the sum by full computation as well, per the method's alternative instrument.
 theorem sum_eq_5050_native : ∑ i ∈ s, i = 5050 := by

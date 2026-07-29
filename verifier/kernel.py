@@ -42,6 +42,7 @@ class Kernel:
         discharger=None,
         binder=None,
         coverage=None,
+        memory=None,
     ):
         self.store = store
         self.log = log
@@ -56,6 +57,7 @@ class Kernel:
         )
         self.binder = binder      # M1 binding game; None -> direct discharge
         self.coverage = coverage  # M1 coverage audit; None -> no exam
+        self.memory = memory      # M4 advisory stores; None -> static hints
         store.on_trigger(self.verify)  # the single rule wires straight in
 
     # ---- entry ---------------------------------------------------------------
@@ -162,17 +164,35 @@ class Kernel:
 
         outcomes: List[str] = []
         grades: List[str] = []
+        refuting_witness = None
         for obligation in obligations:
             outcome, grade = self._discharge(row, obligation)
             outcomes.append(outcome)
             grades.append(grade)
             if outcome != OUTCOME_HOLDS:
+                if outcome == OUTCOME_REFUTED:
+                    ev = self.store.evidence_for(row["id"])
+                    refuting_witness = ev[-1].get("witness") if ev else None
                 break  # refuted or failed: no point burning further checks
         self._settle(row["id"], outcomes, grade=weakest_grade(grades))
 
+        if self.memory is not None:
+            status = self.store.status(row["id"])
+            self.memory.record_obligations(
+                row["text"], [o.text for o in obligations], status)
+            if status == REFUTED:
+                self.memory.record_attack(
+                    row["text"], row["text"],
+                    str(refuting_witness), kind="refutation")
+            self.log.append("memory_recorded", {"claim": row["id"]})
+
     def _compile_obligations(self, row: Dict):
+        memory_hits = (
+            self.memory.hits_for_obligations(row["text"])
+            if self.memory is not None else self.memory_hits
+        )
         payload = self.obligations_role.call(
-            self.backend, {"claim_text": row["text"], "memory_hits": self.memory_hits}
+            self.backend, {"claim_text": row["text"], "memory_hits": memory_hits}
         )
         all_obligations = [
             Obligation(row["id"], o["text"], o["failure_looks_like"])

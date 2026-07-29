@@ -1,0 +1,129 @@
+NineDvd.lean:15:32: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  HPow Nat ℕ (?m.24 k)
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:16:2: error: Tactic `induction` failed: major premise type is not an inductive type
+  ℕ
+
+Explanation: the `induction` tactic is for constructor-based reasoning as well as for applying custom induction principles with a 'using' clause or a registered '@[induction_eliminator]' theorem. The above type neither is an inductive type nor has a registered theorem.
+
+ℕ : Type u_1
+n : ℕ
+⊢ ∃ k, 10 ^ n = 9 * k + 1
+NineDvd.lean:24:30: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  LE ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:24:30: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  OfNat ℕ 1
+numerals are polymorphic in Lean, but the numeral `1` cannot be used in a context where the expected type is
+  ℕ
+due to the absence of the instance above
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:24:44: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  HPow Nat ℕ Nat
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:25:20: error(lean.unknownIdentifier): Unknown identifier `pow10_eq`
+NineDvd.lean:25:9: error: Tactic `rcases` failed: `x✝ : ?m.28` is not an inductive datatype
+NineDvd.lean:32:11: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  OfNat ℕ 9
+numerals are polymorphic in Lean, but the numeral `9` cannot be used in a context where the expected type is
+  ℕ
+due to the absence of the instance above
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:32:10: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  Dvd ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:32:21: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  HSub Nat Nat ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:32:36: error(lean.unknownIdentifier): Unknown identifier `nine_dvd`
+NineDvd.lean:35:11: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  OfNat ℕ 9
+numerals are polymorphic in Lean, but the numeral `9` cannot be used in a context where the expected type is
+  ℕ
+due to the absence of the instance above
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:35:10: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  Dvd ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:35:21: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  HSub Nat Nat ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:35:38: error(lean.unknownIdentifier): Unknown identifier `nine_dvd`
+NineDvd.lean:38:11: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  OfNat ℕ 9
+numerals are polymorphic in Lean, but the numeral `9` cannot be used in a context where the expected type is
+  ℕ
+due to the absence of the instance above
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:38:10: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  Dvd ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:38:21: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  HSub Nat Nat ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:39:11: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  OfNat ℕ 9
+numerals are polymorphic in Lean, but the numeral `9` cannot be used in a context where the expected type is
+  ℕ
+due to the absence of the instance above
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:39:10: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  Dvd ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:39:21: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  HSub Nat Nat ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:42:11: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  OfNat ℕ 1
+numerals are polymorphic in Lean, but the numeral `1` cannot be used in a context where the expected type is
+  ℕ
+due to the absence of the instance above
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:42:10: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  LE ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:42:25: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  OfNat ℕ 1
+numerals are polymorphic in Lean, but the numeral `1` cannot be used in a context where the expected type is
+  ℕ
+due to the absence of the instance above
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:42:24: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  LE ℕ
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:42:20: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  OfNat ℕ 1
+numerals are polymorphic in Lean, but the numeral `1` cannot be used in a context where the expected type is
+  ℕ
+due to the absence of the instance above
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:42:34: error(lean.synthInstanceFailed): failed to synthesize instance of type class
+  OfNat ℕ 200
+numerals are polymorphic in Lean, but the numeral `200` cannot be used in a context where the expected type is
+  ℕ
+due to the absence of the instance above
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+NineDvd.lean:44:14: error(lean.unknownIdentifier): Unknown constant `nine_dvd`
+"PROOF_CHECK_DONE"
