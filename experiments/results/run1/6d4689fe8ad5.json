@@ -1,0 +1,29 @@
+{
+ "claim": "组合数 C(10,3) 等于 125",
+ "is_true": false,
+ "slug": "6d4689fe8ad5",
+ "judge": {
+  "verdict": "false",
+  "reason": "C(10,3) = 10!/(3!7!) = (10×9×8)/(3×2×1) = 720/6 = 120，不等于125。命题为假。",
+  "seconds": 3.5
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "refuted",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "8b64345639ff685aa7157a74fd32bfdbe2b1b60c338dd936c0c99022cb1f64ca",
+    "evidence_id": "059a06147d7003de791267dbe58419862285485bcfedeb1c414883e299e837c0",
+    "grade": "proven",
+    "instrument": "lean (v4.32.2, /opt/homebrew/bin/lean, 已探测可用且验证自含定义可编译执行)",
+    "obligation": "C(10,3) 的值必须等于组合数定义式 10!/(3!·7!) 的计算结果",
+    "obligation_id": "9a4aceca99547a7af1a6cf8e2ba682473b9a0ff6dd47e1070e40676c056e8ec5",
+    "outcome": "refuted",
+    "witness": "C(10,3) = 10!/(3!·7!) = 120,不等于声称的 125。Lean 自含定义计算 #eval choose 10 3 输出 120,#eval (choose 10 3 == 125) 输出 false。"
+   }
+  ],
+  "seconds": 257.7
+ },
+ "verifier_outcome": "ok"
+}

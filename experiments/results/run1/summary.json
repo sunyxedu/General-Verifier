@@ -1,0 +1,436 @@
+{
+ "model": "claude-sonnet-5",
+ "n_pairs": 6,
+ "summary": {
+  "judge": {
+   "n": 12,
+   "false_pass": 0,
+   "false_alarm": 0,
+   "abstain": 0,
+   "ok": 12
+  },
+  "verifier": {
+   "n": 12,
+   "false_pass": 0,
+   "false_alarm": 0,
+   "abstain": 6,
+   "ok": 5
+  }
+ },
+ "records": [
+  {
+   "claim": "对所有 1≤n≤1000，6 整除 n^3-n",
+   "is_true": true,
+   "slug": "c3ab2d7ac85d",
+   "judge": {
+    "verdict": "true",
+    "reason": "n^3 - n = (n-1)·n·(n+1) 是三个连续整数的乘积。任意三个连续整数中必含至少一个偶数（能被2整除）和恰好一个能被3整除的数，因此乘积必被 2×3=6 整除。这一性质对所有整数 n 成立，自然包含 1≤n≤1000 的情形。验证示例：n=2 时 8-2=6=6×1；n=10 时 1000-10=990=6×165，均成立。</parameter>\n</invoke>\n",
+    "seconds": 8.2
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "unverified",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "1369418049688d830a624cfa731715e26f68a5031b9a83b0895434f18b452ae9",
+      "evidence_id": "5eb4bee84fac4e4c436770ed290177c4523ca3eb54d6727d5e4665921010a64c",
+      "grade": "proven",
+      "instrument": "lean4-core (elan default stable v4.32.2, 无需 mathlib)",
+      "obligation": "论证必须是对区间内任意 n 都成立的一般性机制（代数恒等式、模运算分类、归纳法或穷举），而不是仅对少数几个 n 抽样验证后外推到 1≤n≤1000 全体。",
+      "obligation_id": "68765aee45fafc39d7749eb368fcac860369ba0273c7a298173684503a56822f",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "8f1ddc765b900081d0edd76ac067bf0e049d5a7d2419638a790d552d7d2ef8e6",
+      "evidence_id": "a6279fbe836d7fa8acfbb76c154f58f00baebd7f423719f1d85bf9a1bee5e8b6",
+      "grade": "corroborated",
+      "instrument": "binding-game",
+      "obligation": "必须证明 2 整除 n^3-n（即 n^3-n 是偶数），且证明本身要覆盖 n 为奇数和偶数两种情形。",
+      "obligation_id": "25e1034ceadca650ab40493bea108a79ce3f4c016b979b3e70744dbb291cf6f8",
+      "outcome": "failed",
+      "witness": "all candidate methods rejected"
+     }
+    ],
+    "seconds": 681.2
+   },
+   "verifier_outcome": "abstain"
+  },
+  {
+   "claim": "对所有 1≤n≤1000，12 整除 n^3-n",
+   "is_true": false,
+   "slug": "d3835074f57a",
+   "judge": {
+    "verdict": "false",
+    "reason": "命题声称对所有 1≤n≤1000，12 整除 n³−n。但取 n=2 时 n³−n=6，6 不能被 12 整除，构成反例。更一般地，n³−n=(n−1)n(n+1) 总能被 6 整除，但要被 12 整除还需额外一个 2 因子；当 n≡2 (mod 4) 时（如 n=2,6,10,...），该额外因子缺失，导致 12 不整除 n³−n。因此该命题为假。",
+    "seconds": 11.5
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "736122a921ef5d7fa96b8eeb485741e8d26938a007864e1d0a2d6c2ef438240f",
+      "evidence_id": "5b64190e58bb4c3e2537188b3f34c4958635ec767aeba3f782c2b135434d6a21",
+      "grade": "proven",
+      "instrument": "z3(4.15.4, /opt/homebrew/bin/z3)",
+      "obligation": "论证必须覆盖 1≤n≤1000 范围内的每一个 n，不能仅验证个别样本后外推为全称结论。",
+      "obligation_id": "76e94e4befc5624b9eba688e7cff4cc3a919a39f32ce590f42b3046bae7e70dc",
+      "outcome": "refuted",
+      "witness": "n=2: 2^3-2=6, 6 mod 12 = 6 ≠ 0 (not divisible by 12). z3 found 250 counterexamples in [1,1000], all n ≡ 2 (mod 4): 2,6,10,14,18,...,998. Direct arithmetic confirms n=2 is genuine. (n^3-n is always divisible by 6, but only divisible by 12 when n ≡ 0,1,3 mod 4.)"
+     }
+    ],
+    "seconds": 440.4
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "对所有 1≤n≤300，30 整除 n^5-n",
+   "is_true": true,
+   "slug": "3fed3cf516d0",
+   "judge": {
+    "verdict": "true",
+    "reason": "对任意整数 n，n^5 - n = n(n-1)(n+1)(n^2+1)。由费马小定理，对素数 p ∈ {2,3,5}，有 n^p ≡ n (mod p)，即 p | n^p - n。specifically：\n- n^5 - n = (n^5-n)，且 n^5 ≡ n (mod 2)（因为 mod 2 下 n^2≡n，故 n^5=n^4·n≡n·n=n^2≡n）\n- n^5 ≡ n (mod 3)（费马小定理，p=3，n^3≡n，则 n^5=n^3·n^2≡n·n^2=n^3≡n）\n- n^5 ≡ n (mod 5)（费马小定理，p=5，直接 n^5≡n）\n\n故 2|n^5-n, 3|n^5-n, 5|n^5-n，而 2,3,5 两两互质，所以 30=2·3·5 整除 n^5-n。这对所有整数 n 成立，自然对 1≤n≤300 范围内的所有整数也成立。验证几个具体值：n=2时32-2=30=30×1；n=3时243-3=240=30×8；n=4时1024-4=1020=30×34，均整除。命题为真。</reason>\n</invoke>\n",
+    "seconds": 10.0
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "unverified",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "144444f780f0515d770cc801154c4cb194a58708dec973f277478afe19014dd1",
+      "evidence_id": "c2afe1c17ea4a7c1edbb26e83dfd139c5bc0f4d364079b8bdd911dccfa73497a",
+      "grade": "demonstrated",
+      "instrument": "python3-sympy",
+      "obligation": "答案必须给出正确的真值判断：该命题为真（对所有整数 n，30 整除 n^5-n，因此对 1≤n≤300 也成立）。",
+      "obligation_id": "43aa4f49c8ad2bb1ce4f6f74fe180abec71bc2e46511bca77135ecce7c7e841c",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "d58adce3bd61ae90c9e4cc4935e411204b4d633384b2f9cfe27e9f40648ac1dd",
+      "evidence_id": "2d9eeeb2b3ae12db7e0178130ee6fff9f509223cd5d4133c662e62206d0c69de",
+      "grade": "proven",
+      "instrument": "lean4-4.32.2 (probed: `lean --version` 成功, 实测 decide 通过)",
+      "obligation": "论证必须覆盖 1 到 300 的全部 300 个整数，而不能仅用少数样本值（如 n=1,2,3,10,300）验证后就断言\"其余同理\"。",
+      "obligation_id": "0ef0ac83ac118dd7c7e6641a751a13a1823ad8b429de7255a01fcdce36d6b052",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "1b52fba261a8ec28afa060750520958dae6b78d457a44b745414465c92f87043",
+      "evidence_id": "ccec43cb170f66550a08b382e9a72c8657718899a39dedc223f27daf08534dee",
+      "grade": "proven",
+      "instrument": "lean 4.32.2 + lake 5.0.0（standalone，无需 Mathlib，已用 `lean t2.lean` 探测确认可编译）",
+      "obligation": "由于 30=2×3×5 且 2,3,5 两两互质，论证必须分别（显式或隐式地）证明 2、3、5 各自整除 n^5-n；仅证明能被 6 或 10 整除不足以推出被 30 整除。",
+      "obligation_id": "91aa19a12682bd326886ce5de35b57bded7ee45ddedcd4955d27b2ac19ade052",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "790bdfa4b285e746635c730ae049cd202867d89fdfb4fb565dd58dbc925ee477",
+      "evidence_id": "b60a5e2f8269cf6ac63921a2949d7f55a8649ef368ac2a84529e8e0f6e06954f",
+      "grade": "corroborated",
+      "instrument": "binding-game",
+      "obligation": "若论证依赖对 n^5-n 的因式分解（如 n(n-1)(n+1)(n^2+1) 或 n(n^4-1)），该分解必须代数正确，展开后应恒等于 n^5-n。",
+      "obligation_id": "c45b648b92161a0d4fd4ce43a732cdcc84675e46734e134f5eea99ebe1420566",
+      "outcome": "failed",
+      "witness": "all candidate methods rejected"
+     }
+    ],
+    "seconds": 1555.4
+   },
+   "verifier_outcome": "abstain"
+  },
+  {
+   "claim": "对所有 1≤n≤300，60 整除 n^5-n",
+   "is_true": false,
+   "slug": "a05d5691a333",
+   "judge": {
+    "verdict": "false",
+    "reason": "n^5-n 对所有整数只能保证被30整除（因为2、3、5都整除n^5-n），但不一定被60整除。反例：n=2时，n^5-n=32-2=30，30不能被60整除。因此该命题为假。",
+    "seconds": 6.9
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "a391498a07ea2d26f97f41f6364fff062a5237d4580ce5f8465c187ed6cfc2a3",
+      "evidence_id": "4af0bc456c657c48c7bd53b0781a8b7f28a1bd3ddb0ae711d0bbced9b8c3932f",
+      "grade": "proven",
+      "instrument": "lean4-elan-4.32.2 (core, native_decide)",
+      "obligation": "证明必须给出 n^5-n 的正确代数分解，例如 n^5-n = n(n-1)(n+1)(n^2+1)，且分解式在后续整除性论证中被无误地使用。",
+      "obligation_id": "e9c7d9fad2fb0ded345888eaf6f6e70e3ec20347c872437c46588d3bf31f4ddd",
+      "outcome": "refuted",
+      "witness": "n=2: 2^5-2=30，30 不是60的倍数（30 mod 60 = 30 ≠ 0）。分解式本身 n^5-n=n(n-1)(n+1)(n^2+1) 在 [1,300] 内逐点核验正确（factCheck=true，native_decide 确证），但 60|n^5-n 的有界全称命题被 native_decide 证否（check=false，firstFail=some 1，即 0-based index 1 对应 n=2）。"
+     }
+    ],
+    "seconds": 437.9
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "1 到 100 的所有整数之和等于 5050",
+   "is_true": true,
+   "slug": "5d923e8c7a5c",
+   "judge": {
+    "verdict": "true",
+    "reason": "1到100的整数之和 = n(n+1)/2 = 100×101/2 = 5050，命题成立。",
+    "seconds": 3.1
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "error": "[Errno 28] No space left on device"
+   },
+   "verifier_outcome": "error"
+  },
+  {
+   "claim": "1 到 100 的所有整数之和等于 5051",
+   "is_true": false,
+   "slug": "c3235d76a5da",
+   "judge": {
+    "verdict": "false",
+    "reason": "1到100所有整数之和为 100×101/2 = 5050，而不是5051，因此该命题为假。",
+    "seconds": 3.5
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "6898ec2d187224cf68e1bd04867e050672a10370c06494f832c1d066a0a2d66f",
+      "evidence_id": "730952afe4dde7d6e9b800c831f966b28db177ab16f21765bf437decbc28198a",
+      "grade": "proven",
+      "instrument": "lean-4.32.2-decide (probed: /opt/homebrew/bin/lean, no mathlib needed for this closed recursion)",
+      "obligation": "论证必须给出明确的求和方法（如高斯配对法或等差数列求和公式 n(n+1)/2），而非仅断言结果",
+      "obligation_id": "183ede44dcc100efe0152e8408e167b6a742255e2799956199789d197d579f5f",
+      "outcome": "refuted",
+      "witness": "sumTo 100 = 5050（#eval 与 `by decide` 均确认），而非命题声称的 5051；`decide` 对 `sumTo 100 = 5051` 明确判定为假（Lean 报错：\"Tactic decide proved that the proposition sumTo 100 = 5051 is false\"）。等差数列公式 100×101/2 = 5050 与形式计算一致，进一步印证 5051 是错误值。"
+     }
+    ],
+    "seconds": 145.6
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "2^13-1 = 8191 是素数",
+   "is_true": true,
+   "slug": "4730f03192b5",
+   "judge": {
+    "verdict": "true",
+    "reason": "2^13 - 1 = 8191。检验其素性：8191为奇数，各位数字和为19（不被3整除），不以0/5结尾（不被5整除）。逐一检验sqrt(8191)≈90.5以内的所有质数(7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89)，均无法整除8191。因此8191没有小于等于其平方根的质因子，故8191是素数。事实上，8191是著名的梅森素数（第5个梅森素数，对应p=13）。",
+    "seconds": 10.0
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "unverified",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "48b3ae9cbf778f62105fe5b7c460618831975ab5472d66f534b6b8fb77e77470",
+      "evidence_id": "7368caeb99322cdc3feb56d1078359182fd8f60e285fa018e71526fd1366e119",
+      "grade": "demonstrated",
+      "instrument": "python3(3.9.6, builtin int)",
+      "obligation": "目标数值必须正确:必须验证 2^13 = 8192,因此 2^13 - 1 = 8191,不能在幂运算或减法步骤中出现算术错误。",
+      "obligation_id": "b666e66241a817a5fe343314d29e49c7a47d8e597e5d21b018346dd570fda9b3",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "0b42b006f2128c8c2fe52d12c868e7cba2759e842d99564fe179f0aca5ffb000",
+      "evidence_id": "2b8fd0712bce9ec1c00419ffe18d419eaa4e51e7ddca1cf29c312ce9d3dde283",
+      "grade": "corroborated",
+      "instrument": "binding-game",
+      "obligation": "素性判定必须给出覆盖到 floor(sqrt(8191))=90 的完整试除:即对所有小于等于 90 的素数(2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89)逐一验证均不整除 8191,不能遗漏任何一个候选因子或用不完整的界限(例如只测到 50 或 70)。",
+      "obligation_id": "16ff5c66be9e9817c0f588302650d8c2a1c2a71dbfe53b4d203a6fad618d24f2",
+      "outcome": "failed",
+      "witness": "all candidate methods rejected"
+     }
+    ],
+    "seconds": 333.2
+   },
+   "verifier_outcome": "abstain"
+  },
+  {
+   "claim": "2^11-1 = 2047 是素数",
+   "is_true": false,
+   "slug": "652ad623f722",
+   "judge": {
+    "verdict": "false",
+    "reason": "2^11 - 1 = 2047 = 23 × 89，是合数而非素数，因此命题为假。",
+    "seconds": 3.7
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "unverified",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "3a7c799f159b2d6f1cc062861349a71f3b2b7c9d94b397b8ff2717c632725026",
+      "evidence_id": "d42f8bacd5811e76e0c07d3da6da7f9296a1c81ca02d1da90259c5481bc3a857",
+      "grade": "corroborated",
+      "instrument": "binding-game",
+      "obligation": "必须正确计算 2^11 - 1 的数值，确认其等于 2047（2048 - 1 = 2047）",
+      "obligation_id": "511de4849980b565bf27d9cbbc6d51294771a06b9b8a5cebb4ce01ec5b23c4c6",
+      "outcome": "failed",
+      "witness": "all candidate methods rejected"
+     }
+    ],
+    "seconds": 90.6
+   },
+   "verifier_outcome": "abstain"
+  },
+  {
+   "claim": "对所有 1≤n≤200，9 整除 10^n-1",
+   "is_true": true,
+   "slug": "68bc5e774094",
+   "judge": {
+    "verdict": "true",
+    "reason": "10 ≡ 1 (mod 9)，所以 10^n ≡ 1^n = 1 (mod 9)，即 10^n − 1 ≡ 0 (mod 9) 对所有正整数 n 成立，因此对 1≤n≤200 该命题为真。",
+    "seconds": 3.5
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "unverified",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "55c94ff23bfa0cac226b7c65fc0c943eca1970adc74a3424322540f21caa045b",
+      "evidence_id": "d62c727ad9ea88a42b8018cd90a13bdb2c707d28dc8cc99f712cf2f86affbee4",
+      "grade": "proven",
+      "instrument": "lean4-core-standalone(no-mathlib, verified via `lean proof.lean`)",
+      "obligation": "量词范围义务：声明为全称命题——对区间[1,200]内的每一个整数 n 都要成立，不是仅存在某个 n 成立。任何论证策略都必须针对全称量词展开（枚举/归纳/通用引理三选一或组合），不能用存在性证据冒充全称证据。",
+      "obligation_id": "3b185327b88268195042e14fab938861814949598378fc19bab9aae57af88f3c",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "894640a770201147e21d9c964612f3f5533e55af7bedd44bcd18d67fd7696623",
+      "evidence_id": "4e4c85683982b724b84eea241073ff7ac05209a1ec498ceebe85ecfd0c0783dd",
+      "grade": "proven",
+      "instrument": "lean-4.32.2",
+      "obligation": "端点覆盖义务：n=1 和 n=200 必须被显式纳入验证范围，不能因区间开闭理解错误而漏算或多算边界值。",
+      "obligation_id": "136720b0d29fe51a4f4c038e679707a2a3809579fbbe54f079f2785d003fed31",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "1044cb6c65805e908bc58581450ce3f4915513ddf590dc9def024cf809f6a62e",
+      "evidence_id": "bd6192488b6d8cf813c5982349a076ae8187e8feadfae17be88a4da258304502",
+      "grade": "corroborated",
+      "instrument": "binding-game",
+      "obligation": "整除定义一致性义务：对9整除10^n-1必须按标准整数整除定义核验——存在整数 k 使 10^n-1=9k，等价地 (10^n-1) mod 9 = 0——不能用近似、浮点除法或看似整除来代替精确判定。",
+      "obligation_id": "bf1f6b74bd8d3e3040b8513f96d97efa4a05fd1947672f7fb6ce400d5283aff6",
+      "outcome": "failed",
+      "witness": "all candidate methods rejected"
+     }
+    ],
+    "seconds": 986.0
+   },
+   "verifier_outcome": "abstain"
+  },
+  {
+   "claim": "对所有 1≤n≤200，11 整除 10^n-1",
+   "is_true": false,
+   "slug": "8735c4c71fc5",
+   "judge": {
+    "verdict": "false",
+    "reason": "10 ≡ -1 (mod 11)，所以 10^n - 1 ≡ (-1)^n - 1 (mod 11)。当 n 为奇数时，(-1)^n - 1 ≡ -2 (mod 11)，不被 11 整除。反例：n=1 时 10^1-1=9，11∤9。因此该命题对所有 1≤n≤200 并不成立（仅对偶数 n 成立），命题为假。",
+    "seconds": 5.6
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "4d994df3c33a64186995d1a9c26c24a84d7bd0b3f3dbe157f2063082ea984ac4",
+      "evidence_id": "48466bba42956fae6838db795863286b0946a9f4fa7d8f22c46bb1503bbe2a97",
+      "grade": "proven",
+      "instrument": "lean-4.32.2-bare(无mathlib,已探测到/opt/homebrew/bin/lean可执行且decide对Nat.dvd生效)",
+      "obligation": "最终判定应为该命题为假：并非对所有 1≤n≤200 都有 11 | 10^n-1，因为存在反例（n 为奇数时不成立）。",
+      "obligation_id": "03b57f10b18f7f0ebf80a3711a8efb8c91358baeaaf93448a2ce4dcbad883a0b",
+      "outcome": "refuted",
+      "witness": "n=1：10^1-1=9，11 ∤ 9（Lean 中 `¬ (11 ∣ (10^1 - 1))` 由 `decide` 内核检查通过）。更一般地，1..200 中所有奇数 n（共100个，如 n=1,3,5,...,199）均是反例；`#eval` 枚举结果与「奇数集合」完全相等（decide (failing = oddsUpTo200) = true）。"
+     }
+    ],
+    "seconds": 327.6
+   },
+   "verifier_outcome": "ok"
+  },
+  {
+   "claim": "组合数 C(10,3) 等于 120",
+   "is_true": true,
+   "slug": "b87dce665f62",
+   "judge": {
+    "verdict": "true",
+    "reason": "C(10,3) = 10×9×8 / (3×2×1) = 720/6 = 120，计算正确。",
+    "seconds": 2.6
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "unverified",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "d313ec951ae772f1e7050b7b2ffca81f58f35ba096208e8c97309a144b986f10",
+      "evidence_id": "823c4b351a2f86814cec6789ad3f8309247f4152c51723edb5178fd91178595f",
+      "grade": "proven",
+      "instrument": "python3-sympy(1.14.0, 已探测可用)",
+      "obligation": "论证必须使用组合数的正确定义/公式 C(n,k) = n! / (k!·(n-k)!)，并代入 n=10, k=3，而不是误用排列数公式 P(n,k) = n!/(n-k)!。",
+      "obligation_id": "30dd7df9991591966545f838475d943dcfe43af25f5c3ab50971dc512d8ddc35",
+      "outcome": "holds",
+      "witness": null
+     },
+     {
+      "artifact": "2375a000f01e6152622daba9fefd3af6c3d8d7234e3a8e3eca77caab1b123034",
+      "evidence_id": "39fe9f61e876f8a3d307cfd8b8e91be8accc0e45b65bee287d6b633a6c40ab1f",
+      "grade": "corroborated",
+      "instrument": "binding-game",
+      "obligation": "分子部分（下降阶乘）10×9×8 的计算结果必须等于 720。",
+      "obligation_id": "0d5119051cb5aa14e036b18aec02de40ad8b660dd50fc3b3b82acf974efb839d",
+      "outcome": "failed",
+      "witness": "all candidate methods rejected"
+     }
+    ],
+    "seconds": 395.8
+   },
+   "verifier_outcome": "abstain"
+  },
+  {
+   "claim": "组合数 C(10,3) 等于 125",
+   "is_true": false,
+   "slug": "6d4689fe8ad5",
+   "judge": {
+    "verdict": "false",
+    "reason": "C(10,3) = 10!/(3!7!) = (10×9×8)/(3×2×1) = 720/6 = 120，不等于125。命题为假。",
+    "seconds": 3.5
+   },
+   "judge_outcome": "ok",
+   "verifier": {
+    "status": "refuted",
+    "grade": null,
+    "evidence": [
+     {
+      "artifact": "8b64345639ff685aa7157a74fd32bfdbe2b1b60c338dd936c0c99022cb1f64ca",
+      "evidence_id": "059a06147d7003de791267dbe58419862285485bcfedeb1c414883e299e837c0",
+      "grade": "proven",
+      "instrument": "lean (v4.32.2, /opt/homebrew/bin/lean, 已探测可用且验证自含定义可编译执行)",
+      "obligation": "C(10,3) 的值必须等于组合数定义式 10!/(3!·7!) 的计算结果",
+      "obligation_id": "9a4aceca99547a7af1a6cf8e2ba682473b9a0ff6dd47e1070e40676c056e8ec5",
+      "outcome": "refuted",
+      "witness": "C(10,3) = 10!/(3!·7!) = 120,不等于声称的 125。Lean 自含定义计算 #eval choose 10 3 输出 120,#eval (choose 10 3 == 125) 输出 false。"
+     }
+    ],
+    "seconds": 257.7
+   },
+   "verifier_outcome": "ok"
+  }
+ ]
+}

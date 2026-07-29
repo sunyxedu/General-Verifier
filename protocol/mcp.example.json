@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "gv": {
+      "type": "stdio",
+      "command": ".venv/bin/python",
+      "args": [
+        "-m", "verifier.sidecar",
+        "--state-dir", ".gv",
+        "--memory-dir", ".gv-mem"
+      ],
+      "env": {
+        "PYTHONPATH": "."
+      }
+    }
+  }
+}
