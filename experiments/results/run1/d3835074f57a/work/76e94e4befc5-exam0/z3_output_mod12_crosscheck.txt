@@ -1,0 +1,6 @@
+PART_A_MOD12_RESULT:
+sat
+(
+  (define-fun n () Int
+    2)
+)

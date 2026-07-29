@@ -1,0 +1,100 @@
+"""Consumer-side certificate gate (report §11: enforcement is inverted).
+
+The solver is never forced to verify; the CONSUMER refuses to merge without a
+certificate. This CLI is that refusal, shaped for CI:
+
+  python -m verifier.cli certify --events trace.jsonl --state-dir .gv-ci \
+      [--final F] [--seats agent] [--model m] [--no-game]
+  -> exit 0 iff the verdict is `verified`; prints the certificate summary.
+
+  python -m verifier.cli replay --events trace.jsonl
+  -> LLM-free: rebuilds the claim graph and prints label -> status.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sys
+from typing import Optional
+
+from .builder import Builder
+from .certificate import request_certificate
+from .events import EventLog
+from .sidecar import Sidecar
+from .store import ClaimStore
+
+
+def certify(events_path: str, state_dir: str, final_label: Optional[str] = None,
+            seats: str = "agent", model: Optional[str] = None,
+            game: bool = True, kernel_factory=None) -> int:
+    os.makedirs(state_dir, exist_ok=True)
+    target = os.path.join(state_dir, "events.jsonl")
+    if os.path.abspath(events_path) != os.path.abspath(target):
+        shutil.copyfile(events_path, target)   # the gate works on its own copy
+
+    sc = Sidecar(state_dir, kernel_factory=kernel_factory,
+                 model=model, seats=seats, game=game)
+    if final_label is not None:
+        final_id = sc.builder.resolve(final_label)
+    elif sc.builder.finals:
+        final_id = sc.builder.finals[-1]
+    else:
+        print(json.dumps({"error": "no final claim in trace"}))
+        return 2
+
+    cert = request_certificate(sc.store, sc.kernel, sc.log, sc.artifacts,
+                               final_id)
+    print(json.dumps(
+        {
+            "verdict": cert["verdict"],
+            "overall_grade": cert["overall_grade"],
+            "certificate_id": cert["certificate_id"],
+            "slice": [
+                {"text": e["text"], "status": e["status"], "grade": e["grade"]}
+                for e in cert["slice"]
+            ],
+        },
+        ensure_ascii=False, indent=1,
+    ))
+    return 0 if cert["verdict"] == "verified" else 1
+
+
+def replay(events_path: str) -> int:
+    log = EventLog(events_path)
+    builder = Builder(log, ClaimStore())
+    for event in log.replay():
+        builder.feed(event)
+    out = {
+        label: builder.store.status(cid)
+        for label, cid in builder.labels.items()
+    }
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+    return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="verifier.cli")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    c = sub.add_parser("certify")
+    c.add_argument("--events", required=True)
+    c.add_argument("--state-dir", required=True)
+    c.add_argument("--final", default=None)
+    c.add_argument("--seats", default="agent", choices=["agent", "sandbox"])
+    c.add_argument("--model", default=None)
+    c.add_argument("--game", action=argparse.BooleanOptionalAction, default=True)
+
+    r = sub.add_parser("replay")
+    r.add_argument("--events", required=True)
+
+    args = ap.parse_args(argv)
+    if args.cmd == "certify":
+        return certify(args.events, args.state_dir, args.final,
+                       args.seats, args.model, args.game)
+    return replay(args.events)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,2006 @@
+PART_A_RESULT:
+sat
+(
+  (define-fun n () Int
+    2)
+)
+PART_B n=1:
+unsat
+PART_B n=2:
+sat
+PART_B n=3:
+unsat
+PART_B n=4:
+sat
+PART_B n=5:
+unsat
+PART_B n=6:
+sat
+PART_B n=7:
+unsat
+PART_B n=8:
+unsat
+PART_B n=9:
+unsat
+PART_B n=10:
+sat
+PART_B n=11:
+unsat
+PART_B n=12:
+sat
+PART_B n=13:
+unsat
+PART_B n=14:
+sat
+PART_B n=15:
+unsat
+PART_B n=16:
+unsat
+PART_B n=17:
+unsat
+PART_B n=18:
+sat
+PART_B n=19:
+unsat
+PART_B n=20:
+sat
+PART_B n=21:
+unsat
+PART_B n=22:
+sat
+PART_B n=23:
+unsat
+PART_B n=24:
+unsat
+PART_B n=25:
+unsat
+PART_B n=26:
+sat
+PART_B n=27:
+unsat
+PART_B n=28:
+sat
+PART_B n=29:
+unsat
+PART_B n=30:
+sat
+PART_B n=31:
+unsat
+PART_B n=32:
+unsat
+PART_B n=33:
+unsat
+PART_B n=34:
+sat
+PART_B n=35:
+unsat
+PART_B n=36:
+sat
+PART_B n=37:
+unsat
+PART_B n=38:
+sat
+PART_B n=39:
+unsat
+PART_B n=40:
+unsat
+PART_B n=41:
+unsat
+PART_B n=42:
+sat
+PART_B n=43:
+unsat
+PART_B n=44:
+sat
+PART_B n=45:
+unsat
+PART_B n=46:
+sat
+PART_B n=47:
+unsat
+PART_B n=48:
+unsat
+PART_B n=49:
+unsat
+PART_B n=50:
+sat
+PART_B n=51:
+unsat
+PART_B n=52:
+sat
+PART_B n=53:
+unsat
+PART_B n=54:
+sat
+PART_B n=55:
+unsat
+PART_B n=56:
+unsat
+PART_B n=57:
+unsat
+PART_B n=58:
+sat
+PART_B n=59:
+unsat
+PART_B n=60:
+sat
+PART_B n=61:
+unsat
+PART_B n=62:
+sat
+PART_B n=63:
+unsat
+PART_B n=64:
+unsat
+PART_B n=65:
+unsat
+PART_B n=66:
+sat
+PART_B n=67:
+unsat
+PART_B n=68:
+sat
+PART_B n=69:
+unsat
+PART_B n=70:
+sat
+PART_B n=71:
+unsat
+PART_B n=72:
+unsat
+PART_B n=73:
+unsat
+PART_B n=74:
+sat
+PART_B n=75:
+unsat
+PART_B n=76:
+sat
+PART_B n=77:
+unsat
+PART_B n=78:
+sat
+PART_B n=79:
+unsat
+PART_B n=80:
+unsat
+PART_B n=81:
+unsat
+PART_B n=82:
+sat
+PART_B n=83:
+unsat
+PART_B n=84:
+sat
+PART_B n=85:
+unsat
+PART_B n=86:
+sat
+PART_B n=87:
+unsat
+PART_B n=88:
+unsat
+PART_B n=89:
+unsat
+PART_B n=90:
+sat
+PART_B n=91:
+unsat
+PART_B n=92:
+sat
+PART_B n=93:
+unsat
+PART_B n=94:
+sat
+PART_B n=95:
+unsat
+PART_B n=96:
+unsat
+PART_B n=97:
+unsat
+PART_B n=98:
+sat
+PART_B n=99:
+unsat
+PART_B n=100:
+sat
+PART_B n=101:
+unsat
+PART_B n=102:
+sat
+PART_B n=103:
+unsat
+PART_B n=104:
+unsat
+PART_B n=105:
+unsat
+PART_B n=106:
+sat
+PART_B n=107:
+unsat
+PART_B n=108:
+sat
+PART_B n=109:
+unsat
+PART_B n=110:
+sat
+PART_B n=111:
+unsat
+PART_B n=112:
+unsat
+PART_B n=113:
+unsat
+PART_B n=114:
+sat
+PART_B n=115:
+unsat
+PART_B n=116:
+sat
+PART_B n=117:
+unsat
+PART_B n=118:
+sat
+PART_B n=119:
+unsat
+PART_B n=120:
+unsat
+PART_B n=121:
+unsat
+PART_B n=122:
+sat
+PART_B n=123:
+unsat
+PART_B n=124:
+sat
+PART_B n=125:
+unsat
+PART_B n=126:
+sat
+PART_B n=127:
+unsat
+PART_B n=128:
+unsat
+PART_B n=129:
+unsat
+PART_B n=130:
+sat
+PART_B n=131:
+unsat
+PART_B n=132:
+sat
+PART_B n=133:
+unsat
+PART_B n=134:
+sat
+PART_B n=135:
+unsat
+PART_B n=136:
+unsat
+PART_B n=137:
+unsat
+PART_B n=138:
+sat
+PART_B n=139:
+unsat
+PART_B n=140:
+sat
+PART_B n=141:
+unsat
+PART_B n=142:
+sat
+PART_B n=143:
+unsat
+PART_B n=144:
+unsat
+PART_B n=145:
+unsat
+PART_B n=146:
+sat
+PART_B n=147:
+unsat
+PART_B n=148:
+sat
+PART_B n=149:
+unsat
+PART_B n=150:
+sat
+PART_B n=151:
+unsat
+PART_B n=152:
+unsat
+PART_B n=153:
+unsat
+PART_B n=154:
+sat
+PART_B n=155:
+unsat
+PART_B n=156:
+sat
+PART_B n=157:
+unsat
+PART_B n=158:
+sat
+PART_B n=159:
+unsat
+PART_B n=160:
+unsat
+PART_B n=161:
+unsat
+PART_B n=162:
+sat
+PART_B n=163:
+unsat
+PART_B n=164:
+sat
+PART_B n=165:
+unsat
+PART_B n=166:
+sat
+PART_B n=167:
+unsat
+PART_B n=168:
+unsat
+PART_B n=169:
+unsat
+PART_B n=170:
+sat
+PART_B n=171:
+unsat
+PART_B n=172:
+sat
+PART_B n=173:
+unsat
+PART_B n=174:
+sat
+PART_B n=175:
+unsat
+PART_B n=176:
+unsat
+PART_B n=177:
+unsat
+PART_B n=178:
+sat
+PART_B n=179:
+unsat
+PART_B n=180:
+sat
+PART_B n=181:
+unsat
+PART_B n=182:
+sat
+PART_B n=183:
+unsat
+PART_B n=184:
+unsat
+PART_B n=185:
+unsat
+PART_B n=186:
+sat
+PART_B n=187:
+unsat
+PART_B n=188:
+sat
+PART_B n=189:
+unsat
+PART_B n=190:
+sat
+PART_B n=191:
+unsat
+PART_B n=192:
+unsat
+PART_B n=193:
+unsat
+PART_B n=194:
+sat
+PART_B n=195:
+unsat
+PART_B n=196:
+sat
+PART_B n=197:
+unsat
+PART_B n=198:
+sat
+PART_B n=199:
+unsat
+PART_B n=200:
+unsat
+PART_B n=201:
+unsat
+PART_B n=202:
+sat
+PART_B n=203:
+unsat
+PART_B n=204:
+sat
+PART_B n=205:
+unsat
+PART_B n=206:
+sat
+PART_B n=207:
+unsat
+PART_B n=208:
+unsat
+PART_B n=209:
+unsat
+PART_B n=210:
+sat
+PART_B n=211:
+unsat
+PART_B n=212:
+sat
+PART_B n=213:
+unsat
+PART_B n=214:
+sat
+PART_B n=215:
+unsat
+PART_B n=216:
+unsat
+PART_B n=217:
+unsat
+PART_B n=218:
+sat
+PART_B n=219:
+unsat
+PART_B n=220:
+sat
+PART_B n=221:
+unsat
+PART_B n=222:
+sat
+PART_B n=223:
+unsat
+PART_B n=224:
+unsat
+PART_B n=225:
+unsat
+PART_B n=226:
+sat
+PART_B n=227:
+unsat
+PART_B n=228:
+sat
+PART_B n=229:
+unsat
+PART_B n=230:
+sat
+PART_B n=231:
+unsat
+PART_B n=232:
+unsat
+PART_B n=233:
+unsat
+PART_B n=234:
+sat
+PART_B n=235:
+unsat
+PART_B n=236:
+sat
+PART_B n=237:
+unsat
+PART_B n=238:
+sat
+PART_B n=239:
+unsat
+PART_B n=240:
+unsat
+PART_B n=241:
+unsat
+PART_B n=242:
+sat
+PART_B n=243:
+unsat
+PART_B n=244:
+sat
+PART_B n=245:
+unsat
+PART_B n=246:
+sat
+PART_B n=247:
+unsat
+PART_B n=248:
+unsat
+PART_B n=249:
+unsat
+PART_B n=250:
+sat
+PART_B n=251:
+unsat
+PART_B n=252:
+sat
+PART_B n=253:
+unsat
+PART_B n=254:
+sat
+PART_B n=255:
+unsat
+PART_B n=256:
+unsat
+PART_B n=257:
+unsat
+PART_B n=258:
+sat
+PART_B n=259:
+unsat
+PART_B n=260:
+sat
+PART_B n=261:
+unsat
+PART_B n=262:
+sat
+PART_B n=263:
+unsat
+PART_B n=264:
+unsat
+PART_B n=265:
+unsat
+PART_B n=266:
+sat
+PART_B n=267:
+unsat
+PART_B n=268:
+sat
+PART_B n=269:
+unsat
+PART_B n=270:
+sat
+PART_B n=271:
+unsat
+PART_B n=272:
+unsat
+PART_B n=273:
+unsat
+PART_B n=274:
+sat
+PART_B n=275:
+unsat
+PART_B n=276:
+sat
+PART_B n=277:
+unsat
+PART_B n=278:
+sat
+PART_B n=279:
+unsat
+PART_B n=280:
+unsat
+PART_B n=281:
+unsat
+PART_B n=282:
+sat
+PART_B n=283:
+unsat
+PART_B n=284:
+sat
+PART_B n=285:
+unsat
+PART_B n=286:
+sat
+PART_B n=287:
+unsat
+PART_B n=288:
+unsat
+PART_B n=289:
+unsat
+PART_B n=290:
+sat
+PART_B n=291:
+unsat
+PART_B n=292:
+sat
+PART_B n=293:
+unsat
+PART_B n=294:
+sat
+PART_B n=295:
+unsat
+PART_B n=296:
+unsat
+PART_B n=297:
+unsat
+PART_B n=298:
+sat
+PART_B n=299:
+unsat
+PART_B n=300:
+sat
+PART_B n=301:
+unsat
+PART_B n=302:
+sat
+PART_B n=303:
+unsat
+PART_B n=304:
+unsat
+PART_B n=305:
+unsat
+PART_B n=306:
+sat
+PART_B n=307:
+unsat
+PART_B n=308:
+sat
+PART_B n=309:
+unsat
+PART_B n=310:
+sat
+PART_B n=311:
+unsat
+PART_B n=312:
+unsat
+PART_B n=313:
+unsat
+PART_B n=314:
+sat
+PART_B n=315:
+unsat
+PART_B n=316:
+sat
+PART_B n=317:
+unsat
+PART_B n=318:
+sat
+PART_B n=319:
+unsat
+PART_B n=320:
+unsat
+PART_B n=321:
+unsat
+PART_B n=322:
+sat
+PART_B n=323:
+unsat
+PART_B n=324:
+sat
+PART_B n=325:
+unsat
+PART_B n=326:
+sat
+PART_B n=327:
+unsat
+PART_B n=328:
+unsat
+PART_B n=329:
+unsat
+PART_B n=330:
+sat
+PART_B n=331:
+unsat
+PART_B n=332:
+sat
+PART_B n=333:
+unsat
+PART_B n=334:
+sat
+PART_B n=335:
+unsat
+PART_B n=336:
+unsat
+PART_B n=337:
+unsat
+PART_B n=338:
+sat
+PART_B n=339:
+unsat
+PART_B n=340:
+sat
+PART_B n=341:
+unsat
+PART_B n=342:
+sat
+PART_B n=343:
+unsat
+PART_B n=344:
+unsat
+PART_B n=345:
+unsat
+PART_B n=346:
+sat
+PART_B n=347:
+unsat
+PART_B n=348:
+sat
+PART_B n=349:
+unsat
+PART_B n=350:
+sat
+PART_B n=351:
+unsat
+PART_B n=352:
+unsat
+PART_B n=353:
+unsat
+PART_B n=354:
+sat
+PART_B n=355:
+unsat
+PART_B n=356:
+sat
+PART_B n=357:
+unsat
+PART_B n=358:
+sat
+PART_B n=359:
+unsat
+PART_B n=360:
+unsat
+PART_B n=361:
+unsat
+PART_B n=362:
+sat
+PART_B n=363:
+unsat
+PART_B n=364:
+sat
+PART_B n=365:
+unsat
+PART_B n=366:
+sat
+PART_B n=367:
+unsat
+PART_B n=368:
+unsat
+PART_B n=369:
+unsat
+PART_B n=370:
+sat
+PART_B n=371:
+unsat
+PART_B n=372:
+sat
+PART_B n=373:
+unsat
+PART_B n=374:
+sat
+PART_B n=375:
+unsat
+PART_B n=376:
+unsat
+PART_B n=377:
+unsat
+PART_B n=378:
+sat
+PART_B n=379:
+unsat
+PART_B n=380:
+sat
+PART_B n=381:
+unsat
+PART_B n=382:
+sat
+PART_B n=383:
+unsat
+PART_B n=384:
+unsat
+PART_B n=385:
+unsat
+PART_B n=386:
+sat
+PART_B n=387:
+unsat
+PART_B n=388:
+sat
+PART_B n=389:
+unsat
+PART_B n=390:
+sat
+PART_B n=391:
+unsat
+PART_B n=392:
+unsat
+PART_B n=393:
+unsat
+PART_B n=394:
+sat
+PART_B n=395:
+unsat
+PART_B n=396:
+sat
+PART_B n=397:
+unsat
+PART_B n=398:
+sat
+PART_B n=399:
+unsat
+PART_B n=400:
+unsat
+PART_B n=401:
+unsat
+PART_B n=402:
+sat
+PART_B n=403:
+unsat
+PART_B n=404:
+sat
+PART_B n=405:
+unsat
+PART_B n=406:
+sat
+PART_B n=407:
+unsat
+PART_B n=408:
+unsat
+PART_B n=409:
+unsat
+PART_B n=410:
+sat
+PART_B n=411:
+unsat
+PART_B n=412:
+sat
+PART_B n=413:
+unsat
+PART_B n=414:
+sat
+PART_B n=415:
+unsat
+PART_B n=416:
+unsat
+PART_B n=417:
+unsat
+PART_B n=418:
+sat
+PART_B n=419:
+unsat
+PART_B n=420:
+sat
+PART_B n=421:
+unsat
+PART_B n=422:
+sat
+PART_B n=423:
+unsat
+PART_B n=424:
+unsat
+PART_B n=425:
+unsat
+PART_B n=426:
+sat
+PART_B n=427:
+unsat
+PART_B n=428:
+sat
+PART_B n=429:
+unsat
+PART_B n=430:
+sat
+PART_B n=431:
+unsat
+PART_B n=432:
+unsat
+PART_B n=433:
+unsat
+PART_B n=434:
+sat
+PART_B n=435:
+unsat
+PART_B n=436:
+sat
+PART_B n=437:
+unsat
+PART_B n=438:
+sat
+PART_B n=439:
+unsat
+PART_B n=440:
+unsat
+PART_B n=441:
+unsat
+PART_B n=442:
+sat
+PART_B n=443:
+unsat
+PART_B n=444:
+sat
+PART_B n=445:
+unsat
+PART_B n=446:
+sat
+PART_B n=447:
+unsat
+PART_B n=448:
+unsat
+PART_B n=449:
+unsat
+PART_B n=450:
+sat
+PART_B n=451:
+unsat
+PART_B n=452:
+sat
+PART_B n=453:
+unsat
+PART_B n=454:
+sat
+PART_B n=455:
+unsat
+PART_B n=456:
+unsat
+PART_B n=457:
+unsat
+PART_B n=458:
+sat
+PART_B n=459:
+unsat
+PART_B n=460:
+sat
+PART_B n=461:
+unsat
+PART_B n=462:
+sat
+PART_B n=463:
+unsat
+PART_B n=464:
+unsat
+PART_B n=465:
+unsat
+PART_B n=466:
+sat
+PART_B n=467:
+unsat
+PART_B n=468:
+sat
+PART_B n=469:
+unsat
+PART_B n=470:
+sat
+PART_B n=471:
+unsat
+PART_B n=472:
+unsat
+PART_B n=473:
+unsat
+PART_B n=474:
+sat
+PART_B n=475:
+unsat
+PART_B n=476:
+sat
+PART_B n=477:
+unsat
+PART_B n=478:
+sat
+PART_B n=479:
+unsat
+PART_B n=480:
+unsat
+PART_B n=481:
+unsat
+PART_B n=482:
+sat
+PART_B n=483:
+unsat
+PART_B n=484:
+sat
+PART_B n=485:
+unsat
+PART_B n=486:
+sat
+PART_B n=487:
+unsat
+PART_B n=488:
+unsat
+PART_B n=489:
+unsat
+PART_B n=490:
+sat
+PART_B n=491:
+unsat
+PART_B n=492:
+sat
+PART_B n=493:
+unsat
+PART_B n=494:
+sat
+PART_B n=495:
+unsat
+PART_B n=496:
+unsat
+PART_B n=497:
+unsat
+PART_B n=498:
+sat
+PART_B n=499:
+unsat
+PART_B n=500:
+sat
+PART_B n=501:
+unsat
+PART_B n=502:
+sat
+PART_B n=503:
+unsat
+PART_B n=504:
+unsat
+PART_B n=505:
+unsat
+PART_B n=506:
+sat
+PART_B n=507:
+unsat
+PART_B n=508:
+sat
+PART_B n=509:
+unsat
+PART_B n=510:
+sat
+PART_B n=511:
+unsat
+PART_B n=512:
+unsat
+PART_B n=513:
+unsat
+PART_B n=514:
+sat
+PART_B n=515:
+unsat
+PART_B n=516:
+sat
+PART_B n=517:
+unsat
+PART_B n=518:
+sat
+PART_B n=519:
+unsat
+PART_B n=520:
+unsat
+PART_B n=521:
+unsat
+PART_B n=522:
+sat
+PART_B n=523:
+unsat
+PART_B n=524:
+sat
+PART_B n=525:
+unsat
+PART_B n=526:
+sat
+PART_B n=527:
+unsat
+PART_B n=528:
+unsat
+PART_B n=529:
+unsat
+PART_B n=530:
+sat
+PART_B n=531:
+unsat
+PART_B n=532:
+sat
+PART_B n=533:
+unsat
+PART_B n=534:
+sat
+PART_B n=535:
+unsat
+PART_B n=536:
+unsat
+PART_B n=537:
+unsat
+PART_B n=538:
+sat
+PART_B n=539:
+unsat
+PART_B n=540:
+sat
+PART_B n=541:
+unsat
+PART_B n=542:
+sat
+PART_B n=543:
+unsat
+PART_B n=544:
+unsat
+PART_B n=545:
+unsat
+PART_B n=546:
+sat
+PART_B n=547:
+unsat
+PART_B n=548:
+sat
+PART_B n=549:
+unsat
+PART_B n=550:
+sat
+PART_B n=551:
+unsat
+PART_B n=552:
+unsat
+PART_B n=553:
+unsat
+PART_B n=554:
+sat
+PART_B n=555:
+unsat
+PART_B n=556:
+sat
+PART_B n=557:
+unsat
+PART_B n=558:
+sat
+PART_B n=559:
+unsat
+PART_B n=560:
+unsat
+PART_B n=561:
+unsat
+PART_B n=562:
+sat
+PART_B n=563:
+unsat
+PART_B n=564:
+sat
+PART_B n=565:
+unsat
+PART_B n=566:
+sat
+PART_B n=567:
+unsat
+PART_B n=568:
+unsat
+PART_B n=569:
+unsat
+PART_B n=570:
+sat
+PART_B n=571:
+unsat
+PART_B n=572:
+sat
+PART_B n=573:
+unsat
+PART_B n=574:
+sat
+PART_B n=575:
+unsat
+PART_B n=576:
+unsat
+PART_B n=577:
+unsat
+PART_B n=578:
+sat
+PART_B n=579:
+unsat
+PART_B n=580:
+sat
+PART_B n=581:
+unsat
+PART_B n=582:
+sat
+PART_B n=583:
+unsat
+PART_B n=584:
+unsat
+PART_B n=585:
+unsat
+PART_B n=586:
+sat
+PART_B n=587:
+unsat
+PART_B n=588:
+sat
+PART_B n=589:
+unsat
+PART_B n=590:
+sat
+PART_B n=591:
+unsat
+PART_B n=592:
+unsat
+PART_B n=593:
+unsat
+PART_B n=594:
+sat
+PART_B n=595:
+unsat
+PART_B n=596:
+sat
+PART_B n=597:
+unsat
+PART_B n=598:
+sat
+PART_B n=599:
+unsat
+PART_B n=600:
+unsat
+PART_B n=601:
+unsat
+PART_B n=602:
+sat
+PART_B n=603:
+unsat
+PART_B n=604:
+sat
+PART_B n=605:
+unsat
+PART_B n=606:
+sat
+PART_B n=607:
+unsat
+PART_B n=608:
+unsat
+PART_B n=609:
+unsat
+PART_B n=610:
+sat
+PART_B n=611:
+unsat
+PART_B n=612:
+sat
+PART_B n=613:
+unsat
+PART_B n=614:
+sat
+PART_B n=615:
+unsat
+PART_B n=616:
+unsat
+PART_B n=617:
+unsat
+PART_B n=618:
+sat
+PART_B n=619:
+unsat
+PART_B n=620:
+sat
+PART_B n=621:
+unsat
+PART_B n=622:
+sat
+PART_B n=623:
+unsat
+PART_B n=624:
+unsat
+PART_B n=625:
+unsat
+PART_B n=626:
+sat
+PART_B n=627:
+unsat
+PART_B n=628:
+sat
+PART_B n=629:
+unsat
+PART_B n=630:
+sat
+PART_B n=631:
+unsat
+PART_B n=632:
+unsat
+PART_B n=633:
+unsat
+PART_B n=634:
+sat
+PART_B n=635:
+unsat
+PART_B n=636:
+sat
+PART_B n=637:
+unsat
+PART_B n=638:
+sat
+PART_B n=639:
+unsat
+PART_B n=640:
+unsat
+PART_B n=641:
+unsat
+PART_B n=642:
+sat
+PART_B n=643:
+unsat
+PART_B n=644:
+sat
+PART_B n=645:
+unsat
+PART_B n=646:
+sat
+PART_B n=647:
+unsat
+PART_B n=648:
+unsat
+PART_B n=649:
+unsat
+PART_B n=650:
+sat
+PART_B n=651:
+unsat
+PART_B n=652:
+sat
+PART_B n=653:
+unsat
+PART_B n=654:
+sat
+PART_B n=655:
+unsat
+PART_B n=656:
+unsat
+PART_B n=657:
+unsat
+PART_B n=658:
+sat
+PART_B n=659:
+unsat
+PART_B n=660:
+sat
+PART_B n=661:
+unsat
+PART_B n=662:
+sat
+PART_B n=663:
+unsat
+PART_B n=664:
+unsat
+PART_B n=665:
+unsat
+PART_B n=666:
+sat
+PART_B n=667:
+unsat
+PART_B n=668:
+sat
+PART_B n=669:
+unsat
+PART_B n=670:
+sat
+PART_B n=671:
+unsat
+PART_B n=672:
+unsat
+PART_B n=673:
+unsat
+PART_B n=674:
+sat
+PART_B n=675:
+unsat
+PART_B n=676:
+sat
+PART_B n=677:
+unsat
+PART_B n=678:
+sat
+PART_B n=679:
+unsat
+PART_B n=680:
+unsat
+PART_B n=681:
+unsat
+PART_B n=682:
+sat
+PART_B n=683:
+unsat
+PART_B n=684:
+sat
+PART_B n=685:
+unsat
+PART_B n=686:
+sat
+PART_B n=687:
+unsat
+PART_B n=688:
+unsat
+PART_B n=689:
+unsat
+PART_B n=690:
+sat
+PART_B n=691:
+unsat
+PART_B n=692:
+sat
+PART_B n=693:
+unsat
+PART_B n=694:
+sat
+PART_B n=695:
+unsat
+PART_B n=696:
+unsat
+PART_B n=697:
+unsat
+PART_B n=698:
+sat
+PART_B n=699:
+unsat
+PART_B n=700:
+sat
+PART_B n=701:
+unsat
+PART_B n=702:
+sat
+PART_B n=703:
+unsat
+PART_B n=704:
+unsat
+PART_B n=705:
+unsat
+PART_B n=706:
+sat
+PART_B n=707:
+unsat
+PART_B n=708:
+sat
+PART_B n=709:
+unsat
+PART_B n=710:
+sat
+PART_B n=711:
+unsat
+PART_B n=712:
+unsat
+PART_B n=713:
+unsat
+PART_B n=714:
+sat
+PART_B n=715:
+unsat
+PART_B n=716:
+sat
+PART_B n=717:
+unsat
+PART_B n=718:
+sat
+PART_B n=719:
+unsat
+PART_B n=720:
+unsat
+PART_B n=721:
+unsat
+PART_B n=722:
+sat
+PART_B n=723:
+unsat
+PART_B n=724:
+sat
+PART_B n=725:
+unsat
+PART_B n=726:
+sat
+PART_B n=727:
+unsat
+PART_B n=728:
+unsat
+PART_B n=729:
+unsat
+PART_B n=730:
+sat
+PART_B n=731:
+unsat
+PART_B n=732:
+sat
+PART_B n=733:
+unsat
+PART_B n=734:
+sat
+PART_B n=735:
+unsat
+PART_B n=736:
+unsat
+PART_B n=737:
+unsat
+PART_B n=738:
+sat
+PART_B n=739:
+unsat
+PART_B n=740:
+sat
+PART_B n=741:
+unsat
+PART_B n=742:
+sat
+PART_B n=743:
+unsat
+PART_B n=744:
+unsat
+PART_B n=745:
+unsat
+PART_B n=746:
+sat
+PART_B n=747:
+unsat
+PART_B n=748:
+sat
+PART_B n=749:
+unsat
+PART_B n=750:
+sat
+PART_B n=751:
+unsat
+PART_B n=752:
+unsat
+PART_B n=753:
+unsat
+PART_B n=754:
+sat
+PART_B n=755:
+unsat
+PART_B n=756:
+sat
+PART_B n=757:
+unsat
+PART_B n=758:
+sat
+PART_B n=759:
+unsat
+PART_B n=760:
+unsat
+PART_B n=761:
+unsat
+PART_B n=762:
+sat
+PART_B n=763:
+unsat
+PART_B n=764:
+sat
+PART_B n=765:
+unsat
+PART_B n=766:
+sat
+PART_B n=767:
+unsat
+PART_B n=768:
+unsat
+PART_B n=769:
+unsat
+PART_B n=770:
+sat
+PART_B n=771:
+unsat
+PART_B n=772:
+sat
+PART_B n=773:
+unsat
+PART_B n=774:
+sat
+PART_B n=775:
+unsat
+PART_B n=776:
+unsat
+PART_B n=777:
+unsat
+PART_B n=778:
+sat
+PART_B n=779:
+unsat
+PART_B n=780:
+sat
+PART_B n=781:
+unsat
+PART_B n=782:
+sat
+PART_B n=783:
+unsat
+PART_B n=784:
+unsat
+PART_B n=785:
+unsat
+PART_B n=786:
+sat
+PART_B n=787:
+unsat
+PART_B n=788:
+sat
+PART_B n=789:
+unsat
+PART_B n=790:
+sat
+PART_B n=791:
+unsat
+PART_B n=792:
+unsat
+PART_B n=793:
+unsat
+PART_B n=794:
+sat
+PART_B n=795:
+unsat
+PART_B n=796:
+sat
+PART_B n=797:
+unsat
+PART_B n=798:
+sat
+PART_B n=799:
+unsat
+PART_B n=800:
+unsat
+PART_B n=801:
+unsat
+PART_B n=802:
+sat
+PART_B n=803:
+unsat
+PART_B n=804:
+sat
+PART_B n=805:
+unsat
+PART_B n=806:
+sat
+PART_B n=807:
+unsat
+PART_B n=808:
+unsat
+PART_B n=809:
+unsat
+PART_B n=810:
+sat
+PART_B n=811:
+unsat
+PART_B n=812:
+sat
+PART_B n=813:
+unsat
+PART_B n=814:
+sat
+PART_B n=815:
+unsat
+PART_B n=816:
+unsat
+PART_B n=817:
+unsat
+PART_B n=818:
+sat
+PART_B n=819:
+unsat
+PART_B n=820:
+sat
+PART_B n=821:
+unsat
+PART_B n=822:
+sat
+PART_B n=823:
+unsat
+PART_B n=824:
+unsat
+PART_B n=825:
+unsat
+PART_B n=826:
+sat
+PART_B n=827:
+unsat
+PART_B n=828:
+sat
+PART_B n=829:
+unsat
+PART_B n=830:
+sat
+PART_B n=831:
+unsat
+PART_B n=832:
+unsat
+PART_B n=833:
+unsat
+PART_B n=834:
+sat
+PART_B n=835:
+unsat
+PART_B n=836:
+sat
+PART_B n=837:
+unsat
+PART_B n=838:
+sat
+PART_B n=839:
+unsat
+PART_B n=840:
+unsat
+PART_B n=841:
+unsat
+PART_B n=842:
+sat
+PART_B n=843:
+unsat
+PART_B n=844:
+sat
+PART_B n=845:
+unsat
+PART_B n=846:
+sat
+PART_B n=847:
+unsat
+PART_B n=848:
+unsat
+PART_B n=849:
+unsat
+PART_B n=850:
+sat
+PART_B n=851:
+unsat
+PART_B n=852:
+sat
+PART_B n=853:
+unsat
+PART_B n=854:
+sat
+PART_B n=855:
+unsat
+PART_B n=856:
+unsat
+PART_B n=857:
+unsat
+PART_B n=858:
+sat
+PART_B n=859:
+unsat
+PART_B n=860:
+sat
+PART_B n=861:
+unsat
+PART_B n=862:
+sat
+PART_B n=863:
+unsat
+PART_B n=864:
+unsat
+PART_B n=865:
+unsat
+PART_B n=866:
+sat
+PART_B n=867:
+unsat
+PART_B n=868:
+sat
+PART_B n=869:
+unsat
+PART_B n=870:
+sat
+PART_B n=871:
+unsat
+PART_B n=872:
+unsat
+PART_B n=873:
+unsat
+PART_B n=874:
+sat
+PART_B n=875:
+unsat
+PART_B n=876:
+sat
+PART_B n=877:
+unsat
+PART_B n=878:
+sat
+PART_B n=879:
+unsat
+PART_B n=880:
+unsat
+PART_B n=881:
+unsat
+PART_B n=882:
+sat
+PART_B n=883:
+unsat
+PART_B n=884:
+sat
+PART_B n=885:
+unsat
+PART_B n=886:
+sat
+PART_B n=887:
+unsat
+PART_B n=888:
+unsat
+PART_B n=889:
+unsat
+PART_B n=890:
+sat
+PART_B n=891:
+unsat
+PART_B n=892:
+sat
+PART_B n=893:
+unsat
+PART_B n=894:
+sat
+PART_B n=895:
+unsat
+PART_B n=896:
+unsat
+PART_B n=897:
+unsat
+PART_B n=898:
+sat
+PART_B n=899:
+unsat
+PART_B n=900:
+sat
+PART_B n=901:
+unsat
+PART_B n=902:
+sat
+PART_B n=903:
+unsat
+PART_B n=904:
+unsat
+PART_B n=905:
+unsat
+PART_B n=906:
+sat
+PART_B n=907:
+unsat
+PART_B n=908:
+sat
+PART_B n=909:
+unsat
+PART_B n=910:
+sat
+PART_B n=911:
+unsat
+PART_B n=912:
+unsat
+PART_B n=913:
+unsat
+PART_B n=914:
+sat
+PART_B n=915:
+unsat
+PART_B n=916:
+sat
+PART_B n=917:
+unsat
+PART_B n=918:
+sat
+PART_B n=919:
+unsat
+PART_B n=920:
+unsat
+PART_B n=921:
+unsat
+PART_B n=922:
+sat
+PART_B n=923:
+unsat
+PART_B n=924:
+sat
+PART_B n=925:
+unsat
+PART_B n=926:
+sat
+PART_B n=927:
+unsat
+PART_B n=928:
+unsat
+PART_B n=929:
+unsat
+PART_B n=930:
+sat
+PART_B n=931:
+unsat
+PART_B n=932:
+sat
+PART_B n=933:
+unsat
+PART_B n=934:
+sat
+PART_B n=935:
+unsat
+PART_B n=936:
+unsat
+PART_B n=937:
+unsat
+PART_B n=938:
+sat
+PART_B n=939:
+unsat
+PART_B n=940:
+sat
+PART_B n=941:
+unsat
+PART_B n=942:
+sat
+PART_B n=943:
+unsat
+PART_B n=944:
+unsat
+PART_B n=945:
+unsat
+PART_B n=946:
+sat
+PART_B n=947:
+unsat
+PART_B n=948:
+sat
+PART_B n=949:
+unsat
+PART_B n=950:
+sat
+PART_B n=951:
+unsat
+PART_B n=952:
+unsat
+PART_B n=953:
+unsat
+PART_B n=954:
+sat
+PART_B n=955:
+unsat
+PART_B n=956:
+sat
+PART_B n=957:
+unsat
+PART_B n=958:
+sat
+PART_B n=959:
+unsat
+PART_B n=960:
+unsat
+PART_B n=961:
+unsat
+PART_B n=962:
+sat
+PART_B n=963:
+unsat
+PART_B n=964:
+sat
+PART_B n=965:
+unsat
+PART_B n=966:
+sat
+PART_B n=967:
+unsat
+PART_B n=968:
+unsat
+PART_B n=969:
+unsat
+PART_B n=970:
+sat
+PART_B n=971:
+unsat
+PART_B n=972:
+sat
+PART_B n=973:
+unsat
+PART_B n=974:
+sat
+PART_B n=975:
+unsat
+PART_B n=976:
+unsat
+PART_B n=977:
+unsat
+PART_B n=978:
+sat
+PART_B n=979:
+unsat
+PART_B n=980:
+sat
+PART_B n=981:
+unsat
+PART_B n=982:
+sat
+PART_B n=983:
+unsat
+PART_B n=984:
+unsat
+PART_B n=985:
+unsat
+PART_B n=986:
+sat
+PART_B n=987:
+unsat
+PART_B n=988:
+sat
+PART_B n=989:
+unsat
+PART_B n=990:
+sat
+PART_B n=991:
+unsat
+PART_B n=992:
+unsat
+PART_B n=993:
+unsat
+PART_B n=994:
+sat
+PART_B n=995:
+unsat
+PART_B n=996:
+sat
+PART_B n=997:
+unsat
+PART_B n=998:
+sat
+PART_B n=999:
+unsat
+PART_B n=1000:
+unsat

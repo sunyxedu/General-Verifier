@@ -1,0 +1,22 @@
+=== Step 1: symbolic factorization ===
+n**5 - n factored by sympy = n*(n - 1)*(n + 1)*(n**2 + 1)
+n*(n-1)*(n+1)*(n**2+1) expanded = n**5 - n
+n**5 - n expanded            = n**5 - n
+Factorization matches expected form n(n-1)(n+1)(n^2+1): True
+
+=== Step 2: symbolic mod-2/3/5 divisibility checks over all residues ===
+modulus 2: residues checked = [(0, 0, 0), (1, 0, 0)], all divisible = True
+modulus 3: residues checked = [(0, 0, 0), (1, 0, 0), (2, 30, 0)], all divisible = True
+modulus 5: residues checked = [(0, 0, 0), (1, 0, 0), (2, 30, 0), (3, 240, 0), (4, 1020, 0)], all divisible = True
+
+=== Step 3: full residue sweep mod 30 (n = 0..29) ===
+Residues 0..29 checked. Failures: none
+All 30 residue classes give n^5-n divisible by 30: True
+
+=== Step 4: brute-force direct check for n in 1..300 ===
+Checked n=1..300. Failures: none
+All n in [1,300] satisfy 30 | n^5-n: True
+
+=== Overall ===
+step1_ok=True step2_ok=True step3_ok=True step4_ok=True
+OVERALL_RESULT=HOLDS

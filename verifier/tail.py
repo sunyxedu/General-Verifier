@@ -20,9 +20,12 @@ class TailError(ValueError):
 
 class Tail:
     def __init__(self, path: str, on_event: Callable[[Dict], None],
-                 start_seq: int = 0):
+                 start_seq: int = 0, raw: bool = False):
+        """raw=True: a feed of bare JSON lines with no seq discipline (e.g.
+        hook processes appending concurrently); torn-line handling only."""
         self.path = path
         self.on_event = on_event
+        self.raw = raw
         self._offset = 0
         self._buffer = b""
         self._expected = start_seq  # last seq already consumed
@@ -52,12 +55,13 @@ class Tail:
             if not raw:
                 continue
             event = json.loads(raw.decode("utf-8"))
-            self._expected += 1
-            if event["seq"] != self._expected:
-                raise TailError(
-                    f"stream corrupted: expected seq {self._expected}, "
-                    f"got {event['seq']}"
-                )
+            if not self.raw:
+                self._expected += 1
+                if event["seq"] != self._expected:
+                    raise TailError(
+                        f"stream corrupted: expected seq {self._expected}, "
+                        f"got {event['seq']}"
+                    )
             self.on_event(event)
             fired += 1
         return fired
