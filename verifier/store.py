@@ -196,3 +196,7 @@ class ClaimStore:
             raise UnknownDependency(f"{claim_id[:12]}… not in store")
         keys = ("id", "kind", "text", "branch", "revises", "status", "grade", "reason")
         return dict(zip(keys, row))
+
+    def parents(self, claim_id: str) -> List[str]:
+        cur = self.db.execute("SELECT parent FROM deps WHERE child=?", (claim_id,))
+        return [r[0] for r in cur.fetchall()]
