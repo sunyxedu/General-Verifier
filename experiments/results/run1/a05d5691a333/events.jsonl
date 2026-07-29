@@ -1,0 +1,1 @@
+{"payload": {"deps": [], "kind": "assertion", "label": "A", "text": "对所有 1≤n≤300，60 整除 n^5-n"}, "seq": 1, "ts": 1785349170.606244, "type": "commit"}

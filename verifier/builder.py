@@ -29,43 +29,51 @@ def effect_text(event: dict, tool: Optional[str]) -> str:
 
 
 class Builder:
+    """Incremental: feed(event) is the one entry point; replay() is just
+    feeding the whole file. Online mode (component 4's low-latency twin) is a
+    Tail pushing the same events into the same feed — the kernel, wired to the
+    store's trigger, does not know or care which mode it is in."""
+
     def __init__(self, log: EventLog, store: ClaimStore):
         self.log = log
         self.store = store
         self.labels: Dict[str, str] = {}   # label -> claim id
         self.finals: list = []
+        self._pending_tool: Optional[str] = None
 
     def resolve(self, ref: str) -> str:
         if ref not in self.labels:
             raise TraceError(f"unknown claim reference: {ref}")
         return self.labels[ref]
 
+    def feed(self, event: dict) -> None:
+        etype = event["type"]
+        if etype == "tool_call":
+            self._pending_tool = event["payload"].get("tool")
+        elif etype == "tool_result":
+            claim = Claim(KIND_EFFECT, effect_text(event, self._pending_tool))
+            self.store.add_claim(claim)
+            self.labels[f"effect:{event['seq']}"] = claim.id
+            self._pending_tool = None
+        elif etype == "commit":
+            payload = event["payload"]
+            deps = tuple(self.resolve(r) for r in payload.get("deps", []))
+            revises = payload.get("revises")
+            claim = Claim(
+                kind=payload["kind"],
+                text=payload["text"],
+                deps=deps,
+                branch=payload.get("branch"),
+                revises=self.resolve(revises) if revises else None,
+            )
+            self.store.add_claim(claim)
+            if "label" in payload:
+                self.labels[payload["label"]] = claim.id
+            if payload["kind"] == "final":
+                self.finals.append(claim.id)
+        # session_start / message / stop / verifier-side events: no graph action
+
     def replay(self) -> "Builder":
-        pending_tool: Optional[str] = None
         for event in self.log.replay():
-            etype = event["type"]
-            if etype == "tool_call":
-                pending_tool = event["payload"].get("tool")
-            elif etype == "tool_result":
-                claim = Claim(KIND_EFFECT, effect_text(event, pending_tool))
-                self.store.add_claim(claim)
-                self.labels[f"effect:{event['seq']}"] = claim.id
-                pending_tool = None
-            elif etype == "commit":
-                payload = event["payload"]
-                deps = tuple(self.resolve(r) for r in payload.get("deps", []))
-                revises = payload.get("revises")
-                claim = Claim(
-                    kind=payload["kind"],
-                    text=payload["text"],
-                    deps=deps,
-                    branch=payload.get("branch"),
-                    revises=self.resolve(revises) if revises else None,
-                )
-                self.store.add_claim(claim)
-                if "label" in payload:
-                    self.labels[payload["label"]] = claim.id
-                if payload["kind"] == "final":
-                    self.finals.append(claim.id)
-            # session_start / message / stop / verifier-side events: no graph action
+            self.feed(event)
         return self
