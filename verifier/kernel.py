@@ -41,6 +41,7 @@ class Kernel:
         obligations_role=None,
         discharger=None,
         binder=None,
+        coverage=None,
     ):
         self.store = store
         self.log = log
@@ -53,7 +54,8 @@ class Kernel:
         self.discharger = discharger or SandboxDischarger(
             backend, self.sandbox, artifacts
         )
-        self.binder = binder  # M1 binding game; None -> direct discharge
+        self.binder = binder      # M1 binding game; None -> direct discharge
+        self.coverage = coverage  # M1 coverage audit; None -> no exam
         store.on_trigger(self.verify)  # the single rule wires straight in
 
     # ---- entry ---------------------------------------------------------------
@@ -123,6 +125,14 @@ class Kernel:
                  "reason": "no falsifiable obligations"},
             )
             return
+
+        if self.coverage is not None and obligations:
+            exam_discharger = (
+                self.binder.discharger if self.binder else self.discharger
+            )
+            obligations.extend(
+                self.coverage.audit(row, obligations, exam_discharger)
+            )
 
         outcomes: List[str] = []
         grades: List[str] = []

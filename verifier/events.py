@@ -30,6 +30,9 @@ EVENT_TYPES = (
     "entailment_audit",
     "method_rejected",
     "method_bound",
+    # coverage audit (M1, loop 3)
+    "coverage_exam",
+    "obligations_added",
 )
 
 

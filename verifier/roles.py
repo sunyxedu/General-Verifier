@@ -148,6 +148,20 @@ COMPILE_OBLIGATIONS = Role(
     schema={"obligations": [{"text": str, "failure_looks_like": str}]},
 )
 
+COVERAGE_PATCH = Role(
+    name="coverage_patch",
+    template=(
+        "一个已确认为假的变体没有被任何现有义务拦下——这是义务集的覆盖洞。\n"
+        "原 claim：{claim_text}\n漏网变体：{variant_text}\n"
+        "该变体为假的证据：{disproof}\n\n"
+        "写出能拦下这一类错误的新义务：\n"
+        "  text: 义务内容（必要条件，任何正确答案都必须满足）\n"
+        "  failure_looks_like: 该义务不成立时，失败证据具体长什么样\n"
+        '输出 JSON: {{"text": ..., "failure_looks_like": ...}}'
+    ),
+    schema={"text": str, "failure_looks_like": str},
+)
+
 WRITE_CHECK = Role(
     name="write_check",
     template=(
