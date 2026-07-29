@@ -34,8 +34,11 @@ from .certificate import request_certificate
 from .events import EventLog
 from .instruments import ArtifactStore
 from .kernel import Kernel
+from .roles import RoleError
 from .store import ClaimStore, UnknownDependency
 from .tail import Tail
+
+VERB_ERRORS = (TraceError, UnknownDependency, RoleError, ValueError)
 
 HOOK_FEED = "hook_feed.jsonl"
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
@@ -90,7 +93,7 @@ class Sidecar:
         try:
             event = self.log.append("commit", payload)
             self.builder.feed(event)   # trigger rule may verify deps inline
-        except (TraceError, UnknownDependency, ValueError) as err:
+        except VERB_ERRORS as err:
             return {"error": str(err)}
         claim_id = self.builder.labels[label]
         return {"claim_id": claim_id, "status": self.store.status(claim_id)}
@@ -99,10 +102,10 @@ class Sidecar:
         self.drain_hooks()
         try:
             claim_id = self.builder.resolve(label)
-        except TraceError as err:
+            self.log.append("verify_request", {"target": claim_id, "cause": "mcp"})
+            status = self.kernel.verify(claim_id)
+        except VERB_ERRORS as err:
             return {"error": str(err)}
-        self.log.append("verify_request", {"target": claim_id, "cause": "mcp"})
-        status = self.kernel.verify(claim_id)
         return {"claim_id": claim_id, "status": status,
                 "grade": self.store.grade(claim_id)}
 
@@ -110,10 +113,10 @@ class Sidecar:
         self.drain_hooks()
         try:
             final_id = self.builder.resolve(final_label)
-        except TraceError as err:
+            cert = request_certificate(self.store, self.kernel, self.log,
+                                       self.artifacts, final_id)
+        except VERB_ERRORS as err:
             return {"error": str(err)}
-        cert = request_certificate(self.store, self.kernel, self.log,
-                                   self.artifacts, final_id)
         return {
             "verdict": cert["verdict"],
             "overall_grade": cert["overall_grade"],

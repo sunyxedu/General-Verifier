@@ -125,12 +125,22 @@ class AgentBackend:
     def complete(self, role_name: str, prompt: str, variables: Dict[str, Any]) -> Any:
         """Backend entry point (same signature as FixtureBackend.complete).
 
-        Sync wrapper; from inside a running event loop call `run()` directly.
+        Loop-safe sync wrapper: callable from plain sync code AND from code
+        executing inside a running event loop (e.g. an MCP tool handler in the
+        sidecar) — in the latter case the coroutine runs on a private loop in
+        a worker thread, because asyncio.run would raise on a running loop.
         """
         role = self.roles.get(role_name)
         if role is None:
             raise RoleError(f"unknown agent role: {role_name}")
-        return asyncio.run(self.run(role, prompt))
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.run(role, prompt))
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, self.run(role, prompt)).result()
 
     async def run(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
         stderr_tail: List[str] = []

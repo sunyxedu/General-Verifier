@@ -44,8 +44,13 @@ def test_live_solver_mounts_sidecar_over_stdio(tmp_path):
             "type": "json_schema",
             "schema": {
                 "type": "object",
-                "properties": {"verdict": {"type": "string"},
-                               "certificate_id": {"type": "string"}},
+                "properties": {
+                    # closed enum: a fabricated verdict cannot validate
+                    "verdict": {"type": "string",
+                                "enum": ["verified", "unverified",
+                                         "refuted", "error"]},
+                    "certificate_id": {"type": "string"},
+                },
                 "required": ["verdict", "certificate_id"],
                 "additionalProperties": False,
             },
@@ -58,7 +63,9 @@ def test_live_solver_mounts_sidecar_over_stdio(tmp_path):
         "1) commit(label='A', kind='assertion', text='1 到 10 的整数之和等于 55', deps=[])\n"
         "2) commit(label='F', kind='final', text='结论：求和结果正确', deps=['A'])\n"
         "3) certificate(final_label='F')\n"
-        "把 certificate 返回的 verdict 与 certificate_id 作为结构化输出提交。"
+        "结构化输出中的 verdict 与 certificate_id 必须逐字取自 certificate 工具"
+        "返回的 JSON（字段 verdict 与 certificate_id），不得改写或自创；"
+        "工具报错则 verdict 填 error。"
     )
 
     async def run():
