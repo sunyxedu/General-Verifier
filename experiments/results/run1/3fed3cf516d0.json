@@ -1,0 +1,59 @@
+{
+ "claim": "对所有 1≤n≤300，30 整除 n^5-n",
+ "is_true": true,
+ "slug": "3fed3cf516d0",
+ "judge": {
+  "verdict": "true",
+  "reason": "对任意整数 n，n^5 - n = n(n-1)(n+1)(n^2+1)。由费马小定理，对素数 p ∈ {2,3,5}，有 n^p ≡ n (mod p)，即 p | n^p - n。specifically：\n- n^5 - n = (n^5-n)，且 n^5 ≡ n (mod 2)（因为 mod 2 下 n^2≡n，故 n^5=n^4·n≡n·n=n^2≡n）\n- n^5 ≡ n (mod 3)（费马小定理，p=3，n^3≡n，则 n^5=n^3·n^2≡n·n^2=n^3≡n）\n- n^5 ≡ n (mod 5)（费马小定理，p=5，直接 n^5≡n）\n\n故 2|n^5-n, 3|n^5-n, 5|n^5-n，而 2,3,5 两两互质，所以 30=2·3·5 整除 n^5-n。这对所有整数 n 成立，自然对 1≤n≤300 范围内的所有整数也成立。验证几个具体值：n=2时32-2=30=30×1；n=3时243-3=240=30×8；n=4时1024-4=1020=30×34，均整除。命题为真。</reason>\n</invoke>\n",
+  "seconds": 10.0
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "unverified",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "144444f780f0515d770cc801154c4cb194a58708dec973f277478afe19014dd1",
+    "evidence_id": "c2afe1c17ea4a7c1edbb26e83dfd139c5bc0f4d364079b8bdd911dccfa73497a",
+    "grade": "demonstrated",
+    "instrument": "python3-sympy",
+    "obligation": "答案必须给出正确的真值判断：该命题为真（对所有整数 n，30 整除 n^5-n，因此对 1≤n≤300 也成立）。",
+    "obligation_id": "43aa4f49c8ad2bb1ce4f6f74fe180abec71bc2e46511bca77135ecce7c7e841c",
+    "outcome": "holds",
+    "witness": null
+   },
+   {
+    "artifact": "d58adce3bd61ae90c9e4cc4935e411204b4d633384b2f9cfe27e9f40648ac1dd",
+    "evidence_id": "2d9eeeb2b3ae12db7e0178130ee6fff9f509223cd5d4133c662e62206d0c69de",
+    "grade": "proven",
+    "instrument": "lean4-4.32.2 (probed: `lean --version` 成功, 实测 decide 通过)",
+    "obligation": "论证必须覆盖 1 到 300 的全部 300 个整数，而不能仅用少数样本值（如 n=1,2,3,10,300）验证后就断言\"其余同理\"。",
+    "obligation_id": "0ef0ac83ac118dd7c7e6641a751a13a1823ad8b429de7255a01fcdce36d6b052",
+    "outcome": "holds",
+    "witness": null
+   },
+   {
+    "artifact": "1b52fba261a8ec28afa060750520958dae6b78d457a44b745414465c92f87043",
+    "evidence_id": "ccec43cb170f66550a08b382e9a72c8657718899a39dedc223f27daf08534dee",
+    "grade": "proven",
+    "instrument": "lean 4.32.2 + lake 5.0.0（standalone，无需 Mathlib，已用 `lean t2.lean` 探测确认可编译）",
+    "obligation": "由于 30=2×3×5 且 2,3,5 两两互质，论证必须分别（显式或隐式地）证明 2、3、5 各自整除 n^5-n；仅证明能被 6 或 10 整除不足以推出被 30 整除。",
+    "obligation_id": "91aa19a12682bd326886ce5de35b57bded7ee45ddedcd4955d27b2ac19ade052",
+    "outcome": "holds",
+    "witness": null
+   },
+   {
+    "artifact": "790bdfa4b285e746635c730ae049cd202867d89fdfb4fb565dd58dbc925ee477",
+    "evidence_id": "b60a5e2f8269cf6ac63921a2949d7f55a8649ef368ac2a84529e8e0f6e06954f",
+    "grade": "corroborated",
+    "instrument": "binding-game",
+    "obligation": "若论证依赖对 n^5-n 的因式分解（如 n(n-1)(n+1)(n^2+1) 或 n(n^4-1)），该分解必须代数正确，展开后应恒等于 n^5-n。",
+    "obligation_id": "c45b648b92161a0d4fd4ce43a732cdcc84675e46734e134f5eea99ebe1420566",
+    "outcome": "failed",
+    "witness": "all candidate methods rejected"
+   }
+  ],
+  "seconds": 1555.4
+ },
+ "verifier_outcome": "abstain"
+}

@@ -1,7 +1,0 @@
-Sum1To100.lean:8:50: error: Tactic `decide` proved that the proposition
-  s.sum = 5100
-is false
-5050
-'coverage' does not depend on any axioms
-'sum_1_to_100_eq_5050' does not depend on any axioms
-EXIT_CODE=1

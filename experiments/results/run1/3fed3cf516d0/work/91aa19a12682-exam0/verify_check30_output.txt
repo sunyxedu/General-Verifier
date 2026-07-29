@@ -1,3 +1,0 @@
-30 | n^3-n counterexamples in [1,300]: count=120, first10=[2, 3, 7, 8, 12, 13, 17, 18, 22, 23]
-30 | n^5-n counterexamples in [1,300]: count=0, first10=[]
-witness n=2: n^3-n = 6, 30 | it? False

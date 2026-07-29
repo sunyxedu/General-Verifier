@@ -1,3 +1,0 @@
-'dvd2' depends on axioms: [propext]
-'dvd3' depends on axioms: [propext]
-'dvd5' depends on axioms: [propext]

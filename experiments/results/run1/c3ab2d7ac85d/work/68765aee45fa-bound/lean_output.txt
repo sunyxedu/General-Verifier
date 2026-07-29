@@ -1,3 +1,0 @@
-'cube_mod6' depends on axioms: [propext]
-'claim_range' depends on axioms: [propext, Quot.sound]
-EXIT_CODE=0

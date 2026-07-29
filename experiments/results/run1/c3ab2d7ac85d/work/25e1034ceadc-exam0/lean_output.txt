@@ -1,5 +1,0 @@
-'cube_mod_two' depends on axioms: [propext]
-'two_dvd_cube_sub_self' depends on axioms: [propext, Quot.sound]
-0
-"PROOF_CHECK_DONE"
-exit=0

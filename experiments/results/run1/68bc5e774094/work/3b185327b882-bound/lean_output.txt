@@ -1,4 +1,0 @@
-pow10_mod9 : ∀ (n : Nat), 10 ^ n % 9 = 1
-nine_dvd_pow10_sub_one : ∀ (n : Nat), 1 ≤ n → n ≤ 200 → 9 ∣ 10 ^ n - 1
-'nine_dvd_pow10_sub_one' depends on axioms: [propext, Quot.sound]
-EXIT_CODE=0

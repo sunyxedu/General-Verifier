@@ -66,6 +66,40 @@ def test_enum_gate_rejects_invented_outcome(tmp_path):
     assert result.outcome == OUTCOME_FAILED  # schema violation == failed, on record
 
 
+def test_snapshot_skips_toolchain_dirs_and_caps_totals(tmp_path):
+    from verifier.discharge import _snapshot
+
+    w = tmp_path / "w"
+    (w / ".lake" / "deep").mkdir(parents=True)
+    (w / ".lake" / "deep" / "huge.olean").write_text("x" * 100000)
+    (w / "check.py").write_text("print(1)")
+    for i in range(250):
+        (w / f"f{i:03d}.txt").write_text("y")
+
+    snap = _snapshot(str(w))
+    assert "check.py" in snap
+    assert not any(".lake" in k for k in snap)          # vendored tree excluded
+    assert "<snapshot>" in snap and "truncated" in snap["<snapshot>"]
+    assert len(snap) <= 202                              # max_files + markers
+
+
+def test_cleanup_flag_removes_workdir_after_snapshot(tmp_path):
+    def fixture(variables):
+        with open(os.path.join(variables["workdir"], "log.txt"), "w") as f:
+            f.write("ran")
+        assert os.path.isdir(variables["toolchain_dir"])  # shared dir offered
+        return {"outcome": "holds", "witness": "", "artifact": "log.txt"}
+
+    backend = FixtureBackend({"discharge": fixture})
+    artifacts = ArtifactStore(str(tmp_path / "a"))
+    d = AgentDischarger(backend, artifacts,
+                        workdir_base=str(tmp_path / "w"), cleanup=True)
+    result = d.discharge(ROW, OB)
+    assert artifacts.get(result.artifact)["files"]["log.txt"] == "ran"
+    assert not os.path.exists(os.path.join(str(tmp_path / "w"), OB.id[:12]))
+    assert os.path.isdir(d.toolchain_dir)                # toolchains survive
+
+
 def test_method_binding_reaches_prompt(tmp_path):
     seen = {}
 

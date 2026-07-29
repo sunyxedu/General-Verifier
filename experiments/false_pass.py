@@ -97,7 +97,8 @@ def run_verifier(text: str, model: str, workdir: str,
     game = BindingGame(
         backend, artifacts, log,
         AgentDischarger(backend, artifacts,
-                        workdir_base=os.path.join(workdir, "work")),
+                        workdir_base=os.path.join(workdir, "work"),
+                        cleanup=True),      # workdirs are scratch, not evidence
         n_variants=n_variants, max_methods=max_methods,
     )
     kernel = Kernel(store, log, backend, artifacts,

@@ -1,0 +1,39 @@
+{
+ "claim": "组合数 C(10,3) 等于 120",
+ "is_true": true,
+ "slug": "b87dce665f62",
+ "judge": {
+  "verdict": "true",
+  "reason": "C(10,3) = 10×9×8 / (3×2×1) = 720/6 = 120，计算正确。",
+  "seconds": 2.6
+ },
+ "judge_outcome": "ok",
+ "verifier": {
+  "status": "unverified",
+  "grade": null,
+  "evidence": [
+   {
+    "artifact": "d313ec951ae772f1e7050b7b2ffca81f58f35ba096208e8c97309a144b986f10",
+    "evidence_id": "823c4b351a2f86814cec6789ad3f8309247f4152c51723edb5178fd91178595f",
+    "grade": "proven",
+    "instrument": "python3-sympy(1.14.0, 已探测可用)",
+    "obligation": "论证必须使用组合数的正确定义/公式 C(n,k) = n! / (k!·(n-k)!)，并代入 n=10, k=3，而不是误用排列数公式 P(n,k) = n!/(n-k)!。",
+    "obligation_id": "30dd7df9991591966545f838475d943dcfe43af25f5c3ab50971dc512d8ddc35",
+    "outcome": "holds",
+    "witness": null
+   },
+   {
+    "artifact": "2375a000f01e6152622daba9fefd3af6c3d8d7234e3a8e3eca77caab1b123034",
+    "evidence_id": "39fe9f61e876f8a3d307cfd8b8e91be8accc0e45b65bee287d6b633a6c40ab1f",
+    "grade": "corroborated",
+    "instrument": "binding-game",
+    "obligation": "分子部分（下降阶乘）10×9×8 的计算结果必须等于 720。",
+    "obligation_id": "0d5119051cb5aa14e036b18aec02de40ad8b660dd50fc3b3b82acf974efb839d",
+    "outcome": "failed",
+    "witness": "all candidate methods rejected"
+   }
+  ],
+  "seconds": 395.8
+ },
+ "verifier_outcome": "abstain"
+}

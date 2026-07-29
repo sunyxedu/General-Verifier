@@ -1,8 +1,0 @@
-Checked n = 1..200 (both endpoints included), divisor = 9
-Total n tested: 200
-Failures: 0
-PASS: 9 divides 10^n - 1 for every n in [1,200], including endpoints n=1 and n=200.
-Endpoint n=1: 10^1-1 = 9, mod 9 = 0
-Endpoint n=200: 10^200-1 has 200 digits, mod 9 = 0
-VERDICT: holds
-EXIT_CODE=0

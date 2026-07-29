@@ -1,1 +1,0 @@
-'all_ok' does not depend on any axioms

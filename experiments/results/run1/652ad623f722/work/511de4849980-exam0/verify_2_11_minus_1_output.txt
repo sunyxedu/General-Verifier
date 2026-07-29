@@ -1,4 +1,0 @@
-2**11 - 1 = 2047
-expected  = 2047
-string equal: True
-numeric equal: True

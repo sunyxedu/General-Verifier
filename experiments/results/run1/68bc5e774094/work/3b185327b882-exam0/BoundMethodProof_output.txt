@@ -1,2 +1,0 @@
-nine_dvd_pow10_sub_one : ∀ (n : Nat), 1 ≤ n → n ≤ 200 → 9 ∣ 10 ^ n - 1
-exit_code=0

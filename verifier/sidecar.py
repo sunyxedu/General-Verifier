@@ -167,7 +167,8 @@ def _default_kernel(sc: Sidecar, model, seats, game, coverage) -> Kernel:
                                model=model)
         discharger = AgentDischarger(
             backend, sc.artifacts,
-            workdir_base=os.path.join(sc.state_dir, "work"))
+            workdir_base=os.path.join(sc.state_dir, "work"),
+            cleanup=True)   # snapshots are the evidence; workdirs are scratch
         binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                              memory=sc.memory) if game else None
         audit = CoverageAudit(backend, sc.log) if coverage else None

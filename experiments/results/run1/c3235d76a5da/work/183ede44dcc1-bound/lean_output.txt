@@ -1,5 +1,0 @@
-5050
-SumCheck.lean:7:51: error: Tactic `decide` proved that the proposition
-  sumTo 100 = 5051
-is false
-EXIT_CODE=1

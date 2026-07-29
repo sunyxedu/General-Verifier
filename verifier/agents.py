@@ -291,7 +291,9 @@ DISCHARGE_AGENT = AgentRole(
     ),
     template=(
         "claim：{claim_text}\n义务：{obligation_text}\n"
-        "绑定的方法：{procedure}\n仪器：{instrument_id}\n工作目录：{workdir}\n\n"
+        "绑定的方法：{procedure}\n仪器：{instrument_id}\n工作目录：{workdir}\n"
+        "工具链目录：{toolchain_dir}（重量级依赖/项目脚手架装这里，跨检查共享复用；"
+        "工作目录只放本次检查的脚本与输出）\n\n"
         "执行该检查。把检查脚本与完整输出落盘到工作目录（它们就是 artifact）。\n"
         "  outcome: holds（义务成立）| refuted（找到反例）| failed（检查本身没跑成）\n"
         "  witness: refuted 时给具体反例，failed 时给失败原因，否则空字符串\n"

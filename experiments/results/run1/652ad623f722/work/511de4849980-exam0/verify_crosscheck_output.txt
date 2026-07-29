@@ -1,7 +1,0 @@
-== bc computation of 2^11 - 1 ==
-bc result: 2047
-== python3 computation of 2^11 - 1 ==
-python3 result: 2047
-== cross-check ==
-PASS: both bc and python3 agree that 2^11 - 1 = 2047
-EXIT_CODE=0

@@ -1,5 +1,0 @@
-checked n=1..1000, blocks parsed: 1000
-mismatches between z3 and direct arithmetic: 0
-counterexample count (z3, mod 24): 375
-first counterexample n: 2
-n=2 check: 2**3-2 = 6, mod 24 = 6

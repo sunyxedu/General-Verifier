@@ -1,6 +1,0 @@
-'cube_mod_six' depends on axioms: [propext]
-'claim_refuted' depends on axioms: [propext]
-667
-[1, 2, 4, 5, 7, 8, 10, 11, 13, 14]
-"PROOF_CHECK_DONE"
-EXIT_CODE=0

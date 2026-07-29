@@ -79,11 +79,14 @@ class AgentDischarger:
 
     def __init__(self, backend, artifacts: ArtifactStore,
                  role: AgentRole = DISCHARGE_AGENT,
-                 workdir_base: Optional[str] = None):
+                 workdir_base: Optional[str] = None,
+                 cleanup: bool = False):
         self.backend = backend
         self.artifacts = artifacts
         self.role = role
         self.workdir_base = workdir_base or tempfile.mkdtemp(prefix="gv-discharge-")
+        self.toolchain_dir = os.path.join(self.workdir_base, "_toolchains")
+        self.cleanup = cleanup  # remove workdir after snapshot (scratch, not evidence)
 
     def discharge(self, row: Dict, obligation: Obligation,
                   method: Optional[Dict[str, str]] = None,
@@ -91,6 +94,7 @@ class AgentDischarger:
         subdir = obligation.id[:12] + (f"-{tag}" if tag else "")
         workdir = os.path.join(self.workdir_base, subdir)
         os.makedirs(workdir, exist_ok=True)
+        os.makedirs(self.toolchain_dir, exist_ok=True)
         method = method or {
             "procedure": "未绑定方法（oracle 绑定在 M1 接入）：自行选择最强可达的检查手段，"
                          "并把检查脚本与完整输出落盘",
@@ -102,6 +106,7 @@ class AgentDischarger:
             "procedure": method["procedure"],
             "instrument_id": method["instrument_id"],
             "workdir": workdir,
+            "toolchain_dir": self.toolchain_dir,
         }
         try:
             payload = self.role.call(self.backend, variables)
@@ -110,6 +115,7 @@ class AgentDischarger:
                 {"instrument": self.instrument, "error": str(err),
                  "files": _snapshot(workdir)}
             )
+            self._maybe_cleanup(workdir)
             return DischargeResult(OUTCOME_FAILED, str(err), digest,
                                    self.instrument, self.grade)
 
@@ -120,6 +126,7 @@ class AgentDischarger:
                 "files": _snapshot(workdir),
             }
         )
+        self._maybe_cleanup(workdir)
         return DischargeResult(
             outcome=payload["outcome"],
             witness=payload["witness"] or None,
@@ -128,12 +135,35 @@ class AgentDischarger:
             grade=self.grade,
         )
 
+    def _maybe_cleanup(self, workdir: str) -> None:
+        if self.cleanup:
+            import shutil
+            shutil.rmtree(workdir, ignore_errors=True)
 
-def _snapshot(workdir: str, per_file_cap: int = 65536) -> Dict[str, str]:
-    """Content snapshot of everything the agent left on disk (its artifacts)."""
+
+# Mechanical infra exclusions — vendored trees and VCS internals are toolchain
+# plumbing, never evidence. (A Lean discharge once vendored all of mathlib into
+# its workdir; the snapshot must survive that.)
+SNAPSHOT_SKIP_DIRS = {
+    ".git", ".lake", "node_modules", "__pycache__", ".venv", ".cache",
+    "build", "dist", "target",
+}
+
+
+def _snapshot(workdir: str, per_file_cap: int = 65536,
+              max_files: int = 200, max_total: int = 2_000_000) -> Dict[str, str]:
+    """Bounded content snapshot of what the agent left on disk. Caps are
+    mechanical: per file, file count, and total bytes; truncation is marked,
+    never silent."""
     files: Dict[str, str] = {}
-    for dirpath, _dirnames, filenames in os.walk(workdir):
+    total = 0
+    skipped = 0
+    for dirpath, dirnames, filenames in os.walk(workdir):
+        dirnames[:] = sorted(d for d in dirnames if d not in SNAPSHOT_SKIP_DIRS)
         for filename in sorted(filenames):
+            if len(files) >= max_files or total >= max_total:
+                skipped += 1
+                continue
             path = os.path.join(dirpath, filename)
             rel = os.path.relpath(path, workdir)
             try:
@@ -144,5 +174,8 @@ def _snapshot(workdir: str, per_file_cap: int = 65536) -> Dict[str, str]:
                 continue
             if len(content) > per_file_cap:
                 content = content[:per_file_cap] + "\n<truncated>"
+            total += len(content)
             files[rel] = content
+    if skipped:
+        files["<snapshot>"] = f"truncated: {skipped} files beyond caps"
     return files
