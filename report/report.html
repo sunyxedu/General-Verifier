@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Test-time Verification 技术报告 v0.2</title>
+<style>
+@page { size: A4; margin: 16mm 15mm; }
+* { box-sizing: border-box; }
+body { font-family: "PingFang SC", "Hiragino Sans GB", sans-serif; font-size: 10.5pt; line-height: 1.8; color: #2c2c2a; margin: 0; }
+h1 { font-size: 21pt; font-weight: 600; line-height: 1.4; margin: 0 0 4pt 0; }
+h2 { font-size: 14pt; font-weight: 600; margin: 22pt 0 8pt 0; border-bottom: 1.2pt solid #d3d1c7; padding-bottom: 4pt; break-after: avoid; }
+h3 { font-size: 11.5pt; font-weight: 600; margin: 14pt 0 4pt 0; break-after: avoid; }
+p { margin: 0 0 8pt 0; text-align: justify; }
+.subtitle { font-size: 12pt; color: #5f5e5a; margin-bottom: 2pt; }
+.meta { font-size: 9.5pt; color: #8a8880; border-bottom: 2pt solid #2c2c2a; padding-bottom: 10pt; margin-bottom: 14pt; }
+.fig { break-inside: avoid; margin: 12pt 0 14pt 0; }
+.figcap { font-size: 9pt; color: #5f5e5a; text-align: center; margin-top: 4pt; line-height: 1.5; }
+.pagebreak { break-before: page; }
+svg { font-family: "PingFang SC", "Hiragino Sans GB", sans-serif; display: block; margin: 0 auto; }
+svg .bp { fill: #EEEDFE; stroke: #534AB7; stroke-width: 1.1; }
+svg .btl { fill: #E1F5EE; stroke: #0F6E56; stroke-width: 1.1; }
+svg .bc { fill: #FAECE7; stroke: #993C1D; stroke-width: 1.1; }
+svg .bg { fill: #F1EFE8; stroke: #5F5E5A; stroke-width: 1.1; }
+svg .bk { fill: #FBEAF0; stroke: #993556; stroke-width: 1.1; }
+svg .ba { fill: #FAEEDA; stroke: #854F0B; stroke-width: 1.1; }
+svg text.t1 { font-size: 12px; font-weight: 600; }
+svg text.t2 { font-size: 9.5px; }
+svg text.n { font-size: 8.5px; fill: #8a8880; font-weight: 600; }
+svg text.lab { font-size: 11px; font-weight: 600; fill: #444441; }
+svg text.note { font-size: 9.5px; fill: #77756c; }
+svg .fp { fill: #3C3489; } svg .fp2 { fill: #534AB7; }
+svg .ft { fill: #085041; } svg .ft2 { fill: #0F6E56; }
+svg .fc { fill: #712B13; } svg .fc2 { fill: #993C1D; }
+svg .fg { fill: #444441; } svg .fg2 { fill: #5F5E5A; }
+svg .fk { fill: #72243E; } svg .fk2 { fill: #993556; }
+svg .fa { fill: #633806; } svg .fa2 { fill: #854F0B; }
+svg .ar { stroke: #77756c; fill: none; stroke-width: 1.3; }
+svg .dc { stroke: #D85A30; fill: none; stroke-width: 1.3; stroke-dasharray: 4 3; }
+svg .dk { stroke: #D4537E; fill: none; stroke-width: 1.3; stroke-dasharray: 4 3; }
+svg .ds { stroke: #8a8880; fill: none; stroke-width: 1.1; stroke-dasharray: 3 2.5; }
+.comp { margin: 0 0 7pt 0; text-align: justify; }
+.comp b.num { display: inline-block; min-width: 16pt; color: #534AB7; }
+code, pre { font-family: "SF Mono", Menlo, monospace; }
+pre { background: #f6f5f0; border: 0.7pt solid #d3d1c7; border-radius: 4pt; padding: 8pt 10pt; font-size: 8.2pt; line-height: 1.55; overflow: hidden; break-inside: avoid; }
+code { font-size: 9pt; background: #f6f5f0; padding: 0 2pt; border-radius: 2pt; }
+table { border-collapse: collapse; width: 100%; font-size: 9.5pt; margin: 8pt 0 12pt 0; break-inside: avoid; }
+th, td { border: 0.7pt solid #b4b2a9; padding: 4pt 7pt; text-align: left; vertical-align: top; line-height: 1.6; }
+th { background: #f1efe8; font-weight: 600; }
+ul { margin: 0 0 8pt 0; padding-left: 18pt; }
+li { margin-bottom: 3pt; }
+.callout { background: #f6f5f0; border-left: 3pt solid #534AB7; padding: 6pt 10pt; margin: 10pt 0; font-size: 10pt; }
+</style>
+</head>
+<body>
+
+<h1>Test-time Verification</h1>
+<div class="subtitle">一个通用验证器的 meta-harness 设计：sidecar 形态 · 单一触发规则 · 验证驱动搜索</div>
+<div class="meta">设计稿 v0.3 · 2026 年 7 月 · 项目代号 General Verifier</div>
+
+<h2>1 摘要</h2>
+<p>本报告给出一个通用验证器（general verifier）的完整设计。它要解决的核心问题是：让 LLM 判断"这个答案对不对"是不可靠的——既因为很多命题的真值在环境里而不在文本里，也因为验证过程本身没人验证。我们的方案不在提示词里写入任何领域知识，而用三条 meta 层机制让正确的验证行为被"逼出来"：把审计对象从答案换成验证过程本身；把"判断"换成结果可机械观察的"博弈"；把领域知识从提示词移到运行时。</p>
+<p>在系统形态上，verifier 是一个独立的 <b>sidecar 服务</b>：solver 就是一个原装的 Claude Code，零改造。系统的唯一输入是一条 append-only 的<b>统一事件流</b>；调度上只有<b>一条触发规则</b>——"unverified 的 claim 获得依赖者时，验证它"；验证手段默认直取最强可达（强度优先），错误变体构成对所用手段的有效性考卷，降级只因不可达；产物是一份自含证据链、可独立复核的 certificate。最后，一个可信的验证器使并行搜索成为可能：solver 用自带的 subagent 并行探索多个假设，以验证结果剪枝——test-time compute 由此安全地兑换成正确率。本设计的承诺范围是可机检域（数学、代码、可执行计算）；成本不作为设计约束，手段策略为强度优先。</p>
+<div class="callout"><b>v0.3 的范围与策略声明</b>：① 本设计的承诺范围是<b>可机检域</b>（数学、代码、可执行计算）；检索/统计/口径类任务为扩展域演示，不在承诺范围内。② <b>成本不作为设计约束</b>：手段选择策略为"强度优先、失败降级"——默认直取最强适用仪器（数学域即形式化），两道闸退化为对最强手段的有效性考卷，降级只因不可达、不因昂贵；原成本敏感排序降为可配置项。③ 如实标注两处仍为 LLM 判断的承重点（蕴含审计对 demonstrated/corroborated 级）与循环一/三的相关性（共用变体生成器）。④ 新增可信基（TCB）声明与思想谱系。</div>
+
+<h2>2 问题：为什么"再问一次模型"不构成验证</h2>
+<p>最常见的验证方式是 LLM-as-a-judge：把答案和推理给另一个（或同一个）模型看，让它输出对/错。这种做法有两个根本性的失败根源，二者独立存在，都不能靠改提示词修复。</p>
+<div class="fig">
+<svg viewBox="0 0 700 210" width="700">
+<defs><marker id="f1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker></defs>
+<rect x="10" y="14" width="330" height="182" rx="8" fill="none" stroke="#b4b2a9" stroke-width="1" stroke-dasharray="4 4"/>
+<text class="lab" x="26" y="38">失败根源一：无 grounding</text>
+<rect class="bg" x="26" y="56" width="130" height="44" rx="4"/><text class="t1 fg" x="91" y="75" text-anchor="middle">claim</text><text class="t2 fg2" x="91" y="90" text-anchor="middle">"这段证明正确"</text>
+<rect class="btl" x="196" y="56" width="120" height="44" rx="4"/><text class="t1 ft" x="256" y="75" text-anchor="middle">LLM 审读</text><text class="t2 ft2" x="256" y="90" text-anchor="middle">只看文本</text>
+<path class="ar" d="M156,78 H190" marker-end="url(#f1a)"/>
+<path class="ar" d="M256,100 V124" marker-end="url(#f1a)"/>
+<rect class="bc" x="196" y="130" width="120" height="34" rx="4"/><text class="t1 fc" x="256" y="151" text-anchor="middle">"通过 ✓"</text>
+<text class="note" x="26" y="150">真值在环境里（要运行、</text>
+<text class="note" x="26" y="165">要证明、要查证），</text>
+<text class="note" x="26" y="180">文本里根本没有。</text>
+<rect x="360" y="14" width="330" height="182" rx="8" fill="none" stroke="#b4b2a9" stroke-width="1" stroke-dasharray="4 4"/>
+<text class="lab" x="376" y="38">失败根源二：验证方式不可信</text>
+<rect class="bg" x="376" y="56" width="130" height="44" rx="4"/><text class="t1 fg" x="441" y="75" text-anchor="middle">claim</text><text class="t2 fg2" x="441" y="90" text-anchor="middle">待验证的答案</text>
+<rect class="btl" x="546" y="56" width="130" height="44" rx="4"/><text class="t1 ft" x="611" y="75" text-anchor="middle">某种检查</text><text class="t2 ft2" x="611" y="90" text-anchor="middle">不是期望的那种</text>
+<path class="ar" d="M506,78 H540" marker-end="url(#f1a)"/>
+<path class="ar" d="M611,100 V124" marker-end="url(#f1a)"/>
+<rect class="bc" x="546" y="130" width="130" height="34" rx="4"/><text class="t1 fc" x="611" y="151" text-anchor="middle">"通过 ✓"</text>
+<text class="note" x="376" y="150">验证过程本身没人验证：</text>
+<text class="note" x="376" y="165">pass 不蕴含 correct，</text>
+<text class="note" x="376" y="180">信任建立在未审计的过程上。</text>
+</svg>
+<div class="figcap">图 1 · LLM-as-judge 的两个独立失败根源：真值不在文本里；验证过程未被验证</div>
+</div>
+<p><b>根源一（grounding 问题）</b>：很多 claim 的真值需要与环境交互才能确定——代码要运行、定理要形式化检验、事实要检索原始来源。纯 reasoning 的 verifier 对它们在原理上就无效。<b>根源二（过程合法性问题）</b>：即使 verifier 声称"验证过了"，它用的方式可能不是我们期望的方式；它说 pass，不代表 claim 为真，因为我们信任的是一个从未被审计的过程。第二个根源更隐蔽也更关键——它意味着单纯堆叠更多 verifier 无济于事，因为每个新 verifier 都带来一个新的未审计过程。</p>
+
+<h2>3 三个设计转移与一条总原则</h2>
+<p><b>转移一：judger 的审计对象从"答案"换成"验证过程"。</b>先分清三个角色：solver 产出答案；verifier 检查答案（本文中的解除机制，组件 17–20）；judger 检查 verifier 的工作质量——它在本文架构中落地为蕴含审计器（21）与覆盖审计器（22），后文统称"审计器"。朴素设计里，judger 把答案再判一次——那只是引入又一个不可信的 verifier：同底座、同材料、同盲区，且立刻面临"谁来 judge 这个 judger"的无穷回归。回归的正确压缩方式是：上层只审计下层的<i>义务集是否完备</i>、<i>证据是否真的解除义务</i>。这两个判断比原始问题小得多、机械得多（verification asymmetry），并且最底层锚定在机器可检的 artifact（执行日志、反例、证明文件）上。必须如实：这个锚只对 proven 级是完全机械的；对 demonstrated / corroborated 级，蕴含审计仍是一个被压缩、聚焦、仪器化的 LLM 判断——本文声称的是压缩与可审计，不是消除（另见 §18）。</p>
+<p><b>转移二：把"判断"换成"机制"。</b>"这个验证够不够严格""该不该用 Lean""何时该验证"——这类元判断 LLM 的校准都很差，不能信任。解法是把每个元判断替换成一个结果可机械观察的博弈：验证手段的效力由<i>错误变体考卷</i>裁决、落点由可达性决定（两道闸，§7）；验证的时机由<i>依赖结构</i>决定（单一触发规则，§9）。智能不来自提示词里的叮嘱，来自机制施加的选择压力。</p>
+<p><b>转移三：领域知识从提示词移到运行时。</b>所有提示模板永远是 generic 的（"生成可证伪的必要条件""生成似是而非的错误变体"）。领域内容有三个运行时来源：环境本身（文档、已装工具、可检索的资料）、模型的潜在知识（由 generic 元指令现场激发）、以及系统自己的失败记录（每次翻案沉淀成记忆，越用越强）。</p>
+<p><b>总原则（全文反复使用）：交给模型生成的东西，只允许影响效率，不允许影响正确性。</b>义务生成的失败由覆盖审计兜底，变体生成的失败由翻案回流补强，手段排序的失败由停靠条件兜底，依赖抽取的失败由篡改审计兜底，编排协议的失败由 certificate 闸兜底。每一处"生成"背后都站着一道独立的闸；闸的机械性有分级——proven 级全机械，其余是压缩后的小步判断（见 §8 注记）。</p>
+
+<h3>思想谱系</h3>
+<p>本设计的构件各有先例，创新在于组合与机制化：certificate 在形态上接近 proof-carrying code（可交付、可独立复核的证据包）；区分度博弈是 mutation testing 与科学方法论中 negative control 的机制化推广；taint 不变量来自污点追踪；refuted 结论的跨分支复用是 SAT 求解器 CDCL（冲突子句学习）的形状；两道闸的分工回应了 LCF 式内核纪律（信任收敛到小核）；分级 verdict 对应证据强度层级的显式化。</p>
+<h2>4 系统形态：站在 solver 之外</h2>
+<p>v0.2 的形态决定：<b>verifier 是一个 sidecar 服务，solver 是一个原装的 Claude Code，零改造</b>。二者的全部接触面是三个挂点：hooks（PostToolUse / Stop 把每次工具调用与会话结束第一手推给 sidecar）、会话日志（结构化、append-only 的完整 trace，可增量 tail）、以及一个 MCP 服务端（solver 自愿调用 commit / verify / certificate）。任何有 trace 的 agent 都能被同一个服务验证——这正是"通用"的含义。</p>
+<div class="fig">
+<svg viewBox="0 0 700 290" width="680">
+<defs><marker id="wa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker>
+<marker id="wk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#D4537E"/></marker></defs>
+<rect class="bg" x="30" y="55" width="140" height="44" rx="22"/><text class="t1 fg" x="100" y="82" text-anchor="middle">用户</text>
+<rect class="btl" x="240" y="30" width="200" height="64" rx="4"/><text class="t1 ft" x="340" y="56" text-anchor="middle">Claude Code（solver）</text><text class="t2 ft2" x="340" y="74" text-anchor="middle">原装，零改造</text>
+<rect class="bg" x="240" y="150" width="200" height="56" rx="4"/><text class="t1 fg" x="340" y="172" text-anchor="middle">环境</text><text class="t2 fg2" x="340" y="190" text-anchor="middle">文件 · python · lean · git</text>
+<rect class="bp" x="510" y="30" width="180" height="176" rx="4"/><text class="t1 fp" x="600" y="56" text-anchor="middle">验证 sidecar</text><text class="t2 fp2" x="600" y="78" text-anchor="middle">常驻后台，被动应答</text><text class="t2 fp2" x="600" y="98" text-anchor="middle">hooks 接收 · 日志 tail</text><text class="t2 fp2" x="600" y="118" text-anchor="middle">MCP：commit · verify</text><text class="t2 fp2" x="600" y="138" text-anchor="middle">事件流 → 图 → 内核</text><text class="t2 fp2" x="600" y="158" text-anchor="middle">仪器沙箱 · 记忆三库</text>
+<path class="ar" d="M170,64 H234" marker-end="url(#wa)"/>
+<text class="note" x="202" y="54" text-anchor="middle">prompt</text>
+<path class="ar" d="M240,86 H176" marker-end="url(#wa)"/>
+<text class="note" x="205" y="106" text-anchor="middle">答案 + 证书结论</text>
+<path class="ar" d="M340,94 V144" marker-start="url(#wa)" marker-end="url(#wa)"/>
+<path class="ar" d="M440,50 H504" stroke-dasharray="4 3" marker-end="url(#wa)"/>
+<text class="note" x="472" y="40" text-anchor="middle">事件</text>
+<path class="dk" d="M510,78 H446" marker-end="url(#wk)"/>
+<text class="note" x="440" y="112" text-anchor="end">MCP 返回：证书 · 反例</text>
+<rect class="bg" x="480" y="240" width="210" height="40" rx="8" stroke-dasharray="5 4"/><text class="t2 fg2" x="585" y="264" text-anchor="middle">CI / 闸门：直取权威副本</text>
+<path class="ar" d="M600,206 V234" stroke-dasharray="4 3" marker-end="url(#wa)"/>
+</svg>
+<div class="figcap">图 2 · 舞台：对话主路径终结于 Claude Code——它经 MCP 取回 certificate，向用户交付"答案 + 证书结论"；只有 CI 等执法方绕过 solver 直取权威副本</div>
+</div>
+<p>这个形态带来一次<b>执法反转</b>：系统无法（也不再试图）拦住 solver 做任何事——强制力移到消费端。certificate 是自含证据链、可独立复核的产物，CI 与用户拿它当准入条件（"切片上有 unverified / refuted 就不合并"）。交付路径有两条：<b>对话主路径终结于 Claude Code</b>——solver 按协议经 MCP 取回 certificate，在最终回复中附上结论等级；转述可能失真，故证书带内容哈希，任何消费端都可向 sidecar 索取权威副本核对。<b>执法路径绕过 solver</b>——CI 直接向 sidecar 取证。可选的严格档位利用 Claude Code 的 PreToolUse hook，只拦"外发且不可逆"的动作（push、发布、部署）：切片未验证不放行——taint 规则恰好落在错误即将变贵的位置。solver 的配合完全自愿，且不影响 soundness：它的合作只买精度与省钱（见 §10）；让它愿意配合的是胡萝卜——refuted 附带反例，比撞到 CI 才发现便宜一个数量级。</p>
+
+<h2>5 总体架构</h2>
+<p>图 3 是系统全图：34 个原子组件（每个只做一件事），另有两个系统外实体（虚线框：solver 与消费端）。颜色表示职能：<span style="color:#534AB7">紫 = 数据与元层</span>、<span style="color:#0F6E56">绿 = 执行与生产</span>、<span style="color:#993C1D">橙 = 对抗与审计</span>、<span style="color:#5F5E5A">灰 = 支撑</span>、<span style="color:#993556">粉 = 记忆与反馈</span>。实线为主数据流，橙虚线为三个对抗循环，灰点线为支撑服务，粉虚线为记忆与反馈。</p>
+<div class="fig">
+<svg viewBox="0 0 720 1040" width="660">
+<defs>
+<marker id="fa3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker>
+<marker id="fc3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#D85A30"/></marker>
+<marker id="fk3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#D4537E"/></marker>
+</defs>
+<rect class="bg" x="15" y="16" width="510" height="44" rx="8" stroke-dasharray="5 4"/><text class="t1 fg" x="270" y="43" text-anchor="middle">solver：原装 Claude Code（系统外，零改造）</text>
+<rect class="bk" x="545" y="16" width="160" height="44" rx="4"/><text class="n" x="554" y="30">34</text><text class="t1 fk" x="625" y="36" text-anchor="middle">反馈发布器</text><text class="t2 fk2" x="625" y="52" text-anchor="middle">反例·翻案回送</text>
+<path class="dk" d="M545,38 H531" marker-end="url(#fk3)"/>
+<text class="lab" x="15" y="84">适配器层（唯一职责：变成事件）</text>
+<rect class="btl" x="15" y="92" width="150" height="56" rx="4"/><text class="n" x="24" y="106">1</text><text class="t1 ft" x="90" y="114" text-anchor="middle">hooks 适配器</text><text class="t2 ft2" x="90" y="130" text-anchor="middle">PostToolUse · Stop</text>
+<rect class="btl" x="190" y="92" width="150" height="56" rx="4"/><text class="n" x="199" y="106">2</text><text class="t1 ft" x="265" y="114" text-anchor="middle">日志 tail 适配器</text><text class="t2 ft2" x="265" y="130" text-anchor="middle">任何有 trace 的 agent</text>
+<rect class="btl" x="365" y="92" width="150" height="56" rx="4"/><text class="n" x="374" y="106">3</text><text class="t1 ft" x="440" y="114" text-anchor="middle">MCP 服务端</text><text class="t2 ft2" x="440" y="130" text-anchor="middle">commit·verify·cert</text>
+<rect class="btl" x="540" y="92" width="150" height="56" rx="4"/><text class="n" x="549" y="106">4</text><text class="t1 ft" x="615" y="114" text-anchor="middle">文件回放</text><text class="t2 ft2" x="615" y="130" text-anchor="middle">离线 trace / 纯文本</text>
+<path class="ar" d="M90,60 V86" marker-end="url(#fa3)"/>
+<path class="ar" d="M265,60 V86" marker-end="url(#fa3)"/>
+<path class="ar" d="M440,60 V86" marker-end="url(#fa3)"/>
+<path class="ar" d="M90,148 V174" marker-end="url(#fa3)"/>
+<path class="ar" d="M265,148 V174" marker-end="url(#fa3)"/>
+<path class="ar" d="M440,148 V174" marker-end="url(#fa3)"/>
+<path class="ar" d="M615,148 V174" marker-end="url(#fa3)"/>
+<rect class="bp" x="15" y="180" width="675" height="44" rx="4"/><text class="n" x="24" y="194">5</text><text class="t1 fp" x="352" y="199" text-anchor="middle">统一事件流（append-only · 系统唯一输入）</text><text class="t2 fp2" x="352" y="215" text-anchor="middle">tool_call · tool_result · message · commit · stop · verify 请求</text>
+<text class="lab" x="15" y="252">图构建（一切皆提案，审计定真伪）</text>
+<rect class="btl" x="15" y="260" width="150" height="56" rx="4"/><text class="n" x="24" y="274">6</text><text class="t1 ft" x="90" y="282" text-anchor="middle">机械解析器</text><text class="t2 ft2" x="90" y="298" text-anchor="middle">工具事件→效应节点</text>
+<rect class="bp" x="190" y="260" width="150" height="56" rx="4"/><text class="n" x="199" y="274">7</text><text class="t1 fp" x="265" y="282" text-anchor="middle">断言抽取器</text><text class="t2 fp2" x="265" y="298" text-anchor="middle">LLM · 按节奏旋钮</text>
+<rect class="bp" x="365" y="260" width="150" height="56" rx="4"/><text class="n" x="374" y="274">8</text><text class="t1 fp" x="440" y="282" text-anchor="middle">依赖边提议器</text><text class="t2 fp2" x="440" y="298" text-anchor="middle">提案，不被信任</text>
+<rect class="bc" x="540" y="260" width="150" height="56" rx="4"/><text class="n" x="549" y="274">9</text><text class="t1 fc" x="615" y="282" text-anchor="middle">篡改审计器</text><text class="t2 fc2" x="615" y="298" text-anchor="middle">谁的提案都同审</text>
+<path class="ar" d="M90,224 V254" marker-end="url(#fa3)"/>
+<path class="ar" d="M265,224 V254" marker-end="url(#fa3)"/>
+<path class="ar" d="M340,288 H359" marker-end="url(#fa3)"/>
+<path class="ar" d="M515,288 H534" marker-end="url(#fa3)"/>
+<rect class="bp" x="15" y="356" width="330" height="56" rx="4"/><text class="n" x="24" y="370">10</text><text class="t1 fp" x="180" y="378" text-anchor="middle">claim store（依赖图）</text><text class="t2 fp2" x="180" y="394" text-anchor="middle">事件流的物化视图 · 状态机</text>
+<rect class="bg" x="380" y="356" width="310" height="56" rx="4"/><text class="n" x="389" y="370">11</text><text class="t1 fg" x="535" y="378" text-anchor="middle">artifact 存储</text><text class="t2 fg2" x="535" y="394" text-anchor="middle">内容寻址：日志 · 证据 · 文件</text>
+<path class="ar" d="M90,316 V350" marker-end="url(#fa3)"/>
+<path class="ar" d="M612,316 V340 H260 V350" marker-end="url(#fa3)"/>
+<path class="ar" d="M345,384 H374" marker-start="url(#fa3)" marker-end="url(#fa3)"/>
+<rect class="bc" x="15" y="444" width="330" height="56" rx="4"/><text class="n" x="24" y="458">12</text><text class="t1 fc" x="180" y="466" text-anchor="middle">触发器（唯一规则）</text><text class="t2 fc2" x="180" y="482" text-anchor="middle">unverified 获得依赖者 → 验它</text>
+<rect class="bg" x="380" y="444" width="310" height="56" rx="4"/><text class="n" x="389" y="458">13</text><text class="t1 fg" x="535" y="466" text-anchor="middle">反向切片器</text><text class="t2 fg2" x="535" y="482" text-anchor="middle">cert 请求 = final 的依赖者（同一规则）</text>
+<path class="ar" d="M180,412 V438" marker-end="url(#fa3)"/>
+<path class="ar" d="M330,412 V428 H430 V438" marker-end="url(#fa3)"/>
+<path class="ar" d="M380,472 H351" marker-end="url(#fa3)"/>
+<text class="lab" x="200" y="528">验证内核（14–23，模式无关）</text>
+<path class="ar" d="M180,500 V512 H90 V518" marker-end="url(#fa3)"/>
+<rect class="bp" x="15" y="524" width="150" height="52" rx="4"/><text class="n" x="24" y="538">14</text><text class="t1 fp" x="90" y="550" text-anchor="middle">义务编译器</text><text class="t2 fp2" x="90" y="565" text-anchor="middle">answer-blind</text>
+<rect class="bc" x="190" y="524" width="150" height="52" rx="4"/><text class="n" x="199" y="538">15</text><text class="t1 fc" x="265" y="550" text-anchor="middle">可证伪性过滤器</text><text class="t2 fc2" x="265" y="565" text-anchor="middle">空洞义务丢弃</text>
+<rect class="bp" x="365" y="524" width="150" height="52" rx="4"/><text class="n" x="374" y="538">16</text><text class="t1 fp" x="440" y="550" text-anchor="middle">oracle 枚举器</text><text class="t2 fp2" x="440" y="565" text-anchor="middle">含"查账"仪器</text>
+<rect class="bc" x="540" y="524" width="150" height="52" rx="4"/><text class="n" x="549" y="538">17</text><text class="t1 fc" x="615" y="550" text-anchor="middle">变体生成器</text><text class="t2 fc2" x="615" y="565" text-anchor="middle">似是而非的错误</text>
+<path class="ar" d="M165,549 H184" marker-end="url(#fa3)"/>
+<path class="ar" d="M340,549 H359" marker-end="url(#fa3)"/>
+<path class="ar" d="M515,549 H534" marker-end="url(#fa3)"/>
+<path class="ar" d="M615,576 V606" marker-end="url(#fa3)"/>
+<path class="dc" d="M590,612 V594 H465 V582" marker-end="url(#fc3)"/>
+<text class="note" x="527" y="590" text-anchor="middle">存活→升级</text>
+<path class="dc" d="M115,612 V598 H265 V608" marker-end="url(#fc3)"/>
+<text class="note" x="190" y="592" text-anchor="middle">不合格→重做</text>
+<rect class="bc" x="15" y="612" width="150" height="52" rx="4"/><text class="n" x="24" y="626">21</text><text class="t1 fc" x="90" y="638" text-anchor="middle">蕴含审计器</text><text class="t2 fc2" x="90" y="653" text-anchor="middle">证据真解除了吗</text>
+<rect class="btl" x="190" y="612" width="150" height="52" rx="4"/><text class="n" x="199" y="626">20</text><text class="t1 ft" x="265" y="638" text-anchor="middle">verifier 执行器</text><text class="t2 ft2" x="265" y="653" text-anchor="middle">产出证据 artifact</text>
+<rect class="bp" x="365" y="612" width="150" height="52" rx="4"/><text class="n" x="374" y="626">19</text><text class="t1 fp" x="440" y="638" text-anchor="middle">证据合同绑定器</text><text class="t2 fp2" x="440" y="653" text-anchor="middle">无证据即无效</text>
+<rect class="bc" x="540" y="612" width="150" height="52" rx="4"/><text class="n" x="549" y="626">18</text><text class="t1 fc" x="615" y="638" text-anchor="middle">区分度测试器</text><text class="t2 fc2" x="615" y="653" text-anchor="middle">变体能否全拒</text>
+<path class="ar" d="M540,637 H521" marker-end="url(#fa3)"/>
+<path class="ar" d="M365,637 H346" marker-end="url(#fa3)"/>
+<path class="ar" d="M190,637 H171" marker-end="url(#fa3)"/>
+<path class="ar" d="M90,664 V698" marker-end="url(#fa3)"/>
+<path class="dc" d="M15,730 H6 V549 H12" marker-end="url(#fc3)"/>
+<text class="note" x="100" y="690">有洞 → 回 14 补义务</text>
+<rect class="bc" x="15" y="704" width="150" height="52" rx="4"/><text class="n" x="24" y="718">22</text><text class="t1 fc" x="90" y="730" text-anchor="middle">覆盖审计器</text><text class="t2 fc2" x="90" y="745" text-anchor="middle">义务集有洞吗</text>
+<rect class="bg" x="190" y="704" width="150" height="52" rx="4"/><text class="n" x="199" y="718">23</text><text class="t1 fg" x="265" y="730" text-anchor="middle">切片冻结器</text><text class="t2 fg2" x="265" y="745" text-anchor="middle">导出 certificate</text>
+<path class="ar" d="M165,730 H184" marker-end="url(#fa3)"/>
+<text class="lab" x="15" y="790">仪器与支撑（点线 = 服务关系）</text>
+<rect class="btl" x="15" y="798" width="124" height="52" rx="4"/><text class="n" x="24" y="812">26</text><text class="t1 ft" x="77" y="822" text-anchor="middle">仪器适配器</text><text class="t2 ft2" x="77" y="838" text-anchor="middle">沙箱子进程</text>
+<rect class="bg" x="153" y="798" width="124" height="52" rx="4"/><text class="n" x="162" y="812">27</text><text class="t1 fg" x="215" y="822" text-anchor="middle">终止控制器</text><text class="t2 fg2" x="215" y="838" text-anchor="middle">上限即降级</text>
+<rect class="btl" x="291" y="798" width="124" height="52" rx="4"/><text class="n" x="300" y="812">24</text><text class="t1 ft" x="353" y="822" text-anchor="middle">仪器供给器</text><text class="t2 ft2" x="353" y="838" text-anchor="middle">就绪 · 可装即装</text>
+<rect class="btl" x="429" y="798" width="124" height="52" rx="4"/><text class="n" x="438" y="812">25</text><text class="t1 ft" x="491" y="822" text-anchor="middle">查账仪器</text><text class="t2 ft2" x="491" y="838" text-anchor="middle">对账事件流</text>
+<rect class="bg" x="567" y="798" width="124" height="52" rx="4"/><text class="n" x="576" y="812">28</text><text class="t1 fg" x="629" y="822" text-anchor="middle">缓存</text><text class="t2 fg2" x="629" y="838" text-anchor="middle">内容哈希·脏锥</text>
+<path class="ds" d="M77,798 V778 H177 V656 H184" marker-end="url(#fa3)"/>
+<path class="ds" d="M215,798 V778 H255 V762" marker-end="url(#fa3)"/>
+<path class="ds" d="M353,798 V610 H440 V582" marker-end="url(#fa3)"/>
+<path class="ds" d="M491,798 V778 H600 V670" marker-end="url(#fa3)"/>
+<path class="ds" d="M629,798 V670" marker-end="url(#fa3)"/>
+<path class="ar" d="M320,756 V770 H284 V874" marker-end="url(#fa3)"/>
+<rect class="bg" x="15" y="880" width="330" height="52" rx="4"/><text class="n" x="24" y="894">33</text><text class="t1 fg" x="180" y="904" text-anchor="middle">certificate</text><text class="t2 fg2" x="180" y="920" text-anchor="middle">自含证据链，可独立复核</text>
+<rect class="bg" x="380" y="880" width="310" height="52" rx="8" stroke-dasharray="5 4"/><text class="t1 fg" x="535" y="904" text-anchor="middle">消费端（系统外）</text><text class="t2 fg2" x="535" y="920" text-anchor="middle">CI 闸门 · merge 条件 · 用户策略</text>
+<path class="ar" d="M345,906 H374" marker-end="url(#fa3)"/>
+<rect x="8" y="944" width="704" height="80" rx="8" fill="none" stroke="#D4537E" stroke-width="1" stroke-dasharray="4 4"/>
+<text class="lab" x="24" y="958" style="fill:#993556">经验记忆</text>
+<path class="dk" d="M180,932 V938" marker-end="url(#fk3)"/>
+<rect class="bk" x="120" y="964" width="130" height="52" rx="4"/><text class="n" x="129" y="978">29</text><text class="t1 fk" x="185" y="988" text-anchor="middle">义务库</text><text class="t2 fk2" x="185" y="1004" text-anchor="middle">洞的沉淀</text>
+<rect class="bk" x="270" y="964" width="130" height="52" rx="4"/><text class="n" x="279" y="978">30</text><text class="t1 fk" x="335" y="988" text-anchor="middle">变体模式库</text><text class="t2 fk2" x="335" y="1004" text-anchor="middle">翻案回流</text>
+<rect class="bk" x="420" y="964" width="130" height="52" rx="4"/><text class="n" x="429" y="978">31</text><text class="t1 fk" x="485" y="988" text-anchor="middle">手段策略库</text><text class="t2 fk2" x="485" y="1004" text-anchor="middle">特征→强度</text>
+<rect class="bk" x="570" y="964" width="130" height="52" rx="4"/><text class="n" x="579" y="978">32</text><text class="t1 fk" x="635" y="988" text-anchor="middle">记忆检索器</text><text class="t2 fk2" x="635" y="1004" text-anchor="middle">回注 14·16·17</text>
+<path class="dk" d="M700,990 H708 V549 H696" marker-end="url(#fk3)"/>
+<path class="dk" d="M690,638 H716 V38 H711" marker-end="url(#fk3)"/>
+<text class="note" x="712" y="330" text-anchor="end">反例反馈给 solver</text>
+</svg>
+<div class="figcap">图 3 · 总体架构：34 个原子组件与两个系统外实体。实线 = 主数据流；橙虚线 = 三个对抗循环；灰点线 = 支撑服务；粉虚线 = 记忆的沉淀、回注与反例回送</div>
+</div>
+<h2 class="pagebreak">6 逐组件说明</h2>
+<p>按图 3 的编号逐一解释。每个组件只做一件事；全部耦合经过事件流（5）或 claim store（10），没有隐藏通道。</p>
+
+<h3>适配器层（1–4）：唯一职责是把任何来源变成事件</h3>
+<p class="comp"><b class="num">1</b><b>hooks 适配器</b>——接收 Claude Code 的 PostToolUse / Stop 钩子推送：每次工具调用的名称、参数、结果第一手到达，会话结束即产生 stop 事件。载荷携带 agent 标识，subagent 的活动天然带分支标签。可选严格档位用 PreToolUse 拦截外发不可逆动作。</p>
+<p class="comp"><b class="num">2</b><b>日志 tail 适配器</b>——增量读取会话 trace（结构化、append-only）。solver 完全不合作也能工作的兜底通道；也使任何有 trace 的第三方 agent 即插即验。</p>
+<p class="comp"><b class="num">3</b><b>MCP 服务端</b>——暴露 <code>commit(claim, deps)</code>、<code>verify(target)</code>、<code>certificate()</code> 三个工具。solver 的自愿合作通道：合作只买精度与反馈速度，不买 soundness（见 §10）。</p>
+<p class="comp"><b class="num">4</b><b>文件回放适配器</b>——把一份历史 trace 或纯文本解答按序回放成事件。所谓"离线模式"，就是这条延迟很高的流。</p>
+
+<h3>事实源（5、10、11）</h3>
+<p class="comp"><b class="num">5</b><b>统一事件流</b>——系统唯一输入，append-only。tool_call、tool_result、message、commit、stop、verify 请求，一切皆事件；触发也是事件。它同时就是事件日志：断点恢复、完整审计、回放消融，三种能力一份数据。</p>
+<p class="comp"><b class="num">10</b><b>claim store（依赖图）</b>——事件流的物化视图。存每个 claim 的内容、类型（断言 / 效应 / 最终）、依赖边、分支标签、验证状态机（unverified → verified(grade) / refuted / stale）。claim 以内容哈希为 id：去重、缓存、跨分支复用因此免费。</p>
+<p class="comp"><b class="num">11</b><b>artifact 存储</b>——内容寻址的证据仓库：执行日志、反例、证明文件、来源快照。certificate 的证据链指向这里。</p>
+
+<h3>图构建层（6–9）：一切皆提案，审计定真伪</h3>
+<p class="comp"><b class="num">6</b><b>机械解析器</b>——把结构化的工具事件确定性地转成效应节点（零 LLM）。效应节点不是特殊类别，就是一条内容为"发生过这样一次调用、返回了 X"的普通断言——只是它恰好有一个免费、无歧义的入册窗口（见 §9）。</p>
+<p class="comp"><b class="num">7</b><b>断言抽取器</b>——LLM 角色，把自由文本切成候选 claim。带一个节奏旋钮：抽取越勤，触发越早、止损越早；旋钮只影响反馈延迟，不影响正确性。粒度宁粗勿细：切不开就合并成粗 claim。</p>
+<p class="comp"><b class="num">8</b><b>依赖边提议器</b>——为 claim 提议依赖边。输出称"提议"，因为不被信任——必须过 9。</p>
+<p class="comp"><b class="num">9</b><b>篡改审计器</b>——变体法审计一切提案，<b>不管提案人是谁</b>：抽取器提的边要审，solver 经 MCP 自己声明的边同样要审、同一审法（solver 的合作被统一理解为"志愿抽取"）。方法：改坏 trace 中某个中间结论，重建图上必须存在通往 final 的路径，否则漏边重抽。</p>
+
+<h3>触发层（12–13）</h3>
+<p class="comp"><b class="num">12</b><b>触发器</b>——全系统唯一的调度规则：<i>unverified 的 claim 获得第一个依赖者时，验证它</i>。没有第二条规则；eager/lazy 之分、效应特判、Stop 特判都不存在。它是 taint 不变量（final 不得依赖 unverified）的构造性版本。在搜索场景下扩展一步而不加规则：给某分支追加尝试投入 = 依赖该分支的前沿 claim（"投入即使用"）。</p>
+<p class="comp"><b class="num">13</b><b>反向切片器</b>——certificate 请求 = 给 final 加一个依赖者，是同一规则的特例：从 final 沿依赖边回溯，切片上残余的 unverified 全部补验。不在切片上的节点（含所有死分支）一分钱不花。</p>
+
+<h3>验证内核（14–23，模式无关，v0.1 原样保留）</h3>
+<p class="comp"><b class="num">14</b><b>义务编译器</b>——只看任务类型、不看候选内容（answer-blind，防合理化），生成"任何正确答案都必须满足"的必要条件集。模板 generic，领域内容由 32 检索注入与模型潜在知识现场生成。</p>
+<p class="comp"><b class="num">15</b><b>可证伪性过滤器</b>——对每条候选义务追问："描述一个会使它失败的具体 artifact。"描述不出的（如"推理连贯优美"）当场除册，只留日志。宁删勿留：删错的风险由覆盖审计兜底（洞会被变体暴露、循环三补回）；留一条永远验不了的空洞义务则两头堵死——要么有人凭感觉给它打勾（污染证书），要么它永远 unverified 卡住 taint 规则。义务清单是工单，写不出失败样子的条目不是检查项，是感想。</p>
+<p class="comp"><b class="num">16</b><b>oracle 枚举器</b>——面向当前义务枚举可用检验手段，按 soundness 降序与去相关性排成阶梯（成本敏感排序仅为可配置项；生成过程见 §7）。效应类 claim 的阶梯里，"查账仪器（25）"是天然的权威项——账本即"发生过"类事实的源头。</p>
+<p class="comp"><b class="num">17</b><b>变体生成器</b>——以候选为种子生成"似是而非的错误变体"。同一原语服务 18 的手段测试与 22 的覆盖测试；强度由 30 的翻案记录持续喂养，是全系统的对抗上界。</p>
+<p class="comp"><b class="num">18</b><b>区分度测试器</b>——用当前手段去"验证"各变体：任何变体存活即宣判该手段无效、verdict 作废，强制换用其他手段（主路径中即降级）；全拒才允许进入绑定。这是第一道闸。</p>
+<p class="comp"><b class="num">19</b><b>证据合同绑定器</b>——把通过两道闸的手段固化为证据类型合同：<i>不带该类型证据的 verdict 一律无效</i>。"验证方式不可信"由此从行为问题变成合同问题。</p>
+<p class="comp"><b class="num">20</b><b>verifier 执行器</b>——按合同调用仪器执行解除，产出证据 artifact。任何崩溃、超时、不可解析一律记为解除失败（fail-closed），绝不折算成通过。</p>
+<p class="comp"><b class="num">21</b><b>蕴含审计器</b>——逐条检查"这份证据在逻辑上是否解除这条义务"：日志属不属于这个脚本、证明有没有 sorry、抽样证据能不能支撑全称结论。这是第二道闸；不合格打回 20 重做。</p>
+<p class="comp"><b class="num">22</b><b>覆盖审计器</b>——用变异答案攻击整个义务集：有变体全过 = 义务集有洞，回 14 补义务。发现的洞与翻案是 29 / 30 的主要来源。</p>
+<p class="comp"><b class="num">23</b><b>切片冻结器</b>——切片全绿后把子图连证据链冻结导出为 certificate。纯函数，无判断。</p>
+
+<h3>仪器与支撑（24–28）</h3>
+<p class="comp"><b class="num">24</b><b>仪器供给器</b>——维护每个仪器的三态：就绪 / 可装（安装成本计入阶梯 est_cost，第一次被博弈选中时现装、永久缓存）/ 不可得。"没装"不是能力边界而是一次性成本；<code>unverified(no-instrument)</code> 只留给真正装不了（断网、策略禁止）或根本不存在 oracle 的情形。安装在 sidecar 自己的沙箱作用域内进行，失败 fail-closed。</p>
+<p class="comp"><b class="num">25</b><b>查账仪器</b>——以事件流为数据源的特殊仪器：核对"某次调用发生过且返回了 X"。效应类 claim 的区分度博弈会自动落在它身上（变体"13 passed""collected 0"在账面前全灭）——工具因此不需要任何特殊对待。</p>
+<p class="comp"><b class="num">26</b><b>仪器适配器</b>——每种工具一个实例（python 沙箱、Lean、检索、bash……），统一接口 <code>probe() / run(check) → artifact</code>，子进程运行，带超时与资源限制。</p>
+<p class="comp"><b class="num">27</b><b>终止控制器</b>——为每个循环设轮数上限（升级/降级队列长度、覆盖审计轮数、重试次数），保证终止；成本不是本设计的约束，终止性是。达到上限即降级为 <code>unverified(bounds)</code> 并如实写入 certificate，永不静默通过。</p>
+<p class="comp"><b class="num">28</b><b>缓存</b>——验证结果以（claim 哈希, 义务哈希, 仪器 id, 变体集哈希）为键；claim 修订则下游依赖锥置 stale（爆炸半径的机械实现）。内容寻址使并行分支间同一 claim 只验一次。</p>
+
+<h3>记忆与产物（29–34）</h3>
+<p class="comp"><b class="num">29</b><b>义务库</b>——覆盖审计发现的洞沉淀为义务模式（如"财务数字必带口径义务"），供 14 检索复用。</p>
+<p class="comp"><b class="num">30</b><b>变体模式库</b>——翻案的错误模式回流，供 17 生成更狠的攻击。</p>
+<p class="comp"><b class="num">31</b><b>手段策略库</b>——记录 (claim 特征, 手段, 是否翻案)。短期支持跳级，长期是训练 instrument policy 的现成 reward 数据。</p>
+<p class="comp"><b class="num">32</b><b>记忆检索器</b>——把三库内容以检索结果身份注入 14 / 16 / 17 的模板。模板永远 generic——"领域知识不进提示词"的落点。</p>
+<p class="comp"><b class="num">33</b><b>certificate</b>——冻结切片 + 每条义务的证据与审计结论 + 分级 verdict（proven / demonstrated / corroborated / unverified(reason)）+ 升级轨迹与翻案历史（洞不隐瞒）。它使验证本身可被抽查验证。</p>
+<p class="comp"><b class="num">34</b><b>反馈发布器</b>——把反例与翻案经 MCP 响应 / hook 注入送回 solver。到达时机 = solver 刚开始在该 claim 上投资的时刻，止损价值最大；也是 solver 愿意合作的胡萝卜。</p>
+
+<h2 class="pagebreak">7 机制 A：两道闸——手段的效力与降级由谁裁决</h2>
+<p>系统里最重要的单个机制。成本无关的强度优先策略消灭了旧问题（"该用多强的手段"——一律直取最强可达），但换来两个必须回答的新问题：<b>最强手段真的有效吗</b>——形式化会不会证了别的东西（忠实性）、管线会不会静默放行（fail-closed 健全性）？<b>不可达而降级时，降到哪级才够</b>——此时"选强度"在剩余手段中回归。变体考卷的功能因此是<b>分叉</b>的：主路径上它考有效性——假命题在健全证明器下必然编译失败，若变体竟然存活，暴露的是管线被配坏了（烟雾测试），真正的信息量在忠实性检查器的变体考卷上；降级路径上它恢复原始的区分度选择功能。两道闸对这两个问题分别裁决。</p>
+<div class="fig">
+<svg viewBox="0 0 700 292" width="660">
+<defs><marker id="g1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker>
+<marker id="g2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#D85A30"/></marker></defs>
+<rect class="bc" x="285" y="16" width="180" height="46" rx="4"/><text class="t1 fc" x="375" y="35" text-anchor="middle">变体生成器（17）</text><text class="t2 fc2" x="375" y="51" text-anchor="middle">似是而非的错误变体</text>
+<rect class="btl" x="30" y="108" width="180" height="52" rx="4"/><text class="t1 ft" x="120" y="130" text-anchor="middle">当前验证手段</text><text class="t2 ft2" x="120" y="146" text-anchor="middle">从最强可达的开始</text>
+<rect class="bc" x="285" y="108" width="180" height="52" rx="4"/><text class="t1 fc" x="375" y="130" text-anchor="middle">区分度测试（18）</text><text class="t2 fc2" x="375" y="146" text-anchor="middle">同法去验变体</text>
+<rect class="bg" x="520" y="108" width="150" height="52" rx="4"/><text class="t1 fg" x="595" y="130" text-anchor="middle">绑定合同（19）</text><text class="t2 fg2" x="595" y="146" text-anchor="middle">记入 certificate</text>
+<rect class="bp" x="150" y="220" width="220" height="48" rx="4"/><text class="t1 fp" x="260" y="240" text-anchor="middle">oracle 枚举器（16）</text><text class="t2 fp2" x="260" y="256" text-anchor="middle">取阶梯上次强的一级</text>
+<path class="ar" d="M210,134 H279" marker-end="url(#g1)"/>
+<path class="ar" d="M375,62 V102" marker-end="url(#g1)"/>
+<path class="ar" d="M465,134 H514" marker-end="url(#g1)"/>
+<text class="note" x="489" y="126" text-anchor="middle">全拒</text>
+<path class="dc" d="M375,160 V244 H376" marker-end="url(#g2)"/>
+<text class="note" x="388" y="200">考卷失败或不可达</text>
+<path class="dc" d="M150,244 C80,244 60,190 100,166" marker-end="url(#g2)"/>
+<text class="note" x="30" y="196">换用降级后</text>
+<text class="note" x="30" y="211">的手段重验</text>
+</svg>
+<div class="figcap">图 4 · 两道闸循环体：主路径从最强可达开始，考卷失败或不可达即降级；裁判是变体死活与证据蕴含这两类可记录事实</div>
+</div>
+<p>主路径流程：直取最强可达手段，接受 verdict 前过两道闸——变体考卷（闸一）与证据蕴含审查（闸二），任一失败或手段不可达（定义见下）即降一级重来，降级次序与各级闸况全部记入轨迹。图 4 画的是这个循环体；图 5 是<b>降级路径的实测存档</b>：仅当形式化不可达时才逐级下探，各级闸况记录保留了教学价值。</p>
+<div class="fig">
+<svg viewBox="0 0 700 336" width="660">
+<defs><marker id="h1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker></defs>
+<rect class="bp" x="230" y="28" width="240" height="42" rx="4"/><text class="t1 fp" x="350" y="46" text-anchor="middle">L5 · 形式化证明（Lean）</text><text class="t2 fp2" x="350" y="61" text-anchor="middle">最强，也最贵</text>
+<rect class="btl" x="230" y="84" width="240" height="42" rx="4"/><text class="t1 ft" x="350" y="102" text-anchor="middle">L4 · 性质测试 / 反例搜索</text><text class="t2 ft2" x="350" y="117" text-anchor="middle">系统地找反例</text>
+<rect class="btl" x="230" y="140" width="240" height="42" rx="4"/><text class="t1 ft" x="350" y="158" text-anchor="middle">L3 · 执行与实测</text><text class="t2 ft2" x="350" y="173" text-anchor="middle">跑起来看结果</text>
+<rect class="btl" x="230" y="196" width="240" height="42" rx="4"/><text class="t1 ft" x="350" y="214" text-anchor="middle">L2 · 独立重解 / 代入检查</text><text class="t2 ft2" x="350" y="229" text-anchor="middle">盲解一遍再比对</text>
+<rect class="bg" x="230" y="252" width="240" height="42" rx="4"/><text class="t1 fg" x="350" y="270" text-anchor="middle">L1 · 文本审读</text><text class="t2 fg2" x="350" y="285" text-anchor="middle">最便宜，最弱</text>
+<text class="lab" x="60" y="322" text-anchor="middle">x + 1 = 5 ⇒ x = 4</text>
+<path class="ar" d="M60,306 V226" marker-end="url(#h1)"/>
+<circle cx="60" cy="273" r="9" fill="#FAECE7" stroke="#993C1D"/><text x="60" y="277" text-anchor="middle" style="font-size:11px;fill:#993C1D">✗</text>
+<text class="note" x="78" y="277">审读可能看走眼</text>
+<circle cx="60" cy="217" r="9" fill="#E1F5EE" stroke="#0F6E56"/><text x="60" y="221" text-anchor="middle" style="font-size:11px;fill:#0F6E56">✓</text>
+<text class="note" x="78" y="213">变体 x=5, 6, −4 代入全灭</text>
+<text class="note" x="78" y="228">降级至 L2 即有完备区分度</text>
+<text class="lab" x="600" y="322" text-anchor="middle">"√2 是无理数"的证明</text>
+<path class="ar" d="M600,306 V50" marker-end="url(#h1)"/>
+<circle cx="600" cy="273" r="9" fill="#FAECE7" stroke="#993C1D"/><text x="600" y="277" text-anchor="middle" style="font-size:11px;fill:#993C1D">✗</text>
+<text class="note" x="588" y="277" text-anchor="end">√4 骨架变体存活</text>
+<circle cx="600" cy="217" r="9" fill="#FAECE7" stroke="#993C1D"/><text x="600" y="221" text-anchor="middle" style="font-size:11px;fill:#993C1D">✗</text>
+<text class="note" x="588" y="221" text-anchor="end">"结论对步骤错"存活</text>
+<circle cx="600" cy="161" r="9" fill="#F1EFE8" stroke="#888780"/><text x="600" y="165" text-anchor="middle" style="font-size:10px;fill:#5F5E5A">—</text>
+<text class="note" x="588" y="165" text-anchor="end">对逐步义务不适用</text>
+<circle cx="600" cy="105" r="9" fill="#F1EFE8" stroke="#888780"/><text x="600" y="109" text-anchor="middle" style="font-size:10px;fill:#5F5E5A">—</text>
+<circle cx="600" cy="49" r="9" fill="#E1F5EE" stroke="#0F6E56"/><text x="600" y="53" text-anchor="middle" style="font-size:11px;fill:#0F6E56">✓</text>
+<text class="note" x="588" y="45" text-anchor="end">全部变体在 Lean 下死亡</text>
+<text class="note" x="588" y="60" text-anchor="end">绑定：可编译无 sorry 的证明</text>
+</svg>
+<div class="figcap">图 5 · 降级路径实测存档：各层级上变体的死活记录。强度优先下主路径直取形式化，本图仅在不可达降级时被走到</div>
+</div>
+<p>三点说明。其一，<b>图中的 L1–L5 不是系统里写死的阶梯，而是 oracle 枚举器（16）在这个任务上的运行时产物</b>：换一个领域，枚举出的阶梯完全不同（统计任务会出现"安慰剂检验"一级，事实核查会出现"溯源检索"一级）。harness 固定的只有一个抽象的证据类别词汇表（文本级 / 重解级 / 执行级 / 系统搜索级 / 形式化级）——它的身份是 schema 而非知识：为了 certificate 跨任务可比、策略库有稳定的特征空间可学习。把排序交给模型是安全的，因为停靠条件是"变体全灭"这个机械事实而非"到达某级"，<i>排序错误只损失效率，不损失 soundness</i>。其二，"Lean 的存在"不写在提示词里：它在模型的潜在知识里（枚举时模型自己会提出），在环境里（仪器供给器负责就绪：已装即用，未装则在第一次被博弈选中时现装）。其三，成本不作为约束后，默认策略是<b>强度优先</b>：直取阶梯最强的适用手段（数学域即形式化），两道闸的角色从"决定升到哪级"变为"对最强手段的有效性考卷"；只有最强手段不可达（无法形式化、查库与现场证明都失败）才降级到次强，降级即如实封顶等级。图 5 的逐级上爬因此只出现在降级路径上，作为不可达时的实测记录。</p>
+<p><b>"不可达"的操作性定义（降级的机械触发器）</b>：(i) 仪器不可得（无此类 oracle / 断网禁装）；(ii) 适用性失败（命题无法在该手段中陈述）；(iii) 执行失败达上限（超时、编译失败重试 N 次——由终止控制器判定并记入轨迹）。三者都是机械事件，降级从不出自判断。</p>
+<h3>两道闸的分工</h3>
+<p>绑定一个手段要连过两道独立的闸，缺一不可。<b>闸一（区分度测试，18）管"方法能不能辨别对错"</b>：变体存活即作废。<b>闸二（蕴含审计，21）管"证据在逻辑上够不够"</b>：即便变体全灭，交上来的证据若蕴含不了义务，照样打回。典型案例：对"某命题对一切 n 成立"这类全称义务，性质测试（抽样找反例）能杀死所有已知变体——闸一通过——但它的 artifact 是"抽样一千个无反例"，蕴含不了全称结论，闸二打回、继续升级到形式化。只有两道闸都点头，合同才成立。</p>
+<h3>阶梯的生成过程（组件 16 内部）</h3>
+<p>枚举按<b>义务</b>粒度进行。输入四样，全部是运行时数据：当前义务、仪器供给器（24）的三态清单、策略库（31）检索命中、固定的证据类别词汇表。流程五步：</p>
+<pre>
+义务：{obligation}
+claim 特征：{features}
+本环境可用仪器（注册表探测结果）：{registry}
+历史记录（检索命中）：{memory_hits}
+
+枚举所有可用于检查该义务的方法。每个方法输出：
+  procedure:          具体检查步骤
+  instrument_id:      执行它的仪器，必须取自上面的仪器列表
+  evidence_kind:      text | rederive | execute | search | formal
+  artifact:           将产出什么证据
+  failure_looks_like: 若义务不成立，artifact 会是什么样子
+  est_cost:           low | mid | high
+</pre>
+<p><b>① 方法激发</b>：一次 structured output 调用，模板如上、完全 generic——"Lean 能机器检查证明""统计结论可做安慰剂检验"由义务与仪器清单从模型潜在知识里触发流出。<b>② 机械接地</b>：instrument_id 逐条对照供给器；引用"可装"仪器的方法保留并计入安装成本，只有真正不可得（断网 / 策略禁止 / 此类 claim 无 oracle）才丢弃。<b>③ 可证伪性过滤</b>：写不出 failure_looks_like 的方法当场丢弃（与筛义务的 15 是同一原语的复用）。<b>④ 排序</b>：soundness 降序（强度优先；成本敏感排序仅为可配置项）→ 去相关性；策略库命中可直达历史落点。排序只是启发式，不被信任。<b>⑤ 懒消费</b>：区分度博弈从队首逐个弹出、编译成 check_spec 打变体；全灭且过闸二即绑定，队列耗尽即如实 unverified(no-instrument)。三类生成失败各有兜底：排错序只损失效率；坏方法死于两道闸；漏方法最坏是诚实的 unverified。枚举结果以（义务哈希 + 注册表哈希）为键缓存。图 5 的 L1–L5 就是这个流程输出的方法列表按词汇表归并后的投影。</p>
+
+<h3>落点的光谱：强度优先下什么落形式化，什么被迫降级</h3>
+<p>系统从不判断"这题难不难"。强度优先策略下，落点 = <b>最强可达的手段</b>，降级只因不可达，各有执法者：形式化可达（可陈述、查库命中或现场证明成功、忠实性考卷通过）→ proven；形式化不可达但存在完备的执行检查（有限全称、代回封闭）→ demonstrated；只剩审读与盲式重证可用 → corroborated 封顶，且审读必须先过有效性考卷（对该类 claim 的变体有实测区分度）、产物必须是带逐步理由的结构化 artifact。冷启动的义务完备性在可机检域压力较小：数学义务大多可从逻辑形态导出（量词结构、前提对齐、公理清单），不依赖领域惯例——依赖惯例的口径类任务属扩展域（§13 例 E 明示了这一边界）。</p>
+<table>
+<tr><th style="width:30%">数学 claim</th><th style="width:36%">决定性的机械事实</th><th style="width:20%">落点</th><th style="width:14%">等级</th></tr>
+<tr><td>x²−5x+6=0 解为 2、3</td><td>可陈述；ring 因式分解 + mul_eq_zero 数行（代入方向 norm_num）</td><td>形式化（执行级代回为降级备胎）</td><td>proven</td></tr>
+<tr><td>n≤100 时 n²+n+41 全素</td><td>有限命题；逐点素性证书（norm_num 素性扩展）</td><td>形式化（穷举为备胎）</td><td>proven</td></tr>
+<tr><td>∀n，6 ∣ n³−n</td><td>ZMod 6 有限化后 decide</td><td>形式化</td><td>proven</td></tr>
+<tr><td>验证一份 √2 无理性证明</td><td>"结论对步骤错"变体只死于逐步机检</td><td>Lean 逐步形式化</td><td>proven</td></tr>
+<tr><td>验证一份竞赛级长证明</td><td>部分引理形式化不可达</td><td>逐引理分解（见下）</td><td>混合分级</td></tr>
+<tr><td>一个开放猜想</td><td>不存在有蕴含力的 oracle</td><td>不硬验</td><td>unverified(no-instrument)</td></tr>
+</table>
+<p>（表中形式化手段均为示意，以实际编译通过为准。）<b>真正困难的证明：分解 + 分级，不假装。</b>义务编译把长证明拆到引理粒度：标准引理走 mathlib 查库（proven，零新证明）；可形式化的现场证明（proven）；真正创造性、形式化不可达的步骤，系统做它能做的（N 路独立审读、逐步反例搜索、盲式重证），<b>如实</b>给 corroborated 并在证书里标明"此环节未获逐步机器检查"。最终 certificate 是混合等级的精确地图——哪些环节硬、哪些环节软。这套降级试探只在第一次遇到某类 claim 时发生：策略库记下落点后，同类 claim 一步到位。</p>
+
+<h2 class="pagebreak">8 机制 B：三个对抗循环——验证失败的三种方式各有防线</h2>
+<p>一个错误答案想混过验证，只有三条路：<b>验漏了</b>（义务集不完备）、<b>验浅了</b>（手段太弱，pass 不蕴含 correct）、<b>验错了</b>（证据本身没有解除义务）。系统为每条路配一个对抗循环，三个循环工作在不同层级、互不冗余，且各自锚定在不同的判据上。两点如实标注：其一，循环一与循环三<b>共用变体生成器（17）</b>——它造不出的错误类型两环同盲，实际独立性是"两层半"而非三层，变体生成器因此是全系统最重要的单点（评测中单独度量其攻击成功率）；其二，判据的机械性分级——proven 级锚定机器可检 artifact，demonstrated / corroborated 级的蕴含审计仍是被压缩聚焦的 LLM 判断，压缩而非消除。</p>
+<div class="fig">
+<svg viewBox="0 0 700 486" width="620">
+<defs><marker id="j1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker>
+<marker id="j2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#D85A30"/></marker></defs>
+<rect class="bp" x="240" y="16" width="220" height="52" rx="4"/><text class="t1 fp" x="350" y="38" text-anchor="middle">义务编译（14+15）</text><text class="t2 fp2" x="350" y="54" text-anchor="middle">该检查什么</text>
+<rect class="bp" x="240" y="108" width="220" height="52" rx="4"/><text class="t1 fp" x="350" y="130" text-anchor="middle">手段绑定（16–19）</text><text class="t2 fp2" x="350" y="146" text-anchor="middle">用什么强度检查</text>
+<rect class="btl" x="240" y="200" width="220" height="52" rx="4"/><text class="t1 ft" x="350" y="222" text-anchor="middle">解除执行（20）</text><text class="t2 ft2" x="350" y="238" text-anchor="middle">产出证据</text>
+<rect class="bc" x="240" y="292" width="220" height="52" rx="4"/><text class="t1 fc" x="350" y="314" text-anchor="middle">蕴含审计（21）</text><text class="t2 fc2" x="350" y="330" text-anchor="middle">证据合格吗</text>
+<rect class="bc" x="240" y="384" width="220" height="52" rx="4"/><text class="t1 fc" x="350" y="406" text-anchor="middle">覆盖审计（22）</text><text class="t2 fc2" x="350" y="422" text-anchor="middle">义务集有洞吗</text>
+<path class="ar" d="M350,68 V102" marker-end="url(#j1)"/>
+<path class="ar" d="M350,160 V194" marker-end="url(#j1)"/>
+<path class="ar" d="M350,252 V286" marker-end="url(#j1)"/>
+<path class="ar" d="M350,344 V378" marker-end="url(#j1)"/>
+<path class="dc" d="M460,146 H520 V120 H466" marker-end="url(#j2)"/>
+<text class="note" x="530" y="128">循环一 · 验浅了</text>
+<text class="note" x="530" y="143">变体存活 → 换更强手段</text>
+<path class="dc" d="M460,318 H540 V226 H466" marker-end="url(#j2)"/>
+<text class="note" x="550" y="272">循环二 · 验错了</text>
+<text class="note" x="550" y="287">证据打回重做</text>
+<path class="dc" d="M240,410 H150 V42 H234" marker-end="url(#j2)"/>
+<text class="note" x="140" y="220" text-anchor="end">循环三 · 验漏了</text>
+<text class="note" x="140" y="235" text-anchor="end">变异答案全过义务</text>
+<text class="note" x="140" y="250" text-anchor="end">→ 回去补义务</text>
+</svg>
+<div class="figcap">图 6 · 三个对抗循环。错误答案必须同时骗过三道防线；防线判据的机械性分级与"两层半"相关性注记见正文</div>
+</div>
+<p>三个循环各有专属记忆：循环三发现的洞沉淀进义务库（29），被翻案的错误模式回流进变体模式库（30），循环一的最终落点写进手段策略库（31）。<b>系统的每一次失败都有明确的去处</b>——这是 meta-harness 自我改进的完整回路，也是未来做强化学习的现成数据管道。</p>
+
+<h2>9 机制 C：单一触发规则——验证挂在依赖图上</h2>
+<p>"只在最后验 / 每步验 / 出中间结果验 / 用工具时验"不是需要选择的策略。系统只有一条触发规则，其余全部是它的推论：</p>
+<div class="callout"><b>当一个 unverified 的 claim 获得第一个依赖者时，验证它。</b>（certificate 请求 = 给 final 加一个依赖者，是同一规则的特例。）</div>
+<pre>
+def on_edge_created(edge):                # 图构建器每连一条边调用
+    if edge.tail.status == UNVERIFIED:
+        enqueue(kernel.verify(edge.tail))     # 异步，solver 不用等
+def on_certificate_request(final):        # 上面规则的特例
+    for c in backward_slice(final):
+        if c.status == UNVERIFIED:
+            enqueue(kernel.verify(c))
+</pre>
+<p>这条规则是 taint 不变量（final 不得依赖 unverified）的构造性版本：不是禁止，而是按需执行——出证时切片自然全绿。它的副产物性质：从未被依赖的 claim 永远不被验证；refuted 的消息恰好在 solver 开始往该 claim 上投资的时刻送达，止损最大化。灵敏度由抽取节奏旋钮（组件 7）控制：抽取攒到最后，规则退化为"只在出证时验"（仍然 sound，反馈全挤到最后）；抽取越勤，触发越早、返工越少——旋钮只影响反馈延迟，不影响正确性。</p>
+<p>这条规则被五种具体事件点火，除第三种外全部异步、solver 不停工；系统里没有定时器、没有轮询：<b>①图构建器连边时</b>（最常见，无人"调用"，灵敏度=抽取节奏）；<b>②solver 经 MCP commit 时</b>（声明的边立即生效，合作买到"更早"）；<b>③solver 显式 verify(target)</b>（协议在关键分岔点使用，唯一同步等待的调用）；<b>④Stop hook / certificate() / CI 出证</b>（= 给 final 加依赖者，切片兜底）；<b>⑤搜索加注</b>（给分支追加尝试投入 = 依赖其前沿 claim，下注前先验货）。</p>
+<h3>工具为什么不需要特殊对待</h3>
+<p>在"全量 trace 保留、append-only"的前提下，效应类 claim（"测试跑了且 12 passed"）就是一条内容为"发生过这次调用"的普通断言，它的最强也最便宜的验证手段是<b>查账</b>——对账事件流里的结构化记录。把"查账"注册为仪器（25），区分度博弈自动把效应类 claim 绑定到它身上：变体（"13 passed""collected 0""跑的是别的命令"）在账面前全灭。原设计里的"后置条件即时检查"没有消失——它变成了效应 claim 在首次被依赖时的正常解除，与其他一切 claim 走完全相同的流水线。如实记录的代价："空跑仍报成功"这类陷阱的发现时刻从"调用当刻"推迟到"首次被依赖"，soundness 无损，返工量增加；以及查账只能证"当时返回过 200"，不能证"现在还健康"——效应 claim 的时间语义由义务编译显式标注。</p>
+<h3>效应节点为什么值得存在</h3>
+<p>三个理由。<b>其一</b>，下游真的压在它上面，而 solver 几乎从不把它说出口（跑完测试直接走人）——没人替"算法真的跑出了 R"写断言，出证时依赖链会缺一环，解析器代写就是效应节点。<b>其二</b>，代写的时机选在信息最明确的一刻：工具事件是结构化记录，转节点是确定性代码、零成本、零歧义；不立节点，就得等到出证时让 LLM 在 trace 里模糊检索"这个断言靠哪次调用"——同一件记账，要么在最清楚的时刻免费做，要么在最模糊的时刻花钱做。<b>其三</b>，状态锚定：patch 前后的两次"测试全绿"是关于两个世界版本的两个不同事实，效应节点把断言的语义钉在"哪些动作之后的世界"上。</p>
+<div class="fig">
+<svg viewBox="0 0 700 545" width="680">
+<defs><marker id="tg2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker></defs>
+<text class="lab" x="20" y="42">solver 的线性 trace</text>
+<text class="lab" x="352" y="42">变成的 claim graph</text>
+<rect class="bg" x="20" y="52" width="280" height="40" rx="4"/><text class="t2 fg2" x="30" y="76">① 读 pagination.py，看 offset 计算</text><text class="t2 fg2" x="292" y="76" text-anchor="end">折叠→A1</text>
+<rect class="bg" x="20" y="100" width="280" height="40" rx="4" stroke-dasharray="4 3"/><text class="t2 fg2" x="30" y="124">② 怀疑缓存问题……排除（死路）</text><text class="t2 fg2" x="292" y="124" text-anchor="end">丢弃</text>
+<rect class="bg" x="20" y="148" width="280" height="40" rx="4"/><text class="t2 fg2" x="30" y="172">③ 跑测试基线：12 passed</text><text class="t2 fg2" x="292" y="172" text-anchor="end">→ E1</text>
+<rect class="bg" x="20" y="196" width="280" height="40" rx="4"/><text class="t2 fg2" x="30" y="220">④ 根因：offset 越界抛 IndexError</text><text class="t2 fg2" x="292" y="220" text-anchor="end">→ A1</text>
+<rect class="bg" x="20" y="244" width="280" height="40" rx="4"/><text class="t2 fg2" x="30" y="268">⑤ 构造 page=999 复现 → 500</text><text class="t2 fg2" x="292" y="268" text-anchor="end">→ E2</text>
+<rect class="bg" x="20" y="292" width="280" height="40" rx="4"/><text class="t2 fg2" x="30" y="316">⑥ patch：把 offset 钳制进边界</text><text class="t2 fg2" x="292" y="316" text-anchor="end">→ C1</text>
+<rect class="bg" x="20" y="340" width="280" height="40" rx="4"/><text class="t2 fg2" x="30" y="364">⑦ patch 后复现→200，测试全绿</text><text class="t2 fg2" x="292" y="364" text-anchor="end">→ E3</text>
+<rect class="bg" x="20" y="388" width="280" height="40" rx="4"/><text class="t2 fg2" x="30" y="412">⑧ 结论：bug 已修复</text><text class="t2 fg2" x="292" y="412" text-anchor="end">→ F</text>
+<rect class="ba" x="352" y="52" width="150" height="44" rx="4"/><text class="t1 fa" x="427" y="70" text-anchor="middle">E1 · 效应</text><text class="t2 fa2" x="427" y="86" text-anchor="middle">测试基线 ←③</text>
+<rect class="btl" x="530" y="52" width="150" height="44" rx="4"/><text class="t1 ft" x="605" y="70" text-anchor="middle">A1 · 断言</text><text class="t2 ft2" x="605" y="86" text-anchor="middle">根因诊断 ←①④</text>
+<rect class="btl" x="370" y="160" width="145" height="44" rx="4"/><text class="t1 ft" x="442" y="178" text-anchor="middle">C1 · 断言</text><text class="t2 ft2" x="442" y="194" text-anchor="middle">patch 方案 ←⑥</text>
+<rect class="ba" x="530" y="160" width="150" height="44" rx="4"/><text class="t1 fa" x="605" y="178" text-anchor="middle">E2 · 效应</text><text class="t2 fa2" x="605" y="194" text-anchor="middle">复现 500 ←⑤</text>
+<rect class="ba" x="440" y="268" width="170" height="44" rx="4"/><text class="t1 fa" x="525" y="286" text-anchor="middle">E3 · 效应</text><text class="t2 fa2" x="525" y="302" text-anchor="middle">复现转 200 + 全绿 ←⑦</text>
+<rect class="bp" x="440" y="376" width="170" height="44" rx="4"/><text class="t1 fp" x="525" y="394" text-anchor="middle">F · final</text><text class="t2 fp2" x="525" y="410" text-anchor="middle">修复完成 ←⑧</text>
+<path class="ar" d="M560,96 L480,156" marker-end="url(#tg2)"/>
+<path class="ar" d="M605,96 V156" marker-end="url(#tg2)"/>
+<path class="ar" d="M430,204 L495,264" marker-end="url(#tg2)"/>
+<path class="ar" d="M600,204 L560,264" marker-end="url(#tg2)"/>
+<path class="ar" d="M352,74 H340 V290 H434" marker-end="url(#tg2)"/>
+<path class="ar" d="M420,204 V398 H434" marker-end="url(#tg2)"/>
+<path class="ar" d="M525,312 V370" marker-end="url(#tg2)"/>
+<text class="note" x="20" y="460">② 无人依赖 → 连节点都不是：微步与死路的默认命运</text>
+<text class="note" x="20" y="478">③⑤⑦ 每次工具调用出生即为效应节点（琥珀色），由机械解析器免费代写</text>
+<text class="note" x="20" y="496">⑧ → F 是反向切片起点：从 F 沿边回溯，不可达节点不花验证预算</text>
+<text class="note" x="20" y="514">在线：图随事件流实时生长；离线：同一抽取器吃历史 trace（边过篡改审计）</text>
+</svg>
+<div class="figcap">图 7 · 一段修 bug 的 trace 如何变成 claim graph：微步折叠、死路丢弃、工具调用成为效应节点、结论成为断言节点；F 的依赖闭包就是出证前必须全绿的范围</div>
+</div>
+
+<h3>solver 的自查怎么被对待：复用而不轻信</h3>
+<p>solver 常常自己验证自己（跑测试、代回、复现）。verifier 对这些自查按三种身份区别对待，判据是证据合同而非"验没验过"。<b>其一，工具执行型自查是证据候选</b>：它们在 trace 里是效应节点、第一手记录——运行本身由查账仪器核（确实跑过、输出如此），运行的语义过蕴含审计（脚本检查的东西与义务对得上吗）；两层都过即直接采纳，verifier 不重跑——已有的合格证据绝不重制。<b>其二，口头自查零证据价值</b>："我检查了一遍没问题"只是又一条断言，可信度不高于被它检查的原 claim。<b>其三，合同缺口由 verifier 补做</b>：方法太弱（抽样 vs 全称）则升级；义务要求独立性（盲式重解）则 solver 自查在定义上不合格，必须独立角色重做；即便复用 solver 的检查脚本，该手段照样过变体博弈（便宜：同一脚本对变体重跑）。一句话：solver 的自查是待审的证据来源，不是可信的结论来源。</p>
+
+<h2 class="pagebreak">10 机制 D：一条事件流——在线与离线的彻底统一</h2>
+<p>v0.1 用"两个生产者、一个内核"统一两模式；v0.2 把统一推到底：<b>系统唯一的输入是一条事件流，"离线"只是一条延迟很高的流（一次性回放完），"在线"只是延迟很低的流（hooks 实时推）</b>。图构建器和内核对延迟无感知；连触发策略都不再是组件——触发本身就是流里的事件。适配器（1–4）的唯一职责是把任何来源规范化成同一种事件。</p>
+<p>第二层统一同样重要：<b>solver 的合作被统一理解为"志愿抽取"</b>。它经 MCP commit 的 claim 与声明的 deps，和我们自己的抽取器（7、8）的产出是同一种东西——提案；篡改审计器（9）对一切提案一视同仁。于是"solver 声明不可信"这个老问题不需要特殊处理：所有提案者都不可信，所有提案过同一道审计。合作买到的是精度与省下的抽取费，soundness 从不经它的手——总原则的又一次落地。触发剖面也随之贴上需求：机械部分（效应节点、查账）流式即时完成；断言抽取与内核验证按触发进行——懒惰在这里买到的不是省钱，而是"验证事件数被载重 claim 数界定"这一整洁性质。</p>
+
+<h2>11 机制 E：验证驱动的搜索</h2>
+<p>一个可信的 verifier 能把"更多算力"安全地兑换成"更高正确率"，兑换方式是搜索。best-of-N、beam search 的瓶颈从来不是采样，而是<b>选择函数不可信</b>——LLM 自评会被漂亮的错误骗走；本系统的机械裁决恰好能当选择函数用，且粒度是 claim 级：剪枝发生在错误假设刚冒头的时刻，而不是终点。</p>
+<p>实现上不新增任何编排组件：<b>solver 用 Claude Code 自带的 subagent（Task 工具）并行探索，编排由 solver 自己完成，我们只提供一段协议提示词</b>（CLAUDE.md）。subagent 的工具调用照样触发 hooks、照样进事件流（载荷带 agent 标识，图构建器据此打分支标签），claim store 自然长成 AND-OR 图：分支内 AND，竞争分支 OR。subagent 还免费实现了"私有草稿"——上下文独立、结束即弃。</p>
+<pre>
+# 验证协作协议（CLAUDE.md 片段，verifier sidecar 已接入）
+
+## 并行探索
+- 遇到存在多种可能路径的关键决策（候选根因、候选方案、证明路线、
+  数据口径），用 Task 工具并行启动 2–4 个 subagent，每个探索一个
+  互斥假设；指令写明"确立或排除这个假设"，而非"完成整个任务"。
+
+## 提交与裁决
+- subagent 得出关键结论后调用 verifier.commit(claim, deps) 并请求
+  verify。分支取舍只看 verdict：
+  - refuted：放弃该假设，反例记入上下文，不再重试同类路径；
+  - verified：继续深入；多分支并存时按证据等级排序。
+- 不要凭自己的判断淘汰分支；不要在 refuted 之后为假设辩护。
+
+## 收尾
+- 最终作答前调用 verifier.certificate()；切片有 unverified / refuted
+  先处理。答案附 certificate 结论等级，如实转述（含翻案记录）。
+</pre>
+<div class="fig">
+<svg viewBox="0 0 700 410" width="660">
+<defs><marker id="ba9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker></defs>
+<rect class="bg" x="270" y="16" width="160" height="36" rx="18"/><text class="t1 fg" x="350" y="39" text-anchor="middle" style="font-size:12px">任务：修 500 bug</text>
+<path class="ar" d="M310,52 V66 H125 V82" marker-end="url(#ba9)"/>
+<path class="ar" d="M350,52 V82" marker-end="url(#ba9)"/>
+<path class="ar" d="M390,52 V66 H575 V82" marker-end="url(#ba9)"/>
+<rect class="bg" x="30" y="88" width="190" height="60" rx="4" stroke-dasharray="5 4"/><text class="t1 fg" x="125" y="112" text-anchor="middle">分支① 缓存失效</text><text class="t2 fg2" x="125" y="130" text-anchor="middle">按假设构造不出复现</text>
+<rect class="bg" x="255" y="88" width="190" height="60" rx="4" stroke-dasharray="5 4"/><text class="t1 fg" x="350" y="112" text-anchor="middle">分支② off-by-one</text><text class="t2 fg2" x="350" y="130" text-anchor="middle">区分输入预测 404≠实测</text>
+<rect class="btl" x="480" y="88" width="190" height="60" rx="4"/><text class="t1 ft" x="575" y="112" text-anchor="middle">分支③ 越界预取</text><text class="t2 ft2" x="575" y="130" text-anchor="middle">复现 + 区分输入全中</text>
+<circle cx="205" cy="96" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="205" y="100" text-anchor="middle" style="font-size:11px;fill:#993C1D">✗</text>
+<circle cx="430" cy="96" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="430" y="100" text-anchor="middle" style="font-size:11px;fill:#993C1D">✗</text>
+<circle cx="655" cy="96" r="10" fill="#E1F5EE" stroke="#0F6E56"/><text x="655" y="100" text-anchor="middle" style="font-size:11px;fill:#0F6E56">✓</text>
+<text class="note" x="30" y="176">①② 在首轮验证即被拒：分支死亡，refuted 结论注入 ③ 的上下文（排除项），剩余尝试投入全部转移</text>
+<rect class="ba" x="30" y="196" width="300" height="44" rx="4"/><text class="t1 fa" x="180" y="214" text-anchor="middle">共享资产：E · 测试基线</text><text class="t2 fa2" x="180" y="230" text-anchor="middle">三分支共用，内容寻址只验一次</text>
+<rect class="btl" x="480" y="196" width="190" height="50" rx="4"/><text class="t1 ft" x="575" y="216" text-anchor="middle">patch：钳制 offset</text><text class="t2 ft2" x="575" y="232" text-anchor="middle">覆盖审计补回归义务</text>
+<path class="ar" d="M575,148 V190" marker-end="url(#ba9)"/>
+<path class="ar" d="M575,246 V264" marker-end="url(#ba9)"/>
+<rect class="bp" x="455" y="270" width="240" height="56" rx="4"/><text class="t1 fp" x="575" y="292" text-anchor="middle">F · 修复完成</text><text class="t2 fp2" x="575" y="310" text-anchor="middle">demonstrated · 切片仅含 ③ 的闭包</text>
+<text class="note" x="30" y="366">solver 读到的每个信号都是机械事实：谁被拒、谁全绿、各自的闸况轨迹——</text>
+<text class="note" x="30" y="384">没有任何一步依赖"模型觉得哪个分支更有希望"。</text>
+</svg>
+<div class="figcap">图 8 · 验证剪枝的并行搜索：三个互斥假设同时出发，refuted 硬杀、verified 加注，certificate 的切片自动只含胜者</div>
+</div>
+<p>四条搜索规则，全部读机械信号（注：本节"投入"指 solver 侧的尝试次数与深入程度，系统内不存在成本预算，终止控制器只管轮数上限）：<b>剪枝不对称</b>——杀分支只凭 refuted（限定：反例背书在可执行域成立，本文范围即此；义务依赖领域惯例的扩展域中 refuted 同样可错，应软化为强降权）；verified 等级只用于排序加注（软信号，错杀比错留贵）。<b>资产共享</b>——内容寻址使同一 claim 跨分支只验一次；refuted 成为全局排除项注入兄弟分支，搜索空间单调收缩（SAT 求解器 CDCL 的形状：每次反驳都是学到的子句）。<b>投入即使用</b>——给分支追加尝试投入就是依赖其前沿 claim，自动触发"下注前先验货"，仍是那一条规则。<b>协议是建议性的</b>——solver 不并行、不 commit、无视 refuted 都不影响 soundness（certificate 闸不动），只浪费它自己的时间；编排属于生成侧，只影响效率。诚实的新问题：验证吞吐成为共享瓶颈（终止控制器按分支状态排队，refuted 分支的验证需求直接出队，系统自动向"验得过的方向"倾斜）；同底座分支易想到一块去（多样性靠协议显式分配互斥假设）。</p>
+
+<h2 class="pagebreak">12 端到端主线示例：一笔画路线（可机检域）</h2>
+<p>用户："<code>map.json</code> 是步行街路网，规划一条每条街恰好走一次、回到起点的巡游路线，结论要可靠。"solver 的 trace：读 map.json 解析出图 G（工具 → E1）；跑连通性检查 True（→ E2）；跑度数检查全偶（→ E3）；断言"连通且度全偶，由欧拉定理存在回路"——抽取器拆成 A1（连通）、A2（度全偶）、<b>T（欧拉定理：回路 ⟺ 连通∧度全偶，被物化为图上普通节点，来源是 solver 记忆）</b>、A3（存在回路）；跑 Hierholzer 得路线 R（→ E4）；结论 F"按 R 走"。</p>
+<div class="fig">
+<svg viewBox="0 0 700 490" width="660">
+<defs><marker id="eu9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker></defs>
+<text class="note" x="20" y="18">橙圈数字 = 被验证的触发时刻（"获得第一个依赖者"的顺序，不是出生顺序）</text>
+<rect class="ba" x="30" y="40" width="150" height="56" rx="4"/><text class="t1 fa" x="105" y="62" text-anchor="middle">E1 · 解析输入</text><text class="t2 fa2" x="105" y="78" text-anchor="middle">图 G：12 顶点 18 边</text>
+<rect class="ba" x="210" y="40" width="150" height="56" rx="4"/><text class="t1 fa" x="285" y="62" text-anchor="middle">E2 · 连通性检查</text><text class="t2 fa2" x="285" y="78" text-anchor="middle">connected(G)=True</text>
+<rect class="ba" x="390" y="40" width="150" height="56" rx="4"/><text class="t1 fa" x="465" y="62" text-anchor="middle">E3 · 度数检查</text><text class="t2 fa2" x="465" y="78" text-anchor="middle">全部顶点为偶数</text>
+<rect class="bp" x="555" y="40" width="140" height="68" rx="4"/><text class="t1 fp" x="625" y="60" text-anchor="middle">T · 欧拉定理</text><text class="t2 fp2" x="625" y="76" text-anchor="middle">回路 ⟺ 连通∧度全偶</text><text class="t2 fp2" x="625" y="92" text-anchor="middle">来源：solver 记忆</text>
+<rect class="btl" x="210" y="160" width="150" height="56" rx="4"/><text class="t1 ft" x="285" y="182" text-anchor="middle">A1 · G 连通</text><text class="t2 ft2" x="285" y="198" text-anchor="middle">依据 E2</text>
+<rect class="btl" x="390" y="160" width="150" height="56" rx="4"/><text class="t1 ft" x="465" y="182" text-anchor="middle">A2 · 度全偶</text><text class="t2 ft2" x="465" y="198" text-anchor="middle">依据 E3</text>
+<rect class="ba" x="30" y="280" width="170" height="56" rx="4"/><text class="t1 fa" x="115" y="302" text-anchor="middle">E4 · Hierholzer</text><text class="t2 fa2" x="115" y="318" text-anchor="middle">输出回路 R</text>
+<rect class="btl" x="300" y="280" width="220" height="64" rx="4"/><text class="t1 ft" x="410" y="304" text-anchor="middle">A3 · 存在欧拉回路</text><text class="t2 ft2" x="410" y="322" text-anchor="middle">A1 ∧ A2 ∧ T 推出</text>
+<rect class="bp" x="260" y="408" width="240" height="64" rx="4"/><text class="t1 fp" x="380" y="432" text-anchor="middle">F · final：路线 R 合法</text><text class="t2 fp2" x="380" y="450" text-anchor="middle">依赖 A3 与 E4</text>
+<path class="ar" d="M285,96 V154" marker-end="url(#eu9)"/>
+<path class="ar" d="M465,96 V154" marker-end="url(#eu9)"/>
+<path class="ar" d="M105,96 V274" marker-end="url(#eu9)"/>
+<path class="ar" d="M285,216 L370,274" marker-end="url(#eu9)"/>
+<path class="ar" d="M465,216 L450,274" marker-end="url(#eu9)"/>
+<path class="ar" d="M625,108 V300 H526" marker-end="url(#eu9)"/>
+<path class="ar" d="M410,344 V402" marker-end="url(#eu9)"/>
+<path class="ar" d="M115,336 V440 H254" marker-end="url(#eu9)"/>
+<circle cx="348" cy="48" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="348" y="52" text-anchor="middle" style="font-size:10px;fill:#993C1D">1</text>
+<circle cx="528" cy="48" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="528" y="52" text-anchor="middle" style="font-size:10px;fill:#993C1D">1</text>
+<circle cx="348" cy="168" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="348" y="172" text-anchor="middle" style="font-size:10px;fill:#993C1D">2</text>
+<circle cx="528" cy="168" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="528" y="172" text-anchor="middle" style="font-size:10px;fill:#993C1D">2</text>
+<circle cx="683" cy="48" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="683" y="52" text-anchor="middle" style="font-size:10px;fill:#993C1D">2</text>
+<circle cx="168" cy="48" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="168" y="52" text-anchor="middle" style="font-size:10px;fill:#993C1D">3</text>
+<circle cx="508" cy="288" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="508" y="292" text-anchor="middle" style="font-size:10px;fill:#993C1D">4</text>
+<circle cx="188" cy="288" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="188" y="292" text-anchor="middle" style="font-size:10px;fill:#993C1D">4</text>
+<circle cx="488" cy="416" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="488" y="420" text-anchor="middle" style="font-size:10px;fill:#993C1D">5</text>
+</svg>
+<div class="figcap">图 9 · 一笔画任务的 claim graph：定理 T 是图上普通节点；橙圈为各节点被验证的触发时刻</div>
+</div>
+<p><b>时刻 1</b>（A1、A2 入图）：E2、E3 首次被依赖 → 查账仪器对账事件流，毫秒级 verified。<b>时刻 2</b>（A3 入图，三路并行）：A1/A2 廉价（变体法确认检查脚本语义）；<b>T 按强度优先直取 formal 级</b>——mathlib 查库命中对应定理，工作只剩三方对齐（Lean 陈述 ↔ 自然语言定理 ↔ A3 的使用方向），对齐检查自过变体考卷（statement 错位成"路径版""去连通版"必须全部被察觉）→ <b>proven，零新证明</b>；若查库未中则现场形式化，再不可达才降到检索/审读并如实封顶。同时 O2（前提对齐）在蕴含审计核掉：定理前提 {连通, 度全偶} ⊆ A3 的已验证依赖 {A1, A2} ✓。反事实：solver 忘查连通性（无 A1）→ T 照样 proven 但 O2 当场失败，A3 被拒，反馈发布器送回"缺连通性前提"——引定理漏前提被图的<b>结构</b>卡住，不靠细心。<b>时刻 3</b>（E4 入图）：E1 此刻才首次被依赖 → 查账。<b>时刻 4</b>（F 入图）：A3 的小步蕴含一步核过。<b>时刻 5</b>（出证）：F 的义务"R 合法"迎接覆盖审计——mutant 路线 R′（重复走一条街）、R″（漏一条街）攻破了只有"算法输出了 R"的义务集 → 补义务"独立校验器逐边验证：每条街恰好一次、首尾相接、回到起点"（与 Hierholzer 实现无关的完备执行检查）→ mutant 全灭。覆盖审计还打了一发<b>输入端攻击</b>：mutant 图 G′（解析时静默丢一条街的版本）——G′ 连通 ✓、度全偶 ✓、其上的回路合法 ✓，能穿过全部既有义务 → 暴露出链条最底端的洞：<b>没有任何义务覆盖"G 忠实于 map.json"</b>（查账只证解析调用发生过，不证解析没丢边）→ 补义务"独立重解析对照：边数与邻接摘要须与原始文件一致" → G′ 死。这是形式化鸿沟在输入端的镜像（Lean 陈述 ↔ 原定理；G ↔ map.json）：凡经解析/加载进入图的事实，自动携带输入忠实性义务——且这一课是覆盖审计在可机检域<b>冷启动</b>下自己挖出来的，不依赖记忆库。冻结出证：</p>
+<pre>verdict: 整体 demonstrated（T 单项 proven；R 合法性为完备执行检查）
+slice: [F, A3, E4, E1, E2, E3, A1, A2, T]
+T: { mathlib 命中 + 三方对齐, proven }    F: { 覆盖审计发现两洞 → 已补独立逐边校验 + 输入忠实性对照 }</pre>
+<p>沉淀：义务库收"图论存在性断言须做前提对齐"与"解析类效应须带输入忠实性义务"；变体库收"删前提攻击"与"静默丢边攻击"；策略库记（定理引用类 → mathlib-lookup 直达）。本例的两个关键拦截——引定理漏前提、只信算法输出——分别死于图结构与覆盖审计；数学域的义务（量词、前提、公理）从逻辑形态导出，冷启动依赖显著弱于口径类扩展域。</p>
+
+<h2>13 示例集：同一机制的不同落点</h2>
+<h3>例 A · 验证一份"√2 是无理数"的证明（内核级示例）</h3>
+<p>候选证明为经典写法，其中"p² 是偶数 ⇒ p 是偶数"一步只是断言。下表按图 3 的组件编号走完内核全程；表中"区分度博弈"一行保留的是<b>降级路径演示</b>——强度优先的主路径会直取逐步形式化，此处的逐级叙事即降级链路的闸况存档。</p>
+<table>
+<tr><th style="width:16%">阶段</th><th style="width:12%">组件</th><th>发生了什么</th></tr>
+<tr><td>义务编译</td><td>14, 15</td><td>只看任务，生成义务：O1 结论与定理一致；O2 每步推理有效；O3 无未声明假设；O4 引用的引理成立。候选义务"论证清晰严谨"因给不出具体失败样例被 15 丢弃。</td></tr>
+<tr><td>变体生成</td><td>17</td><td>以候选证明为种子造错误变体：M1 同一骨架"证明"√4 无理（其中"p² 是 4 的倍数 ⇒ p 是 4 的倍数"为假，p=2 即反例）；M2 删互素假设；M3 结论对但中间一步换成错误的整除断言。</td></tr>
+<tr><td>区分度博弈</td><td>16, 18</td><td>文本审读把 M1 批准了（模式匹配"标准证明"）→ verdict 无效，升级。独立重证能拒 M1 但对 M3（结论对步骤错）无区分度 → 再升级。Lean 逐步形式化下三个变体全灭 → 停。</td></tr>
+<tr><td>合同绑定</td><td>19</td><td>O2 的证据合同：可编译、无 sorry、公理清单干净的 Lean 文件。其他形式的 verdict 一概无效。</td></tr>
+<tr><td>解除执行</td><td>20, 26</td><td>逐步形式化。走到断言步时 Lean 不接受断言，用 mathlib 现成引理补上，编译通过。产出：Lean 文件、编译日志、公理清单、statement 对照。</td></tr>
+<tr><td>蕴含审计</td><td>21</td><td>日志确属该文件；无 sorryAx；关键一条——Lean 的 <code>Irrational (Real.sqrt 2)</code> 是否忠实翻译原定理？忠实性检查自身也过变体法（statement 变异成 sqrt 3、变成"有理"，检查器必须全部察觉）。</td></tr>
+<tr><td>覆盖审计</td><td>22</td><td>伪造"能编译但证的是别的命题"的变异答案攻击义务集 → 被 O1 拒掉。全部通过。</td></tr>
+<tr><td>冻结导出</td><td>23, 33</td><td>certificate：verdict = proven，附升级轨迹与全部证据链。</td></tr>
+<tr><td>经验沉淀</td><td>29–32</td><td>策略库 +2 条 → 下次证明类任务直接跳到 Lean；变体库收"√4 骨架攻击"；义务库收"形式化证据必查公理清单"。</td></tr>
+</table>
+<p>顺带一提定理引用的一般机制：当某断言引用一个标准定理时，定理被物化为图上普通节点，formal 级的解除首选<b>查证明库</b>（mathlib 命中则只做三方对齐：Lean 陈述 ↔ 自然语言定理 ↔ 使用方向，零新证明，verdict 可达 proven）；且"定理的前提必须被使用处的已验证依赖覆盖"是一条显式义务——引定理漏前提（如用欧拉定理忘查连通性）会被图的结构卡住，不靠任何人细心。</p>
+<h3>例 B · 修 bug（sidecar 在线全程）</h3>
+<p>solver 修分页接口 500。hooks 把每次工具调用推成效应节点：测试基线（E1，"12 passed"——查账时连同"用例收集数与基线一致"一起核对，防"空跑仍报成功"的 false-pass——用例目录配错、自研 runner 吞掉告警的经典场景）；复现（E2）。根因断言 A1 被 patch 设计依赖的那一刻触发验证：区分度博弈发现"off-by-one"竞争假设与 A1 在普通复现下不可区分 → 再激发出<b>区分性输入对</b>（恰满页 vs 不满页：A1 预测 (200,500)，竞争假设预测 (200,404)）→ 实测 (200,500)，竞争假设死。终局覆盖审计造"治标 mutant patch"（catch 住异常吞成空页）攻破了只有"复现转绿 + 套件全绿"的义务集 → 补义务"根因位置直接单测 + 复现纳入回归"→ mutant 死。verdict：demonstrated。</p>
+<h3>例 C · 核查事实性 claim（扩展域 · 离线）</h3>
+<p>验证""Attention Is All You Need" 发表于 2017 年的 NeurIPS"。模型凭记忆答对了，但区分度测试暴露：年份变体成 2018 后记忆仍以相当置信度点头——记忆对细节的区分度不稳定，verdict 无效，升级到检索原始来源，证据 = proceedings 快照 + 逐字段对照。分级的意义在此最直观：官方来源 → demonstrated；仅二手转述 → corroborated 且要求两个独立来源；网络不可用 → unverified(no-instrument) 如实写明。"模型知道"与"验证过了"的区别被机制强制显性化。</p>
+<h3>例 D · 验证统计结论（扩展域 · 离线）</h3>
+<p>验证"A/B 实验显示转化率显著提升（p=0.03）"。义务：口径与实验设计一致（无中途窥探）、检验前提成立、结论对分析自由度稳健。手段升级的关键一级：<b>把处理组标签随机打乱，用同一条分析流水线跑"安慰剂数据"</b>——合格流程必须得出"不显著"；照样显著即流程在制造显著性（对 p-hacking 的机械检测）。这正是科学方法论里的 negative control：<b>区分度测试不是我们发明的怪东西，而是把科学界零散的最佳实践机制化成了领域无关组件</b>——且安慰剂检验是模型在运行时自己提出的，佐证"领域知识不进提示词"可行。</p>
+<h3>例 E · 销售同比月报（扩展域演示：口径类任务）</h3>
+<p><b>范围注记（明示能力边界）</b>：本例属于"义务依赖领域惯例"的扩展域——下文的关键一抓（剔除取消订单）依赖义务库中已有的历史教训；<b>冷启动时该义务不存在，覆盖审计也造不出对应的 mutant</b>。对这类任务，系统的真实回答是"失败过一次之后就知道了"（记忆飞轮）。核心承诺范围（可机检域）不依赖此类先验：数学义务大多从逻辑形态导出。</p>
+<p>用一个最日常的任务走完全程。用户 prompt："用 <code>data/sales.csv</code> 算 2026 年 6 月的销售额同比增长率，写进给老板的月报，数字必须靠谱。"solver 的 trace：读 csv（碎碎念）→ 跑脚本算 2026-06 得 118.8 万（工具）→ 跑脚本算 2025-06 得 108.0 万（工具）→ 断言"同比 =（本期−同期）/同期，增长 10.0%"→ 出结论。抽取器把断言拆成 A1（今年数字）、A2（去年数字）、<b>M（方法："同比"的定义与公式——本场景的"定理"，来源是 solver 记忆）</b>、A3（增长率）。</p>
+<div class="fig">
+<svg viewBox="0 0 700 560" width="660">
+<defs><marker id="yg9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker></defs>
+<text class="note" x="20" y="18">橙圈 = 验证时刻；虚线框 = 被翻案的节点</text>
+<rect class="ba" x="30" y="40" width="190" height="56" rx="4"/><text class="t1 fa" x="125" y="62" text-anchor="middle">E2 · 跑求和脚本</text><text class="t2 fa2" x="125" y="78" text-anchor="middle">2026-06 → 118.8 万</text>
+<rect class="ba" x="250" y="40" width="190" height="56" rx="4"/><text class="t1 fa" x="345" y="62" text-anchor="middle">E3 · 跑求和脚本</text><text class="t2 fa2" x="345" y="78" text-anchor="middle">2025-06 → 108.0 万</text>
+<rect class="bp" x="470" y="40" width="200" height="68" rx="4"/><text class="t1 fp" x="570" y="62" text-anchor="middle">M · 方法：同比公式</text><text class="t2 fp2" x="570" y="78" text-anchor="middle">(本期 − 同期) / 同期</text><text class="t2 fp2" x="570" y="94" text-anchor="middle">来源：solver 记忆</text>
+<rect class="btl" x="30" y="160" width="190" height="56" rx="4" stroke-dasharray="5 4"/><text class="t1 ft" x="125" y="182" text-anchor="middle">A1 · 六月 118.8 万</text><text class="t2 ft2" x="125" y="198" text-anchor="middle">含 3 笔已取消订单</text>
+<rect class="btl" x="250" y="160" width="190" height="56" rx="4"/><text class="t1 ft" x="345" y="182" text-anchor="middle">A2 · 同期 108.0 万</text><text class="t2 ft2" x="345" y="198" text-anchor="middle">口径检查通过</text>
+<text class="note" x="30" y="240">时刻 2 被翻案 ✗ → 反例即刻回送 solver</text>
+<rect class="ba" x="30" y="270" width="190" height="56" rx="4"/><text class="t1 fa" x="125" y="292" text-anchor="middle">E4 · 修正后重跑</text><text class="t2 fa2" x="125" y="308" text-anchor="middle">剔除取消 → 116.4 万</text>
+<rect class="btl" x="250" y="270" width="190" height="56" rx="4"/><text class="t1 ft" x="345" y="292" text-anchor="middle">A1′ · 净额 116.4 万</text><text class="t2 ft2" x="345" y="308" text-anchor="middle">依据 E4</text>
+<rect class="btl" x="250" y="380" width="220" height="60" rx="4"/><text class="t1 ft" x="360" y="404" text-anchor="middle">A3 · 同比 +7.8%</text><text class="t2 ft2" x="360" y="422" text-anchor="middle">A1′ ∧ A2 ∧ M</text>
+<text class="note" x="250" y="460">重算代入：(116.4−108.0)/108.0 = 7.8% ✓</text>
+<rect class="bp" x="240" y="480" width="240" height="56" rx="4"/><text class="t1 fp" x="360" y="502" text-anchor="middle">F · 月报结论</text><text class="t2 fp2" x="360" y="518" text-anchor="middle">"6 月销售同比增长 7.8%"</text>
+<path class="ar" d="M125,96 V154" marker-end="url(#yg9)"/>
+<path class="ar" d="M345,96 V154" marker-end="url(#yg9)"/>
+<path class="ar" d="M220,298 H244" marker-end="url(#yg9)"/>
+<path class="ar" d="M345,326 V374" marker-end="url(#yg9)"/>
+<path class="ar" d="M395,216 V240 H480 V410 H476" marker-end="url(#yg9)"/>
+<path class="ar" d="M570,108 V424 H476" marker-end="url(#yg9)"/>
+<path class="ar" d="M360,440 V474" marker-end="url(#yg9)"/>
+<circle cx="205" cy="48" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="205" y="52" text-anchor="middle" style="font-size:10px;fill:#993C1D">1</text>
+<circle cx="425" cy="48" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="425" y="52" text-anchor="middle" style="font-size:10px;fill:#993C1D">1</text>
+<circle cx="205" cy="168" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="205" y="172" text-anchor="middle" style="font-size:10px;fill:#993C1D">2</text>
+<circle cx="425" cy="168" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="425" y="172" text-anchor="middle" style="font-size:10px;fill:#993C1D">2</text>
+<circle cx="655" cy="48" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="655" y="52" text-anchor="middle" style="font-size:10px;fill:#993C1D">2</text>
+<circle cx="205" cy="278" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="205" y="282" text-anchor="middle" style="font-size:10px;fill:#993C1D">3</text>
+<circle cx="425" cy="278" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="425" y="282" text-anchor="middle" style="font-size:10px;fill:#993C1D">3</text>
+<circle cx="450" cy="388" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="450" y="392" text-anchor="middle" style="font-size:10px;fill:#993C1D">4</text>
+<circle cx="460" cy="488" r="10" fill="#FAECE7" stroke="#993C1D"/><text x="460" y="492" text-anchor="middle" style="font-size:10px;fill:#993C1D">5</text>
+</svg>
+<div class="figcap">图 10 · 销售同比场景的 claim graph：橙圈数字为验证时刻（"获得第一个依赖者"的顺序），A1 在时刻 2 被翻案、修正后经 A1′ 汇入结论</div>
+</div>
+<p><b>时刻 1</b>（A1、A2 入图）：E2、E3 首次被依赖 → 查账仪器对账事件流，毫秒级 verified。<b>时刻 2</b>（A3 入图，三路并行）：verify(A1)——义务编译产出"数字可按声明口径复现"与<b>口径义务</b>（义务库注入的历史教训："财务数字必查退款、取消、币种"）；verifier 独立重算发现 3 行 <code>status=cancelled</code> 共 2.4 万被计入 → <b>A1 refuted</b>，反馈发布器把反例（单号清单）即刻送回 solver——到达时机恰是它开始拿 A1 算增长率的一刻。solver 改脚本重跑（E4：116.4 万）提交 A1′。verify(A2) 口径通过。verify(M)——变体：环比版（"和上月比"）、分母用本期版、日期错位版（2025-05）；文本回忆对环比版点头（同比/环比混淆是模型与人类共同的高频错误）→ 作废升级 → 检索权威定义拒掉全部变体 → demonstrated；使用对齐义务核对公式要求 {2026-06, 2025-06} 与 A3 依赖一致 ✓。<b>时刻 3</b>：verify(E4)（查账：修正脚本 diff + 输出）、verify(A1′)（重算复现 ✓）。<b>时刻 4</b>（F 入图）：verify(A3) 一行代入 (116.4−108.0)/108.0 = 7.8% ✓。<b>时刻 5</b>（出证）：覆盖审计造 mutant 月报——"+10.0%"（未修正版）、"+7.8%（环比）"（标签错版）、"+8%"（修饰版）——义务"结论数值与口径标签可由已验证切片重算复现"全数拒掉。冻结出证：</p>
+<pre>
+verdict: demonstrated
+answer: "2026 年 6 月销售额同比增长 7.8%（净额口径，剔除取消订单）"
+history: { A1 曾被翻案: 口径含取消订单, 已修正并重验 }   # 翻案不隐瞒，如实入证
+</pre>
+<p>沉淀：义务库收"财务数字必带口径义务"；变体库收"口径攻击"模式；策略库记（财务数字类 → 重算级，曾翻案 → 口径检查前置）。下个月再算月报，口径检查在时刻 2 之前就被顶到义务列表第一条。本例抓住的两个错——多算取消订单、潜在的同环比混淆——没有一个靠"再读一遍认真点"：一个死于口径义务与独立重算，一个死于变体博弈与对齐检查。</p>
+<h3>五个案例的收束对比</h3>
+<table>
+<tr><th style="width:21%">任务</th><th style="width:22%">决定性变体</th><th style="width:25%">落点（强度优先）</th><th style="width:18%">绑定的证据</th><th style="width:14%">verdict</th></tr>
+<tr><td>x²−5x+6=0 ⇒ x∈{2,3}</td><td>解 (2,4)、漏根版</td><td>形式化：因式分解 + mul_eq_zero（代回为降级备胎）</td><td>Lean 编译记录</td><td>proven</td></tr>
+<tr><td>√2 无理性证明</td><td>√4 骨架攻击；结论对步骤错</td><td>Lean 逐步形式化</td><td>可编译无 sorry 的文件</td><td>proven</td></tr>
+<tr><td>bug 根因 + patch</td><td>plausible 假根因；治标 mutant patch</td><td>执行级（代码域形式化普遍不可达）</td><td>失败→通过的测试日志</td><td>demonstrated</td></tr>
+<tr><td>事实核查（扩展域）</td><td>年份 ±1；换会议名</td><td>溯源检索</td><td>来源快照 + 逐字段对照</td><td>demonstrated / corroborated</td></tr>
+<tr><td>销售同比（扩展域）</td><td>口径攻击；环比混淆版</td><td>重算 + 口径检查（义务靠记忆飞轮）</td><td>复现脚本 + 口径说明</td><td>demonstrated</td></tr>
+</table>
+<p>可机检域的落点由可达性决定——能形式化的尽形式化；扩展域按可用最强手段如实封顶。没有一处依赖"难度感知"。</p>
+
+<h2 class="pagebreak">14 数据模型与 certificate</h2>
+<p>整个系统唯一的合同，先于一切代码确定。</p>
+<pre>
+Event {   # 统一事件流：append-only JSONL，一切皆事件
+  ts, agent_id,                      # agent_id → 分支标签
+  type: tool_call | tool_result | message | commit | stop | verify_request,
+  payload
+}
+Claim {
+  id:        content_hash            # 内容寻址：去重、缓存、跨分支复用免费
+  kind:      assertion | effect | final    # effect = 机械代写的"发生过"断言
+  text:      "..."
+  deps:      [claim_id]              # 提案（抽取 / commit），经篡改审计
+  branch:    agent_id | null         # AND-OR：分支内 AND，竞争分支 OR
+  revises:   claim_id | null         # 修订链：显式声明或抽取推断，经篡改审计；置前代及其下游 stale
+  status:    unverified | verified(grade) | refuted | stale
+  obligations: [obligation_id]
+}
+Obligation { id, text, contract: { instrument_id, evidence_kind } }  # 由 19 绑定
+Evidence   { id: artifact_hash, instrument, artifacts: [...],
+             discharges: obligation_id, entailment_audit: pass | fail }
+Certificate {  # = 从 final 反向切片的冻结导出（纯函数）
+  claim_graph_slice, obligations, evidence_chain,
+  escalation_traces, coverage_audit_result, overturn_history,
+  verdict: proven | demonstrated | corroborated | unverified(reason)
+}
+</pre>
+<p>verdict 分级语义：<b>proven</b>（机器可检的形式化证据）、<b>demonstrated</b>（执行类证据）、<b>corroborated</b>（独立重解一致，受同底座相关性折扣）、<b>unverified(reason)</b>（无可用手段 / 预算耗尽，如实注明）。整体等级 = 切片上的最弱环节，分项如实列出。弱证据永不坍缩成自信的二值判定。</p>
+
+<h2>15 工程要点清单</h2>
+<h3>可信基（TCB）声明</h3>
+<p>certificate 的可信度最终建立在以下<b>确定性组件</b>的正确性上：事件捕获（hooks / 日志适配器的完整性）、事件流的 append-only 存储、claim store 状态机（含 stale 传播与修订链）、查账仪器、缓存键逻辑、切片冻结器，以及 Lean 内核。全部 LLM 组件（编译、抽取、枚举、变体、两道审计）都不在 TCB 内——它们的失败由机制兜底。威胁模型限定为"诚实但易错"的 solver：第三方 agent 的 trace 是自报的，查账验证的是账本一致性而非现实；对抗性 solver 需要签名事件源与可信执行环境，超出本文范围。</p>
+<ul>
+<li><b>fail-closed 铁律：</b>仪器崩溃、超时、输出不可解析，一律记为解除失败。任何异常路径都不得折算成通过。</li>
+<li><b>角色即无状态子调用：</b>每个 LLM 角色 = generic 提示模板 + JSON schema，校验失败带错误重试；角色间零共享上下文（审计独立性的结构保证）。</li>
+<li><b>缓存键：</b><code>(claim_hash, obligation_hash, instrument_id, mutant_set_hash)</code>，四者皆内容哈希；claim 修订 → 下游依赖锥置 stale；并行分支间自动去重。</li>
+<li><b>hooks 载荷带 agent 标识：</b>分支标签零成本获得；PostToolUse 即效应事件源；PreToolUse 仅用于可选的外发动作闸。</li>
+<li><b>抽取节奏是唯一的延迟旋钮：</b>只影响反馈早晚，不影响正确性；合作式 commit 让触发更早更准。</li>
+<li><b>剪枝不对称：</b>杀分支只凭 refuted（硬证据），verified 等级只用于排序加注——错杀比错留贵。</li>
+<li><b>终止上限：</b>成本不是设计约束，终止性是——每个循环带轮数上限，达到上限即降级为 unverified(bounds) 并写入 certificate，绝不静默砍审计。</li>
+<li><b>独立性折扣：</b>同底座 agent 的"独立重解"打折扣；oracle 排序在 soundness 外加去相关性维度（不同模态、不同工具路径优先）。</li>
+<li><b>变体强度是上界：</b>变异器只会生成蠢错误时会造成虚假的"不必升级"。缓解：翻案模式持续回流（30），评测中单独度量变体库攻击成功率。</li>
+<li><b>形式化的软关节：</b>Lean 能证明的是它的 statement 不是原定理；"statement 忠实性"必须是显式义务，忠实性检查器自身也过变体法。</li>
+<li><b>技术栈：</b>Python + SQLite + JSONL；角色调用走 Claude API structured output；仪器全为子进程 adapter；挂点 = Claude Code hooks 配置两行 + MCP 注册。</li>
+</ul>
+
+<h2>16 施工顺序</h2>
+<div class="fig">
+<svg viewBox="0 0 700 150" width="680">
+<defs><marker id="q9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#77756c"/></marker></defs>
+<rect class="bp" x="10" y="16" width="124" height="60" rx="4"/><text class="t1 fp" x="72" y="38" text-anchor="middle">M0 · 骨架</text><text class="t2 fp2" x="72" y="54" text-anchor="middle">数据模型+事件流</text><text class="t2 fp2" x="72" y="68" text-anchor="middle">内核+单仪器</text>
+<rect class="bc" x="148" y="16" width="124" height="60" rx="4"/><text class="t1 fc" x="210" y="38" text-anchor="middle">M1 · 对抗</text><text class="t2 fc2" x="210" y="54" text-anchor="middle">变体+区分度博弈</text><text class="t2 fc2" x="210" y="68" text-anchor="middle">两道闸+双审计</text>
+<rect class="btl" x="286" y="16" width="124" height="60" rx="4"/><text class="t1 ft" x="348" y="38" text-anchor="middle">M2 · sidecar</text><text class="t2 ft2" x="348" y="54" text-anchor="middle">hooks·MCP·tail</text><text class="t2 ft2" x="348" y="68" text-anchor="middle">图构建+触发器</text>
+<rect class="btl" x="424" y="16" width="124" height="60" rx="4"/><text class="t1 ft" x="486" y="38" text-anchor="middle">M3 · 搜索</text><text class="t2 ft2" x="486" y="54" text-anchor="middle">协议+AND-OR</text><text class="t2 ft2" x="486" y="68" text-anchor="middle">剪枝+反馈</text>
+<rect class="bk" x="562" y="16" width="124" height="60" rx="4"/><text class="t1 fk" x="624" y="38" text-anchor="middle">M4 · 记忆</text><text class="t2 fk2" x="624" y="54" text-anchor="middle">三库+检索回注</text><text class="t2 fk2" x="624" y="68" text-anchor="middle">策略跳级</text>
+<path class="ar" d="M134,46 H142" marker-end="url(#q9)"/>
+<path class="ar" d="M272,46 H280" marker-end="url(#q9)"/>
+<path class="ar" d="M410,46 H418" marker-end="url(#q9)"/>
+<path class="ar" d="M548,46 H556" marker-end="url(#q9)"/>
+<text class="note" x="72" y="100" text-anchor="middle">离线回放端到端</text>
+<text class="note" x="72" y="115" text-anchor="middle">出 certificate</text>
+<text class="note" x="210" y="100" text-anchor="middle">false-pass 率显著低于</text>
+<text class="note" x="210" y="115" text-anchor="middle">LLM 直判（成立性实验）</text>
+<text class="note" x="348" y="100" text-anchor="middle">接通原装 Claude Code</text>
+<text class="note" x="348" y="115" text-anchor="middle">内核零改动（统一性检验）</text>
+<text class="note" x="486" y="100" text-anchor="middle">同尝试次数 pass 率 &gt;</text>
+<text class="note" x="486" y="115" text-anchor="middle">无验证 best-of-N</text>
+<text class="note" x="624" y="100" text-anchor="middle">同类任务第二次</text>
+<text class="note" x="624" y="115" text-anchor="middle">直达历史落点</text>
+</svg>
+<div class="figcap">图 11 · 五个里程碑，每个有可测的验收标准；M2 与 M3 的验收标准本身就是对架构统一性与搜索价值的检验</div>
+</div>
+<p>M0 用文件回放适配器先打通全链路（不含任何集成，最薄）；M1 是成立性实验：区分度博弈不能显著降低 false-pass 率，后面都不必做；M2 只新增适配器与图构建，内核必须零改动；M3 只新增协议文本与分支标签处理；M4 让系统随使用变强。</p>
+
+<h2>17 评测方案</h2>
+<ul>
+<li><b>主指标：false-pass 率</b>——通过验证但标签为错的比例，失败根源二的直接度量，相对 LLM-as-judge 基线必须显著改善。</li>
+<li><b>搜索增益：</b>固定尝试次数下，"subagent 并行 + 验证剪枝"的 pass 率对比"无验证 best-of-N"与"单线程"两条基线。</li>
+<li><b>错杀率：</b>refuted 剪枝杀掉正确分支的比例（应接近零，反例背书）。</li>
+<li><b>辅指标：</b>false-reject 率；翻案延迟；变体库攻击成功率（度量 17 的强度上界）；抽取节奏–返工量曲线。</li>
+<li><b>消融：</b>所有机制做成配置开关（无变体 / 无升级 / 无覆盖审计 / 无记忆 / 无协议），事件流天然支持回放式消融。</li>
+</ul>
+
+<h2>18 局限与开放问题</h2>
+<ul>
+<li><b>无穷回归只能压缩，不能消除。</b>蕴含审计器也是 LLM。辩护是结构性的：每上升一层任务更小更机械，底层锚定机器可检 artifact，certificate 使抽查复核成本极低。</li>
+<li><b>变体生成器是全系统的强度上界。</b>它生成不出的错误类型，博弈与覆盖审计都看不见；回流机制使其随失败增强，冷启动需用已知错误答案集校准。</li>
+<li><b>抽取节奏的延迟代价。</b>效应陷阱（如空跑仍报成功）的发现时刻从调用当刻推迟到首次被依赖；soundness 无损，返工增加。</li>
+<li><b>效应 claim 的时间语义。</b>查账证的是"当时返回过 X"，不是"现在仍然如此"；环境漂移需在义务层显式建模。</li>
+<li><b>协议是建议性的。</b>solver 不守协议只损失效率，但重度不合作会把所有验证挤到出证时刻——反馈的止损价值随之流失。</li>
+<li><b>同底座相关性。</b>独立重解与分支多样性都打折扣；去相关性排序与显式互斥假设缓解但不消除，多底座混合是自然的下一步。</li>
+<li><b>不可形式化的 claim。</b>主观论述没有强 oracle 可升级，正确行为是输出 unverified 并如实说明——"知道自己验不了"本身是有价值的输出。</li>
+</ul>
+
+<h2 class="pagebreak">附录 A · 内核逐步操作规程：一次完整实跑</h2>
+<p>本附录是实现 M0/M1 的对照脚本：对一条具体 claim，逐步列出每个组件的实际输入与产出。<b>被验证的 claim C</b>（solver 提交，带证明）："对一切正整数 n，6 整除 n³−n。证明：n³−n = (n−1)·n·(n+1)，三个连续整数中必有一个被 2 整除、必有一个被 3 整除，故乘积被 6 整除。"环境：python+sympy、lean4+mathlib、检索均就绪；策略库冷启动；策略为强度优先（成本不作为约束），降级路径一并记录以展示两道闸。</p>
+<p><b>步骤 0 · 特征提取</b>（机械 + 一次小 LLM 调用）：</p>
+<pre>{"domain":"math","quantifier":"universal_infinite","has_proof_text":true,
+ "numerically_checkable":true,"statement":"∀ n∈ℤ⁺, 6 ∣ n³−n"}</pre>
+<p><b>步骤 1–2 · 义务编译（14，LLM①，answer-blind：可见命题、不可见证明正文）+ 可证伪过滤（15）</b>：</p>
+<pre>O1 命题成立            失败样例: 一个具体 n 与 (n³−n) mod 6 ≠ 0 的计算记录   ✓入册
+O2 证明每步有效        失败样例: 步骤编号 + 使该步前提真而结论假的反例       ✓入册
+O3 无未声明假设        失败样例: 一个证明与公共知识库中都找不到的引理名       ✓入册
+O4 证明简洁清晰        （给不出具体失败 artifact）                           ✗除册</pre>
+<p><b>步骤 3 · oracle 枚举（16，LLM②）</b>，O1 的方法表与队列：</p>
+<pre>m1 text     审读命题与证明，逐句给出理由
+m2 execute  python: all((n**3-n)%6==0 for n in range(1,10**6))
+m3 rederive 只给命题不给证明，独立判真假，比对结论
+m4 formal   mathlib 检索 "dvd / cube / ZMod 6"
+m5 formal   现场写 Lean 并 lake build
+接地：仪器全部就绪（未就绪则现装）→ soundness 降序 → 队列 [m4, m5, m3, m2, m1]</pre>
+<p><b>步骤 4 · 变体生成（17，LLM③）+ 机械自检</b>（变体"确实错"必须被机械确认，防止用真变体冤枉手段）：</p>
+<pre>O1 池: V1 "4 整除 n³−n"（自检 n=2: 6%4=2 ✓假）   V2 "6 整除 n³+n"（n=1: 2%6=2 ✓假）
+O2 池: V3 结论不变，论证第二步换成 "(n−1)(n+1) 中必有 3 的倍数"
+       （自检 n=3: 2×4=8, 8%3=2 ✓该步假；24%6=0 ✓结论仍真 → 合格的步骤错变体）</pre>
+<p><b>步骤 5–6 · O1 的两道闸博弈</b>（逐个弹队列，裁决=数数）：</p>
+<pre>m4 查库: mathlib 无同名现成定理 → 未命中，弹下一个
+m5 形式化: 归到 ZMod 6 有限枚举（示意，以实际编译为准）:
+    theorem cube_sub_self_zmod : ∀ x : ZMod 6, x^3 - x = 0 := by decide
+    theorem six_dvd (n : ℤ) : (6:ℤ) ∣ n^3 - n := ...  -- ZMod 特征化引理收尾
+  闸一（有效性考卷）: V1/V2 同样形式化编译必败 ✓全灭
+  闸二: 机器证明蕴含全称 ✓ → 绑定 m5，O1 = proven
+降级路径（仅当形式化不可达时启用，本例未走，闸况实测存档）:
+  m3 盲式重证: V1/V2 判假 → 闸一✓；证据=未机检论证 → 封顶 corroborated
+  m2 抽样执行: 变体秒死 → 闸一✓；"10⁶ 内无反例"蕴含不了 ∀n → 闸二拒
+  m1 文本审读: C=PASS, V2=FAIL, V1=PASS（没代数字）→ 有变体存活 → 作废</pre>
+<p><b>步骤 7 · O2（每步有效）的博弈</b>：</p>
+<pre>m5 逐步形式化（强度优先直取）: 原证明拆为引理 S1: n³−n=(n−1)n(n+1) [ring]；
+   S2: 2∣乘积；S3: 3∣乘积；合成: gcd(2,3)=1 → 6∣。
+   V3 假步骤 "∀n, 3∣(n−1)(n+1)" 无法证明、反例可 decide → 杀✓ → 绑定
+降级路径存档: m1 审读 V3=PASS（作废）；m3 重证只比结论、原理性无区分度；m2 抽样闸二拒</pre>
+<p><b>步骤 8–9 · 合同绑定（19）与执行（20+26）</b>：</p>
+<pre>contract: {O1/O2: {instrument: lean4, evidence: {compiled: true, sorry: 0, axioms: 标准}}}
+escalation_trace: [m4:miss, m5:bind]  降级路径存档: [m3:cap, m2:entail_reject, m1:killed_by V1/V3]
+artifact: proof.lean sha256:…, "Build completed successfully." exit 0,
+          #print axioms → [propext, Classical.choice, Quot.sound]</pre>
+<p><b>步骤 10–11 · 双审计（21、22）</b>：蕴含审计机械项（哈希↔文件、exit 0、grep 无 sorry、公理⊆标准三条）+ LLM 小步项（statement 忠实性：Lean 写 ℤ 全体 ⊇ ℤ⁺，更强，蕴含成立、记入对照；忠实性检查器自身过变体考卷——4∣ 版、n³+n 版、ZMod 5 版须全部察觉，否则检查器作废重跑）。覆盖审计伪造攻击：能编译但证别的命题的 artifact → 忠实性义务拒 ✓；sorry 版 → grep 拒 ✓。无洞。</p>
+<p><b>步骤 12 · 冻结与沉淀</b>：certificate（O1 proven、O2 proven → C proven，附轨迹与证据链）；策略库写入 <code>(math·universal_infinite·has_proof, ≥demonstrated) → lean 直达</code> 与 <code>(同, corroborated 够) → 盲式重证级</code>——下次同类 claim，队列直接把 lean 排到队首，步骤 5–6 的试错整段消失。</p>
+<p><b>对照（易例）</b>：若 C 是"x²−5x+6=0 的解是 2 和 3"，强度优先同样直取形式化（因式分解 + mul_eq_zero，数行；示意）→ proven；执行级的代回完备检查是形式化不可达时的降级备胎。全程没有一步是"判断难不难"：每次前进都是同一个循环体——取最强可用方法 → 有效性考卷（闸一）→ 审证据类型（闸二）→ 绑定或降级。</p>
+</body>
+</html>
