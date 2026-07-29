@@ -4,8 +4,8 @@
  "slug": "c3ab2d7ac85d",
  "judge": {
   "verdict": "true",
-  "reason": "n³-n = (n-1)n(n+1)，是三个连续整数的乘积。三个连续整数中必有一个是3的倍数，且至少有一个是2的倍数，因此乘积必被2×3=6整除。该结论对所有整数n成立，自然涵盖1≤n≤1000的情形。",
-  "seconds": 6.0
+  "reason": "n^3 - n = (n-1)n(n+1) 是三个连续整数的乘积。三个连续整数中必有一个是3的倍数，也必有至少一个是2的倍数，因此乘积必被 2×3=6 整除。这对所有整数 n（包括 1≤n≤1000 范围内）都成立。",
+  "seconds": 3.9
  },
  "judge_outcome": "ok",
  "verifier": {
@@ -13,17 +13,17 @@
   "grade": null,
   "evidence": [
    {
-    "artifact": "2da1dcf6dcd4b8ddba4af2e678dca76e36ffbcbf25d97638d0b813502797a3cd",
-    "evidence_id": "73f19419a1592ae65c98d563c61414aa6519851639c30117fb2c38774bc50966",
+    "artifact": "899176cd15e964a27ad90fe843215bbc7dae59dd4dd1b2d6106f3cd6fc9c48bb",
+    "evidence_id": "4f9c796246b298f72b30aabc554315cb5559ce14d40df5d6604601b76ea9df6b",
     "grade": "corroborated",
     "instrument": "binding-game",
-    "obligation": "验证/证明必须覆盖 n=1 到 n=1000 的全部 1000 个整数，不能仅抽样若干值或仅验证部分子集后外推。",
-    "obligation_id": "1c557faf15d514f74447fb512f8d20fcc8e76fb95d3b48b256e9e0cf934b844d",
+    "obligation": "必须给出 n^3 - n 的正确代数恒等变形，尤其是因式分解 n^3 - n = (n-1)·n·(n+1)（三个连续整数之积），且展开/化简过程无代数错误。",
+    "obligation_id": "9ce5f7791b898ed04b24a62f1d17fc8dac39ad302ae3452a3c38c8c454c72ee5",
     "outcome": "failed",
     "witness": "all candidate methods rejected"
    }
   ],
-  "seconds": 770.2
+  "seconds": 653.5
  },
  "verifier_outcome": "abstain"
 }
