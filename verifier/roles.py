@@ -19,8 +19,9 @@ class RoleError(RuntimeError):
 
 
 # ---- minimal schema validation (no external deps) ----------------------------
-# schema: {"field": type} where type in {str, bool, int, float, list, dict}
-# or {"field": [element_schema]} for a list of dicts.
+# schema: {"field": type} where type in {str, bool, int, float, list, dict},
+# {"field": [element_schema]} for a list of dicts, or {"field": ("a", "b")}
+# for a closed string enum.
 
 def validate(schema: Dict[str, Any], payload: Any, path: str = "$") -> None:
     if not isinstance(payload, dict):
@@ -29,7 +30,10 @@ def validate(schema: Dict[str, Any], payload: Any, path: str = "$") -> None:
         if key not in payload:
             raise RoleError(f"{path}.{key}: missing")
         value = payload[key]
-        if isinstance(spec, list):
+        if isinstance(spec, tuple):
+            if value not in spec:
+                raise RoleError(f"{path}.{key}: {value!r} not in {spec}")
+        elif isinstance(spec, list):
             if not isinstance(value, list):
                 raise RoleError(f"{path}.{key}: expected list")
             for i, item in enumerate(value):
