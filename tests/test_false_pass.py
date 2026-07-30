@@ -10,10 +10,24 @@ fp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fp)
 
 
-def test_benchmark_is_balanced_pairs():
-    assert len(fp.BENCHMARK) % 2 == 0
-    trues = sum(1 for _, t in fp.BENCHMARK if t)
-    assert trues == len(fp.BENCHMARK) // 2
+def test_benchmarks_are_balanced_pairs():
+    for entries in fp.BENCHMARK_SETS.values():
+        assert len(entries) % 2 == 0
+        trues = sum(1 for _, t, _c in entries if t)
+        assert trues == len(entries) // 2
+
+
+def test_all_labels_pass_the_mechanical_gate():
+    """Every claim's labelled truth equals its computed truth — the exam
+    itself is validated before it grades anything."""
+    for name, entries in fp.BENCHMARK_SETS.items():
+        fp.validate_labels(entries)
+
+
+def test_label_gate_catches_a_wrong_label():
+    import pytest
+    with pytest.raises(AssertionError, match="label wrong"):
+        fp.validate_labels([("假标签", True, "1 == 2")])
 
 
 def test_classify_judge():

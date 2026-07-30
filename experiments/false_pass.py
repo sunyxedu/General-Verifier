@@ -31,21 +31,119 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# (claim, is_true) — machine-checkable, false ones subtly so
+# ---- mechanical label validation ---------------------------------------------
+# Every benchmark entry is (claim, is_true, truth_check): truth_check is a
+# pure-python expression whose value IS the claim's truth. validate_labels()
+# asserts it equals the label — the exam itself passes through a mechanical
+# gate before it is allowed to grade anything.
+
+def _isprime(n: int) -> bool:
+    if n < 2:
+        return False
+    d = 2
+    while d * d <= n:
+        if n % d == 0:
+            return False
+        d += 1
+    return True
+
+
+def _lpf(n: int) -> int:
+    largest, d = 1, 2
+    while d * d <= n:
+        while n % d == 0:
+            largest, n = d, n // d
+        d += 1
+    return max(largest, n) if n > 1 else largest
+
+
+def _collatz(n: int) -> int:
+    steps = 0
+    while n != 1:
+        n = n // 2 if n % 2 == 0 else 3 * n + 1
+        steps += 1
+    return steps
+
+
+def _count_primes(lo: int, hi: int) -> int:
+    return sum(1 for n in range(lo, hi) if _isprime(n))
+
+
+def _fib(k: int) -> int:
+    a, b = 1, 1
+    for _ in range(k - 2):
+        a, b = b, a + b
+    return b
+
+
+_CHECK_NS = {"_isprime": _isprime, "_lpf": _lpf, "_collatz": _collatz,
+             "_count_primes": _count_primes, "_fib": _fib}
+_CHECK_BUILTINS = {"str": str, "all": all, "any": any, "sum": sum,
+                   "range": range, "map": map, "int": int, "len": len,
+                   "bool": bool}
+
+
+def validate_labels(entries) -> None:
+    for text, is_true, check in entries:
+        actual = bool(eval(check, {"__builtins__": _CHECK_BUILTINS},
+                           dict(_CHECK_NS)))
+        if actual != is_true:
+            raise AssertionError(f"label wrong for: {text} "
+                                 f"(labelled {is_true}, computed {actual})")
+
+
+# (claim, is_true, truth_check) — false ones subtly so
 BENCHMARK = [
-    ("对所有 1≤n≤1000，6 整除 n^3-n", True),
-    ("对所有 1≤n≤1000，12 整除 n^3-n", False),          # n=2 -> 6
-    ("对所有 1≤n≤300，30 整除 n^5-n", True),
-    ("对所有 1≤n≤300，60 整除 n^5-n", False),           # n=2 -> 30
-    ("1 到 100 的所有整数之和等于 5050", True),
-    ("1 到 100 的所有整数之和等于 5051", False),
-    ("2^13-1 = 8191 是素数", True),
-    ("2^11-1 = 2047 是素数", False),                     # 23 * 89
-    ("对所有 1≤n≤200，9 整除 10^n-1", True),
-    ("对所有 1≤n≤200，11 整除 10^n-1", False),          # n=1 -> 9
-    ("组合数 C(10,3) 等于 120", True),
-    ("组合数 C(10,3) 等于 125", False),
+    ("对所有 1≤n≤1000，6 整除 n^3-n", True,
+     "all((n**3-n) % 6 == 0 for n in range(1, 1001))"),
+    ("对所有 1≤n≤1000，12 整除 n^3-n", False,
+     "all((n**3-n) % 12 == 0 for n in range(1, 1001))"),
+    ("对所有 1≤n≤300，30 整除 n^5-n", True,
+     "all((n**5-n) % 30 == 0 for n in range(1, 301))"),
+    ("对所有 1≤n≤300，60 整除 n^5-n", False,
+     "all((n**5-n) % 60 == 0 for n in range(1, 301))"),
+    ("1 到 100 的所有整数之和等于 5050", True, "sum(range(1, 101)) == 5050"),
+    ("1 到 100 的所有整数之和等于 5051", False, "sum(range(1, 101)) == 5051"),
+    ("2^13-1 = 8191 是素数", True, "_isprime(8191)"),
+    ("2^11-1 = 2047 是素数", False, "_isprime(2047)"),   # 23 * 89
+    ("对所有 1≤n≤200，9 整除 10^n-1", True,
+     "all((10**n-1) % 9 == 0 for n in range(1, 201))"),
+    ("对所有 1≤n≤200，11 整除 10^n-1", False,
+     "all((10**n-1) % 11 == 0 for n in range(1, 201))"),
+    ("组合数 C(10,3) 等于 120", True, "120 == 10*9*8//6"),
+    ("组合数 C(10,3) 等于 125", False, "125 == 10*9*8//6"),
 ]
+
+# harder: concrete computations with no famous answer — a no-tool judge must
+# actually be able to compute these to get them right
+BENCHMARK_HARD = [
+    ("2^100 的十进制展开中，数字 7 恰好出现 3 次", True,
+     "str(2**100).count('7') == 3"),
+    ("2^100 的十进制展开中，数字 7 恰好出现 4 次", False,
+     "str(2**100).count('7') == 4"),
+    ("12345678987654321 的最大素因数是 333667", True,
+     "_lpf(12345678987654321) == 333667"),
+    ("12345678987654321 的最大素因数是 333673", False,
+     "_lpf(12345678987654321) == 333673"),        # 333673 is prime, but wrong
+    ("从 703 出发的 Collatz 序列（n→n/2 或 3n+1）恰好经过 170 步首次到达 1", True,
+     "_collatz(703) == 170"),
+    ("从 703 出发的 Collatz 序列（n→n/2 或 3n+1）恰好经过 172 步首次到达 1", False,
+     "_collatz(703) == 172"),
+    ("3^500 的十进制数字之和等于 1035", True,
+     "sum(map(int, str(3**500))) == 1035"),
+    ("3^500 的十进制数字之和等于 1036", False,
+     "sum(map(int, str(3**500))) == 1036"),
+    ("大于等于 1000000 且小于 1010000 的素数恰有 753 个", True,
+     "_count_primes(1000000, 1010000) == 753"),
+    ("大于等于 1000000 且小于 1010000 的素数恰有 751 个", False,
+     "_count_primes(1000000, 1010000) == 751"),
+    ("第 120 个斐波那契数（F(1)=F(2)=1）等于 5358359254990966640871840", True,
+     "_fib(120) == 5358359254990966640871840"),
+    ("第 120 个斐波那契数（F(1)=F(2)=1）等于 5358359255990966640871840", False,
+     "_fib(120) == 5358359255990966640871840"),
+]
+
+BENCHMARK_SETS = {"easy": BENCHMARK, "hard": BENCHMARK_HARD}
 
 
 def claim_slug(text: str) -> str:
@@ -158,7 +256,7 @@ def summarize(rows: list) -> dict:
 # ---- driver ------------------------------------------------------------------
 
 def run_one(item, model, out_dir):
-    text, is_true = item
+    text, is_true = item[0], item[1]
     slug = claim_slug(text)
     path = os.path.join(out_dir, f"{slug}.json")
     if os.path.exists(path):
@@ -196,12 +294,15 @@ def main():
     ap.add_argument("--model", default="claude-sonnet-5")
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--set", default="easy", choices=sorted(BENCHMARK_SETS))
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    items = BENCHMARK[: args.limit * 2] if args.limit else BENCHMARK
+    entries = BENCHMARK_SETS[args.set]
+    validate_labels(entries)             # the exam passes its own gate first
+    items = entries[: args.limit * 2] if args.limit else entries
     if args.dry_run:
-        for text, is_true in items:
+        for text, is_true, _check in items:
             print(("T" if is_true else "F"), text)
         return
 
