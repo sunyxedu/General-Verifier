@@ -83,6 +83,15 @@ def test_registry_names_are_consistent():
         assert role.name == name
 
 
+def test_every_dispatched_seat_is_registered():
+    """Every role name the kernel/game/coverage machinery dispatches through
+    a backend must resolve in AgentBackend's default registry — a missing
+    name fails silently in fail-open components (coverage learned this)."""
+    needed = {"obligations", "oracles", "variants", "validate_variant",
+              "coverage_patch", "discharge", "entailment"}
+    assert needed <= set(ALL_AGENT_ROLES)
+
+
 # ---- backend dispatch --------------------------------------------------------
 
 TRIVIAL = AgentRole(

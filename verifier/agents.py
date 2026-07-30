@@ -326,6 +326,25 @@ GENERATE_VARIANTS_AGENT = AgentRole(
     tools=["Bash", "Write", "Read"],
 )
 
+COVERAGE_PATCH_AGENT = AgentRole(
+    name="coverage_patch",
+    system=(
+        "你是义务补丁员。一个已确认为假的变体没有被任何现有义务拦下——这是义务集"
+        "的覆盖洞。你要写出能拦下这一类错误的新义务。义务必须是\"claim 为真所必需、"
+        "可对世界检验\"的条件，不得面向论证书写方式。"
+    ),
+    template=(
+        "原 claim：{claim_text}\n漏网变体：{variant_text}\n"
+        "该变体为假的证据：{disproof}\n\n"
+        "写出能拦下这一类错误的新义务：\n"
+        "  text: 义务内容（世界性必要条件）\n"
+        "  failure_looks_like: 该义务不成立时，失败证据具体长什么样"
+    ),
+    schema={"text": str, "failure_looks_like": str},
+    tools=[],          # a pure text task — same name serves both backends
+    max_turns=4,
+)
+
 VALIDATE_VARIANT_AGENT = AgentRole(
     name="validate_variant",
     system=(
@@ -391,6 +410,7 @@ ALL_AGENT_ROLES = {
         ENUMERATE_ORACLES_AGENT,
         GENERATE_VARIANTS_AGENT,
         VALIDATE_VARIANT_AGENT,
+        COVERAGE_PATCH_AGENT,
         DISCHARGE_AGENT,
         ENTAILMENT_AUDIT_AGENT,
     )

@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from .agents import GENERATE_VARIANTS_AGENT
+from .agents import COVERAGE_PATCH_AGENT, GENERATE_VARIANTS_AGENT
 from .events import EventLog
 from .model import Obligation, OUTCOME_REFUTED
-from .roles import COVERAGE_PATCH, RoleError
+from .roles import RoleError
 
 WHOLE_CLAIM_EXAM = "（本轮考察义务集的整体覆盖，不针对单条义务：生成整体上似是而非的错误变体）"
 
@@ -28,7 +28,7 @@ WHOLE_CLAIM_EXAM = "（本轮考察义务集的整体覆盖，不针对单条义
 class CoverageAudit:
     def __init__(self, backend, log: EventLog,
                  variants_role=GENERATE_VARIANTS_AGENT,
-                 patch_role=COVERAGE_PATCH,
+                 patch_role=COVERAGE_PATCH_AGENT,
                  n_variants: int = 2, memory_hits: str = "[]"):
         self.backend = backend
         self.log = log
