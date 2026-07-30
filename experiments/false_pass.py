@@ -94,11 +94,14 @@ def run_verifier(text: str, model: str, workdir: str,
     backend = AgentBackend(roles=ALL_AGENT_ROLES, cwd=workdir, model=model)
     store = ClaimStore()
     artifacts = ArtifactStore(os.path.join(workdir, "artifacts"))
+    toolchains = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "experiments", ".toolchains")
     game = BindingGame(
         backend, artifacts, log,
         AgentDischarger(backend, artifacts,
                         workdir_base=os.path.join(workdir, "work"),
-                        cleanup=True),      # workdirs are scratch, not evidence
+                        cleanup=True,       # workdirs are scratch, not evidence
+                        toolchain_dir=toolchains),  # warm across claims & runs
         n_variants=n_variants, max_methods=max_methods,
     )
     kernel = Kernel(store, log, backend, artifacts,

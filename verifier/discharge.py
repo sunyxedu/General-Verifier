@@ -80,12 +80,17 @@ class AgentDischarger:
     def __init__(self, backend, artifacts: ArtifactStore,
                  role: AgentRole = DISCHARGE_AGENT,
                  workdir_base: Optional[str] = None,
-                 cleanup: bool = False):
+                 cleanup: bool = False,
+                 toolchain_dir: Optional[str] = None):
         self.backend = backend
         self.artifacts = artifacts
         self.role = role
         self.workdir_base = workdir_base or tempfile.mkdtemp(prefix="gv-discharge-")
-        self.toolchain_dir = os.path.join(self.workdir_base, "_toolchains")
+        # heavyweight installs (a Lean project with mathlib, a node_modules…)
+        # live here and survive across discharges, claims, and runs when the
+        # caller passes a stable path — cache warming without a warming step
+        self.toolchain_dir = toolchain_dir or os.path.join(
+            self.workdir_base, "_toolchains")
         self.cleanup = cleanup  # remove workdir after snapshot (scratch, not evidence)
 
     def discharge(self, row: Dict, obligation: Obligation,

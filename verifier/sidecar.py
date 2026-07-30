@@ -48,7 +48,9 @@ class Sidecar:
     def __init__(self, state_dir: str, kernel_factory=None,
                  model: Optional[str] = None, seats: str = "agent",
                  game: bool = True, coverage: bool = False,
-                 memory_dir: Optional[str] = None):
+                 memory_dir: Optional[str] = None,
+                 toolchain_dir: Optional[str] = None):
+        self.toolchain_dir = toolchain_dir
         os.makedirs(state_dir, exist_ok=True)
         self.state_dir = state_dir
         self.memory = None
@@ -168,7 +170,8 @@ def _default_kernel(sc: Sidecar, model, seats, game, coverage) -> Kernel:
         discharger = AgentDischarger(
             backend, sc.artifacts,
             workdir_base=os.path.join(sc.state_dir, "work"),
-            cleanup=True)   # snapshots are the evidence; workdirs are scratch
+            cleanup=True,   # snapshots are the evidence; workdirs are scratch
+            toolchain_dir=sc.toolchain_dir)
         binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                              memory=sc.memory) if game else None
         audit = CoverageAudit(backend, sc.log) if coverage else None
@@ -233,10 +236,12 @@ def main() -> None:
     ap.add_argument("--coverage", action=argparse.BooleanOptionalAction,
                     default=False)
     ap.add_argument("--memory-dir", default=None)
+    ap.add_argument("--toolchain-dir", default=None)
     args = ap.parse_args()
     sidecar = Sidecar(args.state_dir, model=args.model, seats=args.seats,
                       game=args.game, coverage=args.coverage,
-                      memory_dir=args.memory_dir)
+                      memory_dir=args.memory_dir,
+                      toolchain_dir=args.toolchain_dir)
     build_server(sidecar).run()   # stdio
 
 

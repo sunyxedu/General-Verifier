@@ -83,6 +83,26 @@ def test_snapshot_skips_toolchain_dirs_and_caps_totals(tmp_path):
     assert len(snap) <= 202                              # max_files + markers
 
 
+def test_explicit_toolchain_dir_is_shared_and_survives(tmp_path):
+    shared = str(tmp_path / "toolchains")
+    seen = []
+
+    def fixture(variables):
+        seen.append(variables["toolchain_dir"])
+        return {"outcome": "holds", "witness": "", "artifact": ""}
+
+    backend = FixtureBackend({"discharge": fixture})
+    artifacts = ArtifactStore(str(tmp_path / "a"))
+    d1 = AgentDischarger(backend, artifacts, workdir_base=str(tmp_path / "w1"),
+                         cleanup=True, toolchain_dir=shared)
+    d2 = AgentDischarger(backend, artifacts, workdir_base=str(tmp_path / "w2"),
+                         toolchain_dir=shared)
+    d1.discharge(ROW, OB)
+    d2.discharge(ROW, OB)
+    assert seen == [shared, shared]           # both point at the same cache
+    assert os.path.isdir(shared)              # survives d1's cleanup
+
+
 def test_cleanup_flag_removes_workdir_after_snapshot(tmp_path):
     def fixture(variables):
         with open(os.path.join(variables["workdir"], "log.txt"), "w") as f:
