@@ -1,4 +1,4 @@
-"""Stateless LLM roles (report: "角色即无状态子调用").
+"""Stateless LLM roles (report: "a role is a stateless sub-call").
 
 Every role = a generic prompt template + an output schema. Backends are
 injectable: FixtureBackend gives deterministic outputs for tests and replay;
@@ -137,13 +137,13 @@ class Role:
 COMPILE_OBLIGATIONS = Role(
     name="compile_obligations",
     template=(
-        "任务：验证一个 claim（answer-blind：你只看到 claim 的陈述，看不到其论证）。\n"
-        "claim 陈述：{claim_text}\n"
-        "历史义务模式（检索命中，可为空）：{memory_hits}\n\n"
-        "列出\"任何正确答案都必须满足\"的必要条件。每条给出：\n"
-        "  text: 义务内容\n"
-        "  failure_looks_like: 若义务不成立，失败证据具体长什么样（给不出就留空字符串）\n"
-        '输出 JSON: {{"obligations": [{{"text": ..., "failure_looks_like": ...}}]}}'
+        "Task: verify a claim (answer-blind: you only see the claim's statement, not its argument).\n"
+        "Claim statement: {claim_text}\n"
+        "Historical obligation patterns (retrieval hits, may be empty): {memory_hits}\n\n"
+        "List the necessary conditions that \"any correct answer must satisfy\". For each give:\n"
+        "  text: the obligation content\n"
+        "  failure_looks_like: what failure evidence concretely looks like if the obligation does not hold (leave an empty string if you cannot give one)\n"
+        'Output JSON: {{"obligations": [{{"text": ..., "failure_looks_like": ...}}]}}'
     ),
     schema={"obligations": [{"text": str, "failure_looks_like": str}]},
 )
@@ -151,11 +151,11 @@ COMPILE_OBLIGATIONS = Role(
 WRITE_CHECK = Role(
     name="write_check",
     template=(
-        "为下面的义务写一个可执行检查（python）。\n"
-        "claim：{claim_text}\n义务：{obligation_text}\n\n"
-        "程序必须在最后一行 print 一个 JSON：{{\"holds\": bool, \"witness\": ...}}，\n"
-        "holds=false 时 witness 给出具体反例。\n"
-        '输出 JSON: {{"check_source": "<python source>"}}'
+        "Write an executable check (python) for the obligation below.\n"
+        "Claim: {claim_text}\nObligation: {obligation_text}\n\n"
+        "The program must print one JSON object on its last line: {{\"holds\": bool, \"witness\": ...}};\n"
+        "when holds=false, witness gives a concrete counterexample.\n"
+        'Output JSON: {{"check_source": "<python source>"}}'
     ),
     schema={"check_source": str},
 )

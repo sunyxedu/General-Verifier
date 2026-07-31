@@ -48,7 +48,7 @@ from .model import (
 )
 from .roles import RoleError
 
-# strength order, strongest first (report §7: 强度优先)
+# strength order, strongest first (report §7: strength-first)
 KIND_RANK = {"formal": 0, "execute": 1, "rederive": 2, "search": 3, "text": 4}
 GRADE_CEILING = {
     "formal": "proven",
@@ -123,8 +123,8 @@ class BindingGame:
         while True:
             if not [v for v in variants if self._variant_usable(v)]:
                 # exam evaporated: every question was disqualified. Send the
-                # reasons back to the generator ONCE (打回重出) — a bounded
-                # round of loop-2 applied to the exam itself.
+                # reasons back to the generator ONCE (reject and regenerate) —
+                # a bounded round of loop-2 applied to the exam itself.
                 if exam_regens < 1:
                     exam_regens += 1
                     fresh = self._exam(row, obligation,
@@ -229,8 +229,10 @@ class BindingGame:
                        if self.memory is not None else self.memory_hits)
         if feedback:
             memory_hits = (
-                "【上一轮考题被质检剔除——它们虽为假，但不违反本条义务。"
-                "新变体必须恰好以违反这条义务的方式为假。被剔理由：】"
+                "[Previous exam questions were disqualified by the quality "
+                "audit: they were false, but not by violating THIS obligation. "
+                "New variants must be false exactly by violating this obligation. "
+                "Disqualification reasons:]"
                 + feedback + "\n" + memory_hits
             )
         try:
@@ -275,9 +277,12 @@ class BindingGame:
         # analogous instance, not the original text verbatim.
         exam_obligation = Obligation(
             obligation.claim_id,
-            "【考题模式移植】下面是原 claim 的一条义务模式；当前 claim 是原 claim 的一个"
-            "变体。把这条义务的同构实例应用到当前 claim 上执行检查（检查的是当前 claim"
-            "的对应性质，不是原义务的字面内容）：\n" + obligation.text,
+            "[EXAM PATTERN TRANSPLANT] Below is an obligation pattern from the "
+            "original claim; the current claim is a variant of the original. "
+            "Apply the isomorphic instance of this obligation to the current "
+            "claim when running the check (what is checked is the current "
+            "claim's corresponding property, not the original obligation's "
+            "literal text):\n" + obligation.text,
             obligation.failure_looks_like,
         )
         sat = 0
@@ -440,7 +445,7 @@ def _features(row: Dict) -> str:
             "length": len(text),
             "has_digits": any(c.isdigit() for c in text),
             "has_quantifier_words": any(
-                w in text for w in ("所有", "任意", "每个", "存在", "all", "every", "exists")
+                w in text for w in ("all", "any", "every", "each", "exists")
             ),
         },
         ensure_ascii=False,

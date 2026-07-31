@@ -96,7 +96,7 @@ class AgentRole:
                 return payload
             except RoleError as err:
                 last_error = err
-                prompt = prompt + f"\n\n[上次尝试失败，修正后重来] {err}"
+                prompt = prompt + f"\n\n[previous attempt failed; fix it and retry] {err}"
         raise RoleError(f"{self.name}: failed twice: {last_error}")
 
 
@@ -254,22 +254,31 @@ GRADES_OR_EMPTY = ("proven", "demonstrated", "corroborated", "")
 COMPILE_OBLIGATIONS_AGENT = AgentRole(
     name="obligations",
     system=(
-        "你是义务编译器。你只看到 claim 的陈述，看不到它的论证（answer-blind）。"
-        "你可以读取环境中的文件来了解任务背景，但你不能执行任何东西。\n"
-        "answer-blind 的推论：义务只能是\"该 claim 为真所必需的、可对世界检验\"的条件"
-        "（可通过计算、执行、形式化等手段独立检查）；对论证书写方式的要求"
-        "（比如\"证明必须给出某个变形/覆盖某种情形\"）不在你的职权内——论证的每个"
-        "中间步骤会作为独立 claim 入图、各自受验。产出会被逐条全量检验，"
-        "所以宁可少而中肯，不要多而不可检。"
+        "You are the obligation compiler. You see only the claim's statement, "
+        "not its argument (answer-blind). You may read files in the environment "
+        "to understand the task context, but you cannot execute anything.\n"
+        "A corollary of answer-blindness: obligations can only be conditions "
+        "that are \"necessary for the claim to be true and checkable against "
+        "the world\" (independently verifiable by computation, execution, "
+        "formalization, or similar means); requirements about how the argument "
+        "is written (e.g. \"the proof must perform a certain rewrite or cover "
+        "a certain case\") are outside your remit — every intermediate step of "
+        "the argument enters the graph as its own claim and is verified "
+        "separately. Your output will be checked exhaustively, item by item, "
+        "so prefer few and on-point over many and uncheckable."
     ),
     template=(
-        "claim 陈述：{claim_text}\n"
-        "历史义务模式（检索命中，可为空）：{memory_hits}\n\n"
-        "列出\"该 claim 为真所必需\"、且在看不到任何论证的前提下可独立检验的条件（义务）。"
-        "每条义务给出：\n"
-        "  text: 义务内容（关于结论本身的世界性条件）\n"
-        "  failure_looks_like: 若该义务不成立，失败证据具体长什么样"
-        "（必须指向一个可拿出手的具体 artifact；给不出就留空字符串）。"
+        "Claim statement: {claim_text}\n"
+        "Historical obligation patterns (retrieval hits, may be empty): {memory_hits}\n\n"
+        "List the conditions (obligations) that are \"necessary for the claim to "
+        "be true\" and independently checkable without seeing any argument. "
+        "For each obligation give:\n"
+        "  text: the obligation content (a world-level condition about the "
+        "conclusion itself)\n"
+        "  failure_looks_like: what the failure evidence concretely looks like "
+        "if this obligation does not hold\n"
+        "(it must point to a concrete, presentable artifact; if you cannot "
+        "give one, leave an empty string)."
     ),
     schema={"obligations": [{"text": str, "failure_looks_like": str}]},
     tools=["Read", "Grep", "Glob"],
@@ -278,21 +287,26 @@ COMPILE_OBLIGATIONS_AGENT = AgentRole(
 ENUMERATE_ORACLES_AGENT = AgentRole(
     name="oracles",
     system=(
-        "你是 oracle 枚举器。方法想象归你，存在性判断归探测：一种仪器是否就绪，"
-        "必须实际探测环境确认（比如用 Bash 检查命令与库是否存在），不许凭印象。"
-        "仪器未就绪但可以安装时，直接安装并确认——安装是一次性成本，不构成不可达。"
+        "You are the oracle enumerator. Imagining methods is your job; judging "
+        "existence belongs to probing: whether an instrument is ready must be "
+        "confirmed by actually probing the environment (e.g. using Bash to "
+        "check that commands and libraries exist), never by assumption. "
+        "When an instrument is not ready but can be installed, install it and "
+        "confirm — installation is a one-time cost, not a boundary."
     ),
     template=(
-        "claim：{claim_text}\n"
-        "义务：{obligation_text}\n"
-        "claim 特征：{features}\n"
-        "已知就绪仪器（可为空）：{registry}\n\n"
-        "枚举所有可用于检查该义务的方法，按证据强度从强到弱排列。每个方法给出：\n"
-        "  procedure: 具体怎么做\n"
-        "  instrument_id: 依赖的仪器（探测确认过的）\n"
-        "  evidence_kind: 证据类型\n"
-        "  artifact: 该方法产出的可复核证据是什么\n"
-        "  failure_looks_like: 该方法发现问题时，失败证据长什么样"
+        "Claim: {claim_text}\n"
+        "Obligation: {obligation_text}\n"
+        "Claim features: {features}\n"
+        "Instruments known to be ready (may be empty): {registry}\n\n"
+        "Enumerate all methods that can check this obligation, ordered by "
+        "evidence strength, strongest first. For each method give:\n"
+        "  procedure: concretely how to do it\n"
+        "  instrument_id: the instrument it depends on (confirmed by probing)\n"
+        "  evidence_kind: the kind of evidence\n"
+        "  artifact: what auditable evidence the method produces\n"
+        "  failure_looks_like: what the failure evidence looks like when this "
+        "method finds a problem"
     ),
     schema={
         "methods": [
@@ -311,16 +325,21 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
 GENERATE_VARIANTS_AGENT = AgentRole(
     name="variants",
     system=(
-        "你是变体生成器。你生成\"似是而非的错误变体\"，并且必须机械确认每个变体"
-        "确实为假（实际运行一个最小检查），否则会冤枉验证手段。确认不了就不要提交它。"
+        "You are the variant generator. You generate \"plausible-but-wrong "
+        "variants\" and must mechanically confirm that each variant is indeed "
+        "false (by actually running a minimal check) — otherwise you would "
+        "wrongly condemn the verification methods. If you cannot confirm one, "
+        "do not submit it."
     ),
     template=(
-        "原 claim：{claim_text}\n义务：{obligation_text}\n"
-        "历史攻击模式（检索命中，可为空）：{memory_hits}\n\n"
-        "生成 {n} 个错误变体：与原 claim 结构相似、乍看合理、但确实为假。\n"
-        "对每个变体给出：\n"
-        "  text: 变体陈述\n"
-        "  disproof: 你实际运行检查后确认它为假的证据（命令与输出摘要）"
+        "Original claim: {claim_text}\nObligation: {obligation_text}\n"
+        "Historical attack patterns (retrieval hits, may be empty): {memory_hits}\n\n"
+        "Generate {n} wrong variants: structurally similar to the original "
+        "claim, plausible at first glance, but actually false.\n"
+        "For each variant give:\n"
+        "  text: the variant statement\n"
+        "  disproof: the evidence confirming it is false from the check you "
+        "actually ran (command and output summary)"
     ),
     schema={"variants": [{"text": str, "disproof": str}]},
     tools=["Bash", "Write", "Read"],
@@ -329,16 +348,20 @@ GENERATE_VARIANTS_AGENT = AgentRole(
 COVERAGE_PATCH_AGENT = AgentRole(
     name="coverage_patch",
     system=(
-        "你是义务补丁员。一个已确认为假的变体没有被任何现有义务拦下——这是义务集"
-        "的覆盖洞。你要写出能拦下这一类错误的新义务。义务必须是\"claim 为真所必需、"
-        "可对世界检验\"的条件，不得面向论证书写方式。"
+        "You are the obligation patcher. A variant confirmed false was not "
+        "caught by any existing obligation — this is a coverage hole in the "
+        "obligation set. You must write a new obligation that catches this "
+        "class of error. The obligation must be a condition that is \"necessary "
+        "for the claim to be true and checkable against the world\"; it must "
+        "not target how the argument is written."
     ),
     template=(
-        "原 claim：{claim_text}\n漏网变体：{variant_text}\n"
-        "该变体为假的证据：{disproof}\n\n"
-        "写出能拦下这一类错误的新义务：\n"
-        "  text: 义务内容（世界性必要条件）\n"
-        "  failure_looks_like: 该义务不成立时，失败证据具体长什么样"
+        "Original claim: {claim_text}\nVariant that slipped through: {variant_text}\n"
+        "Evidence that this variant is false: {disproof}\n\n"
+        "Write a new obligation that catches this class of error:\n"
+        "  text: the obligation content (a world-level necessary condition)\n"
+        "  failure_looks_like: what the failure evidence concretely looks like "
+        "when this obligation does not hold"
     ),
     schema={"text": str, "failure_looks_like": str},
     tools=[],          # a pure text task — same name serves both backends
@@ -348,17 +371,21 @@ COVERAGE_PATCH_AGENT = AgentRole(
 VALIDATE_VARIANT_AGENT = AgentRole(
     name="validate_variant",
     system=(
-        "你是考题质检员。一道\"错误变体\"考题把所有候选方法都放行了——要么全体方法"
-        "共享盲区，要么这个变体根本不假（生成器错了）。你必须实际重跑检查来确认"
-        "它的真假，不许只看文字。拿不准就判 actually_false=yes（宁可冤枉方法，"
-        "不可放过盲区）。"
+        "You are the exam-question quality inspector. A \"wrong variant\" exam "
+        "question let every candidate method pass — either all the methods "
+        "share a blind spot, or the variant is not actually false (the "
+        "generator was wrong). You must actually rerun the check to confirm "
+        "whether it is true or false; do not judge from text alone. When in "
+        "doubt, rule actually_false=yes (better to wrongly fault a method "
+        "than to let a blind spot through)."
     ),
     template=(
-        "原 claim：{claim_text}\n针对的义务：{obligation_text}\n"
-        "变体：{variant_text}\n生成器给的假性证据（disproof）：{disproof}\n\n"
-        "实际运行检查，确认该变体是否真的为假、且假在违反这条义务上。\n"
+        "Original claim: {claim_text}\nTargeted obligation: {obligation_text}\n"
+        "Variant: {variant_text}\nGenerator's evidence of falsity (disproof): {disproof}\n\n"
+        "Actually run the check to confirm whether this variant really is "
+        "false, and false precisely by violating this obligation.\n"
         "  actually_false: yes | no\n"
-        "  reason: 你的检查过程与结论"
+        "  reason: your checking process and conclusion"
     ),
     schema={"actually_false": ("yes", "no"), "reason": str},
     tools=["Bash", "Read", "Write"],
@@ -367,18 +394,27 @@ VALIDATE_VARIANT_AGENT = AgentRole(
 DISCHARGE_AGENT = AgentRole(
     name="discharge",
     system=(
-        "你是 verifier 执行器。你按给定的方法执行检查并产出可复核的 artifact。"
-        "崩溃、超时、输出不可解析一律如实记为 failed——绝不折算成通过。"
+        "You are the discharge executor. You carry out the check by the given "
+        "method and produce an auditable artifact. Crashes, timeouts, and "
+        "unparseable output are all honestly recorded as failed — never "
+        "converted into a pass."
     ),
     template=(
-        "claim：{claim_text}\n义务：{obligation_text}\n"
-        "绑定的方法：{procedure}\n仪器：{instrument_id}\n工作目录：{workdir}\n"
-        "工具链目录：{toolchain_dir}（重量级依赖/项目脚手架装这里，跨检查共享复用；"
-        "工作目录只放本次检查的脚本与输出）\n\n"
-        "执行该检查。把检查脚本与完整输出落盘到工作目录（它们就是 artifact）。\n"
-        "  outcome: holds（义务成立）| refuted（找到反例）| failed（检查本身没跑成）\n"
-        "  witness: refuted 时给具体反例，failed 时给失败原因，否则空字符串\n"
-        "  artifact: 落盘文件的路径列表（JSON 数组之外用逗号分隔的字符串）"
+        "Claim: {claim_text}\nObligation: {obligation_text}\n"
+        "Bound method: {procedure}\nInstrument: {instrument_id}\nWorking "
+        "directory: {workdir}\n"
+        "Toolchain directory: {toolchain_dir} (install heavyweight "
+        "dependencies and project scaffolding here, shared and reused across "
+        "checks; the working directory holds only this check's scripts and "
+        "outputs)\n\n"
+        "Run the check. Write the check script and its full output to disk in "
+        "the working directory (they are the artifact).\n"
+        "  outcome: holds (the obligation holds) | refuted (a counterexample "
+        "was found) | failed (the check itself did not run)\n"
+        "  witness: for refuted give the concrete counterexample, for failed "
+        "give the failure reason, otherwise an empty string\n"
+        "  artifact: paths of the files written to disk (a comma-separated "
+        "string, not a JSON array)"
     ),
     schema={"outcome": OUTCOMES, "witness": str, "artifact": str},
     tools=["Bash", "Read", "Write", "Grep"],
@@ -387,17 +423,21 @@ DISCHARGE_AGENT = AgentRole(
 ENTAILMENT_AUDIT_AGENT = AgentRole(
     name="entailment",
     system=(
-        "你是蕴含审计器（闸二）。你不判断 claim 真假，只判断这份证据在逻辑上"
-        "是否解除了这条义务。抽样证据蕴含不了全称结论——这类缺口必须指出。"
-        "你必须打开 artifact 亲自核对（必要时重跑校验），不许只读摘要。"
+        "You are the entailment auditor (gate 2). You do not judge whether "
+        "the claim is true, only whether this evidence logically discharges "
+        "the obligation. Sampled evidence cannot entail a universal "
+        "conclusion — such gaps must be pointed out. You must open the "
+        "artifact and check it yourself (rerunning the verification when "
+        "necessary); do not rely on summaries alone."
     ),
     template=(
-        "义务：{obligation_text}\n声称的失败样例形态：{failure_looks_like}\n"
-        "提交的证据（含 artifact 路径）：{evidence}\n\n"
-        "核对证据本身，判断它是否在逻辑上蕴含该义务成立。\n"
+        "Obligation: {obligation_text}\nClaimed failure pattern: {failure_looks_like}\n"
+        "Submitted evidence (including artifact paths): {evidence}\n\n"
+        "Check the evidence itself and judge whether it logically entails "
+        "that the obligation holds.\n"
         "  entails: yes | no\n"
-        "  grade: 证据等级（entails=no 时留空字符串）\n"
-        "  reason: 理由，指出证据链上任何缺口"
+        "  grade: the evidence grade (leave an empty string when entails=no)\n"
+        "  reason: your reasoning, pointing out any gap in the evidence chain"
     ),
     schema={"entails": ("yes", "no"), "grade": GRADES_OR_EMPTY, "reason": str},
     tools=["Read", "Bash", "Grep"],

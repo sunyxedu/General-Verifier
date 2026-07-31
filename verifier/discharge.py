@@ -10,7 +10,7 @@ Two seats for the same contract:
   reports outcome/witness plus on-disk artifacts, which we snapshot into the
   content-addressed store. The outcome is agent-REPORTED — generation, not
   mechanics — so it honestly grades `corroborated` until an independent audit
-  (M1 闸二) re-checks the artifacts. Grades never overstate provenance.
+  (M1 gate 2) re-checks the artifacts. Grades never overstate provenance.
 """
 from __future__ import annotations
 
@@ -101,8 +101,9 @@ class AgentDischarger:
         os.makedirs(workdir, exist_ok=True)
         os.makedirs(self.toolchain_dir, exist_ok=True)
         method = method or {
-            "procedure": "未绑定方法（oracle 绑定在 M1 接入）：自行选择最强可达的检查手段，"
-                         "并把检查脚本与完整输出落盘",
+            "procedure": "no bound method (oracle binding arrives in M1): "
+                         "choose the strongest reachable check yourself, and "
+                         "write the check script and its complete output to disk",
             "instrument_id": "self-selected",
         }
         variables = {

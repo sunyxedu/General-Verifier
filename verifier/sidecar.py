@@ -197,8 +197,9 @@ def build_server(sidecar: Sidecar):
     @server.tool()
     def commit(label: str, kind: str, text: str, deps: List[str],
                branch: str = "", revises: str = "") -> str:
-        """提交一个 claim（kind: assertion|effect|final）。deps 是已提交 claim 的
-        label 列表（含 effect:<seq>）。返回 claim_id 与当前 status。"""
+        """Commit a claim (kind: assertion|effect|final). deps is a list of
+        labels of already-committed claims (including effect:<seq>). Returns
+        the claim_id and current status."""
         return json.dumps(
             sidecar.commit(label, kind, text, deps,
                            branch or None, revises or None),
@@ -206,22 +207,24 @@ def build_server(sidecar: Sidecar):
 
     @server.tool()
     def verify(label: str) -> str:
-        """立即验证一个已提交的 claim，返回 status 与 grade。"""
+        """Verify a committed claim now; returns its status and grade."""
         return json.dumps(sidecar.verify(label), ensure_ascii=False)
 
     @server.tool()
     def certificate(final_label: str) -> str:
-        """对 final claim 出证：结算依赖闭包、冻结证书，返回 verdict 与切片摘要。"""
+        """Certify a final claim: settle the dependency closure, freeze the
+        certificate, and return the verdict plus a slice summary."""
         return json.dumps(sidecar.certificate(final_label), ensure_ascii=False)
 
     @server.tool()
     def status(label: str = "") -> str:
-        """查询单个 label 或全部 label 的状态。"""
+        """Query the status of one label or of all labels."""
         return json.dumps(sidecar.status(label or None), ensure_ascii=False)
 
     @server.tool()
     def branches() -> str:
-        """并行假设分支的状态与死分支列表（refuted 剪枝，建议性）。"""
+        """Statuses of parallel hypothesis branches and the dead-branch list
+        (refuted pruning, advisory)."""
         return json.dumps(sidecar.branches(), ensure_ascii=False)
 
     return server

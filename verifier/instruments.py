@@ -96,7 +96,7 @@ class PythonSandbox:
 
 
 class LedgerInstrument:
-    """查账仪器 (component 25): verifies effect claims against the event stream.
+    """Audit instrument (component 25): verifies effect claims against the event stream.
 
     An effect claim's text is the canonical JSON produced by the mechanical
     parser: {"event_seq": n, "tool": ..., "digest": <event_digest>}. The check

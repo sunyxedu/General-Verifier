@@ -1,8 +1,9 @@
-"""Coverage audit (验漏, loop 3 of report §8): exam the OBLIGATION SET.
+"""Coverage audit (hole detection, loop 3 of report §8): exam the OBLIGATION SET.
 
 Loop 1 asks "does this method discriminate for this obligation"; this loop
 asks "do the obligations as a whole cover the claim's failure modes". Both
-share the variant generator (the report's honest "两层半" note): here the
+share the variant generator (the report's honest "two and a half layers"
+note): here the
 variants target the claim as a whole rather than one obligation. For each
 self-confirmed-false variant, every current obligation gets a discharge run
 against it; if NO obligation refutes a false variant, that is a coverage
@@ -22,7 +23,11 @@ from .events import EventLog
 from .model import Obligation, OUTCOME_REFUTED
 from .roles import RoleError
 
-WHOLE_CLAIM_EXAM = "（本轮考察义务集的整体覆盖，不针对单条义务：生成整体上似是而非的错误变体）"
+WHOLE_CLAIM_EXAM = (
+    "(this round examines the obligation set's overall coverage, not any "
+    "single obligation: generate wrong variants that look plausible on the "
+    "whole but are false)"
+)
 
 
 class CoverageAudit:
