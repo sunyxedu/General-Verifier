@@ -239,7 +239,6 @@ class AgentBackend:
 # memory — never from text written here.
 
 OUTCOMES = ("holds", "refuted", "failed")
-GRADES_OR_EMPTY = ("proven", "demonstrated", "corroborated", "")
 
 COMPILE_OBLIGATIONS_AGENT = AgentRole(
     name="obligations",
@@ -421,10 +420,9 @@ ENTAILMENT_AUDIT_AGENT = AgentRole(
         "Check the evidence itself and judge whether it logically entails "
         "that the obligation holds.\n"
         "  entails: yes | no\n"
-        "  grade: the evidence grade (leave an empty string when entails=no)\n"
         "  reason: your reasoning, pointing out any gap in the evidence chain"
     ),
-    schema={"entails": ("yes", "no"), "grade": GRADES_OR_EMPTY, "reason": str},
+    schema={"entails": ("yes", "no"), "reason": str},
     tools=["Read", "Bash", "Grep"],
 )
 

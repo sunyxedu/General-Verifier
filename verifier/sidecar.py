@@ -47,8 +47,7 @@ def _extract_obligations(evidence: list) -> list:
     for ev in evidence:
         if "obligation" not in ev or "outcome" not in ev:
             continue
-        entry = {"text": ev["obligation"], "outcome": ev["outcome"],
-                 "grade": ev.get("grade")}
+        entry = {"text": ev["obligation"], "outcome": ev["outcome"]}
         if ev.get("witness") and ev["outcome"] != "holds":
             entry["reason"] = str(ev["witness"])
         detail.append(entry)
@@ -127,8 +126,7 @@ class Sidecar:
             status = self.kernel.verify(claim_id)
         except VERB_ERRORS as err:
             return {"error": str(err)}
-        result = {"claim_id": claim_id, "status": status,
-                  "grade": self.store.grade(claim_id)}
+        result = {"claim_id": claim_id, "status": status}
         if status == "partial":
             result["obligations"] = _extract_obligations(
                 self.store.evidence_for(claim_id))
@@ -144,8 +142,7 @@ class Sidecar:
             return {"error": str(err)}
         slice_summary = []
         for e in cert["slice"]:
-            entry = {"text": e["text"], "status": e["status"],
-                     "grade": e["grade"]}
+            entry = {"text": e["text"], "status": e["status"]}
             if e["status"] == "partial":
                 obligations = _extract_obligations(e.get("evidence", []))
                 if obligations:
@@ -153,7 +150,6 @@ class Sidecar:
             slice_summary.append(entry)
         return {
             "verdict": cert["verdict"],
-            "overall_grade": cert["overall_grade"],
             "certificate_id": cert["certificate_id"],
             "slice": slice_summary,
         }
@@ -166,7 +162,7 @@ class Sidecar:
             except TraceError as err:
                 return {"error": str(err)}
             row = self.store.get(claim_id)
-            result = {k: row[k] for k in ("id", "kind", "text", "status", "grade")}
+            result = {k: row[k] for k in ("id", "kind", "text", "status")}
             if row["status"] == "partial":
                 result["obligations"] = _extract_obligations(
                     self.store.evidence_for(claim_id))
@@ -235,7 +231,7 @@ def build_server(sidecar: Sidecar):
 
     @server.tool()
     def verify(label: str) -> str:
-        """Verify a committed claim now; returns its status and grade."""
+        """Verify a committed claim now; returns its status."""
         return json.dumps(sidecar.verify(label), ensure_ascii=False)
 
     @server.tool()

@@ -49,10 +49,9 @@ def certify(events_path: str, state_dir: str, final_label: Optional[str] = None,
     print(json.dumps(
         {
             "verdict": cert["verdict"],
-            "overall_grade": cert["overall_grade"],
             "certificate_id": cert["certificate_id"],
             "slice": [
-                {"text": e["text"], "status": e["status"], "grade": e["grade"]}
+                {"text": e["text"], "status": e["status"]}
                 for e in cert["slice"]
             ],
         },

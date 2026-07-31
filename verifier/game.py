@@ -23,11 +23,9 @@ Per obligation:
      entails=no -> downgrade.
 4. All candidates exhausted -> failed, with every attempt on record.
 
-Grades are earned, not declared: the ceiling comes from the mechanical
-properties of the discharge (discharger type + independent re-verification),
-not from a category label. The final grade is the weaker of the auditor's
-grade and that ceiling. Generation influences which method binds (efficiency);
-whether it binds is decided by gates.
+Trust comes from the gates, not from labels. Re-verification (strength.py)
+acts as a fabrication detector: if an agent's reported outcome disagrees
+with an independent sandbox re-run, the method is rejected.
 """
 from __future__ import annotations
 
@@ -44,11 +42,11 @@ from .discharge import DischargeResult
 from .events import EventLog
 from .instruments import ArtifactStore, PythonSandbox
 from .model import (
-    Obligation, weakest_grade,
+    Obligation,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED,
 )
 from .roles import RoleError
-from .strength import ceiling, reverify
+from .strength import check_fabrication
 
 
 @dataclass
@@ -160,12 +158,17 @@ class BindingGame:
                 rejected[idx] = True
                 continue
 
+            fabrication = self._check_fabrication(result)
+            if fabrication:
+                reason = fabrication
+                self._reject(row, obligation, method, reason)
+                attempt.rejected = reason
+                rejected[idx] = True
+                continue
+
             if result.outcome == OUTCOME_REFUTED:
-                # asymmetric: counterexamples go on record immediately
-                rev = self._reverify(result)
                 return self._settle(row, obligation, attempts, variants,
-                                    method, result, audit=None,
-                                    grade=ceiling(result, rev))
+                                    method, result, audit=None)
 
             verdict = self._gate2(obligation, method, result, attempt)
             if verdict["entails"] != "yes":
@@ -175,12 +178,8 @@ class BindingGame:
                 rejected[idx] = True
                 continue
 
-            rev = self._reverify(result)
-            grade = weakest_grade(
-                [ceiling(result, rev), verdict["grade"]]
-            )
             return self._settle(row, obligation, attempts, variants,
-                                method, result, audit=verdict, grade=grade)
+                                method, result, audit=verdict)
 
     def _exam_feedback(self) -> str:
         import json as _json
@@ -363,7 +362,7 @@ class BindingGame:
                 },
             )
         except RoleError as err:
-            verdict = {"entails": "no", "grade": "",
+            verdict = {"entails": "no",
                        "reason": f"audit failed: {err}"}  # fail-closed
         attempt.audit = verdict
         self.log.append(
@@ -394,7 +393,7 @@ class BindingGame:
         )
 
     def _settle(self, row, obligation, attempts, variants, method, result,
-                audit, grade) -> DischargeResult:
+                audit) -> DischargeResult:
         bound = {"method": method, "audit": audit,
                  "discharge_artifact": result.artifact}
         digest = self._record(obligation, attempts, variants, bound)
@@ -403,21 +402,20 @@ class BindingGame:
         self.log.append(
             "method_bound",
             {"claim": row["id"], "obligation": obligation.id,
-             "procedure": method["procedure"][:80], "grade": grade},
+             "procedure": method["procedure"][:80]},
         )
         return DischargeResult(
             outcome=result.outcome,
             witness=result.witness,
             artifact=digest,
             instrument=method["procedure"][:80],
-            grade=grade,
         )
 
-    def _reverify(self, result: DischargeResult) -> Optional[DischargeResult]:
+    def _check_fabrication(self, result: DischargeResult) -> Optional[str]:
         content = self.artifacts.get(result.artifact)
         if content is None:
             return None
-        return reverify(result, content, self.sandbox)
+        return check_fabrication(content, result.outcome, self.sandbox)
 
     def _fail(self, row, obligation, attempts, variants, reason) -> DischargeResult:
         digest = self._record(obligation, attempts, variants, None)
@@ -426,7 +424,6 @@ class BindingGame:
             witness=reason,
             artifact=digest,
             instrument="binding-game",
-            grade="corroborated",
         )
 
 

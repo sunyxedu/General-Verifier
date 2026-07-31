@@ -16,7 +16,7 @@ from .discharge import SandboxDischarger
 from .events import EventLog
 from .instruments import ArtifactStore, LedgerInstrument, PythonSandbox
 from .model import (
-    Claim, Evidence, Obligation, weakest_grade,
+    Claim, Evidence, Obligation,
     KIND_EFFECT, UNVERIFIED, STALE, REFUTED, PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED,
 )
@@ -94,11 +94,10 @@ class Kernel:
             row["id"],
             {"outcome": OUTCOME_HOLDS if other_row["status"] == "verified"
              else OUTCOME_REFUTED,
-             "instrument": "dedup", "source": other,
-             "grade": other_row["grade"]},
+             "instrument": "dedup", "source": other},
         )
         if other_row["status"] == "verified":
-            self.store.set_verified(row["id"], other_row["grade"])
+            self.store.set_verified(row["id"])
         else:
             self.store.set_refuted(row["id"], reason=f"dedup of {other[:12]}")
             self._prune(row["id"])
@@ -125,7 +124,7 @@ class Kernel:
             "discharge",
             {"claim": row["id"], "instrument": self.ledger.name, "outcome": result.outcome},
         )
-        self._settle(row["id"], [result.outcome], ["demonstrated"])
+        self._settle(row["id"], [result.outcome])
 
     # ---- assertion / final ---------------------------------------------------
 
@@ -185,17 +184,15 @@ class Kernel:
             return
 
         outcomes: List[str] = []
-        grades: List[str] = []
         refuting_witness = None
         for obligation in obligations:
-            outcome, grade = self._discharge(row, obligation)
+            outcome = self._discharge(row, obligation)
             outcomes.append(outcome)
-            grades.append(grade)
             if outcome == OUTCOME_REFUTED:
                 ev = self.store.evidence_for(row["id"])
                 refuting_witness = ev[-1].get("witness") if ev else None
                 break
-        self._settle(row["id"], outcomes, grades)
+        self._settle(row["id"], outcomes)
 
         if self.memory is not None:
             status = self.store.status(row["id"])
@@ -227,7 +224,7 @@ class Kernel:
         )
         return kept, dropped
 
-    def _discharge(self, row: Dict, obligation: Obligation):
+    def _discharge(self, row: Dict, obligation: Obligation) -> str:
         if self.binder is not None:
             result = self.binder.run(row, obligation)
         else:
@@ -248,7 +245,6 @@ class Kernel:
                 "outcome": result.outcome,
                 "artifact": result.artifact,
                 "witness": result.witness,
-                "grade": result.grade,
                 "evidence_id": evidence.id,
             },
         )
@@ -257,23 +253,19 @@ class Kernel:
             {"claim": row["id"], "obligation": obligation.id,
              "instrument": result.instrument, "outcome": result.outcome},
         )
-        return result.outcome, result.grade
+        return result.outcome
 
     # ---- settlement ----------------------------------------------------------
 
-    def _settle(self, claim_id: str, outcomes: List[str],
-                grades: List[str]) -> None:
+    def _settle(self, claim_id: str, outcomes: List[str]) -> None:
         if any(o == OUTCOME_REFUTED for o in outcomes):
             self.store.set_refuted(claim_id, reason="counterexample on record")
             new_status = "refuted"
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes:
-            self.store.set_verified(claim_id, weakest_grade(grades))
+            self.store.set_verified(claim_id)
             new_status = "verified"
         elif any(o == OUTCOME_HOLDS for o in outcomes):
-            holds_grades = [
-                g for o, g in zip(outcomes, grades) if o == OUTCOME_HOLDS
-            ]
-            self.store.set_partial(claim_id, weakest_grade(holds_grades))
+            self.store.set_partial(claim_id)
             new_status = "partial"
         else:
             new_status = UNVERIFIED

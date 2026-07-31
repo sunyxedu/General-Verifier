@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS claims (
     branch  TEXT,
     revises TEXT,
     status  TEXT NOT NULL DEFAULT 'unverified',
-    grade   TEXT,
     reason  TEXT
 );
 CREATE TABLE IF NOT EXISTS deps (
@@ -104,33 +103,28 @@ class ClaimStore:
         row = self._row(claim_id)
         return row["status"]
 
-    def grade(self, claim_id: str) -> Optional[str]:
-        return self._row(claim_id)["grade"]
-
-    def set_verified(self, claim_id: str, grade: str) -> None:
-        self._transition(claim_id, VERIFIED, allowed={UNVERIFIED, STALE, PARTIAL}, grade=grade)
+    def set_verified(self, claim_id: str) -> None:
+        self._transition(claim_id, VERIFIED, allowed={UNVERIFIED, STALE, PARTIAL})
 
     def set_refuted(self, claim_id: str, reason: str) -> None:
         self._transition(claim_id, REFUTED, allowed={UNVERIFIED, STALE, PARTIAL}, reason=reason)
 
-    def set_partial(self, claim_id: str, grade: str) -> None:
-        self._transition(claim_id, PARTIAL, allowed={UNVERIFIED, STALE, PARTIAL}, grade=grade)
+    def set_partial(self, claim_id: str) -> None:
+        self._transition(claim_id, PARTIAL, allowed={UNVERIFIED, STALE, PARTIAL})
 
-    def _transition(self, claim_id, new, allowed, grade=None, reason=None):
+    def _transition(self, claim_id, new, allowed, reason=None):
         current = self.status(claim_id)
         if current not in allowed:
             raise IllegalTransition(f"{current} -> {new} not allowed")
         self.db.execute(
-            "UPDATE claims SET status=?, grade=?, reason=? WHERE id=?",
-            (new, grade, reason, claim_id),
+            "UPDATE claims SET status=?, reason=? WHERE id=?",
+            (new, reason, claim_id),
         )
         self.db.commit()
 
     def _mark_stale_cone(self, claim_id: str) -> None:
-        """Revision semantics (§14): predecessor and everything downstream of it
-        lose their verification status — the mechanical form of 'blast radius'."""
         for cid in [claim_id, *self.downstream(claim_id)]:
-            self.db.execute("UPDATE claims SET status=?, grade=NULL WHERE id=?", (STALE, cid))
+            self.db.execute("UPDATE claims SET status=? WHERE id=?", (STALE, cid))
 
     # ---- evidence ------------------------------------------------------------
 
@@ -190,14 +184,14 @@ class ClaimStore:
 
     def _row(self, claim_id: str) -> Dict:
         cur = self.db.execute(
-            "SELECT id, kind, text, branch, revises, status, grade, reason "
+            "SELECT id, kind, text, branch, revises, status, reason "
             "FROM claims WHERE id=?",
             (claim_id,),
         )
         row = cur.fetchone()
         if row is None:
             raise UnknownDependency(f"{claim_id[:12]}… not in store")
-        keys = ("id", "kind", "text", "branch", "revises", "status", "grade", "reason")
+        keys = ("id", "kind", "text", "branch", "revises", "status", "reason")
         return dict(zip(keys, row))
 
     def parents(self, claim_id: str) -> List[str]:

@@ -32,20 +32,6 @@ REFUTED = "refuted"
 STALE = "stale"
 PARTIAL = "partial"
 
-# evidence grades, strongest first (§14: overall = weakest link)
-GRADES = ("proven", "demonstrated", "corroborated")
-
-
-def grade_rank(grade: str) -> int:
-    return GRADES.index(grade)
-
-
-def weakest_grade(grades) -> Optional[str]:
-    grades = [g for g in grades if g is not None]
-    if not grades:
-        return None
-    return max(grades, key=grade_rank)
-
 
 @dataclass(frozen=True)
 class Claim:

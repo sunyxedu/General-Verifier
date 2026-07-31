@@ -3,14 +3,12 @@
 Two seats for the same contract:
 
 - SandboxDischarger (M0): a role writes a check program, the kernel runs it
-  mechanically in the python sandbox. The verdict comes from deterministic
-  execution, so it grades `demonstrated`.
+  mechanically in the python sandbox.
 
 - AgentDischarger: a Claude Agent SDK agent executes the check itself and
   reports outcome/witness plus on-disk artifacts, which we snapshot into the
-  content-addressed store. The outcome is agent-REPORTED — generation, not
-  mechanics — so it honestly grades `corroborated` until an independent audit
-  (M1 gate 2) re-checks the artifacts. Grades never overstate provenance.
+  content-addressed store. Re-verification (strength.py) independently re-runs
+  any extractable check script as a fabrication detector.
 """
 from __future__ import annotations
 
@@ -31,13 +29,10 @@ class DischargeResult:
     witness: Optional[Any]
     artifact: str                # digest in the artifact store
     instrument: str
-    grade: str                   # demonstrated | corroborated
 
 
 class SandboxDischarger:
     """write_check role -> python sandbox -> mechanical verdict."""
-
-    grade = "demonstrated"
 
     def __init__(self, backend, sandbox: PythonSandbox, artifacts: ArtifactStore,
                  role: Role = WRITE_CHECK):
@@ -63,7 +58,6 @@ class SandboxDischarger:
             witness=result.witness,
             artifact=digest,
             instrument=self.sandbox.name,
-            grade=self.grade,
         )
 
 
@@ -74,7 +68,6 @@ class AgentDischarger:
     retries) is a FAILED discharge, on record — never a pass.
     """
 
-    grade = "corroborated"
     instrument = "agent:discharge"
 
     def __init__(self, backend, artifacts: ArtifactStore,
@@ -121,7 +114,7 @@ class AgentDischarger:
             )
             self._maybe_cleanup(workdir)
             return DischargeResult(OUTCOME_FAILED, str(err), digest,
-                                   self.instrument, self.grade)
+                                   self.instrument)
 
         digest = self.artifacts.put(
             {
@@ -136,7 +129,6 @@ class AgentDischarger:
             witness=payload["witness"] or None,
             artifact=digest,
             instrument=self.instrument,
-            grade=self.grade,
         )
 
     def _maybe_cleanup(self, workdir: str) -> None:
