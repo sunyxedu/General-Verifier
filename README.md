@@ -7,7 +7,6 @@ Two founding questions: (1) a verifier that only reasons cannot verify claims th
 interacting with the environment; (2) if the verifier uses a verification method you never
 intended it to use, "passed" does not mean "correct".
 
-Design document: `Test-time Verification 技术报告.pdf` (v0.3.1, HTML source `report/report.html`).
 **Hard constraint**: every prompt template under `verifier/` carries zero domain knowledge —
 domain content only emerges at runtime (environment probing, the model's latent knowledge,
 memory retrieval); correctness is guarded entirely by mechanical gates
