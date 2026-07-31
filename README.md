@@ -51,37 +51,6 @@ solver (stock Claude Code) ──MCP stdio──> sidecar (verifier/sidecar.py)
   registry — with mechanical retrieval (bigram Jaccard), injected only into prompt
   slots: hits make the system faster, and can never let a wrong claim verify as right.
 
-## Validity experiment (experiments/results/README.md)
-
-12 true/false math claims, verifier arm vs same-model direct-judge arm: the verifier
-scored **0 false passes / 0 false alarms / 0 abstentions, 12/12** — all 6 false claims
-refuted with counterexamples, all 6 true claims verified (4 of them proven: Lean
-formalization / sympy recomputation that passed the entailment audit). The three
-mechanism fixes — obligation-pattern transport in the discrimination exam, exam-question
-audit with reject-and-regenerate, and the world-checkable obligation contract — were all
-driven out by this experiment.
-
-## Usage
-
-```bash
-# Tests (120 offline; live acceptance with GV_LIVE=1 spends real tokens)
-.venv/bin/python -m pytest
-GV_LIVE=1 .venv/bin/python -m pytest tests/test_agents_live.py tests/test_sidecar_live.py
-
-# sidecar: mount from the solver side via .mcp.json
-# {"mcpServers": {"gv": {"type": "stdio", "command": ".venv/bin/python",
-#   "args": ["-m", "verifier.sidecar", "--state-dir", ".gv", "--memory-dir", ".gv-mem"]}}}
-# solver protocol text (put into CLAUDE.md, advisory): protocol/solver-protocol.md
-# hooks that capture tool events: hooks/pre_tool_use.py, hooks/post_tool_use.py
-
-# CI certification gate (consumer-side enforcement: exit code 1 unless the verdict is verified)
-.venv/bin/python -m verifier.cli certify --events trace.jsonl --state-dir .gv-ci
-.venv/bin/python -m verifier.cli replay --events trace.jsonl   # LLM-free state replay
-
-# Validity experiment (false-pass rate vs LLM direct judge)
-.venv/bin/python experiments/false_pass.py --out experiments/results/run1
-```
-
 ## Module map
 
 | Module | Report section | Contents |
