@@ -12,7 +12,7 @@ import sqlite3
 from typing import Callable, Dict, List, Optional, Set
 
 from .model import (
-    Claim, UNVERIFIED, VERIFIED, REFUTED, STALE, KINDS,
+    Claim, UNVERIFIED, VERIFIED, REFUTED, STALE, PARTIAL, KINDS,
 )
 
 TriggerCallback = Callable[[str], None]
@@ -108,10 +108,13 @@ class ClaimStore:
         return self._row(claim_id)["grade"]
 
     def set_verified(self, claim_id: str, grade: str) -> None:
-        self._transition(claim_id, VERIFIED, allowed={UNVERIFIED, STALE}, grade=grade)
+        self._transition(claim_id, VERIFIED, allowed={UNVERIFIED, STALE, PARTIAL}, grade=grade)
 
     def set_refuted(self, claim_id: str, reason: str) -> None:
-        self._transition(claim_id, REFUTED, allowed={UNVERIFIED, STALE}, reason=reason)
+        self._transition(claim_id, REFUTED, allowed={UNVERIFIED, STALE, PARTIAL}, reason=reason)
+
+    def set_partial(self, claim_id: str, grade: str) -> None:
+        self._transition(claim_id, PARTIAL, allowed={UNVERIFIED, STALE, PARTIAL}, grade=grade)
 
     def _transition(self, claim_id, new, allowed, grade=None, reason=None):
         current = self.status(claim_id)

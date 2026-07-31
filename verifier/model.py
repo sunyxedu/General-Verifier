@@ -30,6 +30,7 @@ UNVERIFIED = "unverified"
 VERIFIED = "verified"
 REFUTED = "refuted"
 STALE = "stale"
+PARTIAL = "partial"
 
 # evidence grades, strongest first (§14: overall = weakest link)
 GRADES = ("proven", "demonstrated", "corroborated")

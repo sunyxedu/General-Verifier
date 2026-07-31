@@ -40,6 +40,20 @@ from .tail import Tail
 
 VERB_ERRORS = (TraceError, UnknownDependency, RoleError, ValueError)
 
+
+def _extract_obligations(evidence: list) -> list:
+    """Build obligation-level detail from discharge evidence records."""
+    detail = []
+    for ev in evidence:
+        if "obligation" not in ev or "outcome" not in ev:
+            continue
+        entry = {"text": ev["obligation"], "outcome": ev["outcome"],
+                 "grade": ev.get("grade")}
+        if ev.get("witness") and ev["outcome"] != "holds":
+            entry["reason"] = str(ev["witness"])
+        detail.append(entry)
+    return detail
+
 HOOK_FEED = "hook_feed.jsonl"
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 
@@ -113,8 +127,12 @@ class Sidecar:
             status = self.kernel.verify(claim_id)
         except VERB_ERRORS as err:
             return {"error": str(err)}
-        return {"claim_id": claim_id, "status": status,
-                "grade": self.store.grade(claim_id)}
+        result = {"claim_id": claim_id, "status": status,
+                  "grade": self.store.grade(claim_id)}
+        if status == "partial":
+            result["obligations"] = _extract_obligations(
+                self.store.evidence_for(claim_id))
+        return result
 
     def certificate(self, final_label: str) -> Dict[str, Any]:
         self.drain_hooks()
@@ -124,14 +142,20 @@ class Sidecar:
                                        self.artifacts, final_id)
         except VERB_ERRORS as err:
             return {"error": str(err)}
+        slice_summary = []
+        for e in cert["slice"]:
+            entry = {"text": e["text"], "status": e["status"],
+                     "grade": e["grade"]}
+            if e["status"] == "partial":
+                obligations = _extract_obligations(e.get("evidence", []))
+                if obligations:
+                    entry["obligations"] = obligations
+            slice_summary.append(entry)
         return {
             "verdict": cert["verdict"],
             "overall_grade": cert["overall_grade"],
             "certificate_id": cert["certificate_id"],
-            "slice": [
-                {"text": e["text"], "status": e["status"], "grade": e["grade"]}
-                for e in cert["slice"]
-            ],
+            "slice": slice_summary,
         }
 
     def status(self, label: Optional[str] = None) -> Dict[str, Any]:
@@ -142,7 +166,11 @@ class Sidecar:
             except TraceError as err:
                 return {"error": str(err)}
             row = self.store.get(claim_id)
-            return {k: row[k] for k in ("id", "kind", "text", "status", "grade")}
+            result = {k: row[k] for k in ("id", "kind", "text", "status", "grade")}
+            if row["status"] == "partial":
+                result["obligations"] = _extract_obligations(
+                    self.store.evidence_for(claim_id))
+            return result
         return {
             label: self.store.status(cid)
             for label, cid in self.builder.labels.items()

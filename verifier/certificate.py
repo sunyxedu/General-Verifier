@@ -13,7 +13,7 @@ from typing import Dict
 from .events import EventLog
 from .instruments import ArtifactStore
 from .kernel import Kernel
-from .model import UNVERIFIED, STALE, VERIFIED, REFUTED, weakest_grade
+from .model import UNVERIFIED, STALE, VERIFIED, REFUTED, PARTIAL, weakest_grade
 from .store import ClaimStore
 
 
@@ -49,13 +49,16 @@ def request_certificate(
         verdict = "refuted"
     elif any(s in (UNVERIFIED, STALE) for s in statuses):
         verdict = "unverified"
+    elif any(s == PARTIAL for s in statuses):
+        verdict = "partial"
     else:
         verdict = "verified"
 
     certificate = {
         "final": final_id,
         "verdict": verdict,
-        "overall_grade": weakest_grade(grades) if verdict == "verified" else None,
+        "overall_grade": (weakest_grade(grades)
+                          if verdict in ("verified", "partial") else None),
         "slice": entries,
     }
     digest = artifacts.put(certificate)

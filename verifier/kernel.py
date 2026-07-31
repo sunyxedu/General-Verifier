@@ -17,7 +17,7 @@ from .events import EventLog
 from .instruments import ArtifactStore, LedgerInstrument, PythonSandbox
 from .model import (
     Claim, Evidence, Obligation, weakest_grade,
-    KIND_EFFECT, UNVERIFIED, STALE, REFUTED,
+    KIND_EFFECT, UNVERIFIED, STALE, REFUTED, PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED,
 )
 from .roles import COMPILE_OBLIGATIONS
@@ -72,7 +72,7 @@ class Kernel:
     def verify(self, claim_id: str) -> str:
         """Verify one claim; returns its resulting status. Idempotent."""
         row = self.store.get(claim_id)
-        if row["status"] not in (UNVERIFIED, STALE):
+        if row["status"] not in (UNVERIFIED, STALE, PARTIAL):
             return row["status"]
         if row["kind"] != KIND_EFFECT and self._dedup(row):
             return self.store.status(claim_id)
@@ -125,7 +125,7 @@ class Kernel:
             "discharge",
             {"claim": row["id"], "instrument": self.ledger.name, "outcome": result.outcome},
         )
-        self._settle(row["id"], [result.outcome], grade="demonstrated")
+        self._settle(row["id"], [result.outcome], ["demonstrated"])
 
     # ---- assertion / final ---------------------------------------------------
 
@@ -191,12 +191,11 @@ class Kernel:
             outcome, grade = self._discharge(row, obligation)
             outcomes.append(outcome)
             grades.append(grade)
-            if outcome != OUTCOME_HOLDS:
-                if outcome == OUTCOME_REFUTED:
-                    ev = self.store.evidence_for(row["id"])
-                    refuting_witness = ev[-1].get("witness") if ev else None
-                break  # refuted or failed: no point burning further checks
-        self._settle(row["id"], outcomes, grade=weakest_grade(grades))
+            if outcome == OUTCOME_REFUTED:
+                ev = self.store.evidence_for(row["id"])
+                refuting_witness = ev[-1].get("witness") if ev else None
+                break
+        self._settle(row["id"], outcomes, grades)
 
         if self.memory is not None:
             status = self.store.status(row["id"])
@@ -262,15 +261,22 @@ class Kernel:
 
     # ---- settlement ----------------------------------------------------------
 
-    def _settle(self, claim_id: str, outcomes: List[str], grade: str) -> None:
+    def _settle(self, claim_id: str, outcomes: List[str],
+                grades: List[str]) -> None:
         if any(o == OUTCOME_REFUTED for o in outcomes):
             self.store.set_refuted(claim_id, reason="counterexample on record")
             new_status = "refuted"
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes:
-            self.store.set_verified(claim_id, grade)
+            self.store.set_verified(claim_id, weakest_grade(grades))
             new_status = "verified"
+        elif any(o == OUTCOME_HOLDS for o in outcomes):
+            holds_grades = [
+                g for o, g in zip(outcomes, grades) if o == OUTCOME_HOLDS
+            ]
+            self.store.set_partial(claim_id, weakest_grade(holds_grades))
+            new_status = "partial"
         else:
-            new_status = UNVERIFIED  # failed discharge: stays unverified, on record
+            new_status = UNVERIFIED
         self.log.append("status_change", {"claim": claim_id, "status": new_status})
         if new_status == "refuted":
             self._prune(claim_id)
