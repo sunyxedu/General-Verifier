@@ -84,10 +84,8 @@ class Memory:
             "evidence": evidence, "kind": kind,
         })
 
-    def record_instrument(self, instrument_id: str, evidence_kind: str,
-                          procedure: str) -> bool:
+    def record_instrument(self, procedure: str) -> bool:
         return self._append("instruments", {
-            "instrument_id": instrument_id, "evidence_kind": evidence_kind,
             "procedure": procedure,
         })
 
@@ -110,7 +108,5 @@ class Memory:
                           ensure_ascii=False)
 
     def registry_summary(self, k: int = 10) -> str:
-        seen: Dict[str, dict] = {}
-        for r in self._records["instruments"]:
-            seen[r["instrument_id"]] = r        # newest wins
-        return json.dumps(list(seen.values())[-k:], ensure_ascii=False)
+        return json.dumps(self._records["instruments"][-k:],
+                          ensure_ascii=False)

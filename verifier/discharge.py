@@ -104,13 +104,11 @@ class AgentDischarger:
             "procedure": "no bound method (oracle binding arrives in M1): "
                          "choose the strongest reachable check yourself, and "
                          "write the check script and its complete output to disk",
-            "instrument_id": "self-selected",
         }
         variables = {
             "claim_text": row["text"],
             "obligation_text": obligation.text,
             "procedure": method["procedure"],
-            "instrument_id": method["instrument_id"],
             "workdir": workdir,
             "toolchain_dir": self.toolchain_dir,
         }

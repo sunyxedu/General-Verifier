@@ -1,15 +1,15 @@
-"""Binding game (M1, report §7/§8): strength-first method binding, two gates.
+"""Binding game (M1, report §7/§8): method binding with two gates.
 
 Per obligation:
 
 1. Enumerate candidate methods (oracles agent probes the environment; a
    not-installed instrument is a one-time cost, not a boundary). Methods are
-   mechanically re-sorted strongest evidence kind first — the agent's own
-   ordering is advisory only.
+   tried in the oracle's returned order — the oracle is prompted to rank by
+   strength, and its ordering only affects efficiency, never correctness.
 2. Generate the exam: wrong variants of the claim, each self-confirmed false
    by the generator (with a disproof on record). No exam -> nothing can bind
    (fail-closed).
-3. For each method, strongest reachable first:
+3. For each method in order:
    - Gate 1 (discrimination): run the method's discharge against every false
      variant. It must refute ALL of them; a single "holds" is a false pass
      and rejects the method; a "failed" means it could not sit the exam.
@@ -23,10 +23,11 @@ Per obligation:
      entails=no -> downgrade.
 4. All candidates exhausted -> failed, with every attempt on record.
 
-Grades are mechanical: evidence_kind gives a ceiling (formal->proven,
-execute/rederive->demonstrated, search/text->corroborated); the final grade is
-the weaker of the auditor's grade and that ceiling. Generation influences
-which method binds (efficiency); whether it binds is decided by gates.
+Grades are earned, not declared: the ceiling comes from the mechanical
+properties of the discharge (discharger type + independent re-verification),
+not from a category label. The final grade is the weaker of the auditor's
+grade and that ceiling. Generation influences which method binds (efficiency);
+whether it binds is decided by gates.
 """
 from __future__ import annotations
 
@@ -41,22 +42,13 @@ from .agents import (
 )
 from .discharge import DischargeResult
 from .events import EventLog
-from .instruments import ArtifactStore
+from .instruments import ArtifactStore, PythonSandbox
 from .model import (
     Obligation, weakest_grade,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED,
 )
 from .roles import RoleError
-
-# strength order, strongest first (report §7: strength-first)
-KIND_RANK = {"formal": 0, "execute": 1, "rederive": 2, "search": 3, "text": 4}
-GRADE_CEILING = {
-    "formal": "proven",
-    "execute": "demonstrated",
-    "rederive": "demonstrated",
-    "search": "corroborated",
-    "text": "corroborated",
-}
+from .strength import ceiling, reverify
 
 
 @dataclass
@@ -76,6 +68,7 @@ class BindingGame:
         artifacts: ArtifactStore,
         log: EventLog,
         discharger,
+        sandbox: PythonSandbox = None,
         oracles_role=ENUMERATE_ORACLES_AGENT,
         variants_role=GENERATE_VARIANTS_AGENT,
         entailment_role=ENTAILMENT_AUDIT_AGENT,
@@ -90,6 +83,7 @@ class BindingGame:
         self.artifacts = artifacts
         self.log = log
         self.discharger = discharger
+        self.sandbox = sandbox or PythonSandbox()
         self.oracles_role = oracles_role
         self.variants_role = variants_role
         self.entailment_role = entailment_role
@@ -168,9 +162,10 @@ class BindingGame:
 
             if result.outcome == OUTCOME_REFUTED:
                 # asymmetric: counterexamples go on record immediately
+                rev = self._reverify(result)
                 return self._settle(row, obligation, attempts, variants,
                                     method, result, audit=None,
-                                    grade=GRADE_CEILING[method["evidence_kind"]])
+                                    grade=ceiling(result, rev))
 
             verdict = self._gate2(obligation, method, result, attempt)
             if verdict["entails"] != "yes":
@@ -180,8 +175,9 @@ class BindingGame:
                 rejected[idx] = True
                 continue
 
+            rev = self._reverify(result)
             grade = weakest_grade(
-                [GRADE_CEILING[method["evidence_kind"]], verdict["grade"]]
+                [ceiling(result, rev), verdict["grade"]]
             )
             return self._settle(row, obligation, attempts, variants,
                                 method, result, audit=verdict, grade=grade)
@@ -210,16 +206,12 @@ class BindingGame:
                             {"claim": row["id"], "obligation": obligation.id,
                              "error": str(err)})
             return []
-        methods = [
-            m for m in payload["methods"] if m["evidence_kind"] in KIND_RANK
-        ]
-        methods.sort(key=lambda m: KIND_RANK[m["evidence_kind"]])
-        methods = methods[: self.max_methods]
+        methods = payload["methods"][: self.max_methods]
         self.log.append(
             "methods_enumerated",
             {"claim": row["id"], "obligation": obligation.id,
-             "methods": [{"instrument_id": m["instrument_id"],
-                          "evidence_kind": m["evidence_kind"]} for m in methods]},
+             "methods": [{"procedure": m["procedure"][:80]}
+                         for m in methods]},
         )
         return methods
 
@@ -300,17 +292,16 @@ class BindingGame:
             self.log.append(
                 "discrimination",
                 {"claim": row["id"], "obligation": obligation.id,
-                 "instrument_id": method["instrument_id"],
+                 "procedure": method["procedure"][:80],
                  "variant": variant["text"], "outcome": result.outcome},
             )
             if result.outcome == OUTCOME_HOLDS:
                 if not self._audit_variant(row, obligation, variant):
                     continue   # question disqualified, not the method's fault
                 if self.memory is not None:
-                    # yesterday's escape becomes tomorrow's exam question
                     self.memory.record_attack(
                         row["text"], variant["text"],
-                        f"false-passed by {method['instrument_id']}",
+                        f"false-passed by method: {method['procedure'][:60]}",
                         kind="false_pass_caught")
                 return "false pass on a known-false variant"
             if result.outcome == OUTCOME_FAILED:
@@ -378,7 +369,7 @@ class BindingGame:
         self.log.append(
             "entailment_audit",
             {"obligation": obligation.id,
-             "instrument_id": method["instrument_id"], **verdict},
+             "procedure": method["procedure"][:80], **verdict},
         )
         return verdict
 
@@ -388,7 +379,7 @@ class BindingGame:
         self.log.append(
             "method_rejected",
             {"claim": row["id"], "obligation": obligation.id,
-             "instrument_id": method["instrument_id"], "reason": reason},
+             "procedure": method["procedure"][:80], "reason": reason},
         )
 
     def _record(self, obligation, attempts, variants, bound) -> str:
@@ -408,22 +399,25 @@ class BindingGame:
                  "discharge_artifact": result.artifact}
         digest = self._record(obligation, attempts, variants, bound)
         if self.memory is not None:
-            self.memory.record_instrument(
-                method["instrument_id"], method["evidence_kind"],
-                method["procedure"])
+            self.memory.record_instrument(method["procedure"])
         self.log.append(
             "method_bound",
             {"claim": row["id"], "obligation": obligation.id,
-             "instrument_id": method["instrument_id"],
-             "evidence_kind": method["evidence_kind"], "grade": grade},
+             "procedure": method["procedure"][:80], "grade": grade},
         )
         return DischargeResult(
             outcome=result.outcome,
             witness=result.witness,
             artifact=digest,
-            instrument=method["instrument_id"],
+            instrument=method["procedure"][:80],
             grade=grade,
         )
+
+    def _reverify(self, result: DischargeResult) -> Optional[DischargeResult]:
+        content = self.artifacts.get(result.artifact)
+        if content is None:
+            return None
+        return reverify(result, content, self.sandbox)
 
     def _fail(self, row, obligation, attempts, variants, reason) -> DischargeResult:
         digest = self._record(obligation, attempts, variants, None)

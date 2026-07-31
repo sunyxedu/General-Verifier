@@ -28,14 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .roles import RoleError, validate
-
-try:  # the SDK is optional at import time so the offline kernel still runs
-    from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
-
-    SDK_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised only without the SDK
-    SDK_AVAILABLE = False
-
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 class _TransientSDKError(RuntimeError):
     """Infrastructure failure worth backing off and retrying (internal)."""
@@ -118,8 +111,6 @@ class AgentBackend:
         model: Optional[str] = None,
         permission_mode: str = "bypassPermissions",
     ):
-        if not SDK_AVAILABLE:
-            raise RoleError("claude-agent-sdk is not installed")
         self.roles = dict(roles) if roles is not None else dict(ALL_AGENT_ROLES)
         self.cwd = cwd
         self.model = model
@@ -247,7 +238,6 @@ class AgentBackend:
 # the agent can probe, from the model's latent knowledge, and from retrieved
 # memory — never from text written here.
 
-EVIDENCE_KINDS = ("text", "rederive", "execute", "search", "formal")
 OUTCOMES = ("holds", "refuted", "failed")
 GRADES_OR_EMPTY = ("proven", "demonstrated", "corroborated", "")
 
@@ -298,12 +288,10 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
         "Claim: {claim_text}\n"
         "Obligation: {obligation_text}\n"
         "Claim features: {features}\n"
-        "Instruments known to be ready (may be empty): {registry}\n\n"
+        "Methods known to work (may be empty): {registry}\n\n"
         "Enumerate all methods that can check this obligation, ordered by "
         "evidence strength, strongest first. For each method give:\n"
-        "  procedure: concretely how to do it\n"
-        "  instrument_id: the instrument it depends on (confirmed by probing)\n"
-        "  evidence_kind: the kind of evidence\n"
+        "  procedure: concretely how to do it (including what tool/library to use)\n"
         "  artifact: what auditable evidence the method produces\n"
         "  failure_looks_like: what the failure evidence looks like when this "
         "method finds a problem"
@@ -312,8 +300,6 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
         "methods": [
             {
                 "procedure": str,
-                "instrument_id": str,
-                "evidence_kind": EVIDENCE_KINDS,
                 "artifact": str,
                 "failure_looks_like": str,
             }
@@ -401,8 +387,7 @@ DISCHARGE_AGENT = AgentRole(
     ),
     template=(
         "Claim: {claim_text}\nObligation: {obligation_text}\n"
-        "Bound method: {procedure}\nInstrument: {instrument_id}\nWorking "
-        "directory: {workdir}\n"
+        "Bound method: {procedure}\nWorking directory: {workdir}\n"
         "Toolchain directory: {toolchain_dir} (install heavyweight "
         "dependencies and project scaffolding here, shared and reused across "
         "checks; the working directory holds only this check's scripts and "
