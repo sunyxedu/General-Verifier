@@ -34,9 +34,10 @@ on it — a solver that ignores the protocol simply gets no certificate, never a
 ## Wrap-up
 
 - After committing `final`, call `gv.certificate(final_label=...)`.
-- The verdict has exactly three honest values: `verified` (with overall_grade),
-  `unverified` (unresolved residue, with reasons), `refuted` (a counterexample exists on
-  the slice). Relay the verdict and certificate_id verbatim to the user/CI; do not
-  paraphrase them into anything beyond plain pass/fail wording.
+- The verdict has exactly four honest values: `verified` (every obligation on the slice
+  holds), `partial` (some hold, some could not be discharged), `unverified` (unresolved
+  residue, with reasons), `refuted` (a counterexample exists on the slice). Relay the
+  verdict and certificate_id verbatim to the user/CI; do not paraphrase them into
+  anything beyond plain pass/fail wording.
 - `unverified` is not a failure — it means "couldn't be verified": you can add supporting
   grounds and resubmit with a revise.

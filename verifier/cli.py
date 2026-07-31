@@ -3,11 +3,11 @@
 The solver is never forced to verify; the CONSUMER refuses to merge without a
 certificate. This CLI is that refusal, shaped for CI:
 
-  python -m verifier.cli certify --events trace.jsonl --state-dir .gv-ci \
+  uv run python -m verifier.cli certify --events trace.jsonl --state-dir .gv-ci \
       [--final F] [--seats agent] [--model m] [--no-game]
   -> exit 0 iff the verdict is `verified`; prints the certificate summary.
 
-  python -m verifier.cli replay --events trace.jsonl
+  uv run python -m verifier.cli replay --events trace.jsonl
   -> LLM-free: rebuilds the claim graph and prints label -> status.
 """
 from __future__ import annotations
@@ -19,11 +19,11 @@ import shutil
 import sys
 from typing import Optional
 
-from .builder import Builder
-from .certificate import request_certificate
-from .events import EventLog
+from .stream.builder import Builder
+from .engine.certificate import request_certificate
+from .core.events import EventLog
 from .sidecar import Sidecar
-from .store import ClaimStore
+from .core.store import ClaimStore
 
 
 def certify(events_path: str, state_dir: str, final_label: Optional[str] = None,

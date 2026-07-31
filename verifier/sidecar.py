@@ -1,7 +1,7 @@
 """Sidecar MCP service (report §11): the verifier as a separate process.
 
 The solver stays a vanilla Claude Code session; it mounts this server over
-stdio and gets three verbs — commit, verify, certificate — plus status. Every
+stdio and gets five verbs — commit, verify, certificate, status, branches. Every
 call is an event in the sidecar's own append-only log, verification runs
 inside the sidecar (through the same kernel as offline replay, zero changes),
 and the certificate returns to the solver over MCP; only CI bypasses it via
@@ -15,12 +15,12 @@ seq itself. The feed is drained before every MCP verb so effect claims are
 referenceable (`effect:<seq>`) at commit time.
 
 Run:
-  python -m verifier.sidecar --state-dir .gv [--model m] [--seats agent|sandbox]
+  uv run python -m verifier.sidecar --state-dir .gv [--model m] [--seats agent|sandbox]
       [--game/--no-game] [--coverage/--no-coverage]
 
 Claude Code config (.mcp.json):
-  {"mcpServers": {"gv": {"type": "stdio", "command": ".venv/bin/python",
-                          "args": ["-m", "verifier.sidecar", "--state-dir", ".gv"]}}}
+  {"mcpServers": {"gv": {"type": "stdio", "command": "uv",
+                          "args": ["run", "python", "-m", "verifier.sidecar", "--state-dir", ".gv"]}}}
 """
 from __future__ import annotations
 
@@ -29,14 +29,14 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-from .builder import Builder, TraceError
-from .certificate import request_certificate
-from .events import EventLog
-from .instruments import ArtifactStore
-from .kernel import Kernel
-from .roles import RoleError
-from .store import ClaimStore, UnknownDependency
-from .tail import Tail
+from .stream.builder import Builder, TraceError
+from .engine.certificate import request_certificate
+from .core.events import EventLog
+from .execution.instruments import ArtifactStore
+from .engine.kernel import Kernel
+from .llm.roles import RoleError
+from .core.store import ClaimStore, UnknownDependency
+from .stream.tail import Tail
 
 VERB_ERRORS = (TraceError, UnknownDependency, RoleError, ValueError)
 
@@ -182,12 +182,12 @@ class Sidecar:
 
 def _default_kernel(sc: Sidecar, model, seats, game, coverage) -> Kernel:
     if seats == "agent":
-        from .agents import (
+        from .llm.agents import (
             ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
         )
-        from .coverage import CoverageAudit
-        from .discharge import AgentDischarger
-        from .game import BindingGame
+        from .engine.coverage import CoverageAudit
+        from .execution.discharge import AgentDischarger
+        from .engine.game import BindingGame
 
         backend = AgentBackend(roles=ALL_AGENT_ROLES, cwd=sc.state_dir,
                                model=model)
@@ -204,7 +204,7 @@ def _default_kernel(sc: Sidecar, model, seats, game, coverage) -> Kernel:
                       discharger=discharger, binder=binder, coverage=audit,
                       memory=sc.memory)
     if seats == "sandbox":
-        from .roles import OpenAIBackend
+        from .llm.roles import OpenAIBackend
 
         backend = OpenAIBackend(model=model or "gpt-4o")
         return Kernel(sc.store, sc.log, backend, sc.artifacts)

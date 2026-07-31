@@ -1,71 +1,142 @@
-# General Verifier — Test-time Verification
+# General Verifier
 
-A general-verifier meta-harness: it verifies the claims a solver (e.g. Claude Code)
-produces during reasoning — not by "asking the model again", but through an evidence
-chain of **obligation compilation → method-binding game → mechanical execution → dual audits**.
-Two founding questions: (1) a verifier that only reasons cannot verify claims that require
-interacting with the environment; (2) if the verifier uses a verification method you never
-intended it to use, "passed" does not mean "correct".
+A test-time verification harness for LLM solvers (e.g. Claude Code). It verifies the
+claims a solver produces **during** reasoning — not by asking a model for a second
+opinion, but by forcing every claim through an evidence chain that ends in mechanical
+gates, and issuing a certificate a consumer (you, or CI) can refuse to merge without.
 
-**Hard constraint**: every prompt template under `verifier/` carries zero domain knowledge —
-domain content only emerges at runtime (environment probing, the model's latent knowledge,
-memory retrieval); correctness is guarded entirely by mechanical gates
-(overarching principle: generation affects efficiency only, never correctness).
+## Why
 
-## Architecture (fully implemented)
+Two observations drive the design:
+
+1. **Opinions are not evidence.** A verifier that only reasons cannot check claims that
+   require touching the environment — running code, probing what is installed. Roles
+   that must act are agents with tools, not text completions.
+2. **"Passed" must mean what you think it means.** If a claim is checked by a method
+   that cannot tell right from wrong, a pass is worthless. So every method must first
+   pass an exam: it has to reject known-wrong variants of the claim before its verdict
+   on the real claim counts.
+
+Master principle: **LLM generation affects efficiency only, never correctness.** Every
+prompt template under `verifier/` carries zero domain knowledge — domain content emerges
+at runtime (environment probing, the model's knowledge, memory retrieval) — and
+correctness is guarded entirely by mechanical gates. A crash, timeout, or unparseable
+output is always a FAILED check, never a pass (fail-closed).
+
+## How it works
 
 ```
-solver (stock Claude Code) ──MCP stdio──> sidecar (verifier/sidecar.py)
-     └─ hooks ──> hook_feed.jsonl ──tail──> unified event stream events.jsonl (append-only)
-                                                  │ builder (incremental graph building)
-                                                  v
-                claim store (SQLite, content-addressed, state machine, branches/revisions/taint guard)
-                                                  │ single trigger rule:
-                                                  │ "verify an unverified claim the moment it
-                                                  │  gains its first depender"
-                                                  v
-        kernel ── obligation compilation (agent) ─ coverage audit (leak check) ─ binding game ─ settlement
-                     binding game (verifier/game.py, strength-first):
-                     oracle enumeration (agent probes the environment) → mechanical ranking
-                     by evidence strength
-                     → gate 1: discrimination exam (every wrong variant must be rejected)
-                     → discharge (agent truly executes, artifacts snapshotted to disk)
-                     → gate 2: entailment audit (independent agent re-reviews the artifact)
-                     → unreachable/rejected → demote to next-strongest method → failed if exhausted
-                                                  v
-                certificate: dependency-closure slice + evidence chain + freeze
-                verdict ∈ {verified (with weakest level), unverified (with reason), refuted (with counterexample)}
+solver (stock Claude Code) ──MCP──> sidecar ──> append-only event stream
+     └─ hooks: tool calls ──> effect claims          │
+                                                     v
+                          claim store (SQLite, content-addressed, branches/revisions)
+                                                     │
+                     trigger rule: verify a claim the moment it gains its first dependent
+                                                     v
+        kernel: obligations ─> binding game per obligation ─> settlement
+                                                     v
+        certificate: dependency-closure slice + evidence chain
+        verdict ∈ {verified, partial, unverified, refuted}
 ```
 
-- **Dual-track SDK**: roles that act (probe/execute/audit) = Claude Agent SDK agents
-  (`verifier/agents.py`, official `output_format` structured output + hard `tools` panel);
-  plain one-shot LLM calls = OpenAI SDK (`verifier/roles.py`, provider-agnostic).
-- **Level honesty**: mechanical sandbox execution earns `demonstrated`; agent self-reports
-  are capped at `corroborated`; the entailment audit assigns the level and the evidence
-  type sets the ceiling (formal→proven / execute→demonstrated / text→corroborated) —
-  take the weaker of the two; overall = the weakest link of the slice.
-- **Search support (M3)**: the branch is part of a claim's identity; `refuted` hard-kills
-  the downstream cone (event `branch_pruned`, advisory — soundness rests on the taint
-  guard); identical conclusions reached across branches are deduplicated and reuse evidence.
-- **Memory (M4)**: three stores — obligation patterns / attack patterns / instrument
-  registry — with mechanical retrieval (bigram Jaccard), injected only into prompt
-  slots: hits make the system faster, and can never let a wrong claim verify as right.
+1. **Commit.** The solver commits claims (`assertion` / `final`) over MCP; hooks turn
+   its tool calls into `effect` claims. Everything is one append-only JSONL stream —
+   replay of that file is the whole offline mode.
+2. **Trigger.** One scheduling rule: an unverified claim is verified the moment another
+   claim first depends on it.
+3. **Obligations.** An agent compiles the claim into falsifiable obligations (each must
+   state what failure would look like). A coverage audit attacks the obligation *set*:
+   claim-level wrong variants that no obligation rejects reveal holes, and a patch role
+   fills them in.
+4. **Binding game** (per obligation): an oracle agent probes the environment and
+   proposes candidate check methods; each candidate must survive
+   - **gate 1 — discrimination exam**: it must reject every known-wrong variant of the
+     claim (variants are self-confirmed false, with disproofs on record);
+   - **discharge**: the method actually runs; artifacts are snapshotted to a
+     content-addressed store; a fabrication detector independently re-runs any
+     extractable check script in a sandbox and rejects the method on disagreement;
+   - **gate 2 — entailment audit**: an independent agent opens the artifacts and judges
+     whether the evidence really discharges the obligation.
+   A rejected/unreachable method demotes to the next candidate; exhaustion = failed,
+   with every attempt on record.
+5. **Settlement** is honest per claim: any counterexample → `refuted` (and the
+   downstream cone of a refuted claim is hard-killed); all obligations hold →
+   `verified`; a mix → `partial`. The certificate collapses its slice the same way:
+   refuted > unverified > partial > verified.
+
+Design notes:
+
+- **Dual-track SDK**: roles that act (probe / execute / audit) are Claude Agent SDK
+  agents with structured output and a hard tool panel (`verifier/llm/agents.py`); pure
+  text-in/JSON-out roles are one-shot OpenAI SDK calls, provider-agnostic
+  (`verifier/llm/roles.py`).
+- **Search support**: the branch is part of a claim's identity; solvers can explore
+  hypotheses in parallel, `refuted` kills a branch's downstream cone, and identical
+  conclusions reached on different branches deduplicate and reuse evidence.
+- **Memory is advisory only**: three stores (obligation patterns / attack patterns /
+  instrument registry) feed prompt slots via deterministic retrieval. Hits make the
+  system faster; they can never make a wrong claim verify.
+
+## Usage
+
+Managed with [uv](https://docs.astral.sh/uv/) (Python 3.12+). Three third-party
+dependencies — `mcp` (sidecar), `claude-agent-sdk` (agent seats), `openai`
+(one-shot roles):
+
+```bash
+uv sync
+```
+
+Credentials: agent seats go through the Claude Agent SDK (`ANTHROPIC_API_KEY` or an
+authenticated Claude Code environment); one-shot roles use the OpenAI SDK and honor
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` (OpenAI, Anthropic's compat endpoint, local vLLM, …).
+
+### Online — sidecar to a stock Claude Code session
+
+1. **Mount the MCP server** in the solver's project — copy `protocol/mcp.example.json`
+   into `.mcp.json` (if the solver project is not this repo, add
+   `"--project", "/path/to/General-Verifier"` after `"run"`). The solver gets five
+   verbs: `gv.commit`, `gv.verify`, `gv.certificate`, `gv.status`, `gv.branches`.
+   Sidecar flags: `--state-dir` (required), `--seats agent|sandbox`, `--model`,
+   `--no-game`, `--no-coverage`, `--memory-dir`, `--toolchain-dir`.
+2. **Wire the hooks** so tool calls become referenceable effect claims — in the
+   solver's `.claude/settings.json`:
+
+   ```json
+   {"hooks": {
+     "PreToolUse":  [{"matcher": "*", "hooks": [{"type": "command", "command": "python3 hooks/pre_tool_use.py"}]}],
+     "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "python3 hooks/post_tool_use.py"}]}]}}
+   ```
+
+   Hooks append to a raw feed file (`GV_HOOK_FEED`, default `.gv/hook_feed.jsonl`);
+   the sidecar drains it before every MCP verb.
+3. **Give the solver the protocol** — put `protocol/solver-protocol.md` into the
+   solver's CLAUDE.md. It is advisory: a solver that ignores it simply gets no
+   certificate, never a wrong one.
+
+### Offline — CI certificate gate
+
+```bash
+# exit 0 iff the verdict is `verified` (partial/unverified/refuted → 1, no final claim → 2)
+uv run python -m verifier.cli certify --events trace.jsonl --state-dir .gv-ci \
+    [--final F] [--seats agent|sandbox] [--model m] [--no-game]
+
+# LLM-free: rebuild the claim graph from a trace, print label -> status
+uv run python -m verifier.cli replay --events trace.jsonl
+```
+
+Enforcement is inverted: the solver is never forced to verify — the consumer refuses to
+merge without a certificate.
 
 ## Module map
 
-| Module | Report section | Contents |
-|---|---|---|
-| `verifier/model.py` | §14 | content addressing, Claim/Obligation/Evidence, levels |
-| `verifier/events.py` | 5 | unified event stream (append-only JSONL, seq validation) |
-| `verifier/store.py` | 10/12/13 | claim store, single trigger rule, slices, branches/dead branches |
-| `verifier/builder.py` + `tail.py` | 4/6/3 | incremental graph building; torn-line-tolerant online tail |
-| `verifier/roles.py` | 15 | one-shot roles (OpenAI SDK), schema gate |
-| `verifier/agents.py` | 15 | agent roles (Claude Agent SDK), five seats |
-| `verifier/instruments.py` | 25/26 | python sandbox (fail-closed), audit instruments, artifact store |
-| `verifier/discharge.py` | 20 | two discharge seats: sandbox / agent |
-| `verifier/game.py` | 17-19/21 | strength-first binding game, two gates, demotion |
-| `verifier/coverage.py` | 22 | leak check: claim-level variants test the obligation set, fill-in obligations |
-| `verifier/kernel.py` | 14/20/21 | trigger entry, taint guard, settlement, dedup, pruning |
-| `verifier/certificate.py` | 13/23/33 | settlement residue, freeze, honest verdict |
-| `verifier/sidecar.py` + `cli.py` | §11 | MCP service, hook ingestion, CI gate |
-| `verifier/memory.py` | §13 | three stores (advisory only) |
+| Module | Contents |
+|---|---|
+| `verifier/core/` | data contracts: content addressing + status machine (`model.py`), append-only event stream (`events.py`), claim store + single trigger rule + slices/branches (`store.py`) |
+| `verifier/stream/` | ingestion: incremental graph building (`builder.py`), torn-line-tolerant online tail (`tail.py`) |
+| `verifier/llm/` | LLM seats: one-shot roles with schema gate (`roles.py`, OpenAI SDK), acting agent roles (`agents.py`, Claude Agent SDK) |
+| `verifier/execution/` | the hands: python sandbox + artifact store, fail-closed (`instruments.py`), two discharge seats (`discharge.py`), fabrication detector (`strength.py`) |
+| `verifier/engine/` | verification core: trigger entry + settlement + dedup + pruning (`kernel.py`), binding game with two gates (`game.py`), coverage leak check (`coverage.py`), certificate + honest verdict (`certificate.py`) |
+| `verifier/memory.py` | three stores (advisory only) |
+| `verifier/sidecar.py` + `cli.py` | entry points: MCP service + hook ingestion; CI gate |
+| `hooks/` + `protocol/` | solver-side PreToolUse/PostToolUse hooks; MCP mount example + solver protocol |

@@ -21,7 +21,7 @@ import json
 import os
 from typing import Dict, List, Optional
 
-from .model import content_hash
+from .core.model import content_hash
 
 STORES = ("obligations", "attacks", "instruments")
 

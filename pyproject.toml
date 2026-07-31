@@ -1,0 +1,20 @@
+[project]
+name = "general-verifier"
+version = "0.1.0"
+description = "Test-time verification harness: verifies solver claims through mechanical evidence gates"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp",
+    "claude-agent-sdk",
+    "openai",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["verifier"]
