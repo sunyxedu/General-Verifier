@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="900" height="934" viewBox="0 0 900 934" role="img" aria-label="General Verifier architecture" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+  <rect x="0" y="0" width="900" height="934" fill="#fcfcfb"/>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#52514e"/>
+    </marker>
+    <marker id="arb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#898781"/>
+    </marker>
+  </defs>
+
+  <!-- ======== SOLVER ======== -->
+  <rect x="30" y="16" width="840" height="88" rx="10" fill="#fcfcfb" stroke="#898781" stroke-width="1.3"/>
+  <circle cx="52" cy="40" r="9" fill="#0b0b0b"/><text x="52" y="43.5" text-anchor="middle" font-size="10" fill="#ffffff" font-weight="bold">1</text>
+  <text x="70" y="44" font-size="13" font-weight="bold" fill="#0b0b0b">SOLVER — stock Claude Code session</text>
+  <text x="70" y="62" font-size="10" fill="#52514e">works normally with its own tools (Bash, Edit, ...) — nothing about it is modified</text>
+  <rect x="85" y="70" width="160" height="24" rx="5" fill="#fcfcfb" stroke="#b5b3ac" stroke-width="1"/>
+  <text x="165" y="86" text-anchor="middle" font-size="9.5" fill="#0b0b0b">hooks: Pre/PostToolUse</text>
+  <rect x="470" y="70" width="180" height="24" rx="5" fill="#fcfcfb" stroke="#b5b3ac" stroke-width="1"/>
+  <text x="560" y="86" text-anchor="middle" font-size="9.5" fill="#0b0b0b">MCP client: gv.* verbs</text>
+
+  <!-- solver -> feed (straight drop) -->
+  <line x1="165" y1="94" x2="165" y2="166" stroke="#52514e" stroke-width="1.3" marker-end="url(#ar)"/>
+  <circle cx="165" cy="126" r="9" fill="#0b0b0b"/><text x="165" y="129.5" text-anchor="middle" font-size="10" fill="#ffffff" font-weight="bold">2</text>
+  <text x="182" y="123" font-size="9.5" fill="#52514e">every tool call &amp; result,</text>
+  <text x="182" y="135" font-size="9.5" fill="#52514e">as raw JSONL lines</text>
+
+  <!-- solver -> stream (straight drop) -->
+  <line x1="560" y1="94" x2="560" y2="162" stroke="#52514e" stroke-width="1.3" marker-end="url(#ar)"/>
+  <text x="576" y="112" font-size="9.5" fill="#52514e">gv.commit · gv.verify · gv.certificate ·</text>
+  <text x="576" y="124" font-size="9.5" fill="#52514e">gv.status · gv.branches — over stdio;</text>
+  <text x="576" y="136" font-size="9.5" fill="#52514e">state-changing calls become events</text>
+
+  <!-- ======== SIDECAR ======== -->
+  <rect x="30" y="140" width="840" height="650" rx="10" fill="#f9f9f7" stroke="#898781" stroke-width="1.3"/>
+  <text x="54" y="160" font-size="10.5" font-weight="bold" fill="#52514e" letter-spacing="1.5">SIDECAR — THE VERIFIER, A SEPARATE PROCESS</text>
+
+  <!-- hook feed -->
+  <rect x="70" y="172" width="190" height="56" rx="7" fill="#fcfcfb" stroke="#b5b3ac" stroke-width="1.1"/>
+  <text x="165" y="192" text-anchor="middle" font-size="11" font-weight="bold" fill="#0b0b0b">hook feed</text>
+  <text x="165" y="207" text-anchor="middle" font-size="9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#52514e">.gv/hook_feed.jsonl</text>
+  <text x="165" y="220" text-anchor="middle" font-size="8.5" fill="#898781">raw, no seq, many writers</text>
+
+  <!-- feed -> stream -->
+  <line x1="260" y1="200" x2="336" y2="200" stroke="#52514e" stroke-width="1.3" marker-end="url(#ar)"/>
+  <text x="298" y="192" text-anchor="middle" font-size="8.5" fill="#52514e">drained</text>
+
+  <!-- event stream -->
+  <rect x="340" y="166" width="280" height="66" rx="7" fill="#fcfcfb" stroke="#52514e" stroke-width="1.6"/>
+  <circle cx="358" cy="172" r="9" fill="#0b0b0b"/><text x="358" y="175.5" text-anchor="middle" font-size="10" fill="#ffffff" font-weight="bold">3</text>
+  <text x="480" y="188" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#0b0b0b">EVENT STREAM — events.jsonl</text>
+  <text x="480" y="204" text-anchor="middle" font-size="9.5" fill="#52514e">append-only ledger · seq-validated</text>
+  <text x="480" y="217" text-anchor="middle" font-size="9.5" fill="#52514e">the only input and the only log</text>
+
+  <!-- stream -> builder -->
+  <line x1="480" y1="232" x2="480" y2="264" stroke="#52514e" stroke-width="1.3" marker-end="url(#ar)"/>
+
+  <!-- builder -->
+  <rect x="360" y="268" width="240" height="54" rx="7" fill="#2a78d6" fill-opacity="0.10" stroke="#2a78d6" stroke-width="1.4"/>
+  <circle cx="378" cy="276" r="9" fill="#0b0b0b"/><text x="378" y="279.5" text-anchor="middle" font-size="10" fill="#ffffff" font-weight="bold">4</text>
+  <text x="480" y="288" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#0b0b0b">BUILDER</text>
+  <text x="480" y="303" text-anchor="middle" font-size="9.5" fill="#52514e">deterministic parser · events → claims · no LLM</text>
+
+  <!-- builder -> store -->
+  <line x1="480" y1="322" x2="480" y2="354" stroke="#52514e" stroke-width="1.3" marker-end="url(#ar)"/>
+
+  <!-- claim store -->
+  <rect x="360" y="358" width="240" height="54" rx="7" fill="#fcfcfb" stroke="#b5b3ac" stroke-width="1.1"/>
+  <text x="480" y="378" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#0b0b0b">CLAIM STORE</text>
+  <text x="480" y="393" text-anchor="middle" font-size="9.5" fill="#52514e">SQLite · claim DAG · status machine</text>
+
+  <!-- store -> kernel (trigger) -->
+  <line x1="480" y1="412" x2="480" y2="450" stroke="#52514e" stroke-width="1.3" marker-end="url(#ar)"/>
+  <circle cx="480" cy="430" r="9" fill="#0b0b0b"/><text x="480" y="433.5" text-anchor="middle" font-size="10" fill="#ffffff" font-weight="bold">5</text>
+  <text x="498" y="427" font-size="9.5" fill="#52514e">the single trigger rule: verify a claim the</text>
+  <text x="498" y="439" font-size="9.5" fill="#52514e">moment it gains its first dependent</text>
+
+  <!-- ======== MEMORY (aligned with kernel band) ======== -->
+  <rect x="34" y="454" width="120" height="212" rx="7" fill="#fcfcfb" stroke="#898781" stroke-width="1.1" stroke-dasharray="5 3"/>
+  <text x="94" y="486" text-anchor="middle" font-size="11" font-weight="bold" fill="#0b0b0b">MEMORY</text>
+  <text x="94" y="508" text-anchor="middle" font-size="8.8" fill="#52514e">obligation patterns</text>
+  <text x="94" y="521" text-anchor="middle" font-size="8.8" fill="#52514e">attack patterns</text>
+  <text x="94" y="534" text-anchor="middle" font-size="8.8" fill="#52514e">instruments</text>
+  <text x="94" y="560" text-anchor="middle" font-size="8.6" font-style="italic" fill="#898781">advisory only:</text>
+  <text x="94" y="572" text-anchor="middle" font-size="8.6" font-style="italic" fill="#898781">feeds prompt slots,</text>
+  <text x="94" y="584" text-anchor="middle" font-size="8.6" font-style="italic" fill="#898781">nothing else</text>
+  <line x1="154" y1="515" x2="168" y2="515" stroke="#898781" stroke-width="1.1" stroke-dasharray="5 3" marker-end="url(#arb)"/>
+
+  <!-- ======== KERNEL ======== -->
+  <rect x="172" y="454" width="684" height="212" rx="8" fill="#fcfcfb" stroke="#2a78d6" stroke-width="1.5"/>
+  <circle cx="194" cy="476" r="9" fill="#0b0b0b"/><text x="194" y="479.5" text-anchor="middle" font-size="10" fill="#ffffff" font-weight="bold">6</text>
+  <text x="210" y="480" font-size="11.5" font-weight="bold" fill="#0b0b0b">KERNEL — verifies one claim at a time</text>
+
+  <!-- kernel row A -->
+  <rect x="192" y="494" width="190" height="46" rx="6" fill="#eb6834" fill-opacity="0.10" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="287" y="513" text-anchor="middle" font-size="10" fill="#0b0b0b">obligation compiler</text>
+  <text x="287" y="527" text-anchor="middle" font-size="8.7" fill="#52514e">claim → concrete checks</text>
+  <line x1="382" y1="517" x2="410" y2="517" stroke="#52514e" stroke-width="1.2" marker-end="url(#ar)"/>
+  <rect x="414" y="494" width="190" height="46" rx="6" fill="#2a78d6" fill-opacity="0.10" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="509" y="513" text-anchor="middle" font-size="10" fill="#0b0b0b">falsifiability filter</text>
+  <text x="509" y="527" text-anchor="middle" font-size="8.7" fill="#52514e">vacuous checks dropped</text>
+  <line x1="604" y1="517" x2="632" y2="517" stroke="#52514e" stroke-width="1.2" marker-end="url(#ar)"/>
+  <rect x="636" y="494" width="190" height="46" rx="6" fill="#eb6834" fill-opacity="0.10" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="731" y="513" text-anchor="middle" font-size="10" fill="#0b0b0b">coverage audit</text>
+  <text x="731" y="527" text-anchor="middle" font-size="8.7" fill="#52514e">holes → extra checks</text>
+
+  <!-- row A -> game strip -->
+  <line x1="731" y1="540" x2="731" y2="564" stroke="#52514e" stroke-width="1.2" marker-end="url(#ar)"/>
+
+  <!-- binding game strip -->
+  <rect x="192" y="568" width="634" height="66" rx="6" fill="#fbfaf8" stroke="#c3c2b7" stroke-width="1"/>
+  <text x="204" y="583" font-size="8.6" font-weight="bold" fill="#52514e" letter-spacing="1">BINDING GAME — RUNS ONCE PER OBLIGATION</text>
+  <rect x="204" y="590" width="112" height="36" rx="5" fill="#2a78d6" fill-opacity="0.10" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="260" y="605" text-anchor="middle" font-size="9.3" fill="#0b0b0b">gate 1: exam</text>
+  <text x="260" y="618" text-anchor="middle" font-size="8" fill="#52514e">reject wrong variants</text>
+  <line x1="316" y1="608" x2="338" y2="608" stroke="#52514e" stroke-width="1.1" marker-end="url(#ar)"/>
+  <rect x="342" y="590" width="108" height="36" rx="5" fill="#eb6834" fill-opacity="0.10" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="396" y="605" text-anchor="middle" font-size="9.3" fill="#0b0b0b">discharge</text>
+  <text x="396" y="618" text-anchor="middle" font-size="8" fill="#52514e">check really executes</text>
+  <line x1="450" y1="608" x2="472" y2="608" stroke="#52514e" stroke-width="1.1" marker-end="url(#ar)"/>
+  <rect x="476" y="590" width="120" height="36" rx="5" fill="#2a78d6" fill-opacity="0.10" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="536" y="605" text-anchor="middle" font-size="9.3" fill="#0b0b0b">fabrication re-run</text>
+  <text x="536" y="618" text-anchor="middle" font-size="8" fill="#52514e">script re-run in sandbox</text>
+  <line x1="596" y1="608" x2="618" y2="608" stroke="#52514e" stroke-width="1.1" marker-end="url(#ar)"/>
+  <rect x="622" y="590" width="110" height="36" rx="5" fill="#eb6834" fill-opacity="0.10" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="677" y="605" text-anchor="middle" font-size="9.3" fill="#0b0b0b">gate 2: audit</text>
+  <text x="677" y="618" text-anchor="middle" font-size="8" fill="#52514e">independent review</text>
+  <line x1="732" y1="608" x2="754" y2="608" stroke="#52514e" stroke-width="1.1" marker-end="url(#ar)"/>
+  <rect x="758" y="590" width="56" height="36" rx="5" fill="#2a78d6" fill-opacity="0.10" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="786" y="605" text-anchor="middle" font-size="9.3" fill="#0b0b0b">settle</text>
+  <text x="786" y="618" text-anchor="middle" font-size="8" fill="#52514e">claim</text>
+
+  <text x="192" y="654" font-size="8.6" fill="#898781">a method that fails any stage is discarded and the next candidate is tried — trust is earned per obligation, never assumed</text>
+
+  <!-- kernel -> certificate -->
+  <line x1="480" y1="666" x2="480" y2="694" stroke="#52514e" stroke-width="1.3" marker-end="url(#ar)"/>
+
+  <!-- ======== CERTIFICATE ======== -->
+  <circle cx="92" cy="720" r="9" fill="#0b0b0b"/><text x="92" y="723.5" text-anchor="middle" font-size="10" fill="#ffffff" font-weight="bold">7</text>
+  <rect x="70" y="698" width="786" height="80" rx="8" fill="#2a78d6" fill-opacity="0.10" stroke="#2a78d6" stroke-width="1.5"/>
+  <text x="110" y="724" font-size="11.5" font-weight="bold" fill="#0b0b0b">CERTIFICATE — the final claim's dependency slice + its evidence chain, frozen</text>
+  <text x="110" y="740" font-size="9.5" fill="#52514e">verdict = the honest worst case over the slice · returned to the solver over MCP</text>
+  <rect x="110" y="748" width="60" height="18" rx="9" fill="#0ca30c" fill-opacity="0.14" stroke="#0a7d0a" stroke-width="1"/>
+  <text x="140" y="760.5" text-anchor="middle" font-size="8.8" font-weight="bold" fill="#0a7d0a">verified</text>
+  <rect x="178" y="748" width="54" height="18" rx="9" fill="#fab219" fill-opacity="0.18" stroke="#a36e00" stroke-width="1"/>
+  <text x="205" y="760.5" text-anchor="middle" font-size="8.8" font-weight="bold" fill="#a36e00">partial</text>
+  <rect x="240" y="748" width="70" height="18" rx="9" fill="#fcfcfb" stroke="#898781" stroke-width="1"/>
+  <text x="275" y="760.5" text-anchor="middle" font-size="8.8" font-weight="bold" fill="#52514e">unverified</text>
+  <rect x="318" y="748" width="58" height="18" rx="9" fill="#d03b3b" fill-opacity="0.12" stroke="#d03b3b" stroke-width="1"/>
+  <text x="347" y="760.5" text-anchor="middle" font-size="8.8" font-weight="bold" fill="#d03b3b">refuted</text>
+  <text x="392" y="761" font-size="8.8" fill="#898781">precedence: refuted, then unverified/stale, then partial, else verified — never rounds up</text>
+
+  <!-- certificate -> consumer -->
+  <line x1="480" y1="778" x2="480" y2="816" stroke="#52514e" stroke-width="1.3" marker-end="url(#ar)"/>
+
+  <!-- ======== CONSUMER ======== -->
+  <circle cx="292" cy="828" r="9" fill="#0b0b0b"/><text x="292" y="831.5" text-anchor="middle" font-size="10" fill="#ffffff" font-weight="bold">8</text>
+  <rect x="270" y="820" width="420" height="66" rx="8" fill="#fcfcfb" stroke="#898781" stroke-width="1.3"/>
+  <text x="310" y="840" font-size="11.5" font-weight="bold" fill="#0b0b0b">CONSUMER / CI — where enforcement lives</text>
+  <text x="310" y="856" font-size="9.3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#52514e">uv run python -m verifier.cli certify ...</text>
+  <text x="310" y="871" font-size="9.3" fill="#52514e">merges only on a verified certificate (exit 0)</text>
+
+  <!-- legend -->
+  <rect x="30" y="908" width="13" height="13" rx="3" fill="#eb6834" fill-opacity="0.10" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="49" y="918.5" font-size="9" fill="#52514e">LLM proposes (efficiency only)</text>
+  <rect x="210" y="908" width="13" height="13" rx="3" fill="#2a78d6" fill-opacity="0.10" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="229" y="918.5" font-size="9" fill="#52514e">mechanical decides (correctness)</text>
+  <rect x="400" y="908" width="13" height="13" rx="3" fill="#fcfcfb" stroke="#b5b3ac" stroke-width="1.1"/>
+  <text x="419" y="918.5" font-size="9" fill="#52514e">data at rest</text>
+  <rect x="500" y="908" width="13" height="13" rx="3" fill="#fcfcfb" stroke="#898781" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="519" y="918.5" font-size="9" fill="#52514e">advisory only</text>
+</svg>

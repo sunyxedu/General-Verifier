@@ -5,6 +5,7 @@ __pycache__/
 .idea/
 .gv/
 .gv-*/
+report/
 artifacts/
 *.db
 .DS_Store

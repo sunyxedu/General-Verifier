@@ -25,19 +25,7 @@ output is always a FAILED check, never a pass (fail-closed).
 
 ## How it works
 
-```
-solver (stock Claude Code) ──MCP──> sidecar ──> append-only event stream
-     └─ hooks: tool calls ──> effect claims          │
-                                                     v
-                          claim store (SQLite, content-addressed, branches/revisions)
-                                                     │
-                     trigger rule: verify a claim the moment it gains its first dependent
-                                                     v
-        kernel: obligations ─> binding game per obligation ─> settlement
-                                                     v
-        certificate: dependency-closure slice + evidence chain
-        verdict ∈ {verified, partial, unverified, refuted}
-```
+![General Verifier architecture](docs/architecture.svg)
 
 1. **Commit.** The solver commits claims (`assertion` / `final`) over MCP; hooks turn
    its tool calls into `effect` claims. Everything is one append-only JSONL stream —
