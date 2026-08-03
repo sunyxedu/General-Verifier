@@ -14,9 +14,10 @@ Two observations drive the design:
    that must act are agents with tools, not text completions.
 2. **Every "yes" must have an owner.** A pass nobody is accountable for is worthless.
    The responsibilities are named: the oracle signs the guarantee that a method
-   suffices (and grades its assurance level L1→L3), the executor owns doing it
-   faithfully, and a judger examines the delivered result against that promise — with
-   exactly one bounded redo. Every verdict traces back to a named guarantee.
+   suffices (and grades its assurance level on a scale of its own devising), the
+   executor owns doing it faithfully, and a judger examines the delivered result
+   against that promise — feeding its reasons back for redos, at most 3 rounds. Every
+   verdict traces back to a named guarantee.
 
 Master principle: **LLM generation affects efficiency only, never correctness.** Every
 prompt template under `verifier/` carries zero domain knowledge — domain content emerges
@@ -41,13 +42,15 @@ output is always a FAILED check, never a pass (fail-closed).
    a settled verdict transfers across claims for free.
 4. **Binding game** (per obligation node): the oracle lists only *sufficient* methods —
    sufficiency is its own signed guarantee, researched first when the domain is
-   unfamiliar — graded **L1** (simplest sufficient) → **L3** (machine-checked, e.g.
-   Lean); execution runs simplest-first. The discharge executor carries the method out
+   unfamiliar — each graded with an assurance level **of the oracle's own devising**
+   and listed ascending; execution follows the oracle's order exactly (simplest
+   sufficient first, most assured last). The discharge executor carries the method out
    faithfully (a missing instrument is installed on the spot; a truly unobtainable one
    settles the claim at `partial`). A **judger** then examines the delivered result:
    was the bound method faithfully executed and the promised artifact delivered?
-   Unfaithful → one redo with the judger's reasons, then a blind re-judge. Exhaustion =
-   failed, with every attempt on record.
+   Unfaithful → the judger's reason goes back to the executor for a redo and a blind
+   re-judge — a loop of at most **3 rounds**. Exhaustion = failed, with every attempt
+   on record.
 5. **Settlement** is honest per claim: a claim's status is the fold of its obligation
    nodes — any refuted node → `refuted` (and the downstream cone is hard-killed); all
    verified → `verified`; blocked only by an unobtainable instrument → `partial`. The
