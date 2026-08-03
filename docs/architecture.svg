@@ -101,7 +101,7 @@
   <rect x="192" y="624" width="634" height="60" rx="6" fill="#fbfaf8" stroke="#c3c2b7" stroke-width="1"/>
   <text x="204" y="638" font-size="8.6" font-weight="bold" fill="#52514e" letter-spacing="1">BINDING GAME — PER OBLIGATION NODE</text>
   <rect x="204" y="644" width="206" height="34" rx="5" fill="#eb6834" fill-opacity="0.10" stroke="#eb6834" stroke-width="1.2"/>
-  <text x="307" y="657" text-anchor="middle" font-size="9" fill="#0b0b0b">oracle: sufficient only · L1→L3</text>
+  <text x="307" y="657" text-anchor="middle" font-size="9" fill="#0b0b0b">oracle: sufficient only · self-graded levels</text>
   <text x="307" y="670" text-anchor="middle" font-size="7.8" fill="#52514e">researches unfamiliar domains first</text>
   <line x1="410" y1="661" x2="424" y2="661" stroke="#52514e" stroke-width="1.1" marker-end="url(#ar)"/>
   <rect x="428" y="644" width="180" height="34" rx="5" fill="#eb6834" fill-opacity="0.10" stroke="#eb6834" stroke-width="1.2"/>
@@ -110,7 +110,7 @@
   <line x1="608" y1="661" x2="622" y2="661" stroke="#52514e" stroke-width="1.1" marker-end="url(#ar)"/>
   <rect x="626" y="644" width="188" height="34" rx="5" fill="#eb6834" fill-opacity="0.10" stroke="#eb6834" stroke-width="1.2"/>
   <text x="720" y="657" text-anchor="middle" font-size="9" fill="#0b0b0b">judger: result faithful?</text>
-  <text x="720" y="670" text-anchor="middle" font-size="7.8" fill="#52514e">redo ×1 → blind re-judge</text>
+  <text x="720" y="670" text-anchor="middle" font-size="7.8" fill="#52514e">redo loop ≤3 → blind re-judge</text>
 
   <text x="192" y="702" font-size="8.6" fill="#898781">a claim's status is the fold of its obligation nodes — any refuted node refutes the claim and prunes its downstream cone</text>
 
