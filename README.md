@@ -12,10 +12,11 @@ Two observations drive the design:
 1. **Opinions are not evidence.** A verifier that only reasons cannot check claims that
    require touching the environment — running code, probing what is installed. Roles
    that must act are agents with tools, not text completions.
-2. **"Passed" must mean what you think it means.** If a claim is checked by a method
-   that cannot tell right from wrong, a pass is worthless. So every method must first
-   pass an exam: it has to reject known-wrong variants of the claim before its verdict
-   on the real claim counts.
+2. **Every "yes" must have an owner.** A pass nobody is accountable for is worthless.
+   The responsibilities are named: the oracle signs the guarantee that a method
+   suffices (and grades its assurance level L1→L3), the executor owns doing it
+   faithfully, and a judger examines the delivered result against that promise — with
+   exactly one bounded redo. Every verdict traces back to a named guarantee.
 
 Master principle: **LLM generation affects efficiency only, never correctness.** Every
 prompt template under `verifier/` carries zero domain knowledge — domain content emerges
@@ -32,25 +33,27 @@ output is always a FAILED check, never a pass (fail-closed).
    replay of that file is the whole offline mode.
 2. **Trigger.** One scheduling rule: an unverified claim is verified the moment another
    claim first depends on it.
-3. **Obligations.** An agent compiles the claim into falsifiable obligations (each must
-   state what failure would look like). A coverage audit attacks the obligation *set*:
-   claim-level wrong variants that no obligation rejects reveal holes, and a patch role
-   fills them in.
-4. **Binding game** (per obligation): an oracle agent probes the environment and
-   proposes candidate check methods; each candidate must survive
-   - **gate 1 — discrimination exam**: it must reject every known-wrong variant of the
-     claim (variants are self-confirmed false, with disproofs on record);
-   - **discharge**: the method actually runs; artifacts are snapshotted to a
-     content-addressed store; a fabrication detector independently re-runs any
-     extractable check script in a sandbox and rejects the method on disagreement;
-   - **gate 2 — entailment audit**: an independent agent opens the artifacts and judges
-     whether the evidence really discharges the obligation.
-   A rejected/unreachable method demotes to the next candidate; exhaustion = failed,
-   with every attempt on record.
-5. **Settlement** is honest per claim: any counterexample → `refuted` (and the
-   downstream cone of a refuted claim is hard-killed); all obligations hold →
-   `verified`; a mix → `partial`. The certificate collapses its slice the same way:
-   refuted > unverified > partial > verified.
+3. **Obligations.** A graph-aware agent compiles the claim into concretely checkable
+   obligations. It sees the whole claim graph: premises already verified may be relied
+   on (obligations can be *residual*), and a condition already proven anywhere is
+   reused verbatim instead of re-demanded. Obligations materialize as first-class,
+   content-addressed graph nodes: the same check under two claims is **one node**, so
+   a settled verdict transfers across claims for free.
+4. **Binding game** (per obligation node): the oracle lists only *sufficient* methods —
+   sufficiency is its own signed guarantee, researched first when the domain is
+   unfamiliar — graded **L1** (simplest sufficient) → **L3** (machine-checked, e.g.
+   Lean); execution runs simplest-first. The discharge executor carries the method out
+   faithfully (a missing instrument is installed on the spot; a truly unobtainable one
+   settles the claim at `partial`). A **judger** then examines the delivered result:
+   was the bound method faithfully executed and the promised artifact delivered?
+   Unfaithful → one redo with the judger's reasons, then a blind re-judge. Exhaustion =
+   failed, with every attempt on record.
+5. **Settlement** is honest per claim: a claim's status is the fold of its obligation
+   nodes — any refuted node → `refuted` (and the downstream cone is hard-killed); all
+   verified → `verified`; blocked only by an unobtainable instrument → `partial`. The
+   certificate freezes the slice with each claim's obligation nodes and their evidence
+   nested inside, and collapses the same way: refuted > unverified > partial >
+   verified.
 
 Design notes:
 
@@ -86,7 +89,7 @@ authenticated Claude Code environment); one-shot roles use the OpenAI SDK and ho
    `"--project", "/path/to/General-Verifier"` after `"run"`). The solver gets five
    verbs: `gv.commit`, `gv.verify`, `gv.certificate`, `gv.status`, `gv.branches`.
    Sidecar flags: `--state-dir` (required), `--seats agent|sandbox`, `--model`,
-   `--no-game`, `--no-coverage`, `--memory-dir`, `--toolchain-dir`.
+   `--no-game`, `--memory-dir`, `--toolchain-dir`.
 2. **Wire the hooks** so tool calls become referenceable effect claims — in the
    solver's `.claude/settings.json`:
 
@@ -120,11 +123,11 @@ merge without a certificate.
 
 | Module | Contents |
 |---|---|
-| `verifier/core/` | data contracts: content addressing + status machine (`model.py`), append-only event stream (`events.py`), claim store + single trigger rule + slices/branches (`store.py`) |
+| `verifier/core/` | data contracts: content addressing + status machine (`model.py`), append-only event stream (`events.py`), claim store + obligation nodes + single trigger rule + slices/branches (`store.py`) |
 | `verifier/stream/` | ingestion: incremental graph building (`builder.py`), torn-line-tolerant online tail (`tail.py`) |
 | `verifier/llm/` | LLM seats: one-shot roles with schema gate (`roles.py`, OpenAI SDK), acting agent roles (`agents.py`, Claude Agent SDK) |
-| `verifier/execution/` | the hands: python sandbox + artifact store, fail-closed (`instruments.py`), two discharge seats (`discharge.py`), fabrication detector (`strength.py`) |
-| `verifier/engine/` | verification core: trigger entry + settlement + dedup + pruning (`kernel.py`), binding game with two gates (`game.py`), coverage leak check (`coverage.py`), certificate + honest verdict (`certificate.py`) |
+| `verifier/execution/` | the hands: python sandbox + artifact store, fail-closed (`instruments.py`), two discharge seats (`discharge.py`); `strength.py` retained but unused |
+| `verifier/engine/` | verification core: trigger entry + settlement + obligation-node reuse + pruning (`kernel.py`), binding game: level-ordered sufficient methods + fidelity judger with one redo (`game.py`), certificate with nested obligations (`certificate.py`) |
 | `verifier/memory.py` | three stores (advisory only) |
 | `verifier/sidecar.py` + `cli.py` | entry points: MCP service + hook ingestion; CI gate |
 | `hooks/` + `protocol/` | solver-side PreToolUse/PostToolUse hooks; MCP mount example + solver protocol |
