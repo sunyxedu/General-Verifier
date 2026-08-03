@@ -290,7 +290,7 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
         "Methods known to work (may be empty): {registry}\n\n"
         "Enumerate all methods that can check this obligation, ordered by "
         "evidence strength, strongest first. For each method give:\n"
-        "  procedure: concretely how to do it (including what tool/library to use)\n"
+        "  procedure: concretely how to do it (including what tool/library to use if needed)\n"
         "  artifact: what auditable evidence the method produces\n"
         "  failure_looks_like: what the failure evidence looks like when this "
         "method finds a problem"
