@@ -39,7 +39,10 @@ output is always a FAILED check, never a pass (fail-closed).
    on (obligations can be *residual*), and a condition already proven anywhere is
    reused verbatim instead of re-demanded. Obligations materialize as first-class,
    content-addressed graph nodes: the same check under two claims is **one node**, so
-   a settled verdict transfers across claims for free.
+   a settled verdict transfers across claims for free. An obligation whose text
+   matches a claim the graph already settled inherits that verdict the same way —
+   verified passes, refuted refutes, evidence carried over. There is no count cap:
+   however many obligations compile, all are verified.
 4. **Binding game** (per obligation node): the oracle lists only *sufficient* methods —
    sufficiency is its own signed guarantee, researched first when the domain is
    unfamiliar — each graded with an assurance level **of the oracle's own devising**
