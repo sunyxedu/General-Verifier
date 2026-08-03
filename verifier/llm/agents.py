@@ -68,9 +68,9 @@ class AgentRole:
     """A verifier role: generic prompt + output contract + permitted palette."""
 
     name: str
-    template: str                      # generic — never contains domain knowledge
-    schema: Dict[str, Any]             # output contract (mini-DSL, see roles.py)
-    tools: List[str] = field(default_factory=list)   # hard palette, e.g. ["Bash"]
+    template: str
+    schema: Dict[str, Any]
+    tools: List[str] = field(default_factory=list)
     model: Optional[str] = None
     max_turns: int = 20
     system: str = ""
