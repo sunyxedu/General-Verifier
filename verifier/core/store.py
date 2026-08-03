@@ -237,6 +237,23 @@ class ClaimStore:
         )
         return [self._row(oid) for (oid,) in cur.fetchall()]
 
+    def settled_statement(self, text: str,
+                          exclude: Optional[str] = None) -> Optional[Dict]:
+        """A currently-trusted CLAIM (assertion/final) that settled exactly
+        this statement — verified or refuted, identical text. Lets an
+        obligation node inherit the verdict of a same-text claim: the two
+        live in different identity spaces (claim id hashes kind/deps/branch
+        too), so plain node dedup cannot see across. Stale and partial
+        claims never transfer; effects are ledger refs, not statements."""
+        cur = self.db.execute(
+            "SELECT id, status FROM claims "
+            "WHERE text=? AND kind IN ('assertion', 'final') "
+            "AND status IN (?, ?) AND id != ? LIMIT 1",
+            (text, VERIFIED, REFUTED, exclude or ""),
+        )
+        row = cur.fetchone()
+        return {"id": row[0], "status": row[1]} if row else None
+
     def graph_snapshot(self, exclude: Optional[str] = None,
                        cap: int = 150) -> List[Dict]:
         """A compact view of the WHOLE graph for the obligation compiler:

@@ -174,6 +174,18 @@ class Kernel:
                     refuting_witness = ev[-1].get("witness") if ev else None
                     break
                 continue
+            src = self.store.settled_statement(obligation.text,
+                                               exclude=row["id"])
+            if src is not None:
+                # the graph already settled this exact statement as a CLAIM
+                # (different identity space, so node dedup cannot see it) —
+                # the verdict and its evidence transfer, no instrument spent
+                outcome, witness = self._inherit(row, obligation, src)
+                outcomes.append(outcome)
+                if outcome == OUTCOME_REFUTED:
+                    refuting_witness = witness
+                    break
+                continue
             outcome, witness = self._discharge(row, obligation)
             outcomes.append(outcome)
             if outcome == OUTCOME_REFUTED:
@@ -227,6 +239,40 @@ class Kernel:
              "obligations": [o.text for o in obligations]},
         )
         return obligations
+
+    def _inherit(self, row: Dict, obligation: Obligation, src: Dict):
+        """Transfer a same-text settled CLAIM's verdict onto an obligation
+        node. The node is settled too, so every later claim sharing it gets
+        the plain node-dedup path. Returns (outcome, witness)."""
+        oid = obligation.id
+        ev = self.store.evidence_for(src["id"])
+        witness = ev[-1].get("witness") if ev else None
+        if witness is None and src["status"] == REFUTED:
+            # a claim's concrete counterexample lives on its refuting
+            # obligation node, one hop down — carry it over
+            for kid in self.store.obligation_children(src["id"]):
+                if kid["status"] == REFUTED and kid["reason"]:
+                    witness = kid["reason"]
+                    break
+        if witness is None:
+            witness = self.store.get(src["id"])["reason"]
+        outcome = (OUTCOME_HOLDS if src["status"] == VERIFIED
+                   else OUTCOME_REFUTED)
+        self.store.record_evidence(
+            oid,
+            {"obligation": obligation.text, "instrument": "graph",
+             "outcome": outcome, "source": src["id"], "witness": witness},
+        )
+        if outcome == OUTCOME_HOLDS:
+            self.store.set_verified(oid)
+        else:
+            self.store.set_refuted(oid, reason=str(witness)[:200])
+        self.log.append(
+            "dedup_hit",
+            {"claim": row["id"], "obligation": oid, "source": src["id"],
+             "status": src["status"], "space": "claim"},
+        )
+        return outcome, witness
 
     def _discharge(self, row: Dict, obligation: Obligation):
         """Discharge one obligation NODE: evidence lands on the node, and
