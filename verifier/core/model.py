@@ -1,4 +1,4 @@
-"""Data contracts (report §14). Everything content-addressed; statuses are a
+"""Data contracts. Everything content-addressed; statuses are a
 small state machine enforced by the store, not here."""
 from __future__ import annotations
 

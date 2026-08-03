@@ -1,4 +1,4 @@
-"""Memory (M4, report §13): three stores, purely advisory.
+"""Memory: three stores, purely advisory.
 
 1. obligations — obligation patterns that were actually discharged, keyed by
    the claim they served. Retrieved into the compiler's {memory_hits}.

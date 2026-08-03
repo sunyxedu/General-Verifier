@@ -1,4 +1,4 @@
-"""Consumer-side certificate gate (report §11: enforcement is inverted).
+"""Consumer-side certificate gate.
 
 The solver is never forced to verify; the CONSUMER refuses to merge without a
 certificate. This CLI is that refusal, shaped for CI:

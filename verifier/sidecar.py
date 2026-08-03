@@ -1,4 +1,4 @@
-"""Sidecar MCP service (report §11): the verifier as a separate process.
+"""Sidecar MCP service: the verifier as a separate process.
 
 The solver stays a vanilla Claude Code session; it mounts this server over
 stdio and gets five verbs — commit, verify, certificate, status, branches. Every

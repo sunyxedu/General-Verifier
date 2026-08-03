@@ -2,7 +2,7 @@
 
 Two seats for the same contract:
 
-- SandboxDischarger (M0): a role writes a check program, the kernel runs it
+- SandboxDischarger: a role writes a check program, the kernel runs it
   mechanically in the python sandbox.
 
 - AgentDischarger: a Claude Agent SDK agent executes the check itself and

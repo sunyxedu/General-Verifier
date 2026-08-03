@@ -1,4 +1,4 @@
-"""Unified event stream (component 5): append-only JSONL, the system's only
+"""Unified event stream: append-only JSONL, the system's only
 input and its only log. Replay = reading the same file; "offline" is just a
 high-latency stream (report §10)."""
 from __future__ import annotations

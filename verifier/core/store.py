@@ -1,7 +1,7 @@
-"""Claim store (component 10) + the single trigger rule (component 12) +
-backward slicer (component 13). SQLite-backed materialized view of the stream.
+"""Claim stor + the single trigger rule +
+backward slicer. SQLite-backed materialized view of the stream.
 
-The one scheduling rule of the whole system (report §9):
+The one scheduling rule of the whole system:
     when an UNVERIFIED claim gains its FIRST dependent, verify it.
 The store owns detecting that moment; what "verify" means belongs to the kernel.
 """

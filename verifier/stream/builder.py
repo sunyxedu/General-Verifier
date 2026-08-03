@@ -1,4 +1,4 @@
-"""Mechanical parser (component 6) + file replay (component 4).
+"""Mechanical parser + file replay.
 
 Deterministic, zero-LLM: tool events become effect claims whose text is the
 canonical ledger reference; commit events become assertion/final claims. Trace
@@ -30,7 +30,7 @@ def effect_text(event: dict, tool: Optional[str]) -> str:
 
 class Builder:
     """Incremental: feed(event) is the one entry point; replay() is just
-    feeding the whole file. Online mode (component 4's low-latency twin) is a
+    feeding the whole file. Online mode is a
     Tail pushing the same events into the same feed — the kernel, wired to the
     store's trigger, does not know or care which mode it is in."""
 

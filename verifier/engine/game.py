@@ -1,4 +1,4 @@
-"""Binding game (M1, report §7/§8): method binding with two gates.
+"""Binding game: method binding with two gates.
 
 Per obligation:
 

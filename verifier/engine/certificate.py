@@ -1,4 +1,4 @@
-"""Certificate (components 13, 23, 33).
+"""Certificate.
 
 A certificate request is the final claim gaining a dependent — the same single
 rule. The slicer walks the dependency closure, the kernel settles residual

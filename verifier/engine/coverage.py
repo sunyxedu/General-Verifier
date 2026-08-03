@@ -1,4 +1,4 @@
-"""Coverage audit (hole detection, loop 3 of report §8): exam the OBLIGATION SET.
+"""Coverage audit: exam the OBLIGATION SET.
 
 Loop 1 asks "does this method discriminate for this obligation"; this loop
 asks "do the obligations as a whole cover the claim's failure modes". Both

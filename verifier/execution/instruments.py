@@ -1,4 +1,4 @@
-"""Instruments (components 25/26): the hands of the verifier.
+"""Instruments: the hands of the verifier.
 
 Contract (report, fail-closed iron rule): any crash / timeout / unparseable
 output is a FAILED discharge — never converted into a pass.

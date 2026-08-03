@@ -1,6 +1,6 @@
-"""M0 kernel (components 14, 15, 20 + mechanical slice of 21).
+"""Kernel.
 
-Scope per report §16: obligations -> falsifiability filter -> discharge via a
+Obligations -> falsifiability filter -> discharge via a
 single instrument -> mechanical audit bits -> status. The discrimination game,
 variant generation and the two full audits arrive in M1; every seam they will
 plug into is already an explicit step here.

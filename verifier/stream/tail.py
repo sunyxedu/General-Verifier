@@ -1,4 +1,4 @@
-"""Log tail (component 3, online attach point): follow an append-only JSONL.
+"""Log tail: follow an append-only JSONL.
 
 The stream may be mid-append when we read it, so a torn final line is normal:
 read by byte offset, publish only up to the last newline, keep the remainder
