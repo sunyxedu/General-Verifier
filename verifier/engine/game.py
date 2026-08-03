@@ -72,7 +72,6 @@ class BindingGame:
         entailment_role=ENTAILMENT_AUDIT_AGENT,
         validate_variant_role=VALIDATE_VARIANT_AGENT,
         n_variants: int = 2,
-        max_methods: int = 3,
         registry: str = "[]",
         memory_hits: str = "[]",
         memory=None,
@@ -87,7 +86,6 @@ class BindingGame:
         self.entailment_role = entailment_role
         self.validate_variant_role = validate_variant_role
         self.n_variants = n_variants
-        self.max_methods = max_methods
         self.registry = registry
         self.memory_hits = memory_hits
         self.memory = memory  # M4: advisory; feeds registry + attack hits
@@ -205,7 +203,7 @@ class BindingGame:
                             {"claim": row["id"], "obligation": obligation.id,
                              "error": str(err)})
             return []
-        methods = payload["methods"][: self.max_methods]
+        methods = payload["methods"]
         self.log.append(
             "methods_enumerated",
             {"claim": row["id"], "obligation": obligation.id,
