@@ -1,1 +1,1 @@
-"""Verification core: kernel, binding game, coverage audit, certificate."""
+"""Verification core: kernel, binding game, certificate."""

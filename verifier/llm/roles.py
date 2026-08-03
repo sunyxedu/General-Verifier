@@ -139,13 +139,16 @@ COMPILE_OBLIGATIONS = Role(
     template=(
         "Task: verify a claim (answer-blind: you only see the claim's statement, not its argument).\n"
         "Claim statement: {claim_text}\n"
+        "Verified premises from the claim graph (established facts — residual obligations may rely on them): {verified_deps}\n"
+        "Declared but not-yet-verified premises (context only, do NOT rely on them): {pending_deps}\n"
+        "The whole claim graph (kind · status · text — statements already verified anywhere may be relied on): {graph}\n"
         "Historical obligation patterns (retrieval hits, may be empty): {memory_hits}\n\n"
-        "List the necessary conditions that \"any correct answer must satisfy\". For each give:\n"
+        "List the necessary conditions that \"any correct answer must satisfy\", "
+        "each one concretely and independently checkable. For each give:\n"
         "  text: the obligation content\n"
-        "  failure_looks_like: what failure evidence concretely looks like if the obligation does not hold (leave an empty string if you cannot give one)\n"
-        'Output JSON: {{"obligations": [{{"text": ..., "failure_looks_like": ...}}]}}'
+        'Output JSON: {{"obligations": [{{"text": ...}}]}}'
     ),
-    schema={"obligations": [{"text": str, "failure_looks_like": str}]},
+    schema={"obligations": [{"text": str}]},
 )
 
 WRITE_CHECK = Role(

@@ -40,6 +40,15 @@ def request_certificate(
                 "status": row["status"],
                 "reason": row["reason"],
                 "evidence": store.evidence_for(claim_id),
+                # obligations are first-class graph nodes: the certificate
+                # carries each one with its own status and evidence — the
+                # structured residue is native, not a summary bolted on
+                "obligations": [
+                    {"id": o["id"], "text": o["text"],
+                     "status": o["status"], "reason": o["reason"],
+                     "evidence": store.evidence_for(o["id"])}
+                    for o in store.obligation_children(claim_id)
+                ],
             }
         )
 

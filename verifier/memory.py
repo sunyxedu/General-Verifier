@@ -2,10 +2,8 @@
 
 1. obligations — obligation patterns that were actually discharged, keyed by
    the claim they served. Retrieved into the compiler's {memory_hits}.
-2. attacks — variants and witnesses that exposed real problems (false passes
-   caught by the exam, refutations with counterexamples). Retrieved into the
-   variant generator's {memory_hits}: yesterday's escape becomes today's exam
-   question.
+2. attacks — witnesses that exposed real problems (refutations with their
+   counterexamples). Yesterday's escape is kept on record for retrieval.
 3. instruments — instruments confirmed working by a bound method. Summarized
    into the oracle enumerator's {registry} so probing starts warm.
 

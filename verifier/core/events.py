@@ -1,6 +1,6 @@
 """Unified event stream: append-only JSONL, the system's only
 input and its only log. Replay = reading the same file; "offline" is just a
-high-latency stream (report §10)."""
+high-latency stream (see report)."""
 from __future__ import annotations
 
 import json
@@ -23,21 +23,16 @@ EVENT_TYPES = (
     "discharge",
     "status_change",
     "certificate",
-    # binding game (M1)
+    # binding game
     "methods_enumerated",
-    "variants_generated",
-    "discrimination",
-    "entailment_audit",
-    "variant_disqualified",
+    "judger_verdict",
     "method_rejected",
+    "method_redo",
     "method_bound",
-    # coverage audit (M1, loop 3)
-    "coverage_exam",
-    "obligations_added",
-    # search support (M3)
+    # search support
     "dedup_hit",
     "branch_pruned",
-    # memory (M4, advisory)
+    # memory (advisory)
     "memory_recorded",
 )
 

@@ -2,7 +2,7 @@
 
 Why agents rather than single-shot completions: most verifier roles genuinely
 need to act, not just emit text. The oracle enumerator must probe what is
-installed; the discharge executor must run the check; the entailment auditor
+installed; the discharge executor must run the check; the judger
 must open the artifact it is judging. A role that cannot touch the world can
 only give an opinion — which is the very thing this system refuses to trust.
 
@@ -238,14 +238,28 @@ class AgentBackend:
 # the agent can probe, from the model's latent knowledge, and from retrieved
 # memory — never from text written here.
 
-OUTCOMES = ("holds", "refuted", "failed")
+OUTCOMES = ("holds", "refuted", "failed", "unobtainable")
 
 COMPILE_OBLIGATIONS_AGENT = AgentRole(
     name="obligations",
     system=(
-        "You are the obligation compiler. You see only the claim's statement, "
-        "not its argument (answer-blind). You may read files in the environment "
-        "to understand the task context, but you cannot execute anything.\n"
+        "You are the obligation compiler. You see the claim's statement and "
+        "its position in the claim graph — but never the solver's argument "
+        "(answer-blind). You may read files in the environment to understand "
+        "the task context, but you cannot execute anything.\n"
+        "Graph rule: premises marked VERIFIED were independently established "
+        "by this system — treat them as facts and prefer RESIDUAL "
+        "obligations: the world-checkable conditions that, together with "
+        "those verified premises, establish this claim (do not re-demand "
+        "what a verified premise already settles). Premises not marked "
+        "verified are context only — never rely on them.\n"
+        "You are also given the WHOLE claim graph. Search it for statements "
+        "already proven anywhere (status verified — claims and obligation "
+        "nodes alike): if a condition you would demand is already "
+        "established there, rely on it instead of re-demanding it. And when "
+        "a condition you emit matches an already-proven statement word for "
+        "word, reuse that exact wording — identical text is what lets the "
+        "graph share the node and transfer the settled verdict for free.\n"
         "A corollary of answer-blindness: obligations can only be conditions "
         "that are \"necessary for the claim to be true and checkable against "
         "the world\" (independently verifiable by computation, execution, "
@@ -258,131 +272,91 @@ COMPILE_OBLIGATIONS_AGENT = AgentRole(
     ),
     template=(
         "Claim statement: {claim_text}\n"
+        "Verified premises from the claim graph (established facts — residual "
+        "obligations may rely on them): {verified_deps}\n"
+        "Declared but not-yet-verified premises (context only — do NOT rely "
+        "on them): {pending_deps}\n"
+        "The whole claim graph (kind · status · text): {graph}\n"
         "Historical obligation patterns (retrieval hits, may be empty): {memory_hits}\n\n"
         "List the conditions (obligations) that are \"necessary for the claim to "
         "be true\" and independently checkable without seeing any argument. "
-        "For each obligation give:\n"
-        "  text: the obligation content (a world-level condition about the "
-        "conclusion itself)\n"
-        "  failure_looks_like: what the failure evidence concretely looks like "
-        "if this obligation does not hold\n"
-        "(it must point to a concrete, presentable artifact; if you cannot "
-        "give one, leave an empty string)."
+        "Every obligation must be a world-level condition about the conclusion "
+        "itself, concrete enough that a check of it could actually fail — an "
+        "obligation that nothing could ever falsify is worthless, do not emit "
+        "it. For each obligation give:\n"
+        "  text: the obligation content"
     ),
-    schema={"obligations": [{"text": str, "failure_looks_like": str}]},
+    schema={"obligations": [{"text": str}]},
     tools=["Read", "Grep", "Glob"],
 )
 
 ENUMERATE_ORACLES_AGENT = AgentRole(
     name="oracles",
     system=(
-        "You are the oracle enumerator. Imagining methods is your job; judging "
-        "existence belongs to probing: whether an instrument is ready must be "
-        "confirmed by actually probing the environment (e.g. using Bash to "
-        "check that commands and libraries exist), never by assumption. "
-        "When an instrument is not ready but can be installed, install it and "
-        "confirm — installation is a one-time cost, not a boundary."
+        "You are the oracle enumerator, and SUFFICIENCY IS YOUR "
+        "RESPONSIBILITY: list only methods whose successful, faithful "
+        "execution would by itself establish this obligation. No one "
+        "downstream re-judges sufficiency — a method that falls short of "
+        "the obligation's quantifier or scope (a finite sample against an "
+        "unbounded universal) must simply not appear on your list.\n"
+        "If this verification task touches a domain you do not thoroughly "
+        "understand, RESEARCH IT FIRST: read the relevant documentation, "
+        "instructions, references and proof techniques (locally and on the "
+        "web) until you actually understand what a sufficient check looks "
+        "like in this domain. Your guarantees and your level grading are "
+        "what the whole game executes against — getting the levels right "
+        "matters more than answering fast. Do NOT use research to probe "
+        "which instruments are installed — instrument availability is the "
+        "execution stage's problem: a missing instrument gets installed at "
+        "discharge time, and a method whose instrument is truly "
+        "unobtainable will fail there honestly. Never omit a method merely "
+        "because its tool may be absent.\n"
+        "Grade every method with an assurance level:\n"
+        "  L1 — the simplest check that already suffices (e.g. exhaustive "
+        "computation over the exact stated finite domain)\n"
+        "  L2 — a robust structural check (case analysis covering the whole "
+        "domain, independent cross-implementation, symbolic identity)\n"
+        "  L3 — the most assured (machine-checked formal proof, e.g. Lean)\n"
+        "Order the list by level ascending: the simplest sufficient method "
+        "first, the most assured last."
     ),
     template=(
         "Claim: {claim_text}\n"
         "Obligation: {obligation_text}\n"
         "Claim features: {features}\n"
         "Methods known to work (may be empty): {registry}\n\n"
-        "Enumerate all methods that can check this obligation, ordered by "
-        "evidence strength, strongest first. For each method give:\n"
-        "  procedure: concretely how to do it (including what tool/library to use if needed)\n"
+        "Enumerate the sufficient methods for this obligation, ordered by "
+        "assurance level ascending (simplest sufficient first). Research "
+        "the domain first if you need to. For each method give:\n"
+        "  procedure: concretely how to do it (including what class of "
+        "instrument/library to use)\n"
         "  artifact: what auditable evidence the method produces\n"
-        "  failure_looks_like: what the failure evidence looks like when this "
-        "method finds a problem"
+        "  level: L1 | L2 | L3 — its assurance level as defined above"
     ),
     schema={
         "methods": [
             {
                 "procedure": str,
                 "artifact": str,
-                "failure_looks_like": str,
+                "level": ("L1", "L2", "L3"),
             }
         ]
     },
-    tools=["Bash", "Read"],
-)
-
-GENERATE_VARIANTS_AGENT = AgentRole(
-    name="variants",
-    system=(
-        "You are the variant generator. You generate \"plausible-but-wrong "
-        "variants\" and must mechanically confirm that each variant is indeed "
-        "false (by actually running a minimal check) — otherwise you would "
-        "wrongly condemn the verification methods. If you cannot confirm one, "
-        "do not submit it."
-    ),
-    template=(
-        "Original claim: {claim_text}\nObligation: {obligation_text}\n"
-        "Historical attack patterns (retrieval hits, may be empty): {memory_hits}\n\n"
-        "Generate {n} wrong variants: structurally similar to the original "
-        "claim, plausible at first glance, but actually false.\n"
-        "For each variant give:\n"
-        "  text: the variant statement\n"
-        "  disproof: the evidence confirming it is false from the check you "
-        "actually ran (command and output summary)"
-    ),
-    schema={"variants": [{"text": str, "disproof": str}]},
-    tools=["Bash", "Write", "Read"],
-)
-
-COVERAGE_PATCH_AGENT = AgentRole(
-    name="coverage_patch",
-    system=(
-        "You are the obligation patcher. A variant confirmed false was not "
-        "caught by any existing obligation — this is a coverage hole in the "
-        "obligation set. You must write a new obligation that catches this "
-        "class of error. The obligation must be a condition that is \"necessary "
-        "for the claim to be true and checkable against the world\"; it must "
-        "not target how the argument is written."
-    ),
-    template=(
-        "Original claim: {claim_text}\nVariant that slipped through: {variant_text}\n"
-        "Evidence that this variant is false: {disproof}\n\n"
-        "Write a new obligation that catches this class of error:\n"
-        "  text: the obligation content (a world-level necessary condition)\n"
-        "  failure_looks_like: what the failure evidence concretely looks like "
-        "when this obligation does not hold"
-    ),
-    schema={"text": str, "failure_looks_like": str},
-    tools=[],          # a pure text task — same name serves both backends
-    max_turns=4,
-)
-
-VALIDATE_VARIANT_AGENT = AgentRole(
-    name="validate_variant",
-    system=(
-        "You are the exam-question quality inspector. A \"wrong variant\" exam "
-        "question let every candidate method pass — either all the methods "
-        "share a blind spot, or the variant is not actually false (the "
-        "generator was wrong). You must actually rerun the check to confirm "
-        "whether it is true or false; do not judge from text alone. When in "
-        "doubt, rule actually_false=yes (better to wrongly fault a method "
-        "than to let a blind spot through)."
-    ),
-    template=(
-        "Original claim: {claim_text}\nTargeted obligation: {obligation_text}\n"
-        "Variant: {variant_text}\nGenerator's evidence of falsity (disproof): {disproof}\n\n"
-        "Actually run the check to confirm whether this variant really is "
-        "false, and false precisely by violating this obligation.\n"
-        "  actually_false: yes | no\n"
-        "  reason: your checking process and conclusion"
-    ),
-    schema={"actually_false": ("yes", "no"), "reason": str},
-    tools=["Bash", "Read", "Write"],
+    tools=["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
+    max_turns=15,      # research takes room; still no Bash — no probing
 )
 
 DISCHARGE_AGENT = AgentRole(
     name="discharge",
     system=(
         "You are the discharge executor. You carry out the check by the given "
-        "method and produce an auditable artifact. Crashes, timeouts, and "
-        "unparseable output are all honestly recorded as failed — never "
-        "converted into a pass."
+        "method and produce an auditable artifact. If the method's instrument "
+        "is not installed, installing it is part of the job (into the "
+        "toolchain directory; installation is a one-time cost, not a "
+        "boundary); only when it is genuinely unobtainable here — after "
+        "actually attempting — do you report outcome=unobtainable, stating "
+        "why as the witness. Crashes, timeouts, and unparseable output are "
+        "all honestly recorded as failed — never converted into a pass."
     ),
     template=(
         "Claim: {claim_text}\nObligation: {obligation_text}\n"
@@ -394,7 +368,9 @@ DISCHARGE_AGENT = AgentRole(
         "Run the check. Write the check script and its full output to disk in "
         "the working directory (they are the artifact).\n"
         "  outcome: holds (the obligation holds) | refuted (a counterexample "
-        "was found) | failed (the check itself did not run)\n"
+        "was found) | failed (the check itself did not run) | unobtainable "
+        "(the method's instrument cannot be installed or obtained in this "
+        "environment, confirmed by actually trying)\n"
         "  witness: for refuted give the concrete counterexample, for failed "
         "give the failure reason, otherwise an empty string\n"
         "  artifact: paths of the files written to disk (a comma-separated "
@@ -404,25 +380,35 @@ DISCHARGE_AGENT = AgentRole(
     tools=["Bash", "Read", "Write", "Grep"],
 )
 
-ENTAILMENT_AUDIT_AGENT = AgentRole(
-    name="entailment",
+JUDGER_AGENT = AgentRole(
+    name="judger",
     system=(
-        "You are the entailment auditor (gate 2). You do not judge whether "
-        "the claim is true, only whether this evidence logically discharges "
-        "the obligation. Sampled evidence cannot entail a universal "
-        "conclusion — such gaps must be pointed out. You must open the "
-        "artifact and check it yourself (rerunning the verification when "
-        "necessary); do not rely on summaries alone."
+        "You are the judger of EXECUTION FIDELITY. Sufficiency was settled "
+        "upstream: the oracle guaranteed that this method's success "
+        "establishes the obligation, and you do NOT re-judge that. You "
+        "answer one question: was the bound method faithfully executed, "
+        "and the promised artifact genuinely delivered? Faithful means the "
+        "procedure was followed as specified — right instrument, right "
+        "scope and range, complete (no sorry left in a proof, no silently "
+        "narrowed domain, no substituted statement) — and the deliverable "
+        "is the promised kind, produced by this run.\n"
+        "You are the one who LOOKS AT THE RESULT: open the artifact and "
+        "examine the actual outputs yourself, not the narration; there is "
+        "no separate re-run stage, so rerun the check yourself whenever "
+        "reproducibility is in doubt. When ruling no, phrase the reason as "
+        "a concrete fix instruction — the executor gets exactly one redo."
     ),
     template=(
-        "Obligation: {obligation_text}\nClaimed failure pattern: {failure_looks_like}\n"
+        "Obligation (context only): {obligation_text}\n"
+        "Bound method's procedure: {procedure}\n"
+        "Promised artifact: {promised_artifact}\n"
         "Submitted evidence (including artifact paths): {evidence}\n\n"
-        "Check the evidence itself and judge whether it logically entails "
-        "that the obligation holds.\n"
-        "  entails: yes | no\n"
-        "  reason: your reasoning, pointing out any gap in the evidence chain"
+        "Examine the result itself and judge:\n"
+        "  faithful: yes | no — the method was executed as specified and "
+        "the promised artifact delivered\n"
+        "  reason: your reasoning; for 'no', a concrete fix instruction"
     ),
-    schema={"entails": ("yes", "no"), "reason": str},
+    schema={"faithful": ("yes", "no"), "reason": str},
     tools=["Read", "Bash", "Grep"],
 )
 
@@ -431,10 +417,7 @@ ALL_AGENT_ROLES = {
     for role in (
         COMPILE_OBLIGATIONS_AGENT,
         ENUMERATE_ORACLES_AGENT,
-        GENERATE_VARIANTS_AGENT,
-        VALIDATE_VARIANT_AGENT,
-        COVERAGE_PATCH_AGENT,
         DISCHARGE_AGENT,
-        ENTAILMENT_AUDIT_AGENT,
+        JUDGER_AGENT,
     )
 }

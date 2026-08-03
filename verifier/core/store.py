@@ -12,7 +12,8 @@ import sqlite3
 from typing import Callable, Dict, List, Optional, Set
 
 from .model import (
-    Claim, UNVERIFIED, VERIFIED, REFUTED, STALE, PARTIAL, KINDS,
+    Claim, KIND_OBLIGATION,
+    UNVERIFIED, VERIFIED, REFUTED, STALE, PARTIAL, KINDS,
 )
 
 TriggerCallback = Callable[[str], None]
@@ -31,6 +32,13 @@ CREATE TABLE IF NOT EXISTS deps (
     child  TEXT NOT NULL,
     parent TEXT NOT NULL,
     PRIMARY KEY (child, parent)
+);
+-- obligation edges live OUTSIDE claim identity: a claim's deps are fixed at
+-- commit time, but its obligations are materialized later by the kernel
+CREATE TABLE IF NOT EXISTS obligation_edges (
+    claim      TEXT NOT NULL,
+    obligation TEXT NOT NULL,
+    PRIMARY KEY (claim, obligation)
 );
 CREATE TABLE IF NOT EXISTS evidence (
     claim_id TEXT NOT NULL,
@@ -197,6 +205,56 @@ class ClaimStore:
     def parents(self, claim_id: str) -> List[str]:
         cur = self.db.execute("SELECT parent FROM deps WHERE child=?", (claim_id,))
         return [r[0] for r in cur.fetchall()]
+
+    # ---- obligation nodes ----------------------------------------------------
+
+    def add_obligation(self, claim_id: str, obligation) -> str:
+        """Materialize an obligation as a first-class graph node
+        (kind='obligation') and link it to its claim. Content-addressed:
+        the same check compiled under another claim is the SAME node, so a
+        settled verdict transfers for free. No trigger fires — obligation
+        scheduling is the kernel's job, not the store's."""
+        oid = obligation.id
+        cur = self.db.execute("SELECT 1 FROM claims WHERE id=?", (oid,))
+        if not cur.fetchone():
+            self.db.execute(
+                "INSERT INTO claims (id, kind, text) VALUES (?,?,?)",
+                (oid, KIND_OBLIGATION, obligation.text),
+            )
+        self.db.execute(
+            "INSERT OR IGNORE INTO obligation_edges (claim, obligation) "
+            "VALUES (?,?)",
+            (claim_id, oid),
+        )
+        self.db.commit()
+        return oid
+
+    def obligation_children(self, claim_id: str) -> List[Dict]:
+        """The obligation nodes materialized under a claim, full rows."""
+        cur = self.db.execute(
+            "SELECT obligation FROM obligation_edges WHERE claim=?",
+            (claim_id,),
+        )
+        return [self._row(oid) for (oid,) in cur.fetchall()]
+
+    def graph_snapshot(self, exclude: Optional[str] = None,
+                       cap: int = 150) -> List[Dict]:
+        """A compact view of the WHOLE graph for the obligation compiler:
+        every assertion/final/obligation node with its status, so already-
+        proven statements can be found and relied on instead of re-demanded.
+        Effects are omitted (their text is a ledger hash, useless to read)."""
+        cur = self.db.execute(
+            "SELECT id, kind, status, text FROM claims WHERE kind != 'effect'"
+        )
+        out: List[Dict] = []
+        for cid, kind, status, text in cur.fetchall():
+            if cid == exclude:
+                continue
+            out.append({"kind": kind, "status": status, "text": text[:300]})
+            if len(out) >= cap:
+                out.append({"note": f"...truncated at {cap} entries"})
+                break
+        return out
 
     # ---- search support (M3) -------------------------------------------------
 

@@ -1,62 +1,53 @@
-"""Binding game: method binding with two gates.
+"""Binding game: per obligation, bind one sufficient method to real evidence.
 
 Per obligation:
 
-1. Enumerate candidate methods (oracles agent probes the environment; a
-   not-installed instrument is a one-time cost, not a boundary). Methods are
-   tried in the oracle's returned order — the oracle is prompted to rank by
-   strength, and its ordering only affects efficiency, never correctness.
-2. Generate the exam: wrong variants of the claim, each self-confirmed false
-   by the generator (with a disproof on record). No exam -> nothing can bind
-   (fail-closed).
-3. For each method in order:
-   - Gate 1 (discrimination): run the method's discharge against every false
-     variant. It must refute ALL of them; a single "holds" is a false pass
-     and rejects the method; a "failed" means it could not sit the exam.
-   - Discharge the real obligation. Execution failure after role-level
-     retries == unreachable -> downgrade to the next method.
-   - refuted short-circuits: a concrete counterexample is asymmetric (a wrong
-     refutation costs a redo, a wrong pass costs correctness) and goes on
-     record immediately with its witness.
-   - Gate 2 (entailment audit): an independent agent opens the artifacts and
-     judges whether the evidence logically discharges the obligation.
-     entails=no -> downgrade.
-4. All candidates exhausted -> failed, with every attempt on record.
-
-Trust comes from the gates, not from labels. Re-verification (strength.py)
-acts as a fabrication detector: if an agent's reported outcome disagrees
-with an independent sandbox re-run, the method is rejected.
+1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
+   oracle's own guarantee, researched first when the domain is
+   unfamiliar) and grades each with an assurance level L1 (simplest
+   sufficient) -> L3 (machine-checked). Execution proceeds by level
+   ascending: simplest first.
+2. For each method in order the discharge executor carries it out
+   faithfully (a missing instrument is installed at discharge time; a
+   truly unobtainable one settles the claim at partial).
+   - refuted short-circuits: a concrete counterexample is asymmetric (a
+     wrong refutation costs a redo, a wrong pass costs correctness) and
+     goes on record immediately with its witness.
+   - The judger examines the RESULT: was the bound method faithfully
+     executed and the promised artifact delivered? It opens the artifact
+     itself and reruns when reproducibility is in doubt. Unfaithful ->
+     one redo with the judger's reason attached, then a blind re-judge.
+3. All candidates exhausted -> failed (or unobtainable when a missing
+   instrument blocked the way), with every attempt on record.
 """
 from __future__ import annotations
 
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
-from ..llm.agents import (
-    ENTAILMENT_AUDIT_AGENT, ENUMERATE_ORACLES_AGENT, GENERATE_VARIANTS_AGENT,
-    VALIDATE_VARIANT_AGENT,
-)
+from ..llm.agents import ENUMERATE_ORACLES_AGENT, JUDGER_AGENT
 from ..execution.discharge import DischargeResult
 from ..core.events import EventLog
-from ..execution.instruments import ArtifactStore, PythonSandbox
+from ..execution.instruments import ArtifactStore
 from ..core.model import (
     Obligation,
-    OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED,
+    OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
 from ..llm.roles import RoleError
-from ..execution.strength import check_fabrication
 
 
 @dataclass
 class Attempt:
     method: Dict[str, str]
-    discrimination: List[Dict[str, Any]]
     rejected: Optional[str] = None          # reason, if the method was rejected
     discharge_artifact: Optional[str] = None
     discharge_outcome: Optional[str] = None
-    audit: Optional[Dict[str, str]] = None
+    audit: Optional[Dict[str, str]] = None       # judger's first verdict
+    redo_outcome: Optional[str] = None           # one bounded redo, if granted
+    redo_artifact: Optional[str] = None
+    redo_audit: Optional[Dict[str, str]] = None  # blind re-judge verdict
 
 
 class BindingGame:
@@ -66,82 +57,37 @@ class BindingGame:
         artifacts: ArtifactStore,
         log: EventLog,
         discharger,
-        sandbox: PythonSandbox = None,
         oracles_role=ENUMERATE_ORACLES_AGENT,
-        variants_role=GENERATE_VARIANTS_AGENT,
-        entailment_role=ENTAILMENT_AUDIT_AGENT,
-        validate_variant_role=VALIDATE_VARIANT_AGENT,
-        n_variants: int = 2,
+        judger_role=JUDGER_AGENT,
+        redo_rounds: int = 1,
         registry: str = "[]",
-        memory_hits: str = "[]",
         memory=None,
     ):
         self.backend = backend
         self.artifacts = artifacts
         self.log = log
         self.discharger = discharger
-        self.sandbox = sandbox or PythonSandbox()
         self.oracles_role = oracles_role
-        self.variants_role = variants_role
-        self.entailment_role = entailment_role
-        self.validate_variant_role = validate_variant_role
-        self.n_variants = n_variants
+        self.judger_role = judger_role
+        self.redo_rounds = redo_rounds
         self.registry = registry
-        self.memory_hits = memory_hits
-        self.memory = memory  # M4: advisory; feeds registry + attack hits
+        self.memory = memory  # advisory; feeds the oracle's registry slot
 
     # ---- entry ---------------------------------------------------------------
-
-    NO_EXAM = "no usable discrimination exam"
 
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
         attempts: List[Attempt] = []
         methods = self._enumerate(row, obligation)
-        self._variant_verdicts: Dict[str, bool] = {}   # exam quality memo
-        self._disqualified: List[Dict[str, str]] = []
-
         if not methods:
-            return self._fail(row, obligation, attempts, [],
+            return self._fail(row, obligation, attempts,
                               "no candidate methods")
-        variants = self._exam(row, obligation)
-        if not variants:
-            return self._fail(row, obligation, attempts, [],
-                              "no discrimination exam")
+        methods = self._order_by_level(methods)
 
-        rejected = [False] * len(methods)
-        exam_regens = 0
-        while True:
-            if not [v for v in variants if self._variant_usable(v)]:
-                # exam evaporated: every question was disqualified. Send the
-                # reasons back to the generator ONCE (reject and regenerate) —
-                # a bounded round of loop-2 applied to the exam itself.
-                if exam_regens < 1:
-                    exam_regens += 1
-                    fresh = self._exam(row, obligation,
-                                       feedback=self._exam_feedback())
-                    if fresh:
-                        variants = variants + fresh
-                        continue
-                return self._fail(row, obligation, attempts, variants,
-                                  self.NO_EXAM)
-
-            idx = next((i for i, r in enumerate(rejected) if not r), None)
-            if idx is None:
-                return self._fail(row, obligation, attempts, variants,
-                                  "all candidate methods rejected")
-            method = methods[idx]
-            attempt = Attempt(method=method, discrimination=[])
+        unobtainable_seen = False   # a missing, uninstallable instrument
+                                    # blocked a candidate -> settles partial
+        for method in methods:
+            attempt = Attempt(method=method)
             attempts.append(attempt)
-
-            reason = self._gate1(row, obligation, method, variants, attempt)
-            if reason == self.NO_EXAM:
-                attempts.pop()     # not the method's fault; regenerate first
-                continue
-            if reason:
-                self._reject(row, obligation, method, reason)
-                attempt.rejected = reason
-                rejected[idx] = True
-                continue
 
             result = self.discharger.discharge(
                 row, obligation, method=method, tag="bound"
@@ -149,43 +95,64 @@ class BindingGame:
             attempt.discharge_artifact = result.artifact
             attempt.discharge_outcome = result.outcome
 
+            if result.outcome == OUTCOME_UNOBTAINABLE:
+                unobtainable_seen = True
+                reason = "instrument unobtainable"
+                self._reject(row, obligation, method, reason)
+                attempt.rejected = reason
+                continue
+
             if result.outcome == OUTCOME_FAILED:
                 reason = "execution failure at retry limit"
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
-                rejected[idx] = True
-                continue
-
-            fabrication = self._check_fabrication(result)
-            if fabrication:
-                reason = fabrication
-                self._reject(row, obligation, method, reason)
-                attempt.rejected = reason
-                rejected[idx] = True
                 continue
 
             if result.outcome == OUTCOME_REFUTED:
-                return self._settle(row, obligation, attempts, variants,
+                return self._settle(row, obligation, attempts,
                                     method, result, audit=None)
 
-            verdict = self._gate2(obligation, method, result, attempt)
-            if verdict["entails"] != "yes":
-                reason = f"entailment audit: {verdict['reason']}"
-                self._reject(row, obligation, method, reason)
-                attempt.rejected = reason
-                rejected[idx] = True
-                continue
+            verdict = self._judge(obligation, method, result, attempt)
+            if verdict["faithful"] == "yes":
+                return self._settle(row, obligation, attempts,
+                                    method, result, audit=verdict)
 
-            return self._settle(row, obligation, attempts, variants,
-                                method, result, audit=verdict)
+            # judger loop: an unfaithful delivery earns exactly one redo
+            # with the judger's reason attached; the redone evidence is
+            # then re-judged BLIND. (a judger infrastructure failure never
+            # awards a redo)
+            if (not verdict.get("_infra")
+                    and self.redo_rounds > 0
+                    and attempt.redo_outcome is None):
+                result2 = self._redo(row, obligation, method, verdict, attempt)
+                if result2.outcome == OUTCOME_REFUTED:
+                    return self._settle(row, obligation, attempts,
+                                        method, result2, audit=None)
+                if result2.outcome == OUTCOME_UNOBTAINABLE:
+                    unobtainable_seen = True
+                    reason = "instrument unobtainable (redo)"
+                elif result2.outcome == OUTCOME_FAILED:
+                    reason = "execution failure at retry limit (redo)"
+                else:
+                    verdict2 = self._judge(obligation, method, result2,
+                                           attempt, redo=True)
+                    if verdict2["faithful"] == "yes":
+                        return self._settle(row, obligation, attempts,
+                                            method, result2, audit=verdict2)
+                    reason = f"judger after redo: {verdict2['reason']}"
+            else:
+                reason = f"judger: {verdict['reason']}"
+            self._reject(row, obligation, method, reason)
+            attempt.rejected = reason
 
-    def _exam_feedback(self) -> str:
-        import json as _json
-        return _json.dumps(self._disqualified, ensure_ascii=False)
+        return self._fail(row, obligation, attempts,
+                          "all candidate methods rejected",
+                          unobtainable=unobtainable_seen)
 
-    # ---- stages --------------------------------------------------------------
+    # ---- enumeration and advisory review -------------------------------------
 
-    def _enumerate(self, row: Dict, obligation: Obligation) -> List[Dict[str, str]]:
+    def _enumerate(self, row: Dict,
+                   obligation: Obligation) -> List[Dict[str, str]]:
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
         try:
@@ -207,141 +174,23 @@ class BindingGame:
         self.log.append(
             "methods_enumerated",
             {"claim": row["id"], "obligation": obligation.id,
-             "methods": [{"procedure": m["procedure"][:80]}
+             "methods": [{"procedure": m["procedure"][:80],
+                          "level": m.get("level", "")}
                          for m in methods]},
         )
         return methods
 
-    def _exam(self, row: Dict, obligation: Obligation,
-              feedback: str = "") -> List[Dict[str, str]]:
-        memory_hits = (self.memory.hits_for_attacks(row["text"])
-                       if self.memory is not None else self.memory_hits)
-        if feedback:
-            memory_hits = (
-                "[Previous exam questions were disqualified by the quality "
-                "audit: they were false, but not by violating THIS obligation. "
-                "New variants must be false exactly by violating this obligation. "
-                "Disqualification reasons:]"
-                + feedback + "\n" + memory_hits
-            )
-        try:
-            payload = self.variants_role.call(
-                self.backend,
-                {
-                    "claim_text": row["text"],
-                    "obligation_text": obligation.text,
-                    "memory_hits": memory_hits,
-                    "n": self.n_variants,
-                },
-            )
-        except RoleError as err:
-            self.log.append("variants_generated",
-                            {"claim": row["id"], "obligation": obligation.id,
-                             "error": str(err)})
-            return []
-        variants = [v for v in payload["variants"] if v["disproof"].strip()]
-        self.log.append(
-            "variants_generated",
-            {"claim": row["id"], "obligation": obligation.id,
-             "variants": [v["text"] for v in variants],
-             "dropped_no_disproof": len(payload["variants"]) - len(variants)},
-        )
-        return variants
+    _LEVEL_RANK = {"L1": 0, "L2": 1, "L3": 2}   # simplest sufficient first
 
-    def _gate1(self, row, obligation, method, variants, attempt) -> Optional[str]:
-        """Discrimination: the method must refute every USABLE false variant.
+    def _order_by_level(self, methods):
+        """Mechanical order from the oracle's own level declarations."""
+        return sorted(methods,
+                      key=lambda m: self._LEVEL_RANK.get(m.get("level"), 1))
 
-        When a method holds on a variant, there are two suspects: the method
-        (blind spot) or the exam question itself (the generator misconfirmed
-        its falsity, or made it false in a way this obligation does not
-        watch). Before rejecting the method, the question is audited ONCE by
-        an independent agent that re-runs the disproof; only a question that
-        fails its audit is disqualified. Fail-closed direction is preserved:
-        an unclear audit keeps the variant and the method is rejected.
-        """
-        # An obligation is a FUNCTION of the claim, not a constant: "3 | n^5-n"
-        # compiled for the original claim is a fact of arithmetic and holds no
-        # matter what variant it is checked against. The exam must therefore
-        # transport the obligation PATTERN onto the variant — check the
-        # analogous instance, not the original text verbatim.
-        exam_obligation = Obligation(
-            obligation.claim_id,
-            "[EXAM PATTERN TRANSPLANT] Below is an obligation pattern from the "
-            "original claim; the current claim is a variant of the original. "
-            "Apply the isomorphic instance of this obligation to the current "
-            "claim when running the check (what is checked is the current "
-            "claim's corresponding property, not the original obligation's "
-            "literal text):\n" + obligation.text,
-            obligation.failure_looks_like,
-        )
-        sat = 0
-        for i, variant in enumerate(variants):
-            if not self._variant_usable(variant):
-                continue
-            variant_row = {"id": row["id"], "text": variant["text"]}
-            result = self.discharger.discharge(
-                variant_row, exam_obligation, method=method, tag=f"exam{i}"
-            )
-            attempt.discrimination.append(
-                {"variant": variant["text"], "outcome": result.outcome,
-                 "artifact": result.artifact}
-            )
-            self.log.append(
-                "discrimination",
-                {"claim": row["id"], "obligation": obligation.id,
-                 "procedure": method["procedure"][:80],
-                 "variant": variant["text"], "outcome": result.outcome},
-            )
-            if result.outcome == OUTCOME_HOLDS:
-                if not self._audit_variant(row, obligation, variant):
-                    continue   # question disqualified, not the method's fault
-                if self.memory is not None:
-                    self.memory.record_attack(
-                        row["text"], variant["text"],
-                        f"false-passed by method: {method['procedure'][:60]}",
-                        kind="false_pass_caught")
-                return "false pass on a known-false variant"
-            if result.outcome == OUTCOME_FAILED:
-                return "could not sit the discrimination exam"
-            sat += 1
-        if sat == 0:
-            # every question evaporated mid-exam: no exam == nothing binds
-            return self.NO_EXAM
-        return None
+    # ---- the judger ----------------------------------------------------------
 
-    def _variant_usable(self, variant) -> bool:
-        return self._variant_verdicts.get(variant["text"], True)
-
-    def _audit_variant(self, row, obligation, variant) -> bool:
-        """-> True if the exam question stands (variant really is false)."""
-        text = variant["text"]
-        if text in self._variant_verdicts:
-            return self._variant_verdicts[text]
-        try:
-            verdict = self.validate_variant_role.call(
-                self.backend,
-                {
-                    "claim_text": row["text"],
-                    "obligation_text": obligation.text,
-                    "variant_text": text,
-                    "disproof": variant["disproof"],
-                },
-            )
-            stands = verdict["actually_false"] == "yes"
-            reason = verdict["reason"]
-        except RoleError as err:
-            stands, reason = True, f"audit failed, question kept: {err}"
-        self._variant_verdicts[text] = stands
-        if not stands:
-            self._disqualified.append({"variant": text, "reason": reason})
-            self.log.append(
-                "variant_disqualified",
-                {"claim": row["id"], "obligation": obligation.id,
-                 "variant": text, "reason": reason},
-            )
-        return stands
-
-    def _gate2(self, obligation, method, result, attempt) -> Dict[str, str]:
+    def _judge(self, obligation, method, result, attempt,
+               redo: bool = False) -> Dict[str, str]:
         evidence = {
             "outcome": result.outcome,
             "witness": result.witness,
@@ -351,24 +200,52 @@ class BindingGame:
             ),
         }
         try:
-            verdict = self.entailment_role.call(
+            verdict = self.judger_role.call(
                 self.backend,
                 {
                     "obligation_text": obligation.text,
-                    "failure_looks_like": obligation.failure_looks_like,
+                    "procedure": method["procedure"],
+                    "promised_artifact": method.get("artifact", ""),
                     "evidence": json.dumps(evidence, ensure_ascii=False),
                 },
             )
         except RoleError as err:
-            verdict = {"entails": "no",
-                       "reason": f"audit failed: {err}"}  # fail-closed
-        attempt.audit = verdict
+            # fail-closed; the _infra marker keeps a judger infrastructure
+            # failure from awarding itself a redo
+            verdict = {"faithful": "no", "reason": f"judger failed: {err}",
+                       "_infra": True}
+        if redo:
+            attempt.redo_audit = verdict
+        else:
+            attempt.audit = verdict
+        public = {k: v for k, v in verdict.items() if not k.startswith("_")}
         self.log.append(
-            "entailment_audit",
-            {"obligation": obligation.id,
-             "procedure": method["procedure"][:80], **verdict},
+            "judger_verdict",
+            {"obligation": obligation.id, "redo": redo,
+             "procedure": method["procedure"][:80], **public},
         )
         return verdict
+
+    def _redo(self, row, obligation, method, verdict, attempt):
+        """The judger loop's arm: re-execute once with the judger's reason
+        attached; the result goes back for a blind re-judge."""
+        self.log.append(
+            "method_redo",
+            {"claim": row["id"], "obligation": obligation.id,
+             "procedure": method["procedure"][:80],
+             "reason": verdict["reason"][:200]},
+        )
+        method_fb = {
+            **method,
+            "procedure": method["procedure"]
+            + "\n\n[Previous attempt was rejected by the judger; fix it and "
+              "redo. Judger reason: " + verdict["reason"] + "]",
+        }
+        result2 = self.discharger.discharge(
+            row, obligation, method=method_fb, tag="bound-redo")
+        attempt.redo_outcome = result2.outcome
+        attempt.redo_artifact = result2.artifact
+        return result2
 
     # ---- settlement ----------------------------------------------------------
 
@@ -379,28 +256,28 @@ class BindingGame:
              "procedure": method["procedure"][:80], "reason": reason},
         )
 
-    def _record(self, obligation, attempts, variants, bound) -> str:
+    def _record(self, obligation, attempts, bound) -> str:
         return self.artifacts.put(
             {
                 "instrument": "binding-game",
                 "obligation": obligation.text,
-                "variants": variants,
                 "attempts": [vars(a) for a in attempts],
                 "bound": bound,
             }
         )
 
-    def _settle(self, row, obligation, attempts, variants, method, result,
+    def _settle(self, row, obligation, attempts, method, result,
                 audit) -> DischargeResult:
         bound = {"method": method, "audit": audit,
                  "discharge_artifact": result.artifact}
-        digest = self._record(obligation, attempts, variants, bound)
+        digest = self._record(obligation, attempts, bound)
         if self.memory is not None:
             self.memory.record_instrument(method["procedure"])
         self.log.append(
             "method_bound",
             {"claim": row["id"], "obligation": obligation.id,
-             "procedure": method["procedure"][:80]},
+             "procedure": method["procedure"][:80],
+             "level": method.get("level", "")},
         )
         return DischargeResult(
             outcome=result.outcome,
@@ -409,16 +286,11 @@ class BindingGame:
             instrument=method["procedure"][:80],
         )
 
-    def _check_fabrication(self, result: DischargeResult) -> Optional[str]:
-        content = self.artifacts.get(result.artifact)
-        if content is None:
-            return None
-        return check_fabrication(content, result.outcome, self.sandbox)
-
-    def _fail(self, row, obligation, attempts, variants, reason) -> DischargeResult:
-        digest = self._record(obligation, attempts, variants, None)
+    def _fail(self, row, obligation, attempts, reason,
+              unobtainable: bool = False) -> DischargeResult:
+        digest = self._record(obligation, attempts, None)
         return DischargeResult(
-            outcome=OUTCOME_FAILED,
+            outcome=OUTCOME_UNOBTAINABLE if unobtainable else OUTCOME_FAILED,
             witness=reason,
             artifact=digest,
             instrument="binding-game",

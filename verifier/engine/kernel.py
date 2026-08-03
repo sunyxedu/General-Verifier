@@ -1,15 +1,17 @@
 """Kernel.
 
-Obligations -> falsifiability filter -> discharge via a
-single instrument -> mechanical audit bits -> status. The discrimination game,
-variant generation and the two full audits arrive in M1; every seam they will
-plug into is already an explicit step here.
+Compile obligations (graph-aware, answer-blind) -> materialize each as an
+obligation NODE in the claim graph (identical text anywhere = same node, so
+settled verdicts transfer for free) -> discharge each node through the
+binding game (oracle levels -> execute -> judger) -> settle the claim as a
+fold over its obligation nodes.
 
 All kernel activity is appended to the same event stream the solver's activity
 came from — the verifier is auditable through its own ledger.
 """
 from __future__ import annotations
 
+import json
 from typing import Dict, List
 
 from ..execution.discharge import SandboxDischarger
@@ -17,8 +19,8 @@ from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore, LedgerInstrument, PythonSandbox
 from ..core.model import (
     Claim, Evidence, Obligation,
-    KIND_EFFECT, UNVERIFIED, STALE, REFUTED, PARTIAL,
-    OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED,
+    KIND_EFFECT, UNVERIFIED, VERIFIED, STALE, REFUTED, PARTIAL,
+    OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
 from ..llm.roles import COMPILE_OBLIGATIONS
 from ..core.store import ClaimStore
@@ -41,7 +43,6 @@ class Kernel:
         obligations_role=None,
         discharger=None,
         binder=None,
-        coverage=None,
         memory=None,
         max_obligations: int = 16,
     ):
@@ -56,9 +57,8 @@ class Kernel:
         self.discharger = discharger or SandboxDischarger(
             backend, self.sandbox, artifacts
         )
-        self.binder = binder      # M1 binding game; None -> direct discharge
-        self.coverage = coverage  # M1 coverage audit; None -> no exam
-        self.memory = memory      # M4 advisory stores; None -> static hints
+        self.binder = binder      # binding game; None -> direct discharge
+        self.memory = memory      # advisory stores; None -> static hints
         # termination controller (component 27): every loop in the kernel is
         # bounded by construction; this is the one global cap — a pathological
         # compilation cannot stall verification, it gets an honest
@@ -146,27 +146,19 @@ class Kernel:
             )
             return
 
-        obligations, dropped = self._compile_obligations(row)
+        obligations = self._compile_obligations(row)
         if not obligations:
             # fail-closed: nothing checkable means nothing verified
             self.store.record_evidence(
                 row["id"],
-                {"outcome": OUTCOME_FAILED, "error": "no falsifiable obligations"},
+                {"outcome": OUTCOME_FAILED, "error": "no obligations"},
             )
             self.log.append(
                 "status_change",
                 {"claim": row["id"], "status": UNVERIFIED,
-                 "reason": "no falsifiable obligations"},
+                 "reason": "no obligations"},
             )
             return
-
-        if self.coverage is not None and obligations:
-            exam_discharger = (
-                self.binder.discharger if self.binder else self.discharger
-            )
-            obligations.extend(
-                self.coverage.audit(row, obligations, exam_discharger)
-            )
 
         if len(obligations) > self.max_obligations:
             kept_n = self.max_obligations
@@ -186,11 +178,28 @@ class Kernel:
         outcomes: List[str] = []
         refuting_witness = None
         for obligation in obligations:
-            outcome = self._discharge(row, obligation)
+            oid = self.store.add_obligation(row["id"], obligation)
+            known = self.store.status(oid)
+            if known in (VERIFIED, REFUTED, PARTIAL):
+                # content-addressed reuse: the same world-condition was
+                # already settled under another claim — the verdict and its
+                # evidence transfer without re-spending instruments
+                outcome = {VERIFIED: OUTCOME_HOLDS,
+                           REFUTED: OUTCOME_REFUTED,
+                           PARTIAL: OUTCOME_UNOBTAINABLE}[known]
+                self.log.append("dedup_hit",
+                                {"claim": row["id"], "obligation": oid,
+                                 "status": known})
+                outcomes.append(outcome)
+                if outcome == OUTCOME_REFUTED:
+                    ev = self.store.evidence_for(oid)
+                    refuting_witness = ev[-1].get("witness") if ev else None
+                    break
+                continue
+            outcome, witness = self._discharge(row, obligation)
             outcomes.append(outcome)
             if outcome == OUTCOME_REFUTED:
-                ev = self.store.evidence_for(row["id"])
-                refuting_witness = ev[-1].get("witness") if ev else None
+                refuting_witness = witness
                 break
         self._settle(row["id"], outcomes)
 
@@ -209,38 +218,58 @@ class Kernel:
             self.memory.hits_for_obligations(row["text"])
             if self.memory is not None else self.memory_hits
         )
+        # graph context: verified premises are system-established facts the
+        # compiler may build residual obligations on; everything else is
+        # context only. The solver's argument stays invisible either way.
+        verified_deps, pending_deps = [], []
+        for pid in self.store.parents(row["id"]):
+            prow = self.store.get(pid)
+            label = ("[a verified tool-execution record]"
+                     if prow["kind"] == KIND_EFFECT else prow["text"])
+            if prow["status"] == VERIFIED:
+                verified_deps.append(label)
+            else:
+                pending_deps.append(f"{label} (status: {prow['status']})")
         payload = self.obligations_role.call(
-            self.backend, {"claim_text": row["text"], "memory_hits": memory_hits}
+            self.backend,
+            {"claim_text": row["text"],
+             "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
+             "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
+             "graph": json.dumps(
+                 self.store.graph_snapshot(exclude=row["id"]),
+                 ensure_ascii=False),
+             "memory_hits": memory_hits},
         )
-        all_obligations = [
-            Obligation(row["id"], o["text"], o["failure_looks_like"])
-            for o in payload["obligations"]
+        obligations = [
+            Obligation(row["id"], o["text"]) for o in payload["obligations"]
         ]
-        kept = [o for o in all_obligations if o.falsifiable]
-        dropped = [o.text for o in all_obligations if not o.falsifiable]
         self.log.append(
             "obligations_compiled",
-            {"claim": row["id"], "kept": [o.text for o in kept], "dropped": dropped},
+            {"claim": row["id"],
+             "obligations": [o.text for o in obligations]},
         )
-        return kept, dropped
+        return obligations
 
-    def _discharge(self, row: Dict, obligation: Obligation) -> str:
+    def _discharge(self, row: Dict, obligation: Obligation):
+        """Discharge one obligation NODE: evidence lands on the node, and
+        the node's status is settled so any other claim sharing this
+        obligation reuses the verdict. Returns (outcome, witness)."""
+        oid = obligation.id
         if self.binder is not None:
             result = self.binder.run(row, obligation)
         else:
             result = self.discharger.discharge(row, obligation)
         evidence = Evidence(
-            obligation_id=obligation.id,
+            obligation_id=oid,
             instrument=result.instrument,
             outcome=result.outcome,
             artifacts={"artifact": result.artifact},
             witness=result.witness,
         )
         self.store.record_evidence(
-            row["id"],
+            oid,
             {
                 "obligation": obligation.text,
-                "obligation_id": obligation.id,
                 "instrument": result.instrument,
                 "outcome": result.outcome,
                 "artifact": result.artifact,
@@ -248,12 +277,19 @@ class Kernel:
                 "evidence_id": evidence.id,
             },
         )
+        if result.outcome == OUTCOME_HOLDS:
+            self.store.set_verified(oid)
+        elif result.outcome == OUTCOME_REFUTED:
+            self.store.set_refuted(oid, reason=str(result.witness)[:200])
+        elif result.outcome == OUTCOME_UNOBTAINABLE:
+            self.store.set_partial(oid)   # well-defined check, env can't host
+        # failed -> the node stays unverified; a later claim may retry it
         self.log.append(
             "discharge",
-            {"claim": row["id"], "obligation": obligation.id,
+            {"claim": row["id"], "obligation": oid,
              "instrument": result.instrument, "outcome": result.outcome},
         )
-        return result.outcome
+        return result.outcome, result.witness
 
     # ---- settlement ----------------------------------------------------------
 
@@ -265,6 +301,11 @@ class Kernel:
             self.store.set_verified(claim_id)
             new_status = "verified"
         elif any(o == OUTCOME_HOLDS for o in outcomes):
+            self.store.set_partial(claim_id)
+            new_status = "partial"
+        elif any(o == OUTCOME_UNOBTAINABLE for o in outcomes):
+            # the required check is well-defined but its instrument cannot be
+            # obtained here and no equivalent method bound: honest partial
             self.store.set_partial(claim_id)
             new_status = "partial"
         else:

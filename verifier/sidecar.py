@@ -16,7 +16,7 @@ referenceable (`effect:<seq>`) at commit time.
 
 Run:
   uv run python -m verifier.sidecar --state-dir .gv [--model m] [--seats agent|sandbox]
-      [--game/--no-game] [--coverage/--no-coverage]
+      [--game/--no-game]
 
 Claude Code config (.mcp.json):
   {"mcpServers": {"gv": {"type": "stdio", "command": "uv",
@@ -41,17 +41,20 @@ from .stream.tail import Tail
 VERB_ERRORS = (TraceError, UnknownDependency, RoleError, ValueError)
 
 
-def _extract_obligations(evidence: list) -> list:
-    """Build obligation-level detail from discharge evidence records."""
-    detail = []
-    for ev in evidence:
-        if "obligation" not in ev or "outcome" not in ev:
-            continue
-        entry = {"text": ev["obligation"], "outcome": ev["outcome"]}
-        if ev.get("witness") and ev["outcome"] != "holds":
-            entry["reason"] = str(ev["witness"])
-        detail.append(entry)
-    return detail
+def _obligation_summary(store, claim_id: str) -> list:
+    """Obligation-level detail straight from the graph nodes."""
+    out = []
+    for o in store.obligation_children(claim_id):
+        entry = {"text": o["text"], "status": o["status"]}
+        if o["status"] != "verified":
+            reason = o.get("reason")
+            if not reason:
+                ev = store.evidence_for(o["id"])
+                reason = str(ev[-1].get("witness"))[:300] if ev and ev[-1].get("witness") else None
+            if reason:
+                entry["reason"] = reason
+        out.append(entry)
+    return out
 
 HOOK_FEED = "hook_feed.jsonl"
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
@@ -60,7 +63,7 @@ HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 class Sidecar:
     def __init__(self, state_dir: str, kernel_factory=None,
                  model: Optional[str] = None, seats: str = "agent",
-                 game: bool = True, coverage: bool = False,
+                 game: bool = True,
                  memory_dir: Optional[str] = None,
                  toolchain_dir: Optional[str] = None):
         self.toolchain_dir = toolchain_dir
@@ -77,7 +80,7 @@ class Sidecar:
 
         if kernel_factory is None:
             kernel_factory = lambda sc: _default_kernel(  # noqa: E731
-                sc, model=model, seats=seats, game=game, coverage=coverage
+                sc, model=model, seats=seats, game=game
             )
         self.kernel = kernel_factory(self)  # factory receives the sidecar
 
@@ -128,8 +131,7 @@ class Sidecar:
             return {"error": str(err)}
         result = {"claim_id": claim_id, "status": status}
         if status == "partial":
-            result["obligations"] = _extract_obligations(
-                self.store.evidence_for(claim_id))
+            result["obligations"] = _obligation_summary(self.store, claim_id)
         return result
 
     def certificate(self, final_label: str) -> Dict[str, Any]:
@@ -144,7 +146,11 @@ class Sidecar:
         for e in cert["slice"]:
             entry = {"text": e["text"], "status": e["status"]}
             if e["status"] == "partial":
-                obligations = _extract_obligations(e.get("evidence", []))
+                obligations = [
+                    {"text": o["text"], "status": o["status"],
+                     **({"reason": o["reason"]} if o.get("reason") else {})}
+                    for o in e.get("obligations", [])
+                ]
                 if obligations:
                     entry["obligations"] = obligations
             slice_summary.append(entry)
@@ -164,8 +170,7 @@ class Sidecar:
             row = self.store.get(claim_id)
             result = {k: row[k] for k in ("id", "kind", "text", "status")}
             if row["status"] == "partial":
-                result["obligations"] = _extract_obligations(
-                    self.store.evidence_for(claim_id))
+                result["obligations"] = _obligation_summary(self.store, claim_id)
             return result
         return {
             label: self.store.status(cid)
@@ -180,12 +185,11 @@ class Sidecar:
                 "dead": self.store.dead_branches()}
 
 
-def _default_kernel(sc: Sidecar, model, seats, game, coverage) -> Kernel:
+def _default_kernel(sc: Sidecar, model, seats, game) -> Kernel:
     if seats == "agent":
         from .llm.agents import (
             ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
         )
-        from .engine.coverage import CoverageAudit
         from .execution.discharge import AgentDischarger
         from .engine.game import BindingGame
 
@@ -198,10 +202,9 @@ def _default_kernel(sc: Sidecar, model, seats, game, coverage) -> Kernel:
             toolchain_dir=sc.toolchain_dir)
         binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                              memory=sc.memory) if game else None
-        audit = CoverageAudit(backend, sc.log) if coverage else None
         return Kernel(sc.store, sc.log, backend, sc.artifacts,
                       obligations_role=COMPILE_OBLIGATIONS_AGENT,
-                      discharger=discharger, binder=binder, coverage=audit,
+                      discharger=discharger, binder=binder,
                       memory=sc.memory)
     if seats == "sandbox":
         from .llm.roles import OpenAIBackend
@@ -260,13 +263,11 @@ def main() -> None:
     ap.add_argument("--model", default=None)
     ap.add_argument("--seats", default="agent", choices=["agent", "sandbox"])
     ap.add_argument("--game", action=argparse.BooleanOptionalAction, default=True)
-    ap.add_argument("--coverage", action=argparse.BooleanOptionalAction,
-                    default=False)
     ap.add_argument("--memory-dir", default=None)
     ap.add_argument("--toolchain-dir", default=None)
     args = ap.parse_args()
     sidecar = Sidecar(args.state_dir, model=args.model, seats=args.seats,
-                      game=args.game, coverage=args.coverage,
+                      game=args.game,
                       memory_dir=args.memory_dir,
                       toolchain_dir=args.toolchain_dir)
     build_server(sidecar).run()   # stdio

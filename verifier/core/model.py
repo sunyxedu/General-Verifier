@@ -60,21 +60,22 @@ class Claim:
         )
 
 
+# internal graph node kind for obligations; deliberately NOT in KINDS so a
+# solver can never commit one — only the kernel materializes them
+KIND_OBLIGATION = "obligation"
+
+
 @dataclass(frozen=True)
 class Obligation:
-    claim_id: str
+    claim_id: str            # context only — excluded from identity
     text: str
-    failure_looks_like: str  # empty string == vacuous == must be filtered out
 
     @property
     def id(self) -> str:
-        return content_hash(
-            {"claim": self.claim_id, "text": self.text, "fail": self.failure_looks_like}
-        )
-
-    @property
-    def falsifiable(self) -> bool:
-        return bool(self.failure_looks_like.strip())
+        # identity is the CONTENT of the check alone: the same
+        # world-condition compiled under different claims is one graph node,
+        # so settled verification work transfers across claims for free
+        return content_hash({"text": self.text})
 
 
 @dataclass(frozen=True)
@@ -101,3 +102,6 @@ class Evidence:
 OUTCOME_HOLDS = "holds"
 OUTCOME_REFUTED = "refuted"
 OUTCOME_FAILED = "failed"
+# the method is right but its instrument cannot be obtained in this
+# environment; settles the claim at partial, never silently upgraded
+OUTCOME_UNOBTAINABLE = "unobtainable"
