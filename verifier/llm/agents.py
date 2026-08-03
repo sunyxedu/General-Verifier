@@ -311,14 +311,14 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
         "discharge time, and a method whose instrument is truly "
         "unobtainable will fail there honestly. Never omit a method merely "
         "because its tool may be absent.\n"
-        "Grade every method with an assurance level:\n"
-        "  L1 — the simplest check that already suffices (e.g. exhaustive "
-        "computation over the exact stated finite domain)\n"
-        "  L2 — a robust structural check (case analysis covering the whole "
-        "domain, independent cross-implementation, symbolic identity)\n"
-        "  L3 — the most assured (machine-checked formal proof, e.g. Lean)\n"
-        "Order the list by level ascending: the simplest sufficient method "
-        "first, the most assured last."
+        "Grade every method with an assurance level OF YOUR OWN DEVISING: "
+        "you decide the scale and the labels — from the simplest check that "
+        "already suffices up to the most assured (e.g. a machine-checked "
+        "formal proof). The level is your signed declaration of how strong "
+        "the method's guarantee is, and it is disclosed on the certificate.\n"
+        "Order the list ascending by your own grading: the simplest "
+        "sufficient method first, the most assured last — execution tries "
+        "them in exactly the order you give."
     ),
     template=(
         "Claim: {claim_text}\n"
@@ -331,14 +331,14 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
         "  procedure: concretely how to do it (including what class of "
         "instrument/library to use)\n"
         "  artifact: what auditable evidence the method produces\n"
-        "  level: L1 | L2 | L3 — its assurance level as defined above"
+        "  level: its assurance level — your own scale, your own words"
     ),
     schema={
         "methods": [
             {
                 "procedure": str,
                 "artifact": str,
-                "level": ("L1", "L2", "L3"),
+                "level": str,
             }
         ]
     },
@@ -396,7 +396,8 @@ JUDGER_AGENT = AgentRole(
         "examine the actual outputs yourself, not the narration; there is "
         "no separate re-run stage, so rerun the check yourself whenever "
         "reproducibility is in doubt. When ruling no, phrase the reason as "
-        "a concrete fix instruction — the executor gets exactly one redo."
+        "a concrete fix instruction — it goes straight back to the executor "
+        "for a redo (a bounded loop of at most three rounds)."
     ),
     template=(
         "Obligation (context only): {obligation_text}\n"

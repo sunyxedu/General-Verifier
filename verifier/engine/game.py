@@ -4,9 +4,9 @@ Per obligation:
 
 1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
    oracle's own guarantee, researched first when the domain is
-   unfamiliar) and grades each with an assurance level L1 (simplest
-   sufficient) -> L3 (machine-checked). Execution proceeds by level
-   ascending: simplest first.
+   unfamiliar) and grades each with an assurance level of its own
+   devising, listing them ascending — simplest sufficient first, most
+   assured last. Execution follows the oracle's order exactly.
 2. For each method in order the discharge executor carries it out
    faithfully (a missing instrument is installed at discharge time; a
    truly unobtainable one settles the claim at partial).
@@ -16,7 +16,8 @@ Per obligation:
    - The judger examines the RESULT: was the bound method faithfully
      executed and the promised artifact delivered? It opens the artifact
      itself and reruns when reproducibility is in doubt. Unfaithful ->
-     one redo with the judger's reason attached, then a blind re-judge.
+     the judger's reason goes back to the executor for a redo and the
+     redone result is re-judged BLIND — a loop of at most three rounds.
 3. All candidates exhausted -> failed (or unobtainable when a missing
    instrument blocked the way), with every attempt on record.
 """
@@ -44,10 +45,13 @@ class Attempt:
     rejected: Optional[str] = None          # reason, if the method was rejected
     discharge_artifact: Optional[str] = None
     discharge_outcome: Optional[str] = None
-    audit: Optional[Dict[str, str]] = None       # judger's first verdict
-    redo_outcome: Optional[str] = None           # one bounded redo, if granted
-    redo_artifact: Optional[str] = None
-    redo_audit: Optional[Dict[str, str]] = None  # blind re-judge verdict
+    audit: Optional[Dict[str, str]] = None  # judger's first verdict
+    redos: List[Dict] = None                # one {reason, outcome, artifact,
+                                            # audit} per redo round
+
+    def __post_init__(self):
+        if self.redos is None:
+            self.redos = []
 
 
 class BindingGame:
@@ -59,7 +63,7 @@ class BindingGame:
         discharger,
         oracles_role=ENUMERATE_ORACLES_AGENT,
         judger_role=JUDGER_AGENT,
-        redo_rounds: int = 1,
+        redo_rounds: int = 3,
         registry: str = "[]",
         memory=None,
     ):
@@ -81,7 +85,8 @@ class BindingGame:
         if not methods:
             return self._fail(row, obligation, attempts,
                               "no candidate methods")
-        methods = self._order_by_level(methods)
+        # execution order IS the oracle's order: it lists methods ascending
+        # by its own assurance grading (simplest sufficient first)
 
         unobtainable_seen = False   # a missing, uninstallable instrument
                                     # blocked a candidate -> settles partial
@@ -117,31 +122,38 @@ class BindingGame:
                 return self._settle(row, obligation, attempts,
                                     method, result, audit=verdict)
 
-            # judger loop: an unfaithful delivery earns exactly one redo
-            # with the judger's reason attached; the redone evidence is
-            # then re-judged BLIND. (a judger infrastructure failure never
-            # awards a redo)
-            if (not verdict.get("_infra")
-                    and self.redo_rounds > 0
-                    and attempt.redo_outcome is None):
-                result2 = self._redo(row, obligation, method, verdict, attempt)
-                if result2.outcome == OUTCOME_REFUTED:
+            # judger-discharger loop: an unfaithful delivery hands the
+            # judger's reason back to the executor for a redo, and the
+            # redone evidence is re-judged BLIND — at most redo_rounds
+            # rounds. (a judger infrastructure failure never awards a
+            # redo; a refutation surfacing mid-loop settles immediately)
+            reason = None
+            rounds = 0
+            while (verdict["faithful"] == "no"
+                   and not verdict.get("_infra")
+                   and rounds < self.redo_rounds):
+                rounds += 1
+                result = self._redo(row, obligation, method, verdict,
+                                    attempt, rounds)
+                if result.outcome == OUTCOME_REFUTED:
                     return self._settle(row, obligation, attempts,
-                                        method, result2, audit=None)
-                if result2.outcome == OUTCOME_UNOBTAINABLE:
+                                        method, result, audit=None)
+                if result.outcome == OUTCOME_UNOBTAINABLE:
                     unobtainable_seen = True
-                    reason = "instrument unobtainable (redo)"
-                elif result2.outcome == OUTCOME_FAILED:
-                    reason = "execution failure at retry limit (redo)"
-                else:
-                    verdict2 = self._judge(obligation, method, result2,
-                                           attempt, redo=True)
-                    if verdict2["faithful"] == "yes":
-                        return self._settle(row, obligation, attempts,
-                                            method, result2, audit=verdict2)
-                    reason = f"judger after redo: {verdict2['reason']}"
-            else:
-                reason = f"judger: {verdict['reason']}"
+                    reason = f"instrument unobtainable (redo {rounds})"
+                    break
+                if result.outcome == OUTCOME_FAILED:
+                    reason = f"execution failure at retry limit (redo {rounds})"
+                    break
+                verdict = self._judge(obligation, method, result, attempt,
+                                      redo=rounds)
+                if verdict["faithful"] == "yes":
+                    return self._settle(row, obligation, attempts,
+                                        method, result, audit=verdict)
+            if reason is None:
+                reason = (f"judger after {rounds} redo round(s): "
+                          f"{verdict['reason']}"
+                          if rounds else f"judger: {verdict['reason']}")
             self._reject(row, obligation, method, reason)
             attempt.rejected = reason
 
@@ -180,17 +192,10 @@ class BindingGame:
         )
         return methods
 
-    _LEVEL_RANK = {"L1": 0, "L2": 1, "L3": 2}   # simplest sufficient first
-
-    def _order_by_level(self, methods):
-        """Mechanical order from the oracle's own level declarations."""
-        return sorted(methods,
-                      key=lambda m: self._LEVEL_RANK.get(m.get("level"), 1))
-
     # ---- the judger ----------------------------------------------------------
 
     def _judge(self, obligation, method, result, attempt,
-               redo: bool = False) -> Dict[str, str]:
+               redo: int = 0) -> Dict[str, str]:
         evidence = {
             "outcome": result.outcome,
             "witness": result.witness,
@@ -215,7 +220,7 @@ class BindingGame:
             verdict = {"faithful": "no", "reason": f"judger failed: {err}",
                        "_infra": True}
         if redo:
-            attempt.redo_audit = verdict
+            attempt.redos[-1]["audit"] = verdict
         else:
             attempt.audit = verdict
         public = {k: v for k, v in verdict.items() if not k.startswith("_")}
@@ -226,26 +231,30 @@ class BindingGame:
         )
         return verdict
 
-    def _redo(self, row, obligation, method, verdict, attempt):
-        """The judger loop's arm: re-execute once with the judger's reason
-        attached; the result goes back for a blind re-judge."""
+    def _redo(self, row, obligation, method, verdict, attempt, round_no: int):
+        """One arm of the judger-discharger loop: re-execute with every
+        judger reason so far attached (latest last); the result goes back
+        for a blind re-judge."""
         self.log.append(
             "method_redo",
             {"claim": row["id"], "obligation": obligation.id,
-             "procedure": method["procedure"][:80],
+             "procedure": method["procedure"][:80], "round": round_no,
              "reason": verdict["reason"][:200]},
         )
-        method_fb = {
-            **method,
-            "procedure": method["procedure"]
-            + "\n\n[Previous attempt was rejected by the judger; fix it and "
-              "redo. Judger reason: " + verdict["reason"] + "]",
-        }
-        result2 = self.discharger.discharge(
+        attempt.redos.append({"reason": verdict["reason"],
+                              "outcome": None, "artifact": None,
+                              "audit": None})
+        notes = "".join(
+            f"\n\n[Redo round {i + 1} — the judger rejected the previous "
+            f"attempt; fix it and redo. Judger reason: {r['reason']}]"
+            for i, r in enumerate(attempt.redos)
+        )
+        method_fb = {**method, "procedure": method["procedure"] + notes}
+        result = self.discharger.discharge(
             row, obligation, method=method_fb, tag="bound-redo")
-        attempt.redo_outcome = result2.outcome
-        attempt.redo_artifact = result2.artifact
-        return result2
+        attempt.redos[-1]["outcome"] = result.outcome
+        attempt.redos[-1]["artifact"] = result.artifact
+        return result
 
     # ---- settlement ----------------------------------------------------------
 
