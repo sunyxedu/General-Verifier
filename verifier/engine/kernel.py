@@ -44,7 +44,6 @@ class Kernel:
         discharger=None,
         binder=None,
         memory=None,
-        max_obligations: int = 16,
     ):
         self.store = store
         self.log = log
@@ -59,12 +58,6 @@ class Kernel:
         )
         self.binder = binder      # binding game; None -> direct discharge
         self.memory = memory      # advisory stores; None -> static hints
-        # termination controller (component 27): every loop in the kernel is
-        # bounded by construction; this is the one global cap — a pathological
-        # compilation cannot stall verification, it gets an honest
-        # unverified(bounds) instead. Strength-first is untouched: the cap is
-        # on breadth (obligation count), never on instrument strength.
-        self.max_obligations = max_obligations
         store.on_trigger(self.verify)  # the single rule wires straight in
 
     # ---- entry ---------------------------------------------------------------
@@ -157,21 +150,6 @@ class Kernel:
                 "status_change",
                 {"claim": row["id"], "status": UNVERIFIED,
                  "reason": "no obligations"},
-            )
-            return
-
-        if len(obligations) > self.max_obligations:
-            kept_n = self.max_obligations
-            self.store.record_evidence(
-                row["id"],
-                {"outcome": OUTCOME_FAILED,
-                 "error": f"bounds: {len(obligations)} obligations exceed "
-                          f"cap {kept_n}; verification not attempted"},
-            )
-            self.log.append(
-                "status_change",
-                {"claim": row["id"], "status": UNVERIFIED,
-                 "reason": "bounds: obligations cap"},
             )
             return
 
