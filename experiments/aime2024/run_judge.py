@@ -13,7 +13,9 @@ Faithful to the paper where possible, honest about deviations:
 - Same model as the General Verifier's seats, so the comparison is
   evidence-vs-opinion at matched model capability, not model shopping.
 
-Usage:  uv run python experiments/aime2024/run_judge.py [--model sonnet] [--k 8]
+Usage:
+  uv run python experiments/aime2024/run_judge.py [--model sonnet]
+      [--set aime|novel] [--k 8]
 """
 import argparse
 import json
@@ -26,12 +28,9 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
-from problems import PROBLEMS, claim_text            # noqa: E402
+from problems import claim_text                          # noqa: E402
 from verifier.llm.agents import AgentBackend, AgentRole  # noqa: E402
-from verifier.llm.roles import RoleError             # noqa: E402
-
-RESULTS_DIR = os.path.join(HERE, "results", "judge")
-RESULTS = os.path.join(RESULTS_DIR, "results.jsonl")
+from verifier.llm.roles import RoleError                 # noqa: E402
 
 JUDGE = AgentRole(
     name="llm_judge",
@@ -53,10 +52,10 @@ JUDGE = AgentRole(
 )
 
 
-def recorded() -> set:
+def recorded(results_path: str) -> set:
     done = set()
-    if os.path.exists(RESULTS):
-        with open(RESULTS, encoding="utf-8") as f:
+    if os.path.exists(results_path):
+        with open(results_path, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     r = json.loads(line)
@@ -67,16 +66,26 @@ def recorded() -> set:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="sonnet")
+    ap.add_argument("--set", dest="pset", default="aime",
+                    choices=["aime", "novel"])
     ap.add_argument("--k", type=int, default=8, help="repeated evaluations")
     args = ap.parse_args()
 
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    backend = AgentBackend(roles={"llm_judge": JUDGE}, cwd=RESULTS_DIR,
+    if args.pset == "novel":
+        from problems_novel import PROBLEMS
+    else:
+        from problems import PROBLEMS
+    suffix = "" if args.pset == "aime" else "-novel"
+    results_dir = os.path.join(HERE, "results", "judge" + suffix)
+    results = os.path.join(results_dir, "results.jsonl")
+
+    os.makedirs(results_dir, exist_ok=True)
+    backend = AgentBackend(roles={"llm_judge": JUDGE}, cwd=results_dir,
                            model=args.model)
-    done = recorded()
+    done = recorded(results)
     todo = [(p, tag) for p in PROBLEMS for tag in ("true", "trap")
             if (p["id"], tag) not in done]
-    print(f"[judge] {len(todo)} claims x K={args.k} repeats "
+    print(f"[judge:{args.pset}] {len(todo)} claims x K={args.k} repeats "
           f"({len(done)} already recorded)", flush=True)
 
     for i, (p, tag) in enumerate(todo, 1):
@@ -98,12 +107,13 @@ def main() -> None:
             "scores": scores, "mean": mean, "failures": failures,
             "seconds": seconds, "k": args.k, "model": args.model,
         }
-        with open(RESULTS, "a", encoding="utf-8") as f:
+        with open(results, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        print(f"[judge {i}/{len(todo)}] {p['id']}_{tag} answer={answer} "
-              f"-> mean={mean} scores={scores}  ({seconds}s)", flush=True)
+        print(f"[judge:{args.pset} {i}/{len(todo)}] {p['id']}_{tag} "
+              f"answer={answer} -> mean={mean} scores={scores}  ({seconds}s)",
+              flush=True)
 
-    print("[judge] done", flush=True)
+    print(f"[judge:{args.pset}] done", flush=True)
 
 
 if __name__ == "__main__":

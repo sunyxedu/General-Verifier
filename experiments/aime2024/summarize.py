@@ -25,8 +25,15 @@ def load(path):
 
 
 def main() -> None:
-    gv = load(os.path.join(HERE, "results", "gv", "results.jsonl"))
-    jd = load(os.path.join(HERE, "results", "judge", "results.jsonl"))
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--set", dest="pset", default="aime",
+                    choices=["aime", "novel"])
+    args = ap.parse_args()
+    suffix = "" if args.pset == "aime" else "-novel"
+    gv = load(os.path.join(HERE, "results", "gv" + suffix, "results.jsonl"))
+    jd = load(os.path.join(HERE, "results", "judge" + suffix,
+                           "results.jsonl"))
     keys = sorted(set(gv) | set(jd))
 
     print(f"{'claim':<12}{'label':<9}{'GV verdict':<14}{'GV s':>7}"
