@@ -28,9 +28,9 @@ def main() -> None:
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="pset", default="aime",
-                    choices=["aime", "novel"])
+                    choices=["aime", "novel", "aime2026"])
     args = ap.parse_args()
-    suffix = "" if args.pset == "aime" else "-novel"
+    suffix = "" if args.pset == "aime" else "-" + args.pset
     gv = load(os.path.join(HERE, "results", "gv" + suffix, "results.jsonl"))
     jd = load(os.path.join(HERE, "results", "judge" + suffix,
                            "results.jsonl"))

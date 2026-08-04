@@ -43,16 +43,18 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--set", dest="pset", default="aime",
-                    choices=["aime", "novel"])
+                    choices=["aime", "novel", "aime2026"])
     ap.add_argument("--only", default=None, help="comma-separated problem ids")
     args = ap.parse_args()
     only = set(args.only.split(",")) if args.only else None
 
     if args.pset == "novel":
         from problems_novel import PROBLEMS
+    elif args.pset == "aime2026":
+        from problems_aime2026 import PROBLEMS
     else:
         from problems import PROBLEMS
-    suffix = "" if args.pset == "aime" else "-novel"
+    suffix = "" if args.pset == "aime" else "-" + args.pset
     results_dir = os.path.join(HERE, "results", "gv" + suffix)
     results = os.path.join(results_dir, "results.jsonl")
 

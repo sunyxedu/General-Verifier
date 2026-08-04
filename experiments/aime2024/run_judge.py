@@ -67,15 +67,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--set", dest="pset", default="aime",
-                    choices=["aime", "novel"])
+                    choices=["aime", "novel", "aime2026"])
     ap.add_argument("--k", type=int, default=8, help="repeated evaluations")
     args = ap.parse_args()
 
     if args.pset == "novel":
         from problems_novel import PROBLEMS
+    elif args.pset == "aime2026":
+        from problems_aime2026 import PROBLEMS
     else:
         from problems import PROBLEMS
-    suffix = "" if args.pset == "aime" else "-novel"
+    suffix = "" if args.pset == "aime" else "-" + args.pset
     results_dir = os.path.join(HERE, "results", "judge" + suffix)
     results = os.path.join(results_dir, "results.jsonl")
 
