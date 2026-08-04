@@ -67,7 +67,8 @@ GV_PROMPT = (
     "Solve this problem; the answer is an integer. Follow the claim "
     "protocol in CLAUDE.md: commit your key intermediate results as claims "
     "while you work, commit a final claim whose text ends with 'The answer "
-    "is <N>.', and request gv.certificate on it before you finish."
+    "is <N>.', and request gv.certificate on it before you finish. End "
+    "your reply with a line of exactly this form: FINAL ANSWER: <N>"
 )
 
 PLAIN_PROMPT = (
@@ -112,13 +113,17 @@ def parse_answer(text):
     return int(m[-1]) if m else None
 
 
-def run_solver(cwd, prompt):
+def run_solver(cwd, prompt, mcp=False):
     t0 = time.time()
+    cmd = ["claude", "-p", prompt, "--model", "sonnet",
+           "--dangerously-skip-permissions"]
+    if mcp:
+        # headless -p does not auto-trust a project .mcp.json; load it
+        # explicitly or the whole harness silently stays unmounted
+        cmd += ["--mcp-config", ".mcp.json", "--strict-mcp-config"]
     try:
-        proc = subprocess.run(
-            ["claude", "-p", prompt, "--model", "sonnet",
-             "--dangerously-skip-permissions"],
-            cwd=cwd, capture_output=True, text=True, timeout=TIMEOUT)
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                              timeout=TIMEOUT)
         out = proc.stdout
     except subprocess.TimeoutExpired:
         out = "<timeout>"
@@ -140,8 +145,8 @@ def arm_gv(results_dir, results):
             protocol = f.read()
         with open(os.path.join(work, "CLAUDE.md"), "w") as f:
             f.write(protocol)
-        out, seconds = run_solver(work,
-                                  GV_PROMPT.format(statement=p["statement"]))
+        out, seconds = run_solver(
+            work, GV_PROMPT.format(statement=p["statement"]), mcp=True)
         state = os.path.join(work, ".gv")
         text, status, n_refuted = final_claim(state)
         answer = parse_answer(text) or parse_answer(out)
