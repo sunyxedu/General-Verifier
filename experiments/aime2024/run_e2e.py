@@ -51,14 +51,17 @@ MCP_JSON = {
     }
 }
 
+# the repo path contains a space — the hook command is shell-parsed, so the
+# script path MUST be quoted or every tool call in the session gets blocked
+# by a failing PreToolUse hook
 SETTINGS_JSON = {
     "hooks": {
         "PreToolUse": [{"matcher": "*", "hooks": [
             {"type": "command",
-             "command": f"python3 {ROOT}/hooks/pre_tool_use.py"}]}],
+             "command": f'python3 "{ROOT}/hooks/pre_tool_use.py"'}]}],
         "PostToolUse": [{"matcher": "*", "hooks": [
             {"type": "command",
-             "command": f"python3 {ROOT}/hooks/post_tool_use.py"}]}],
+             "command": f'python3 "{ROOT}/hooks/post_tool_use.py"'}]}],
     }
 }
 
@@ -135,7 +138,10 @@ def arm_gv(results_dir, results):
     todo = [p for p in PROBLEMS if (p["id"], 0) not in done]
     print(f"[e2e:gv] {len(todo)} problems ({len(done)} recorded)", flush=True)
     for i, p in enumerate(todo, 1):
-        work = os.path.join(results_dir, p["id"], "work")
+        # workdir OUTSIDE the repo: inside it, Claude Code adopts the repo
+        # as the project and the whole verifier tree leaks into the
+        # solver's context
+        work = os.path.join("/tmp/gv-e2e", p["id"], "work")
         os.makedirs(os.path.join(work, ".claude"), exist_ok=True)
         with open(os.path.join(work, ".mcp.json"), "w") as f:
             json.dump(MCP_JSON, f)
@@ -157,8 +163,9 @@ def arm_gv(results_dir, results):
         rec = {"pid": p["id"], "sample": 0, "answer": answer,
                "truth": p["true"], "solved": answer == p["true"],
                "verdict": status, "refuted_claims": n_refuted,
-               "seconds": seconds, "events": events,
-               "final_text": (text or "")[:200]}
+               "seconds": seconds, "events": events, "workdir": work,
+               "final_text": (text or "")[:200],
+               "output_tail": out[-300:]}
         with open(results, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         print(f"[e2e:gv {i}/{len(todo)}] {p['id']} answer={answer} "
