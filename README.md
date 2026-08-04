@@ -56,7 +56,8 @@ output is always a FAILED check, never a pass (fail-closed).
    on record.
 5. **Settlement** is honest per claim: a claim's status is the fold of its obligation
    nodes — any refuted node → `refuted` (and the downstream cone is hard-killed); all
-   verified → `verified`; blocked only by an unobtainable instrument → `partial`. The
+   verified → `verified`; some verified and some not → `partial`; blocked only by an
+   unobtainable instrument → `partial` as well. The
    certificate freezes the slice with each claim's obligation nodes and their evidence
    nested inside, and collapses the same way: refuted > unverified > partial >
    verified.
@@ -133,7 +134,7 @@ merge without a certificate.
 | `verifier/stream/` | ingestion: incremental graph building (`builder.py`), torn-line-tolerant online tail (`tail.py`) |
 | `verifier/llm/` | LLM seats: one-shot roles with schema gate (`roles.py`, OpenAI SDK), acting agent roles (`agents.py`, Claude Agent SDK) |
 | `verifier/execution/` | the hands: python sandbox + artifact store, fail-closed (`instruments.py`), two discharge seats (`discharge.py`); `strength.py` retained but unused |
-| `verifier/engine/` | verification core: trigger entry + settlement + obligation-node reuse + pruning (`kernel.py`), binding game: level-ordered sufficient methods + fidelity judger with one redo (`game.py`), certificate with nested obligations (`certificate.py`) |
+| `verifier/engine/` | verification core: trigger entry + settlement + obligation-node reuse + pruning (`kernel.py`), binding game: oracle-ordered sufficient methods + fidelity judger with a bounded redo loop (`game.py`), certificate with nested obligations (`certificate.py`) |
 | `verifier/memory.py` | three stores (advisory only) |
 | `verifier/sidecar.py` + `cli.py` | entry points: MCP service + hook ingestion; CI gate |
 | `hooks/` + `protocol/` | solver-side PreToolUse/PostToolUse hooks; MCP mount example + solver protocol |
