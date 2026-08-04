@@ -8,6 +8,9 @@
     <marker id="arb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
       <path d="M0 0L10 5L0 10z" fill="#898781"/>
     </marker>
+    <marker id="arv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#6d4fc4"/>
+    </marker>
   </defs>
 
   <!-- ======== SOLVER ======== -->
@@ -90,7 +93,7 @@
   <!-- kernel row B: obligation nodes -->
   <rect x="192" y="566" width="634" height="40" rx="6" fill="#2a78d6" fill-opacity="0.06" stroke="#2a78d6" stroke-width="1.1"/>
   <text x="509" y="582" text-anchor="middle" font-size="10" font-weight="bold" fill="#0b0b0b">OBLIGATION NODES — materialize into the graph</text>
-  <text x="509" y="598" text-anchor="middle" font-size="8.7" fill="#52514e">already settled anywhere — as a shared obligation or a same-text settled claim? inherit verdict + evidence for free — otherwise run the binding game</text>
+  <text x="509" y="598" text-anchor="middle" font-size="8.7" fill="#52514e">already settled anywhere — shared obligation or same-text settled claim? inherit verdict + evidence — otherwise run the binding game</text>
   <line x1="509" y1="606" x2="509" y2="620" stroke="#52514e" stroke-width="1.2" marker-end="url(#ar)"/>
 
   <!-- binding game strip -->
@@ -106,7 +109,9 @@
   <line x1="608" y1="661" x2="622" y2="661" stroke="#52514e" stroke-width="1.1" marker-end="url(#ar)"/>
   <rect x="626" y="644" width="188" height="34" rx="5" fill="#eb6834" fill-opacity="0.10" stroke="#eb6834" stroke-width="1.2"/>
   <text x="720" y="657" text-anchor="middle" font-size="9" fill="#0b0b0b">judger: result faithful?</text>
-  <text x="720" y="670" text-anchor="middle" font-size="7.8" fill="#52514e">redo loop ≤3 → blind re-judge</text>
+  <text x="720" y="670" text-anchor="middle" font-size="7.8" fill="#52514e">unfaithful → reason back · blind re-judge</text>
+  <path d="M 690 644 C 672 633 566 633 548 644" stroke="#6d4fc4" stroke-width="1.1" fill="none" stroke-dasharray="4 3" marker-end="url(#arv)"/>
+  <text x="619" y="633" text-anchor="middle" font-size="7.6" fill="#6d4fc4">redo loop ≤3</text>
 
   <text x="192" y="702" font-size="8.6" fill="#898781">a claim's status is the fold of its obligation nodes — any refuted node refutes the claim and prunes its downstream cone</text>
 
