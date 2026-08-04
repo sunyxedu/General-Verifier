@@ -9,3 +9,4 @@ artifacts/
 *.db
 .DS_Store
 experiments/*/results/
+experiments/*/vendor/
