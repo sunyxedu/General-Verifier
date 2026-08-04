@@ -8,3 +8,4 @@ __pycache__/
 artifacts/
 *.db
 .DS_Store
+experiments/*/results/
