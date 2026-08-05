@@ -126,6 +126,13 @@ uv run python -m verifier.cli replay --events trace.jsonl
 Enforcement is inverted: the solver is never forced to verify — the consumer refuses to
 merge without a certificate.
 
+## Experiments
+
+Three-way benchmark comparisons (General Verifier vs an LLM-as-a-Verifier
+judge vs stock Claude Code / Codex) on FrontierMath's official public
+sample, SWE-bench Pro's public set, and Terminal-Bench 2.1 — see
+[experiments/README.md](experiments/README.md) for one-command runners.
+
 ## Module map
 
 | Module | Contents |

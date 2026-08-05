@@ -10,3 +10,4 @@ artifacts/
 .DS_Store
 experiments/*/results/
 experiments/*/vendor/
+experiments/frontiermath/_raw/
