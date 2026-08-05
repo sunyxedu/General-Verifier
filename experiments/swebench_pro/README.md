@@ -20,7 +20,7 @@ uv run experiments/swebench_pro/prep.py --pull     # pick subset (default 12,
 uv run python experiments/swebench_pro/run.py --arm gv
 uv run python experiments/swebench_pro/run.py --arm plain --n 3
 uv run python experiments/swebench_pro/run.py --arm codex
-uv run python experiments/swebench_pro/select_best.py   # judge picks 1 of 3 patches
+uv run experiments/swebench_pro/select_best.py   # judge picks 1 of 3 patches
 uv run python experiments/swebench_pro/evaluate.py --arm gv      # official eval
 uv run python experiments/swebench_pro/evaluate.py --arm plain   # all samples
 uv run python experiments/swebench_pro/evaluate.py --arm codex

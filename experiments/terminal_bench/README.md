@@ -20,7 +20,7 @@ verdict-vs-reward analysis.
 uv run python experiments/terminal_bench/run.py --arm plain --k 3
 uv run python experiments/terminal_bench/run.py --arm gv
 uv run python experiments/terminal_bench/run.py --arm codex
-uv run python experiments/terminal_bench/select_best.py    # judge best-of-3 trials
+uv run experiments/terminal_bench/select_best.py    # judge best-of-3 trials
 uv run python experiments/terminal_bench/summarize.py
 ```
 

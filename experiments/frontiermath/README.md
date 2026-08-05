@@ -17,7 +17,7 @@ Answer checking mirrors Epoch's scheme: 11 answers are exact integers,
 uv run python experiments/frontiermath/run.py --arm gv           # GV, one prompt
 uv run python experiments/frontiermath/run.py --arm plain --n 3  # stock Claude Code
 uv run python experiments/frontiermath/run.py --arm codex        # stock Codex
-uv run python experiments/frontiermath/select_best.py                 # LLM-as-a-Verifier best-of-3
+uv run experiments/frontiermath/select_best.py                 # LLM-as-a-Verifier best-of-3
 uv run python experiments/frontiermath/summarize.py
 ```
 

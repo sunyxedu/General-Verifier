@@ -143,8 +143,15 @@ def main():
         patch_file = os.path.join(patches_dir, f"{iid}_s{s}.diff")
         with open(patch_file, "w") as f:
             f.write(patch)
+        transcripts_dir = os.path.join(HERE, "results", args.arm,
+                                       "transcripts")
+        os.makedirs(transcripts_dir, exist_ok=True)
+        transcript_file = os.path.join(transcripts_dir, f"{iid}_s{s}.txt")
+        with open(transcript_file, "w") as f:
+            f.write(out)
         rec = {"instance_id": iid, "sample": s, "arm": args.arm,
                "model": args.model, "patch_file": patch_file,
+               "transcript_file": transcript_file,
                "patch_bytes": len(patch), "seconds": seconds,
                "workdir": work, "output_tail": out[-300:]}
         if args.arm == "gv":

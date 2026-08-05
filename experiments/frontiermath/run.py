@@ -84,11 +84,19 @@ def main():
         else:
             out, seconds = solver.run_codex(work, prompt,
                                             timeout=args.timeout)
+        transcripts_dir = os.path.join(HERE, "results", args.arm,
+                                       "transcripts")
+        os.makedirs(transcripts_dir, exist_ok=True)
+        transcript_file = os.path.join(transcripts_dir,
+                                       f"{p['id']}_s{s}.txt")
+        with open(transcript_file, "w") as f:
+            f.write(out)
         answer = parse_final(out)
         rec = {"pid": p["id"], "sample": s, "arm": args.arm,
                "model": args.model, "answer": answer,
                "solved": matches(answer, p), "seconds": seconds,
-               "workdir": work, "output_tail": out[-300:]}
+               "workdir": work, "transcript_file": transcript_file,
+               "output_tail": out[-300:]}
         if args.arm == "gv":
             gvo = solver.gv_outcome(work)
             # prefer the certified final claim's answer when present
