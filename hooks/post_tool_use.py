@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: append a raw tool_result line to the sidecar's hook feed.
+"""PostToolUse hook: append a raw tool_result line to the MCP server's hook feed.
 
 The response is digested (sha256 over its canonical JSON) plus a bounded
 excerpt: the ledger check needs identity, not bulk; full outputs live in the

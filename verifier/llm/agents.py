@@ -122,7 +122,7 @@ class AgentBackend:
 
         Loop-safe sync wrapper: callable from plain sync code AND from code
         executing inside a running event loop (e.g. an MCP tool handler in the
-        sidecar) — in the latter case the coroutine runs on a private loop in
+        MCP server) — in the latter case the coroutine runs on a private loop in
         a worker thread, because asyncio.run would raise on a running loop.
         """
         role = self.roles.get(role_name)

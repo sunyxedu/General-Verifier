@@ -22,7 +22,7 @@ from typing import Optional
 from .stream.builder import Builder
 from .engine.certificate import request_certificate
 from .core.events import EventLog
-from .sidecar import Sidecar
+from .mcp_server import Service
 from .core.store import ClaimStore
 
 
@@ -34,7 +34,7 @@ def certify(events_path: str, state_dir: str, final_label: Optional[str] = None,
     if os.path.abspath(events_path) != os.path.abspath(target):
         shutil.copyfile(events_path, target)   # the gate works on its own copy
 
-    sc = Sidecar(state_dir, kernel_factory=kernel_factory,
+    sc = Service(state_dir, kernel_factory=kernel_factory,
                  model=model, seats=seats, game=game)
     if final_label is not None:
         final_id = sc.builder.resolve(final_label)

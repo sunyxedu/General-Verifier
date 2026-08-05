@@ -5,7 +5,7 @@ Runs inside the Terminal-Bench task container exactly like the stock
 
   - the General Verifier codebase is shipped into the container
     (/opt/general-verifier) and `uv sync`ed with a uv-managed Python
-  - the MCP sidecar is registered user-scope (Harbor's own mechanism), so
+  - the gv MCP server is registered user-scope (Harbor's own mechanism), so
     the solver gets the gv.* verbs with no trust dialog
   - Pre/PostToolUse hooks are wired via the user-level settings.json in
     $CLAUDE_CONFIG_DIR, feeding /gv-state/hook_feed.jsonl
@@ -36,7 +36,7 @@ GV_ROOT = Path(__file__).resolve().parents[2]      # the General Verifier repo
 GV_DEST = "/opt/general-verifier"
 STATE_DIR = "/gv-state"
 TOOLCHAIN = "/opt/gv-toolchain"
-SIDECAR = "/usr/local/bin/gv-sidecar"
+MCP_SERVER = "/usr/local/bin/gv-mcp-server"
 
 TAR_EXCLUDES = [".git", ".venv", "__pycache__", "experiments", ".gv",
                 ".gv-demo", ".idea", ".pytest_cache", "docs", "report",
@@ -61,7 +61,7 @@ class GVClaudeCode(ClaudeCode):
         # user-scoped MCP registration; ClaudeCode.run() writes it into
         # $CLAUDE_CONFIG_DIR/.claude.json before invoking claude
         self.mcp_servers.append(MCPServerConfig(
-            name="gv", transport="stdio", command=SIDECAR, args=[]))
+            name="gv", transport="stdio", command=MCP_SERVER, args=[]))
 
     # -- payload -----------------------------------------------------------
     def _make_tarball(self) -> str:
@@ -101,12 +101,12 @@ class GVClaudeCode(ClaudeCode):
         wrapper = (
             "#!/bin/sh\n"
             'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"\n'
-            f"exec uv run --project {GV_DEST} python -m verifier.sidecar "
+            f"exec uv run --project {GV_DEST} python -m verifier.mcp_server "
             f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
             f'--model {model} "$@"\n')
         await self.exec_as_root(environment, command=(
-            f"printf %s {shlex.quote(wrapper)} > {SIDECAR} && "
-            f"chmod 755 {SIDECAR}"))
+            f"printf %s {shlex.quote(wrapper)} > {MCP_SERVER} && "
+            f"chmod 755 {MCP_SERVER}"))
 
     # -- per-run config ----------------------------------------------------
     def _settings_json(self) -> str:

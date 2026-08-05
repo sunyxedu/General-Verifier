@@ -6,7 +6,7 @@ harness is attached to the same stock Claude Code:
 
 | arm | what runs |
 |---|---|
-| **gv** | Claude Code + the full **General Verifier** mounted (MCP sidecar + hooks + solver protocol) — verification in the loop, used exactly as a normal user would. |
+| **gv** | Claude Code + the full **General Verifier** mounted (MCP server + hooks + solver protocol) — verification in the loop, used exactly as a normal user would. |
 | **turbo** | Claude Code + **TurboAgent**, the official LLM-as-a-Verifier Claude Code plugin ([llm-as-a-verifier/TurboAgent](https://github.com/llm-as-a-verifier/TurboAgent), arXiv 2607.05391), run as shipped: an API proxy that fans out N parallel candidates per model call and picks the best via the fine-grained logprob verifier + Probabilistic Pivot Tournament — their verification in the loop. |
 | **plain** | stock headless Claude Code, no harness. |
 | **codex** | stock headless Codex CLI, no harness. |

@@ -1,26 +1,26 @@
-"""Sidecar MCP service: the verifier as a separate process.
+"""MCP server: the verifier as a separate process.
 
 The solver stays a vanilla Claude Code session; it mounts this server over
 stdio and gets five verbs — commit, verify, certificate, status, branches. Every
-call is an event in the sidecar's own append-only log, verification runs
-inside the sidecar (through the same kernel as offline replay, zero changes),
+call is an event in the server's own append-only log, verification runs
+inside the server (through the same kernel as offline replay, zero changes),
 and the certificate returns to the solver over MCP; only CI bypasses it via
 `python -m verifier.cli`.
 
 Hook events (tool_call/tool_result written by the solver's PreToolUse /
 PostToolUse hooks) arrive on a separate raw feed file: hooks are concurrent
-short-lived processes and cannot share seq discipline, so the sidecar — the
+short-lived processes and cannot share seq discipline, so the server — the
 canonical log's single writer — ingests the feed in arrival order and assigns
 seq itself. The feed is drained before every MCP verb so effect claims are
 referenceable (`effect:<seq>`) at commit time.
 
 Run:
-  uv run python -m verifier.sidecar --state-dir .gv [--model m] [--seats agent|sandbox]
+  uv run python -m verifier.mcp_server --state-dir .gv [--model m] [--seats agent|sandbox]
       [--game/--no-game]
 
 Claude Code config (.mcp.json):
   {"mcpServers": {"gv": {"type": "stdio", "command": "uv",
-                          "args": ["run", "python", "-m", "verifier.sidecar", "--state-dir", ".gv"]}}}
+                          "args": ["run", "python", "-m", "verifier.mcp_server", "--state-dir", ".gv"]}}}
 """
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ HOOK_FEED = "hook_feed.jsonl"
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 
 
-class Sidecar:
+class Service:
     def __init__(self, state_dir: str, kernel_factory=None,
                  model: Optional[str] = None, seats: str = "agent",
                  game: bool = True,
@@ -82,11 +82,11 @@ class Sidecar:
             kernel_factory = lambda sc: _default_kernel(  # noqa: E731
                 sc, model=model, seats=seats, game=game
             )
-        self.kernel = kernel_factory(self)  # factory receives the sidecar
+        self.kernel = kernel_factory(self)  # factory receives the service
 
         self._feed = Tail(os.path.join(state_dir, HOOK_FEED),
                           self._ingest_hook_event, raw=True)
-        # a restarted sidecar rebuilds its view from its own ledger
+        # a restarted server rebuilds its view from its own ledger
         for event in self.log.replay():
             self.builder.feed(event)
 
@@ -185,7 +185,7 @@ class Sidecar:
                 "dead": self.store.dead_branches()}
 
 
-def _default_kernel(sc: Sidecar, model, seats, game) -> Kernel:
+def _default_kernel(sc: Service, model, seats, game) -> Kernel:
     if seats == "agent":
         from .llm.agents import (
             ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
@@ -216,7 +216,7 @@ def _default_kernel(sc: Sidecar, model, seats, game) -> Kernel:
 
 # ---- MCP wiring --------------------------------------------------------------
 
-def build_server(sidecar: Sidecar):
+def build_server(service: Service):
     from mcp.server.fastmcp import FastMCP
 
     server = FastMCP("gv")
@@ -228,31 +228,31 @@ def build_server(sidecar: Sidecar):
         labels of already-committed claims (including effect:<seq>). Returns
         the claim_id and current status."""
         return json.dumps(
-            sidecar.commit(label, kind, text, deps,
+            service.commit(label, kind, text, deps,
                            branch or None, revises or None),
             ensure_ascii=False)
 
     @server.tool()
     def verify(label: str) -> str:
         """Verify a committed claim now; returns its status."""
-        return json.dumps(sidecar.verify(label), ensure_ascii=False)
+        return json.dumps(service.verify(label), ensure_ascii=False)
 
     @server.tool()
     def certificate(final_label: str) -> str:
         """Certify a final claim: settle the dependency closure, freeze the
         certificate, and return the verdict plus a slice summary."""
-        return json.dumps(sidecar.certificate(final_label), ensure_ascii=False)
+        return json.dumps(service.certificate(final_label), ensure_ascii=False)
 
     @server.tool()
     def status(label: str = "") -> str:
         """Query the status of one label or of all labels."""
-        return json.dumps(sidecar.status(label or None), ensure_ascii=False)
+        return json.dumps(service.status(label or None), ensure_ascii=False)
 
     @server.tool()
     def branches() -> str:
         """Statuses of parallel hypothesis branches and the dead-branch list
         (refuted pruning, advisory)."""
-        return json.dumps(sidecar.branches(), ensure_ascii=False)
+        return json.dumps(service.branches(), ensure_ascii=False)
 
     return server
 
@@ -266,11 +266,11 @@ def main() -> None:
     ap.add_argument("--memory-dir", default=None)
     ap.add_argument("--toolchain-dir", default=None)
     args = ap.parse_args()
-    sidecar = Sidecar(args.state_dir, model=args.model, seats=args.seats,
+    service = Service(args.state_dir, model=args.model, seats=args.seats,
                       game=args.game,
                       memory_dir=args.memory_dir,
                       toolchain_dir=args.toolchain_dir)
-    build_server(sidecar).run()   # stdio
+    build_server(service).run()   # stdio
 
 
 if __name__ == "__main__":

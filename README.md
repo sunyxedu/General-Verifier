@@ -78,7 +78,7 @@ Design notes:
 ## Usage
 
 Managed with [uv](https://docs.astral.sh/uv/) (Python 3.12+). Three third-party
-dependencies — `mcp` (sidecar), `claude-agent-sdk` (agent seats), `openai`
+dependencies — `mcp` (MCP server), `claude-agent-sdk` (agent seats), `openai`
 (one-shot roles):
 
 ```bash
@@ -89,13 +89,13 @@ Credentials: agent seats go through the Claude Agent SDK (`ANTHROPIC_API_KEY` or
 authenticated Claude Code environment); one-shot roles use the OpenAI SDK and honor
 `OPENAI_API_KEY` / `OPENAI_BASE_URL` (OpenAI, Anthropic's compat endpoint, local vLLM, …).
 
-### Online — sidecar to a stock Claude Code session
+### Online — MCP server for a stock Claude Code session
 
 1. **Mount the MCP server** in the solver's project — copy `protocol/mcp.example.json`
    into `.mcp.json` (if the solver project is not this repo, add
    `"--project", "/path/to/General-Verifier"` after `"run"`). The solver gets five
    verbs: `gv.commit`, `gv.verify`, `gv.certificate`, `gv.status`, `gv.branches`.
-   Sidecar flags: `--state-dir` (required), `--seats agent|sandbox`, `--model`,
+   Server flags: `--state-dir` (required), `--seats agent|sandbox`, `--model`,
    `--no-game`, `--memory-dir`, `--toolchain-dir`.
 2. **Wire the hooks** so tool calls become referenceable effect claims — in the
    solver's `.claude/settings.json`:
@@ -107,7 +107,7 @@ authenticated Claude Code environment); one-shot roles use the OpenAI SDK and ho
    ```
 
    Hooks append to a raw feed file (`GV_HOOK_FEED`, default `.gv/hook_feed.jsonl`);
-   the sidecar drains it before every MCP verb.
+   the server drains it before every MCP verb.
 3. **Give the solver the protocol** — put `protocol/solver-protocol.md` into the
    solver's CLAUDE.md. It is advisory: a solver that ignores it simply gets no
    certificate, never a wrong one.
@@ -143,5 +143,5 @@ sample, SWE-bench Pro's public set, and Terminal-Bench 2.1 — see
 | `verifier/execution/` | the hands: python sandbox + artifact store, fail-closed (`instruments.py`), two discharge seats (`discharge.py`); `strength.py` retained but unused |
 | `verifier/engine/` | verification core: trigger entry + settlement + obligation-node reuse + pruning (`kernel.py`), binding game: oracle-ordered sufficient methods + fidelity judger with a bounded redo loop (`game.py`), certificate with nested obligations (`certificate.py`) |
 | `verifier/memory.py` | three stores (advisory only) |
-| `verifier/sidecar.py` + `cli.py` | entry points: MCP service + hook ingestion; CI gate |
+| `verifier/mcp_server.py` + `cli.py` | entry points: MCP server + hook ingestion; CI gate |
 | `hooks/` + `protocol/` | solver-side PreToolUse/PostToolUse hooks; MCP mount example + solver protocol |

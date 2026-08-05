@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: append a raw tool_call line to the sidecar's hook feed.
+"""PreToolUse hook: append a raw tool_call line to the MCP server's hook feed.
 
 Hooks are concurrent short-lived processes, so they never touch the canonical
 event log — they append bare JSON lines to a feed file (GV_HOOK_FEED); the
-sidecar, the log's single writer, ingests them in arrival order.
+server, the log's single writer, ingests them in arrival order.
 
 Settings (.claude/settings.json):
   {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [

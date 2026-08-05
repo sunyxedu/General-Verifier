@@ -7,7 +7,7 @@ reward, so scoring is entirely the benchmark's own.
 
 The gv arm is `gv_agent.py:GVClaudeCode` — Harbor's stock claude-code agent
 plus, at install time: the General Verifier codebase shipped to
-`/opt/general-verifier` (uv-synced with a managed Python), the MCP sidecar
+`/opt/general-verifier` (uv-synced with a managed Python), the gv MCP server
 registered user-scope via Harbor's own mechanism, Pre/PostToolUse hooks in
 the user-level `settings.json`, and the solver protocol as user-level
 `CLAUDE.md`. The task instruction gets one appended paragraph pointing at

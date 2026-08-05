@@ -8,7 +8,7 @@ official harness (evaluate.py).
 
 Arms — every arm is ONE prompt to a solver; only the attached harness
 differs:
-  --arm gv       Claude Code + full General Verifier mounted (MCP sidecar +
+  --arm gv       Claude Code + full General Verifier mounted (MCP server +
                  hooks + solver protocol)
   --arm turbo    Claude Code + TurboAgent, the official LLM-as-a-Verifier
                  Claude Code plugin, as shipped (proxy fans out candidates

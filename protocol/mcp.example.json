@@ -5,7 +5,7 @@
       "command": "uv",
       "args": [
         "run", "python",
-        "-m", "verifier.sidecar",
+        "-m", "verifier.mcp_server",
         "--state-dir", ".gv",
         "--memory-dir", ".gv-mem"
       ]

@@ -6,7 +6,7 @@ Three ways to run a solver on ONE prompt in ONE working directory:
   run_codex(...)             stock headless Codex CLI
   mount_gv(...) + run_claude(..., mcp=True)
                              Claude Code with the full General Verifier
-                             mounted — MCP sidecar + Pre/PostToolUse hooks +
+                             mounted — MCP server + Pre/PostToolUse hooks +
                              the solver protocol as CLAUDE.md. The solver is
                              simply given a prompt; everything else is the
                              system being measured.
@@ -35,7 +35,7 @@ DEFAULT_TIMEOUT = 3600
 
 def mcp_json(model: str | None = None) -> dict:
     args = ["run", "--project", ROOT, "python", "-m",
-            "verifier.sidecar", "--state-dir", ".gv",
+            "verifier.mcp_server", "--state-dir", ".gv",
             "--toolchain-dir", TOOLCHAIN]
     if model:
         args += ["--model", model]

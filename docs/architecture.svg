@@ -40,7 +40,7 @@
   <rect x="790" y="62" width="12" height="12" rx="3" fill="#FDFDFB" stroke="#8C8A80" stroke-width="1.2" stroke-dasharray="3.5 2.5"/>
   <text x="810" y="72" font-size="7.8" fill="#55534C">advisory / feedback</text>
 
-  <!-- solver -> sidecar arrows -->
+  <!-- solver -> server arrows -->
   <line x1="120" y1="94" x2="120" y2="170" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
   <circle cx="140" cy="118" r="8" fill="#201F1D"/><text x="140" y="121.3" text-anchor="middle" font-size="9" fill="#FFFFFF" font-weight="bold">2</text>
   <text x="154" y="115" font-size="7.8" fill="#55534C">every tool call &amp; result,</text>
@@ -50,9 +50,9 @@
   <text x="348" y="124" font-size="7.8" fill="#55534C">gv.status · gv.branches — over stdio;</text>
   <text x="348" y="135" font-size="7.8" fill="#55534C">state-changing calls become events</text>
 
-  <!-- ================= SIDECAR zone ================= -->
+  <!-- ================= MCP SERVER zone ================= -->
   <rect x="24" y="140" width="892" height="512" rx="12" fill="#F8F8F4" stroke="#CFCDC4" stroke-width="1.2"/>
-  <text x="48" y="158" font-size="10" font-weight="bold" fill="#6B6960" letter-spacing="1.8">SIDECAR — THE VERIFIER, A SEPARATE PROCESS</text>
+  <text x="48" y="158" font-size="10" font-weight="bold" fill="#6B6960" letter-spacing="1.8">MCP SERVER — THE VERIFIER, A SEPARATE PROCESS</text>
 
   <!-- ingestion row -->
   <rect x="48" y="172" width="156" height="68" rx="8" fill="#FFFFFF" stroke="#A9A79D" stroke-width="1.1"/>
@@ -173,7 +173,7 @@
   <text x="297" y="629" text-anchor="middle" font-size="7.5" font-weight="bold" fill="#C24541">refuted</text>
   <text x="336" y="629" font-size="7.4" fill="#55534C">verdict = the worst case over the slice — refuted ≻ unverified/stale ≻ partial ≻ verified · never rounds up</text>
 
-  <!-- sidecar -> consumer -->
+  <!-- server -> consumer -->
   <line x1="470" y1="652" x2="470" y2="668" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
 
   <!-- ================= CONSUMER (external) ================= -->
