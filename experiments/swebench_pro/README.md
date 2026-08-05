@@ -17,16 +17,19 @@ kept out of patches via `.git/info/exclude`.
 uv run experiments/swebench_pro/prep.py --pull     # pick subset (default 12,
                                                    # seed 0, fast-repo pool),
                                                    # clone harness, pull images
-uv run python experiments/swebench_pro/run.py --arm gv
-uv run python experiments/swebench_pro/run.py --arm plain --n 3
+uv run python experiments/swebench_pro/run.py --arm gv     # + General Verifier
+uv run python experiments/swebench_pro/run.py --arm turbo  # + TurboAgent (official LLM-as-a-Verifier plugin)
+uv run python experiments/swebench_pro/run.py --arm plain
 uv run python experiments/swebench_pro/run.py --arm codex
-uv run experiments/swebench_pro/select_best.py   # judge picks 1 of 3 patches
 uv run python experiments/swebench_pro/evaluate.py --arm gv      # official eval
-uv run python experiments/swebench_pro/evaluate.py --arm plain   # all samples
+uv run python experiments/swebench_pro/evaluate.py --arm turbo
+uv run python experiments/swebench_pro/evaluate.py --arm plain
 uv run python experiments/swebench_pro/evaluate.py --arm codex
-uv run python experiments/swebench_pro/evaluate.py --arm judge   # picked patches
 uv run python experiments/swebench_pro/summarize.py
 ```
+
+The turbo arm needs `ANTHROPIC_API_KEY` + `VERTEX_API_KEY` (TurboAgent's
+logprob verifier).
 
 Subset selection is deterministic (`--seed`, round-robin over the repo
 pool); delete `instances.json` to reselect. Image pull + extraction caches

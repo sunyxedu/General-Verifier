@@ -2,8 +2,7 @@
 
 Reads the official-harness eval results for every evaluated arm plus the
 GV arm's certificate verdicts and prints:
-  - per-arm resolve rates (gv / codex / judge-selected / plain per sample)
-  - plain pass@1 (mean over samples) and oracle pass@N
+  - per-arm resolve rates (gv / turbo / plain / codex)
   - GV verdict cross-table: verified&resolved vs verified&UNRESOLVED
     (false certificate — the one-vote veto number)
 

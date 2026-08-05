@@ -4,15 +4,21 @@ Per problem the solver gets ONE prompt in a fresh scratch directory (it may
 write and run code there). Answers are mechanically checked against the
 official published answers (check.py).
 
-Arms:
+Arms — every arm is ONE prompt to a solver; only the attached harness
+differs:
   --arm gv       Claude Code + full General Verifier mounted (MCP sidecar +
-                 hooks + solver protocol) — one prompt, normally used
-  --arm plain    stock headless Claude Code  (--n samples/problem)
+                 hooks + solver protocol)
+  --arm turbo    Claude Code + TurboAgent, the official LLM-as-a-Verifier
+                 Claude Code plugin, as shipped (proxy fans out candidates
+                 per model call, logprob verifier picks; needs
+                 ANTHROPIC_API_KEY + VERTEX_API_KEY)
+  --arm plain    stock headless Claude Code
   --arm codex    stock headless Codex CLI
 
 Usage:
   uv run python experiments/frontiermath/run.py --arm gv
-  uv run python experiments/frontiermath/run.py --arm plain --n 3
+  uv run python experiments/frontiermath/run.py --arm turbo
+  uv run python experiments/frontiermath/run.py --arm plain
   uv run python experiments/frontiermath/run.py --arm codex
 """
 import argparse
@@ -25,6 +31,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 from common import results as res                        # noqa: E402
 from common import solver                                # noqa: E402
+from common import turbo                                 # noqa: E402
 from check import matches, parse_final                   # noqa: E402
 
 WORKROOT = "/tmp/gv-frontiermath"      # outside the repo (see common.solver)
@@ -52,11 +59,13 @@ finish. Report the verdict verbatim.
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", required=True, choices=["gv", "plain", "codex"])
-    ap.add_argument("--n", type=int, default=1, help="samples per problem "
-                    "(use >1 on plain for best-of-N selection)")
+    ap.add_argument("--arm", required=True,
+                    choices=["gv", "turbo", "plain", "codex"])
+    ap.add_argument("--n", type=int, default=1, help="samples per problem")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--timeout", type=int, default=5400)
+    ap.add_argument("--candidates", type=int, default=3,
+                    help="turbo: parallel candidates per model call")
     args = ap.parse_args()
 
     with open(os.path.join(HERE, "problems.json")) as f:
@@ -68,6 +77,15 @@ def main():
     print(f"[fm:{args.arm}] {len(todo)} runs ({len(done)} recorded)",
           flush=True)
 
+    proxy_url = None
+    if args.arm == "turbo":
+        turbo.check_keys()
+        turbo_dir = os.path.join(HERE, "results", "turbo")
+        turbo.write_config(turbo_dir, solver_model=args.model,
+                           num_candidates=args.candidates)
+        proxy = turbo.Proxy(turbo_dir)
+        proxy_url = proxy.__enter__()
+
     for i, (p, s) in enumerate(todo, 1):
         work = os.path.join(WORKROOT, args.arm, p["id"], f"s{s}")
         os.makedirs(work, exist_ok=True)
@@ -78,12 +96,13 @@ def main():
             solver.mount_gv(work, model=args.model)
             out, seconds = solver.run_claude(work, prompt, model=args.model,
                                              mcp=True, timeout=args.timeout)
-        elif args.arm == "plain":
-            out, seconds = solver.run_claude(work, prompt, model=args.model,
-                                             timeout=args.timeout)
-        else:
+        elif args.arm == "codex":
             out, seconds = solver.run_codex(work, prompt,
                                             timeout=args.timeout)
+        else:  # plain / turbo — same stock solver, ± the proxy
+            out, seconds = solver.run_claude(work, prompt, model=args.model,
+                                             timeout=args.timeout,
+                                             base_url=proxy_url)
         transcripts_dir = os.path.join(HERE, "results", args.arm,
                                        "transcripts")
         os.makedirs(transcripts_dir, exist_ok=True)
@@ -119,6 +138,8 @@ def main():
               f"answer={str(rec['answer'])[:40]} solved={rec['solved']}"
               f"{extra} ({seconds}s)", flush=True)
 
+    if args.arm == "turbo":
+        proxy.__exit__(None, None, None)
     print(f"[fm:{args.arm}] done", flush=True)
 
 

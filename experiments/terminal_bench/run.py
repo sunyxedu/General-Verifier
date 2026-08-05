@@ -5,6 +5,11 @@ Arms (identical task subset from tasks.txt, resumable by job name):
   --arm codex    stock codex agent (Harbor built-in)
   --arm gv       gv_agent:GVClaudeCode — stock claude-code + the full
                  General Verifier mounted in the container (see gv_agent.py)
+  --arm turbo    stock claude-code agent + TurboAgent, the official
+                 LLM-as-a-Verifier Claude Code plugin, as shipped: the
+                 proxy runs on the host and the in-container Claude Code
+                 reaches it via ANTHROPIC_BASE_URL=host.docker.internal
+                 (needs ANTHROPIC_API_KEY + VERTEX_API_KEY)
 
 Scoring is Harbor's own (task verifiers write reward 0/1). The GV arm also
 downloads /gv-state as a trial artifact so certificate verdicts can be
@@ -24,6 +29,10 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+from common import turbo                                 # noqa: E402
+
 DATASET = "terminal-bench/terminal-bench-2-1"
 JOBS_DIR = os.path.join(HERE, "results", "jobs")
 
@@ -36,9 +45,11 @@ def read_tasks():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", required=True, choices=["plain", "gv", "codex"])
-    ap.add_argument("--k", type=int, default=1, help="attempts per task "
-                    "(use >1 on plain for best-of-N selection)")
+    ap.add_argument("--arm", required=True,
+                    choices=["plain", "gv", "turbo", "codex"])
+    ap.add_argument("--k", type=int, default=1, help="attempts per task")
+    ap.add_argument("--candidates", type=int, default=3,
+                    help="turbo: parallel candidates per model call")
     ap.add_argument("--model", default=None,
                     help="harbor model id (default: anthropic/sonnet for "
                     "claude arms; codex CLI default for codex)")
@@ -63,6 +74,13 @@ def main():
         cmd += ["-a", "codex"]
         if args.model:
             cmd += ["-m", args.model]
+    elif args.arm == "turbo":
+        # stock claude-code agent; every model call goes through the
+        # host-side TurboAgent proxy (harbor forwards ANTHROPIC_BASE_URL
+        # into the container). Model must be un-prefixed so the claude CLI
+        # resolves it itself; the proxy substitutes its backend model anyway.
+        cmd += ["-a", "claude-code", "-m", args.model or "sonnet",
+                "--agent-timeout-multiplier", "3"]
     else:  # gv
         cmd += ["-a", "gv_agent:GVClaudeCode",
                 "-m", args.model or "anthropic/sonnet",
@@ -77,7 +95,18 @@ def main():
     if args.dry_run:
         return
     os.makedirs(JOBS_DIR, exist_ok=True)
-    proc = subprocess.run(cmd, env=env)
+    if args.arm == "turbo":
+        turbo.check_keys()
+        turbo_dir = os.path.join(HERE, "results", "turbo")
+        turbo.write_config(turbo_dir,
+                           solver_model=(args.model or "sonnet").split("/")[-1],
+                           num_candidates=args.candidates)
+        with turbo.Proxy(turbo_dir) as base_url:
+            port = base_url.rsplit(":", 1)[1]
+            env["ANTHROPIC_BASE_URL"] = f"http://host.docker.internal:{port}"
+            proc = subprocess.run(cmd, env=env)
+    else:
+        proc = subprocess.run(cmd, env=env)
     sys.exit(proc.returncode)
 
 

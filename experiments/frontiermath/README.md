@@ -14,15 +14,17 @@ Answer checking mirrors Epoch's scheme: 11 answers are exact integers,
 ## Run
 
 ```bash
-uv run python experiments/frontiermath/run.py --arm gv           # GV, one prompt
-uv run python experiments/frontiermath/run.py --arm plain --n 3  # stock Claude Code
-uv run python experiments/frontiermath/run.py --arm codex        # stock Codex
-uv run experiments/frontiermath/select_best.py                 # LLM-as-a-Verifier best-of-3
+uv run python experiments/frontiermath/run.py --arm gv     # Claude Code + General Verifier
+uv run python experiments/frontiermath/run.py --arm turbo  # Claude Code + TurboAgent (official LLM-as-a-Verifier plugin)
+uv run python experiments/frontiermath/run.py --arm plain  # stock Claude Code
+uv run python experiments/frontiermath/run.py --arm codex  # stock Codex
 uv run python experiments/frontiermath/summarize.py
 ```
 
-Solvers work in scratch dirs under `/tmp/gv-frontiermath/` and may run
-code. All runners resume. Expect very low absolute solve rates — that is
-the point of the benchmark; the comparison of interest is judge-selection
-accuracy vs certificate honesty (verified&WRONG count) on whatever the
-solvers produce.
+Every arm gets one prompt per problem. Solvers work in scratch dirs under
+`/tmp/gv-frontiermath/` and may run code. All runners resume. The turbo
+arm needs `ANTHROPIC_API_KEY` + `VERTEX_API_KEY` (TurboAgent's logprob
+verifier). Expect very low absolute solve rates — that is the point of the
+benchmark; the comparison of interest is what each harness adds, and
+certificate honesty (verified&WRONG count) on whatever the solvers
+produce.

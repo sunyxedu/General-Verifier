@@ -17,12 +17,17 @@ verdict-vs-reward analysis.
 ## Run
 
 ```bash
-uv run python experiments/terminal_bench/run.py --arm plain --k 3
-uv run python experiments/terminal_bench/run.py --arm gv
+uv run python experiments/terminal_bench/run.py --arm plain
+uv run python experiments/terminal_bench/run.py --arm turbo  # + TurboAgent (official LLM-as-a-Verifier plugin)
+uv run python experiments/terminal_bench/run.py --arm gv     # + General Verifier
 uv run python experiments/terminal_bench/run.py --arm codex
-uv run experiments/terminal_bench/select_best.py    # judge best-of-3 trials
 uv run python experiments/terminal_bench/summarize.py
 ```
+
+The turbo arm starts the TurboAgent proxy on the host; the in-container
+Claude Code reaches it via `ANTHROPIC_BASE_URL=http://host.docker.internal:<port>`
+(Docker Desktop resolves this natively). Needs `ANTHROPIC_API_KEY` +
+`VERTEX_API_KEY` (TurboAgent's logprob verifier).
 
 Notes:
 - jobs land in `results/jobs/<arm>/` and resume by job name; add

@@ -1,32 +1,34 @@
 # Benchmark experiments — General Verifier vs LLM-as-a-Verifier vs stock agents
 
-Three public benchmarks, the same three-way comparison on each:
+Three public benchmarks, the same four-way comparison on each. **Every arm
+is one prompt to a solver** — the arms differ only in which verification
+harness is attached to the same stock Claude Code:
 
 | arm | what runs |
 |---|---|
-| **gv** | headless Claude Code with the full General Verifier mounted (MCP sidecar + hooks + solver protocol). The solver gets **one prompt** — the system is used exactly as a normal user would use it, no components isolated. |
-| **plain / codex** | stock headless Claude Code / stock Codex CLI, same prompt minus the protocol paragraph. `--n >1` plain samples feed the judge arm. |
-| **judge** | the **official LLM-as-a-Verifier implementation** ([llm-as-a-verifier/llm-as-a-verifier](https://github.com/llm-as-a-verifier/llm-as-a-verifier), arXiv 2607.05391), run as shipped: fine-grained logprob reward + Probabilistic Pivot Tournament (`llm_verifier.select`), with the repo's own bundled criteria for swe_bench / terminal_bench and a TEMPLATE-style criteria file for FrontierMath. It picks the best of N plain candidates; the pick is scored mechanically. |
+| **gv** | Claude Code + the full **General Verifier** mounted (MCP sidecar + hooks + solver protocol) — verification in the loop, used exactly as a normal user would. |
+| **turbo** | Claude Code + **TurboAgent**, the official LLM-as-a-Verifier Claude Code plugin ([llm-as-a-verifier/TurboAgent](https://github.com/llm-as-a-verifier/TurboAgent), arXiv 2607.05391), run as shipped: an API proxy that fans out N parallel candidates per model call and picks the best via the fine-grained logprob verifier + Probabilistic Pivot Tournament — their verification in the loop. |
+| **plain** | stock headless Claude Code, no harness. |
+| **codex** | stock headless Codex CLI, no harness. |
 
-Every benchmark scores **mechanically** (official harness or official answers);
-the GV arm additionally reports certificate verdicts, so the headline safety
-number everywhere is **verified & wrong = false certificates**.
+Every benchmark scores **mechanically** (official harness or official
+answers); the GV arm additionally reports certificate verdicts, so the
+headline safety number everywhere is **verified & wrong = false
+certificates**.
 
-All runners are resumable (recorded units are skipped; Harbor jobs resume by
-name). Results live under `experiments/<bench>/results/` (gitignored).
+All runners are resumable (recorded units are skipped; Harbor jobs resume
+by name). Results live under `experiments/<bench>/results/` (gitignored).
 
-Prerequisites: `uv sync` done, `claude` + `codex` CLIs authenticated, Docker
-running (SWE-bench Pro + Terminal-Bench), `uv tool install harbor`
+Prerequisites: `uv sync` done, `claude` + `codex` CLIs authenticated,
+Docker running (SWE-bench Pro + Terminal-Bench), `uv tool install harbor`
 (Terminal-Bench only). On Apple Silicon both docker benchmarks run amd64
 images under emulation — slow but supported.
 
-Judge-arm backend (the official package's requirement, not ours): a
-**logprob-capable** endpoint — `VERTEX_API_KEY` for the package default
-`gemini-2.5-flash`, or `OPENAI_BASE_URL`/`OPENAI_API_KEY` for any
-OpenAI-compatible server that returns logprobs (vLLM, …). Anthropic models
-cannot serve this arm (no logprobs; the paper's own App. A). The official
-repo is auto-cloned to `experiments/vendor/llm-as-a-verifier/` (gitignored)
-on first use.
+Turbo arm: TurboAgent is auto-cloned to `experiments/vendor/TurboAgent/`
+(gitignored) and started per run. It needs `ANTHROPIC_API_KEY` (candidate
+generations) **and** `VERTEX_API_KEY` (its verifier scores with Gemini
+**logprobs** — Anthropic models cannot serve the verifier side; the
+paper's own App. A).
 
 ## 1. FrontierMath (official public sample — 12 problems)
 
@@ -37,9 +39,9 @@ mechanically (exact integer / sympy equivalence).
 
 ```bash
 uv run python experiments/frontiermath/run.py --arm gv
-uv run python experiments/frontiermath/run.py --arm plain --n 3
+uv run python experiments/frontiermath/run.py --arm turbo
+uv run python experiments/frontiermath/run.py --arm plain
 uv run python experiments/frontiermath/run.py --arm codex
-uv run experiments/frontiermath/select_best.py          # judge best-of-3
 uv run python experiments/frontiermath/summarize.py
 ```
 
@@ -52,13 +54,13 @@ harness** (`scaleapi/SWE-bench_Pro-os`) in those same images.
 ```bash
 uv run experiments/swebench_pro/prep.py --pull   # subset + harness + images
 uv run python experiments/swebench_pro/run.py --arm gv
-uv run python experiments/swebench_pro/run.py --arm plain --n 3
+uv run python experiments/swebench_pro/run.py --arm turbo
+uv run python experiments/swebench_pro/run.py --arm plain
 uv run python experiments/swebench_pro/run.py --arm codex
-uv run experiments/swebench_pro/select_best.py          # judge best-of-3
-uv run python experiments/swebench_pro/evaluate.py --arm gv
+uv run python experiments/swebench_pro/evaluate.py --arm gv     # official eval
+uv run python experiments/swebench_pro/evaluate.py --arm turbo
 uv run python experiments/swebench_pro/evaluate.py --arm plain
 uv run python experiments/swebench_pro/evaluate.py --arm codex
-uv run python experiments/swebench_pro/evaluate.py --arm judge
 uv run python experiments/swebench_pro/summarize.py
 ```
 
@@ -67,12 +69,13 @@ uv run python experiments/swebench_pro/summarize.py
 Agents run **inside** the task containers; Harbor's own verifiers score.
 The gv arm is a custom Harbor agent (`gv_agent.py`) that is exactly the
 stock claude-code agent plus the General Verifier shipped into the
-container.
+container; the turbo arm is the stock claude-code agent talking to a
+host-side TurboAgent proxy (`ANTHROPIC_BASE_URL=host.docker.internal`).
 
 ```bash
-uv run python experiments/terminal_bench/run.py --arm plain --k 3
+uv run python experiments/terminal_bench/run.py --arm plain
+uv run python experiments/terminal_bench/run.py --arm turbo
 uv run python experiments/terminal_bench/run.py --arm gv
 uv run python experiments/terminal_bench/run.py --arm codex
-uv run experiments/terminal_bench/select_best.py        # judge best-of-3
 uv run python experiments/terminal_bench/summarize.py
 ```

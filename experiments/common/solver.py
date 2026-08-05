@@ -71,16 +71,23 @@ def mount_gv(work: str, model: str | None = None,
 
 
 def run_claude(work: str, prompt: str, model: str = "sonnet",
-               mcp: bool = False, timeout: int = DEFAULT_TIMEOUT):
-    """Headless Claude Code. Returns (stdout, seconds)."""
+               mcp: bool = False, timeout: int = DEFAULT_TIMEOUT,
+               base_url: str | None = None):
+    """Headless Claude Code. Returns (stdout, seconds).
+
+    `base_url` points ANTHROPIC_BASE_URL at a proxy (e.g. TurboAgent).
+    """
     cmd = ["claude", "-p", prompt, "--model", model,
            "--dangerously-skip-permissions"]
     if mcp:
         cmd += ["--mcp-config", ".mcp.json", "--strict-mcp-config"]
+    env = None
+    if base_url:
+        env = dict(os.environ, ANTHROPIC_BASE_URL=base_url)
     t0 = time.time()
     try:
         proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True,
-                              timeout=timeout)
+                              timeout=timeout, env=env)
         out = proc.stdout
     except subprocess.TimeoutExpired:
         out = "<timeout>"

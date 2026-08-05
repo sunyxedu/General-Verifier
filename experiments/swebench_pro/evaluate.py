@@ -6,9 +6,8 @@ builds the predictions file + subset CSV it expects, then runs it with
 images. On Apple Silicon the script auto-selects linux/amd64 emulation.
 
 Arms:
-  --arm gv | codex        evaluates sample 0 of that arm
-  --arm plain             evaluates EVERY sample (pass@1 / oracle need all)
-  --arm judge             evaluates the patches picked by select_best.py
+  --arm gv | turbo | codex   evaluates sample 0 of that arm
+  --arm plain                evaluates EVERY sample
 
 Usage:
   uv run python experiments/swebench_pro/evaluate.py --arm gv
@@ -39,17 +38,8 @@ def write_subset_csv(instances, path):
 
 
 def patches_for(arm, sample):
-    if arm == "judge":
-        sel = res.load(os.path.join(HERE, "results", "judge",
-                                    "selection.jsonl"))
-        picks = {r["instance_id"]: r["pick"] for r in sel}
-        rows = res.load(os.path.join(HERE, "results", "plain",
-                                     "results.jsonl"))
-        rows = [r for r in rows
-                if picks.get(r["instance_id"]) == r["sample"]]
-    else:
-        rows = res.load(os.path.join(HERE, "results", arm, "results.jsonl"))
-        rows = [r for r in rows if r["sample"] == sample]
+    rows = res.load(os.path.join(HERE, "results", arm, "results.jsonl"))
+    rows = [r for r in rows if r["sample"] == sample]
     out = []
     for r in rows:
         with open(r["patch_file"]) as f:
@@ -97,7 +87,7 @@ def run_eval(tag, patches, instances, workers):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True,
-                    choices=["gv", "plain", "codex", "judge"])
+                    choices=["gv", "turbo", "plain", "codex"])
     ap.add_argument("--num_workers", type=int, default=2)
     args = ap.parse_args()
 
