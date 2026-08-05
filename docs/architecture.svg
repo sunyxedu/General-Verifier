@@ -1,185 +1,173 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="940" height="756" viewBox="0 0 940 756" role="img" aria-label="General Verifier architecture" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
-  <rect x="0" y="0" width="940" height="756" fill="#FDFDFB"/>
-  <defs>
-    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10z" fill="#55534C"/>
-    </marker>
-    <marker id="arb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10z" fill="#A5A399"/>
-    </marker>
-    <marker id="arv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10z" fill="#7A5CC9"/>
-    </marker>
-    <marker id="arg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10z" fill="#2F7D3A"/>
-    </marker>
-    <marker id="arm" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-      <path d="M0 0L10 5L0 10z" fill="#8C8A80"/>
-    </marker>
-  </defs>
-
-  <!-- ================= SOLVER (external) ================= -->
-  <rect x="24" y="20" width="536" height="88" rx="10" fill="#FFFFFF" stroke="#AFADA3" stroke-width="1.3"/>
-  <circle cx="44" cy="42" r="9" fill="#201F1D"/><text x="44" y="45.5" text-anchor="middle" font-size="10" fill="#FFFFFF" font-weight="bold">1</text>
-  <text x="60" y="46" font-size="11.5" font-weight="bold" fill="#201F1D">SOLVER — stock Claude Code session</text>
-  <text x="60" y="61" font-size="8.2" fill="#55534C">unmodified: works normally with its own tools (Bash, Edit, …)</text>
-  <rect x="60" y="68" width="120" height="26" rx="13" fill="#FDFDFB" stroke="#B9B7AE" stroke-width="1"/>
-  <text x="120" y="84.5" text-anchor="middle" font-size="8" fill="#201F1D">hooks: Pre/PostToolUse</text>
-  <rect x="276" y="68" width="120" height="26" rx="13" fill="#FDFDFB" stroke="#B9B7AE" stroke-width="1"/>
-  <text x="336" y="84.5" text-anchor="middle" font-size="8" fill="#201F1D">MCP client: gv.* verbs</text>
-
-  <!-- legend (top right) -->
-  <rect x="584" y="20" width="332" height="88" rx="8" fill="#FFFFFF" stroke="#D8D6CD" stroke-width="1"/>
-  <rect x="602" y="36" width="12" height="12" rx="3" fill="#FCEADD" stroke="#D97A33" stroke-width="1.2"/>
-  <text x="622" y="46" font-size="7.8" fill="#55534C">LLM seat — proposes (efficiency only)</text>
-  <rect x="602" y="62" width="12" height="12" rx="3" fill="#E2EDF8" stroke="#3D78B8" stroke-width="1.2"/>
-  <text x="622" y="72" font-size="7.8" fill="#55534C">mechanical — decides (correctness)</text>
-  <rect x="790" y="36" width="12" height="12" rx="3" fill="#FFFFFF" stroke="#A9A79D" stroke-width="1.2"/>
-  <text x="810" y="46" font-size="7.8" fill="#55534C">data at rest</text>
-  <rect x="790" y="62" width="12" height="12" rx="3" fill="#FDFDFB" stroke="#8C8A80" stroke-width="1.2" stroke-dasharray="3.5 2.5"/>
-  <text x="810" y="72" font-size="7.8" fill="#55534C">advisory / feedback</text>
-
-  <!-- solver -> server arrows -->
-  <line x1="120" y1="94" x2="120" y2="170" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-  <circle cx="140" cy="118" r="8" fill="#201F1D"/><text x="140" y="121.3" text-anchor="middle" font-size="9" fill="#FFFFFF" font-weight="bold">2</text>
-  <text x="154" y="115" font-size="7.8" fill="#55534C">every tool call &amp; result,</text>
-  <text x="154" y="126" font-size="7.8" fill="#55534C">as raw JSONL lines</text>
-  <line x1="336" y1="94" x2="336" y2="162" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-  <text x="348" y="113" font-size="7.8" fill="#55534C">gv.commit · gv.verify · gv.certificate ·</text>
-  <text x="348" y="124" font-size="7.8" fill="#55534C">gv.status · gv.branches — over stdio;</text>
-  <text x="348" y="135" font-size="7.8" fill="#55534C">state-changing calls become events</text>
-
-  <!-- ================= MCP SERVER zone ================= -->
-  <rect x="24" y="140" width="892" height="512" rx="12" fill="#F8F8F4" stroke="#CFCDC4" stroke-width="1.2"/>
-  <text x="48" y="158" font-size="10" font-weight="bold" fill="#6B6960" letter-spacing="1.8">MCP SERVER — THE VERIFIER, A SEPARATE PROCESS</text>
-
-  <!-- ingestion row -->
-  <rect x="48" y="172" width="156" height="68" rx="8" fill="#FFFFFF" stroke="#A9A79D" stroke-width="1.1"/>
-  <path d="M 190 172 L 204 186 L 190 186 Z" fill="#EDEBE4" stroke="#A9A79D" stroke-width="0.8"/>
-  <text x="126" y="192" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#201F1D">hook feed</text>
-  <text x="126" y="207" text-anchor="middle" font-size="8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#55534C">.gv/hook_feed.jsonl</text>
-  <text x="126" y="221" text-anchor="middle" font-size="7.5" fill="#8C8A80">raw · no seq · many writers</text>
-  <line x1="204" y1="206" x2="232" y2="206" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-  <text x="218" y="198" text-anchor="middle" font-size="7.3" fill="#8C8A80">drained</text>
-
-  <rect x="236" y="166" width="200" height="80" rx="8" fill="#FFFFFF" stroke="#4E4C45" stroke-width="1.7"/>
-  <circle cx="254" cy="172" r="8" fill="#201F1D"/><text x="254" y="175.3" text-anchor="middle" font-size="9" fill="#FFFFFF" font-weight="bold">3</text>
-  <text x="336" y="190" text-anchor="middle" font-size="10" font-weight="bold" fill="#201F1D">EVENT STREAM</text>
-  <text x="336" y="204" text-anchor="middle" font-size="8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#55534C">events.jsonl</text>
-  <text x="336" y="219" text-anchor="middle" font-size="8" fill="#55534C">append-only ledger · seq-validated</text>
-  <text x="336" y="233" text-anchor="middle" font-size="8" font-style="italic" fill="#55534C">the only input and the only log</text>
-  <line x1="436" y1="206" x2="464" y2="206" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-
-  <rect x="468" y="172" width="160" height="68" rx="8" fill="#E2EDF8" stroke="#3D78B8" stroke-width="1.4"/>
-  <circle cx="486" cy="178" r="8" fill="#201F1D"/><text x="486" y="181.3" text-anchor="middle" font-size="9" fill="#FFFFFF" font-weight="bold">4</text>
-  <text x="548" y="198" text-anchor="middle" font-size="10" font-weight="bold" fill="#201F1D">BUILDER</text>
-  <text x="548" y="213" text-anchor="middle" font-size="8" fill="#55534C">deterministic events → claims</text>
-  <text x="548" y="227" text-anchor="middle" font-size="8" fill="#55534C">no LLM</text>
-  <line x1="628" y1="206" x2="656" y2="206" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-
-  <!-- claim store: cylinder -->
-  <path d="M 660 175 L 660 237 A 116 9 0 0 0 892 237 L 892 175" fill="#FFFFFF" stroke="#A9A79D" stroke-width="1.1"/>
-  <ellipse cx="776" cy="175" rx="116" ry="9" fill="#FFFFFF" stroke="#A9A79D" stroke-width="1.1"/>
-  <text x="776" y="199" text-anchor="middle" font-size="10" font-weight="bold" fill="#201F1D">CLAIM STORE</text>
-  <text x="776" y="214" text-anchor="middle" font-size="8" fill="#55534C">SQLite · claim DAG + obligation nodes</text>
-  <text x="776" y="228" text-anchor="middle" font-size="7.5" fill="#8C8A80">status machine · content-addressed</text>
-
-  <!-- trigger elbow -->
-  <path d="M 776 247 L 776 268 L 182 268 L 182 282" fill="none" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-  <circle cx="200" cy="262" r="8" fill="#201F1D"/><text x="200" y="265.3" text-anchor="middle" font-size="9" fill="#FFFFFF" font-weight="bold">5</text>
-  <text x="214" y="265" font-size="8" font-style="italic" fill="#55534C">the single trigger rule — verify a claim the moment it gains its first dependent</text>
-
-  <!-- ================= KERNEL zone ================= -->
-  <rect x="48" y="284" width="844" height="272" rx="10" fill="#EFF4FA" stroke="#9DBBDC" stroke-width="1.3"/>
-  <circle cx="68" cy="306" r="9" fill="#201F1D"/><text x="68" y="309.5" text-anchor="middle" font-size="10" fill="#FFFFFF" font-weight="bold">6</text>
-  <text x="84" y="310" font-size="11" font-weight="bold" fill="#201F1D">KERNEL — verifies one claim at a time</text>
-
-  <!-- compiler -->
-  <rect x="68" y="330" width="228" height="68" rx="8" fill="#FCEADD" stroke="#D97A33" stroke-width="1.3"/>
-  <text x="182" y="346" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#201F1D">GRAPH-AWARE COMPILER</text>
-  <text x="182" y="360" text-anchor="middle" font-size="7.6" fill="#55534C">answer-blind — sees the statement + graph,</text>
-  <text x="182" y="372" text-anchor="middle" font-size="7.6" fill="#55534C">never the argument · residual on verified premises</text>
-  <text x="182" y="384" text-anchor="middle" font-size="7.6" fill="#55534C">reuses proven statements word for word · no count cap</text>
-  <line x1="296" y1="364" x2="324" y2="364" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-
-  <!-- obligation nodes: mini-graph inset -->
-  <rect x="328" y="318" width="228" height="92" rx="8" fill="#FFFFFF" stroke="#7FA8D6" stroke-width="1.2"/>
-  <text x="442" y="333" text-anchor="middle" font-size="8.8" font-weight="bold" fill="#201F1D">OBLIGATION NODES — into the graph</text>
-  <circle cx="366" cy="357" r="10" fill="#FDFDFB" stroke="#A9A79D" stroke-width="1.1"/>
-  <text x="366" y="360" text-anchor="middle" font-size="7" fill="#55534C">A1</text>
-  <circle cx="366" cy="386" r="10" fill="#FDFDFB" stroke="#A9A79D" stroke-width="1.1"/>
-  <text x="366" y="389" text-anchor="middle" font-size="7" fill="#55534C">A2</text>
-  <line x1="377" y1="360" x2="430" y2="370" stroke="#8C8A80" stroke-width="1" marker-end="url(#arm)"/>
-  <line x1="377" y1="383" x2="430" y2="377" stroke="#8C8A80" stroke-width="1" marker-end="url(#arm)"/>
-  <rect x="434" y="360" width="28" height="28" rx="6" fill="#E2EDF8" stroke="#3D78B8" stroke-width="1.2"/>
-  <text x="448" y="377.5" text-anchor="middle" font-size="8" font-weight="bold" fill="#201F1D">O</text>
-  <circle cx="463" cy="359" r="7" fill="#2F7D3A"/>
-  <text x="463" y="362" text-anchor="middle" font-size="7.5" fill="#FFFFFF" font-weight="bold">✓</text>
-  <rect x="478" y="335" width="70" height="17" rx="8.5" fill="#E7F3E8" stroke="#2F7D3A" stroke-width="1"/>
-  <text x="513" y="346.5" text-anchor="middle" font-size="7" fill="#2F7D3A">settled claim ✓</text>
-  <line x1="504" y1="352" x2="464" y2="364" stroke="#2F7D3A" stroke-width="1" stroke-dasharray="3 2.5" marker-end="url(#arg)"/>
-  <text x="506" y="369" text-anchor="middle" font-size="6.8" font-style="italic" fill="#2F7D3A">same text ⇒ inherit</text>
-  <text x="442" y="404" text-anchor="middle" font-size="7.4" fill="#8C8A80">identical text ⇒ one node · settled verdicts transfer free</text>
-  <line x1="556" y1="364" x2="584" y2="364" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-  <text x="570" y="378" text-anchor="middle" font-size="6.8" fill="#8C8A80">per node</text>
-
-  <!-- binding game breakout -->
-  <rect x="588" y="310" width="284" height="226" rx="10" fill="#FFFFFF" stroke="#BFBDB4" stroke-width="1.1"/>
-  <text x="730" y="328" text-anchor="middle" font-size="8.4" font-weight="bold" fill="#6B6960" letter-spacing="1">BINDING GAME — PER OBLIGATION NODE</text>
-  <rect x="604" y="336" width="252" height="44" rx="7" fill="#FCEADD" stroke="#D97A33" stroke-width="1.3"/>
-  <text x="730" y="352" text-anchor="middle" font-size="9" font-weight="bold" fill="#201F1D">ORACLE — sufficient methods only</text>
-  <text x="730" y="366" text-anchor="middle" font-size="7.4" fill="#55534C">self-graded levels, ascending · researches unfamiliar domains first</text>
-  <line x1="730" y1="380" x2="730" y2="392" stroke="#55534C" stroke-width="1.3" marker-end="url(#ar)"/>
-  <rect x="604" y="394" width="252" height="44" rx="7" fill="#FCEADD" stroke="#D97A33" stroke-width="1.3"/>
-  <text x="730" y="410" text-anchor="middle" font-size="9" font-weight="bold" fill="#201F1D">DISCHARGE — faithful execution</text>
-  <text x="730" y="424" text-anchor="middle" font-size="7.4" fill="#55534C">installs missing instruments · truly unobtainable ⇒ partial</text>
-  <line x1="668" y1="438" x2="668" y2="456" stroke="#55534C" stroke-width="1.3" marker-end="url(#ar)"/>
-  <path d="M 856 478 C 868 474 868 420 856 416" fill="none" stroke="#7A5CC9" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arv)"/>
-  <text x="756" y="451" text-anchor="middle" font-size="7" fill="#7A5CC9">reason back · redo ≤3 · blind re-judge</text>
-  <rect x="604" y="456" width="252" height="44" rx="7" fill="#FCEADD" stroke="#D97A33" stroke-width="1.3"/>
-  <text x="730" y="472" text-anchor="middle" font-size="9" font-weight="bold" fill="#201F1D">JUDGER — was the result faithful?</text>
-  <text x="730" y="486" text-anchor="middle" font-size="7.4" fill="#55534C">opens the artifact itself · reruns when in doubt</text>
-  <text x="730" y="515" text-anchor="middle" font-size="7.3" fill="#8C8A80">refuted ⇒ short-circuit, settle with witness · faithful ⇒ bound</text>
-  <text x="730" y="527" text-anchor="middle" font-size="7.3" fill="#8C8A80">rejected ⇒ next method · exhausted ⇒ failed / unobtainable ⇒ partial</text>
-
-  <!-- memory (advisory) -->
-  <rect x="68" y="448" width="228" height="68" rx="8" fill="#FDFDFB" stroke="#8C8A80" stroke-width="1.1" stroke-dasharray="4.5 3"/>
-  <path d="M 86 468 L 86 490 A 10 4 0 0 0 106 490 L 106 468" fill="#FDFDFB" stroke="#8C8A80" stroke-width="1"/>
-  <ellipse cx="96" cy="468" rx="10" ry="4" fill="#FDFDFB" stroke="#8C8A80" stroke-width="1"/>
-  <text x="200" y="470" text-anchor="middle" font-size="8.8" font-weight="bold" fill="#55534C">MEMORY — advisory only</text>
-  <text x="200" y="484" text-anchor="middle" font-size="7.5" fill="#55534C">obligation · attack · instrument patterns</text>
-  <text x="200" y="497" text-anchor="middle" font-size="7.3" font-style="italic" fill="#8C8A80">retrieval into prompt slots — nothing else</text>
-  <line x1="182" y1="448" x2="182" y2="402" stroke="#8C8A80" stroke-width="1.1" stroke-dasharray="4.5 3" marker-end="url(#arb)"/>
-
-  <!-- settlement footnote -->
-  <text x="470" y="548" text-anchor="middle" font-size="7.8" font-style="italic" fill="#6B6960">a claim's status = the fold of its obligation nodes — any refuted node refutes the claim and hard-kills its downstream cone</text>
-
-  <!-- kernel -> certificate -->
-  <line x1="470" y1="556" x2="470" y2="574" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-
-  <!-- ================= CERTIFICATE ================= -->
-  <rect x="48" y="576" width="844" height="64" rx="10" fill="#E2EDF8" stroke="#3D78B8" stroke-width="1.4"/>
-  <circle cx="68" cy="598" r="9" fill="#201F1D"/><text x="68" y="601.5" text-anchor="middle" font-size="10" fill="#FFFFFF" font-weight="bold">7</text>
-  <text x="84" y="596" font-size="10.5" font-weight="bold" fill="#201F1D">CERTIFICATE — the final claim's slice, frozen</text>
-  <text x="84" y="611" font-size="7.8" fill="#55534C">each claim entry nests its obligation nodes with their evidence · assurance levels disclosed · returned over MCP</text>
-  <rect x="84" y="618" width="54" height="15" rx="7.5" fill="#0CA30C" fill-opacity="0.13" stroke="#0A7D0A" stroke-width="1"/>
-  <text x="111" y="629" text-anchor="middle" font-size="7.5" font-weight="bold" fill="#0A7D0A">verified</text>
-  <rect x="146" y="618" width="48" height="15" rx="7.5" fill="#FAB219" fill-opacity="0.16" stroke="#A36E00" stroke-width="1"/>
-  <text x="170" y="629" text-anchor="middle" font-size="7.5" font-weight="bold" fill="#A36E00">partial</text>
-  <rect x="202" y="618" width="62" height="15" rx="7.5" fill="#FFFFFF" stroke="#8C8A80" stroke-width="1"/>
-  <text x="233" y="629" text-anchor="middle" font-size="7.5" font-weight="bold" fill="#55534C">unverified</text>
-  <rect x="272" y="618" width="50" height="15" rx="7.5" fill="#D03B3B" fill-opacity="0.11" stroke="#C24541" stroke-width="1"/>
-  <text x="297" y="629" text-anchor="middle" font-size="7.5" font-weight="bold" fill="#C24541">refuted</text>
-  <text x="336" y="629" font-size="7.4" fill="#55534C">verdict = the worst case over the slice — refuted ≻ unverified/stale ≻ partial ≻ verified · never rounds up</text>
-
-  <!-- server -> consumer -->
-  <line x1="470" y1="652" x2="470" y2="668" stroke="#55534C" stroke-width="1.4" marker-end="url(#ar)"/>
-
-  <!-- ================= CONSUMER (external) ================= -->
-  <rect x="250" y="670" width="440" height="64" rx="10" fill="#FFFFFF" stroke="#AFADA3" stroke-width="1.3"/>
-  <circle cx="272" cy="692" r="9" fill="#201F1D"/><text x="272" y="695.5" text-anchor="middle" font-size="10" fill="#FFFFFF" font-weight="bold">8</text>
-  <text x="288" y="696" font-size="10.5" font-weight="bold" fill="#201F1D">CONSUMER / CI — where enforcement lives</text>
-  <text x="288" y="711" font-size="7.8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#55534C">uv run python -m verifier.cli certify …</text>
-  <text x="288" y="724" font-size="7.6" fill="#8C8A80">merges only on a verified certificate (exit 0)</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="852" viewBox="0 0 1000 852" role="img" aria-label="General Verifier architecture" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+<defs><marker id="ar" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="5.6" markerHeight="5.6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#5B6272"/></marker><marker id="arg" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="5.0" markerHeight="5.0" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#2E8B57"/></marker><marker id="arv" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="5.0" markerHeight="5.0" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#7A5CC9"/></marker><marker id="arm" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#A8AEBB"/></marker></defs>
+<rect width="1000" height="852" fill="#FFFFFF"/>
+<rect x="28" y="26" width="944" height="64" rx="9" fill="#FFFFFF" stroke="#C3C9D4" stroke-width="1.25"/>
+<g transform="translate(54 46) scale(1.00000)" fill="none" stroke="#14161C" stroke-width="1.700" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 17.5 10 12 4.5 6.5"/><path d="M12.5 18.5H20"/></g>
+<text x="92" y="52" font-size="11.5" fill="#14161C" font-weight="bold">SOLVER — a stock Claude Code session</text>
+<text x="92" y="70" font-size="8.2" fill="#4A5160">unmodified · keeps its own tools (Bash, Edit, …) · never told what to prove</text>
+<text x="956" y="62" font-size="7.0" fill="#8B92A1" text-anchor="end" font-style="italic">external to the verifier</text>
+<path d="M 136 90 L 136 152" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<text x="152" y="106.0" font-size="8.2" fill="#4A5160">hooks: Pre/PostToolUse</text>
+<text x="152" y="117.8" font-size="8.2" fill="#4A5160">every tool call &amp; result,</text>
+<text x="152" y="129.6" font-size="8.2" fill="#4A5160">as raw JSONL lines</text>
+<path d="M 373 90 L 373 152" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<text x="387" y="106.0" font-size="8.2" fill="#4A5160">MCP client: gv.commit · gv.verify ·</text>
+<text x="387" y="117.8" font-size="8.2" fill="#4A5160">gv.certificate · gv.status — over stdio;</text>
+<text x="387" y="129.6" font-size="8.2" fill="#4A5160">state-changing calls become events</text>
+<rect x="28" y="152" width="944" height="560" rx="13" fill="#F6F7F9" stroke="#E1E5EC" stroke-width="1.2"/>
+<text x="48" y="174" font-size="8.2" fill="#7C838F" font-weight="bold" letter-spacing="2.1">VERIFIER   ·   A SEPARATE PROCESS</text>
+<rect x="48" y="190" width="152" height="70" rx="9" fill="#FFFFFF" stroke="#C3C9D4" stroke-width="1.15"/>
+<g transform="translate(62 206) scale(0.75000)" fill="none" stroke="#6B7280" stroke-width="2.067" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2.5H7.5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7z"/><path d="M14 2.5V7h4.5"/><path d="M9 13h6"/><path d="M9 16.6h4"/></g>
+<text x="88" y="213" font-size="9.5" fill="#14161C" font-weight="bold">HOOK FEED</text>
+<text x="88" y="228" font-size="8.2" font-family="Menlo, Monaco, 'Courier New', monospace" fill="#4A5160">.gv/hook_feed.jsonl</text>
+<text x="88" y="241" font-size="7.0" fill="#8B92A1">raw · no seq · many writers</text>
+<path d="M 200 225 L 218 225" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<text x="209" y="218" font-size="7.0" fill="#8B92A1" text-anchor="middle">drain</text>
+<rect x="220" y="190" width="196" height="70" rx="9" fill="#FFFFFF" stroke="#5B6272" stroke-width="1.6"/>
+<g transform="translate(238 206) scale(0.75000)" fill="none" stroke="#14161C" stroke-width="2.067" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h.01"/><path d="M8.5 6.5H20"/><path d="M4 12h.01"/><path d="M8.5 12H20"/><path d="M4 17.5h.01"/><path d="M8.5 17.5H20"/></g>
+<text x="264" y="213" font-size="9.5" fill="#14161C" font-weight="bold">EVENT STREAM</text>
+<text x="264" y="228" font-size="8.2" fill="#4A5160">events.jsonl · append-only</text>
+<text x="264" y="241" font-size="7.0" fill="#8B92A1">seq-validated · the only log</text>
+<path d="M 416 225 L 434 225" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<rect x="436" y="190" width="164" height="70" rx="9" fill="#EAF1FA" stroke="#4A82C4" stroke-width="1.35"/>
+<g transform="translate(452 206) scale(0.75000)" fill="none" stroke="#2E5F9E" stroke-width="2.000" stroke-linecap="round" stroke-linejoin="round"><path d="M 19.20 10.27 L 22.13 10.80 L 22.13 13.20 L 19.20 13.73 L 18.31 15.87 L 20.01 18.31 L 18.31 20.01 L 15.87 18.31 L 13.73 19.20 L 13.20 22.13 L 10.80 22.13 L 10.27 19.20 L 8.13 18.31 L 5.69 20.01 L 3.99 18.31 L 5.69 15.87 L 4.80 13.73 L 1.87 13.20 L 1.87 10.80 L 4.80 10.27 L 5.69 8.13 L 3.99 5.69 L 5.69 3.99 L 8.13 5.69 L 10.27 4.80 L 10.80 1.87 L 13.20 1.87 L 13.73 4.80 L 15.87 5.69 L 18.31 3.99 L 20.01 5.69 L 18.31 8.13 Z"/><path d="M 12 8.6 A 3.4 3.4 0 1 1 11.99 8.6"/></g>
+<text x="478" y="213" font-size="9.5" fill="#14161C" font-weight="bold">BUILDER</text>
+<text x="478" y="228" font-size="8.2" fill="#4A5160">events → claims</text>
+<text x="478" y="241" font-size="7.0" fill="#8B92A1">deterministic · no LLM</text>
+<path d="M 600 225 L 700 225" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<text x="650" y="218" font-size="7.0" fill="#8B92A1" text-anchor="middle">commits claims</text>
+<rect x="700" y="190" width="252" height="416" rx="11" fill="#FFFFFF" stroke="#9AA8BC" stroke-width="1.5"/>
+<g transform="translate(724 202) scale(0.75000)" fill="none" stroke="#3F556F" stroke-width="2.067" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6c0-1.75 3.58-3.2 8-3.2S20 4.25 20 6s-3.58 3.2-8 3.2S4 7.75 4 6Z"/><path d="M4 6v6c0 1.75 3.58 3.2 8 3.2s8-1.45 8-3.2V6"/><path d="M4 12v6c0 1.75 3.58 3.2 8 3.2s8-1.45 8-3.2v-6"/></g>
+<text x="752" y="215" font-size="11.5" fill="#14161C" font-weight="bold">CLAIM GRAPH</text>
+<text x="724" y="232" font-size="7.0" fill="#4A5160">the shared store · content-addressed</text>
+<text x="724" y="244" font-size="7.0" fill="#8B92A1" font-style="italic">every seat reads it; only these two write it</text>
+<line x1="716" y1="253" x2="936" y2="253" stroke="#DFE3EA" stroke-width="1"/>
+<text x="724" y="268" font-size="7.0" fill="#8B92A1">claims — a DAG, status-carrying</text>
+<rect x="723.0" y="279.0" width="58" height="20" rx="10.0" fill="#FFFFFF" stroke="#2E8B57" stroke-width="1.3"/>
+<text x="752" y="292.0" font-size="8.2" fill="#14161C" text-anchor="middle" font-weight="bold">c₁ ✓</text>
+<rect x="723.0" y="305.0" width="58" height="20" rx="10.0" fill="#FFFFFF" stroke="#2E8B57" stroke-width="1.3"/>
+<text x="752" y="318.0" font-size="8.2" fill="#14161C" text-anchor="middle" font-weight="bold">c₂ ✓</text>
+<rect x="831.0" y="292.0" width="58" height="20" rx="10.0" fill="#FFFFFF" stroke="#B07407" stroke-width="1.3"/>
+<text x="860" y="305.0" font-size="8.2" fill="#14161C" text-anchor="middle" font-weight="bold">c₃</text>
+<path d="M 781 289 L 829 299" fill="none" stroke="#A8AEBB" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arm)"/>
+<path d="M 781 315 L 829 305" fill="none" stroke="#A8AEBB" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arm)"/>
+<line x1="716" y1="335" x2="936" y2="335" stroke="#DFE3EA" stroke-width="1"/>
+<text x="724" y="351" font-size="7.0" fill="#8B92A1">obligations — content-addressed nodes</text>
+<circle cx="742" cy="378" r="10.5" fill="#FBFCFD" stroke="#C3C9D4" stroke-width="1.2"/>
+<text x="742" y="381" font-size="8.2" fill="#4A5160" text-anchor="middle">α₁</text>
+<circle cx="742" cy="406" r="10.5" fill="#FBFCFD" stroke="#C3C9D4" stroke-width="1.2"/>
+<text x="742" y="409" font-size="8.2" fill="#4A5160" text-anchor="middle">α₂</text>
+<rect x="796" y="379" width="27" height="27" rx="6" fill="#EAF1FA" stroke="#4A82C4" stroke-width="1.3"/>
+<text x="809.5" y="397" font-size="9.5" fill="#14161C" text-anchor="middle" font-weight="bold">O</text>
+<path d="M 753 379 L 792 387" fill="none" stroke="#A8AEBB" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arm)"/>
+<path d="M 753 405 L 792 397" fill="none" stroke="#A8AEBB" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arm)"/>
+<circle cx="828" cy="378" r="6.6" fill="#2E8B57"/>
+<text x="828" y="381" font-size="7.0" fill="#FFFFFF" text-anchor="middle" font-weight="bold">✓</text>
+<rect x="850" y="370" width="80" height="16" rx="8.0" fill="#E8F4ED" stroke="#2E8B57" stroke-width="1"/>
+<text x="890.0" y="380.6" font-size="7.0" fill="#2E8B57" text-anchor="middle" font-weight="bold">settled claim ✓</text>
+<path d="M 878 386 L 838 392" fill="none" stroke="#2E8B57" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 2.2" marker-end="url(#arg)"/>
+<text x="850" y="417" font-size="7.0" fill="#2E8B57" text-anchor="middle" font-style="italic">same text ⇒ inherit the verdict</text>
+<text x="826.0" y="439" font-size="7.0" fill="#8B92A1" text-anchor="middle">identical text ⇒ one node · verdicts transfer free</text>
+<text x="826.0" y="450" font-size="7.0" fill="#8B92A1" text-anchor="middle">no count cap — every obligation is verified</text>
+<rect x="716" y="460" width="220" height="128" rx="8" fill="#F4F7FB" stroke="#DCE3EC" stroke-width="1"/>
+<text x="826.0" y="478" font-size="7.4" fill="#7C838F" text-anchor="middle" font-weight="bold" letter-spacing="1.2">STATUS MACHINE</text>
+<text x="826.0" y="495.0" font-size="8.2" fill="#4A5160" text-anchor="middle">a claim's status = the fold of</text>
+<text x="826.0" y="506.6" font-size="8.2" fill="#4A5160" text-anchor="middle">its obligation nodes</text>
+<text x="826.0" y="522.0" font-size="7.0" fill="#8B92A1" text-anchor="middle">one refuted node ⇒ refuted, and its</text>
+<text x="826.0" y="533.0" font-size="7.0" fill="#8B92A1" text-anchor="middle">downstream cone is hard-killed</text>
+<text x="826.0" y="544.0" font-size="7.0" fill="#8B92A1" text-anchor="middle">all verified ⇒ verified · mixed ⇒ partial</text>
+<text x="826.0" y="555.0" font-size="7.0" fill="#8B92A1" text-anchor="middle">blocked by an unobtainable tool ⇒ partial</text>
+<rect x="48" y="278" width="588" height="328" rx="11" fill="#EEF3FA" stroke="#B7CCE6" stroke-width="1.3"/>
+<g transform="translate(84 288) scale(0.83333)" fill="none" stroke="#14161C" stroke-width="1.920" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12.5c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67 0C7.5 20 4 17.5 4 12.5V5.8a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.7a1.17 1.17 0 0 1 1.52 0C14.5 3.6 17 4.8 19 4.8a1 1 0 0 1 1 1Z"/><path d="m8.9 12.2 2.1 2.1 4.1-4.1"/></g>
+<text x="112" y="304" font-size="11.5" fill="#14161C" font-weight="bold">KERNEL — verifies one claim at a time</text>
+<text x="342.0" y="270" font-size="7.0" fill="#6C7382" text-anchor="middle" font-style="italic">trigger — a claim is verified the moment it gains its first dependent</text>
+<rect x="64" y="312" width="560" height="66" rx="9" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.35"/>
+<g transform="translate(80 329) scale(0.79167)" fill="none" stroke="#C96A1E" stroke-width="2.021" stroke-linecap="round" stroke-linejoin="round"><path d="M10.2 4.5A9.4 9.4 0 0 1 12 4.35c7 0 10 7.65 10 7.65a18.6 18.6 0 0 1-2.4 3.44"/><path d="M6.6 6.9A18.4 18.4 0 0 0 2 12s3 7.65 10 7.65a9.4 9.4 0 0 0 5-1.35"/><path d="M13.9 13.9a2.7 2.7 0 1 1-3.8-3.8"/><path d="M2.6 2.6 21.4 21.4"/></g>
+<text x="108" y="335" font-size="9.5" fill="#14161C" font-weight="bold">OBLIGATION COMPILER — graph-aware, answer-blind</text>
+<text x="108" y="352" font-size="8.2" fill="#4A5160">compiles each claim into its world-checkable obligations · sees the graph, never the argument</text>
+<text x="108" y="366" font-size="7.0" fill="#8B92A1">residual on verified premises · reuses proven statements verbatim · no count cap</text>
+<rect x="64" y="392" width="560" height="150" rx="9" fill="#FFFFFF" stroke="#CBD1DB" stroke-width="1.15"/>
+<text x="344" y="410" font-size="7.4" fill="#7C838F" text-anchor="middle" font-weight="bold" letter-spacing="1.1">BINDING GAME   ·   PER OBLIGATION NODE</text>
+<rect x="76" y="418" width="172" height="86" rx="7" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.25"/>
+<g transform="translate(89 430) scale(0.70833)" fill="none" stroke="#C96A1E" stroke-width="2.188" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 12a9.2 9.2 0 1 0 18.4 0 9.2 9.2 0 1 0-18.4 0Z"/><path d="m15.9 8.1-2.4 5.4-5.4 2.4 2.4-5.4Z"/></g>
+<text x="112" y="442" font-size="9.5" fill="#14161C" font-weight="bold">ORACLE</text>
+<text x="89" y="459.0" font-size="8.2" fill="#4A5160">sufficient methods only</text>
+<text x="89" y="470.0" font-size="8.2" fill="#4A5160">self-graded, ascending</text>
+<text x="89" y="481.0" font-size="8.2" fill="#4A5160">researches first</text>
+<rect x="256" y="418" width="172" height="86" rx="7" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.25"/>
+<g transform="translate(269 430) scale(0.70833)" fill="none" stroke="#C96A1E" stroke-width="2.188" stroke-linecap="round" stroke-linejoin="round"><path d="M14.6 6.2a1 1 0 0 0 0 1.4l1.8 1.8a1 1 0 0 0 1.4 0l4.2-4.2a6.4 6.4 0 0 1-8.5 8.5l-7.4 7.4a2.26 2.26 0 0 1-3.2-3.2l7.4-7.4a6.4 6.4 0 0 1 8.5-8.5z"/></g>
+<text x="292" y="442" font-size="9.5" fill="#14161C" font-weight="bold">DISCHARGE</text>
+<text x="269" y="459.0" font-size="8.2" fill="#4A5160">faithful execution</text>
+<text x="269" y="470.0" font-size="8.2" fill="#4A5160">installs missing tools</text>
+<text x="269" y="481.0" font-size="8.2" fill="#4A5160">unobtainable ⇒ partial</text>
+<rect x="436" y="418" width="172" height="86" rx="7" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.25"/>
+<g transform="translate(449 430) scale(0.70833)" fill="none" stroke="#C96A1E" stroke-width="2.188" stroke-linecap="round" stroke-linejoin="round"><path d="m15.8 15.6 3-8 3 8c-.9.65-1.95 1-3 1s-2.1-.35-3-1Z"/><path d="m2.2 15.6 3-8 3 8c-.9.65-1.95 1-3 1s-2.1-.35-3-1Z"/><path d="M7.4 20.8h9.2"/><path d="M12 3.6v17.2"/><path d="M3.2 7.2h1.9c1.9 0 4.8-.95 6.9-1.9 2.1.95 5 1.9 6.9 1.9h1.9"/><path d="M10.6 3.6a1.4 1.4 0 1 0 2.8 0 1.4 1.4 0 1 0-2.8 0Z"/></g>
+<text x="472" y="442" font-size="9.5" fill="#14161C" font-weight="bold">JUDGER</text>
+<text x="449" y="459.0" font-size="8.2" fill="#4A5160">was it faithful?</text>
+<text x="449" y="470.0" font-size="8.2" fill="#4A5160">opens the artifact</text>
+<text x="449" y="481.0" font-size="8.2" fill="#4A5160">reruns when in doubt</text>
+<path d="M 248 461 L 256 461" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<path d="M 428 461 L 436 461" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<path d="M 522 508 L 522 523 L 342 523 L 342 508" fill="none" stroke="#7A5CC9" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3.6 2.6" marker-end="url(#arv)"/>
+<text x="432" y="520" font-size="7.0" fill="#7A5CC9" text-anchor="middle">reason back · redo ≤ 3 · blind re-judge</text>
+<text x="344" y="536" font-size="7.0" fill="#8B92A1" text-anchor="middle">refuted ⇒ short-circuit with a witness · exhausted ⇒ failed · faithful ⇒ bound</text>
+<rect x="64" y="556" width="560" height="42" rx="9" fill="#FBFCFD" stroke="#9BA2B0" stroke-width="1.1" stroke-dasharray="4.5 3"/>
+<g transform="translate(78 566) scale(0.70833)" fill="none" stroke="#8B92A1" stroke-width="2.188" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 12a8.8 8.8 0 1 0 8.8-8.8 9.5 9.5 0 0 0-6.6 2.7L3.2 8"/><path d="M3.2 3.4v4.7h4.7"/><path d="M12 7.4v4.9l3.9 2.2"/></g>
+<text x="102" y="573" font-size="9.5" fill="#4A5160" font-weight="bold">MEMORY — advisory only</text>
+<text x="102" y="587" font-size="7.0" fill="#8B92A1">obligation · attack · instrument patterns → the compiler &amp; oracle prompt slots · never a verdict, never a gate</text>
+<path d="M 78 556 L 56 546 L 56 390 L 78 378" fill="none" stroke="#9BA2B0" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4.5 3" marker-end="url(#arm)"/>
+<path d="M 624 340 L 700 340" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<text x="662" y="333" font-size="7.0" fill="#8B92A1" text-anchor="middle">emit obligations</text>
+<path d="M 700 356 L 624 356" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<text x="662" y="366" font-size="7.0" fill="#8B92A1" text-anchor="middle">reads the graph</text>
+<path d="M 624 452 L 700 452" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<text x="662" y="445" font-size="7.0" fill="#8B92A1" text-anchor="middle">write verdict</text>
+<path d="M 700 468 L 624 468" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<text x="662" y="478" font-size="7.0" fill="#8B92A1" text-anchor="middle">read a node</text>
+<path d="M 826 606 L 826 632" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<text x="838" y="622" font-size="7.0" fill="#8B92A1">the settled slice</text>
+<rect x="48" y="632" width="904" height="66" rx="10" fill="#EAF1FA" stroke="#4A82C4" stroke-width="1.4"/>
+<g transform="translate(84 642) scale(0.83333)" fill="none" stroke="#2E5F9E" stroke-width="1.920" stroke-linecap="round" stroke-linejoin="round"><path d="M6.2 8.2a5.8 5.8 0 1 0 11.6 0 5.8 5.8 0 1 0-11.6 0Z"/><path d="M15.5 13.1 17 21.6l-5-2.9-5 2.9 1.5-8.5"/></g>
+<text x="112" y="655" font-size="11.5" fill="#14161C" font-weight="bold">CERTIFICATE — the final claim's slice, frozen</text>
+<text x="112" y="671" font-size="8.2" fill="#4A5160">each claim entry nests its obligation nodes with their evidence · assurance levels disclosed · returned over MCP</text>
+<rect x="112" y="678" width="55" height="16" rx="8.0" fill="#E8F4ED" stroke="#2E8B57" stroke-width="1"/>
+<text x="139.5" y="688.6" font-size="7.0" fill="#2E8B57" text-anchor="middle" font-weight="bold">verified</text>
+<rect x="175" y="678" width="49" height="16" rx="8.0" fill="#FBF1DF" stroke="#B07407" stroke-width="1"/>
+<text x="199.5" y="688.6" font-size="7.0" fill="#B07407" text-anchor="middle" font-weight="bold">partial</text>
+<rect x="232" y="678" width="63" height="16" rx="8.0" fill="#FFFFFF" stroke="#7C838F" stroke-width="1"/>
+<text x="263.5" y="688.6" font-size="7.0" fill="#7C838F" text-anchor="middle" font-weight="bold">unverified</text>
+<rect x="303" y="678" width="51" height="16" rx="8.0" fill="#FBEDEB" stroke="#C0483B" stroke-width="1"/>
+<text x="328.5" y="688.6" font-size="7.0" fill="#C0483B" text-anchor="middle" font-weight="bold">refuted</text>
+<text x="366" y="689" font-size="7.0" fill="#8B92A1">verdict = the worst case over the slice — refuted &gt; unverified/stale &gt; partial &gt; verified · never rounds up</text>
+<path d="M 500 712 L 500 730" fill="none" stroke="#5B6272" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ar)"/>
+<rect x="48" y="730" width="904" height="62" rx="9" fill="#FFFFFF" stroke="#C3C9D4" stroke-width="1.25"/>
+<g transform="translate(84 740) scale(0.83333)" fill="none" stroke="#14161C" stroke-width="1.920" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 18.4a2.8 2.8 0 1 0 5.6 0 2.8 2.8 0 1 0-5.6 0Z"/><path d="M3.2 5.6a2.8 2.8 0 1 0 5.6 0 2.8 2.8 0 1 0-5.6 0Z"/><path d="M6 8.4v12"/><path d="M6 11.2a9 9 0 0 0 9.2 7.2"/></g>
+<text x="112" y="752" font-size="11.5" fill="#14161C" font-weight="bold">CONSUMER / CI — where enforcement lives</text>
+<text x="112" y="769" font-size="8.2" font-family="Menlo, Monaco, 'Courier New', monospace" fill="#4A5160">uv run python -m verifier.cli certify …</text>
+<text x="112" y="782" font-size="7.0" fill="#8B92A1">merges only on a verified certificate (exit 0)</text>
+<text x="936" y="765" font-size="7.0" fill="#8B92A1" text-anchor="end" font-style="italic">external to the verifier</text>
+<rect x="206.9" y="811" width="13" height="13" rx="3.4" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.3"/>
+<text x="226.90000000000003" y="821" font-size="8.2" fill="#6C7382">LLM seat — proposes (efficiency only)</text>
+<rect x="407.6" y="811" width="13" height="13" rx="3.4" fill="#EAF1FA" stroke="#4A82C4" stroke-width="1.3"/>
+<text x="427.6" y="821" font-size="8.2" fill="#6C7382">mechanical — decides (correctness)</text>
+<rect x="596.0" y="811" width="13" height="13" rx="3.4" fill="#FFFFFF" stroke="#C3C9D4" stroke-width="1.3"/>
+<text x="616.0" y="821" font-size="8.2" fill="#6C7382">data at rest</text>
+<rect x="694.2" y="811" width="13" height="13" rx="3.4" fill="#FBFCFD" stroke="#9BA2B0" stroke-width="1.3" stroke-dasharray="4 2.6"/>
+<text x="714.2" y="821" font-size="8.2" fill="#6C7382">advisory / feedback</text>
+<circle cx="48" cy="26" r="8.4" fill="#FFFFFF" stroke="#C9CFDA" stroke-width="1.15"/>
+<text x="48" y="29.1" font-size="8.4" fill="#6C7382" text-anchor="middle" font-weight="bold">1</text>
+<circle cx="136" cy="112" r="8.4" fill="#FFFFFF" stroke="#C9CFDA" stroke-width="1.15"/>
+<text x="136" y="115.1" font-size="8.4" fill="#6C7382" text-anchor="middle" font-weight="bold">2</text>
+<circle cx="240" cy="190" r="8.4" fill="#FFFFFF" stroke="#C9CFDA" stroke-width="1.15"/>
+<text x="240" y="193.1" font-size="8.4" fill="#6C7382" text-anchor="middle" font-weight="bold">3</text>
+<circle cx="456" cy="190" r="8.4" fill="#FFFFFF" stroke="#C9CFDA" stroke-width="1.15"/>
+<text x="456" y="193.1" font-size="8.4" fill="#6C7382" text-anchor="middle" font-weight="bold">4</text>
+<circle cx="718" cy="190" r="8.4" fill="#FFFFFF" stroke="#C9CFDA" stroke-width="1.15"/>
+<text x="718" y="193.1" font-size="8.4" fill="#6C7382" text-anchor="middle" font-weight="bold">5</text>
+<circle cx="68" cy="278" r="8.4" fill="#FFFFFF" stroke="#C9CFDA" stroke-width="1.15"/>
+<text x="68" y="281.1" font-size="8.4" fill="#6C7382" text-anchor="middle" font-weight="bold">6</text>
+<circle cx="68" cy="632" r="8.4" fill="#FFFFFF" stroke="#C9CFDA" stroke-width="1.15"/>
+<text x="68" y="635.1" font-size="8.4" fill="#6C7382" text-anchor="middle" font-weight="bold">7</text>
+<circle cx="68" cy="730" r="8.4" fill="#FFFFFF" stroke="#C9CFDA" stroke-width="1.15"/>
+<text x="68" y="733.1" font-size="8.4" fill="#6C7382" text-anchor="middle" font-weight="bold">8</text>
 </svg>
