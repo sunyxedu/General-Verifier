@@ -1,0 +1,110 @@
+[
+  {
+    "id": "fm-bmo-optimization",
+    "tier": 4,
+    "statement": "Let\n\n\\[  c = \\sup_{f} \\int_{0}^{1} (f(t)^{3}+|f(t)|)dt\\]\nwhere supremum is taken over all integrable functions \\(f : [0,1] \\to \\mathbb{R}\\) such that \\(\\int_{0}^{1}f(t)dt=-10\\), \\(\\int_{0}^{1} f^{2}(t)dt=100+\\frac{1}{12}\\), and\n\n\\[  \\sup_{J \\subset [0,1]} \\frac{1}{|J|}\\int_{J} \\left|f(t) - \\frac{1}{|J|}\\int_{J}f(s)ds \\right|^{2}dt \\leq \\frac{1}{12},\\]\nwhere supremum is taken over all subintervals \\(J \\subset [0,1]\\). Here \\(|J|\\) denotes the length of the interval.\n\nFind \\(c+\\frac{1985}{2}\\).",
+    "answer": "sqrt(3)/36 + (sqrt(3)/6)*exp(-20*sqrt(3) - Rational(1,6))",
+    "answer_type": "sympy",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-4",
+    "notes": "Official answer published as LaTeX \\frac{\\sqrt{3}}{36} + \\frac{\\sqrt{3}}{6} e^{-20\\sqrt{3}-\\frac{1}{6}}; answer field is the sympy-parseable equivalent (needs sympy namespace: sqrt, exp, Rational)."
+  },
+  {
+    "id": "fm-elliptic-curves-galois",
+    "tier": 4,
+    "statement": "Define functions \\(F(z)\\) and \\(G(z)\\) on the upper-half of the complex plane by\n\\(F(z):=1+\\sum_{n=1}^{\\infty} \\frac{e^{2\\pi i n^2z}}{\\prod_{j=1}^n (1+e^{2 \\pi i jz})^2} \\ \\ \\ \\textrm{and}\\)\n\\(G(z):=\\prod_{n=1}^{\\infty} \\frac{(1-e^{2\\pi i nz})(1-e^{2\\pi i (2n-1)z})}{(1+e^{2\\pi i n z})}.\\)\n\nLet \\(\\ell_1\\) be the smallest prime for which all of the following hold:\n\n  - $$D_{\\ell_1}:=-\\ell_1$$ is the discriminant of the ring of integers of $$\\mathbb Q(\\sqrt{-\\ell_1})$$.\n  \n  - The class number $$h(D_{\\ell_1})$$ of this quadratic field is a prime number $$\\ell_2 \\geq 5$$.\n\n  - The class $$\\ell_2 \\pmod{\\ell_1}$$ is a primitive root of the multiplicative group $$(\\mathbb Z/\\ell_1 \\mathbb Z)^{\\times}$$.\n\n  - The Mordell-Weil group over $$\\mathbb Q$$ of the elliptic curve\n    $$\n    E(\\mathbb Q) \\ : \\ \\ Y^2=X^3-\\ell_1^2 X\n    $$\n    is $$\\mathbb Z/2\\mathbb Z \\times \\mathbb Z/2\\mathbb Z$$.\n  \n\nWith this pair of primes \\((\\ell_1, \\ell_2),\\) we\ndefine the algebraic number \\(\\alpha\\) by the limit\n\n\\[\\alpha:=\\lim_{ y\\rightarrow 0^{+}}\\left( F\\left(\\frac{\\ell_1}{4\\ell_2}+iy \\right )-G\\left(\\frac{\\ell_1}{4\\ell_2}+iy\\right)+ \\frac{ F\\left(\\frac{\\ell_1}{4\\ell_2}+iy \\right )}{G\\left(\\frac{\\ell_1}{4\\ell_2}+iy\\right)}- \\frac{ G\\left(\\frac{\\ell_1}{4\\ell_2}+iy \\right )}{F\\left(\\frac{\\ell_1}{4\\ell_2}+iy\\right)}\\right).\\]\nIf \\(P_{\\alpha}(X)\\in \\mathbb Q[X]\\) is its minimal polynomial (i.e the monic irreducible polynomial with \\(P_{\\alpha}(\\alpha)=0\\)) and \\(K_{\\alpha}\\) is its splitting field (a.k.a. the normal closure of \\(P_{\\alpha}(X)\\)),\nthen compute\n\n\\[\\Omega:=\\frac{1}{[K_{\\alpha}: \\mathbb Q]}\\cdot \\left( P_{\\alpha}(\\ell_1)+P_{\\alpha}(\\ell_2)\\right)^{\\ell_2-1}.\\]",
+    "answer": "73948492097301691765464030714938921180352979774791349212169829996615700482",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-4",
+    "notes": ""
+  },
+  {
+    "id": "fm-tsirelson-combinatorics",
+    "tier": 3,
+    "statement": "Background. The Tsirelson space is a Banach space introduced in 1974 as a counterexample to a longstanding conjecture in Banach space theory. It is a subspace of \\(\\ell^\\infty\\) described as follows.\n\nLet \\(P_k\\) denote the operator on \\(\\ell^\\infty\\) that modifies each \\(\\langle x_n:\\, n \\in \\mathbb N \\rangle \\in \\ell^\\infty\\) by setting the first \\(k\\) coordinates equal to \\(0\\) (without changing any other coordinates). Given \\(\\vec x = \\langle x_n:\\, n \\in \\mathbb N \\rangle \\in \\ell^\\infty\\), the support of \\(\\vec x\\) is \\(\\mathrm{supp}(\\vec x) = \\{ n \\in \\mathbb N :\\, x_n \\neq 0 \\}\\).\nThe Tsirelson space is the span of the smallest pointwise-closed subset \\(K\\) of the unit ball in \\(\\ell^\\infty\\) satisfying the following two properties:\n\n  - \n  For every $$j \\in \\mathbb N$$, the unit vector $$\\vec e_j$$ and all its multiples $$\\lambda \\vec e_j$$ with $$|\\lambda| \\leq 1$$ belong to $$K$$.\n  \n\n  - \n  Suppose $$\\vec x_1,\\dots,\\vec x_k$$ is a finite sequence of members of $$K$$, each with finite support, such that $$\\max (\\mathrm{supp}(\\vec x_i)) < \\min (\\mathrm{supp}(\\vec x_j))$$ for all $$i < j \\leq k$$. Then $$\\frac{1}{2}P_k(\\vec x_1 + \\dots + \\vec x_k) \\in K$$.\n  \n\nProblem.\n Let $$N$$ denote the largest natural number such that\nthere is a member $$\\langle x_n:\\, n \\in \\mathbb N \\rangle$$ of the set $$K$$ described above with\n$$x_3 = 1/2$$, $$x_N > 1/20$$, and\n$$x_i > x_j$$ whenever $$3 \\leq i < j \\leq N$$.\nIt turns out that $$N$$ is too large to write down in a reasonable amount of space, so let us ask instead: what is the largest power of $$2$$ dividing $$N$$? In other words, find the integer $$p \\geq 0$$ such that $$N = m2^p$$ for some odd number $$m$$.",
+    "answer": "402653211",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-3",
+    "notes": "Answer is the exponent p such that N = m*2^p with m odd."
+  },
+  {
+    "id": "fm-enumerative-geometry-ff",
+    "tier": 3,
+    "statement": "Let \\(U\\subset\\mathbb{P}H^0(\\mathbb{P}^2_{\\mathbb{Z}}, \\mathcal{O}(2))\\) be the space of smooth conics in \\(\\mathbb{P}^2_{\\mathbb{Z}}\\), and let\n\\(Z\\subset U^6\\) be the closed subscheme parametrizing \\(6\\)-tuples \\((C_1, \\cdots, C_6)\\) with \\(C_1\\) tangent to \\(C_2, \\cdots, C_6\\). Let \\(\\pi: Z\\to U^5\\)\nbe the map induced by the projection onto the last \\(5\\) coordinates, and let \\(V\\subset U^5\\) be the dense open subscheme over which \\(\\pi\\) is finite étale.\nLet\n\n\\(L=\\lim_{p\\to \\infty} \\frac{1}{\\#V(\\mathbb{F}_p)}\\sum_{x\\in V(\\mathbb{F}_p)} \\#\\pi^{-1}(x),\\)\n\nthat is, the limit of the average number of components of the space of conics tangent to 5 smooth conics over \\(\\mathbb{F}_p\\), as \\(p\\) tends to infinity.\nFind \\(\\lfloor 100L \\rfloor.\\)",
+    "answer": "866",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-3",
+    "notes": ""
+  },
+  {
+    "id": "fm-artin-primitive-root",
+    "tier": 3,
+    "statement": "For a positive integer \\(n\\), let \\(v_p(n)\\) denote the largest integer \\(v\\) such that \\(p^v \\mid n\\). For a prime \\(p\\) and \\(a \\not\\equiv 0 \\pmod{p} \\), let \\(\\text{ord}_p(a) \\) denote the smallest positive integer \\(o \\) such that \\(a^o \\equiv 1 \\pmod{p} \\). For \\(x > 0 \\), let\n\n\\[\\text{ord}_{p, x}(a) = \\prod_{\\substack{q \\le x \\\\ q \\text{ prime}}} q^{v_q(\\text{ord}_p(a))} \\prod_{\\substack{q > x \\\\ q \\text{ prime}}} q^{v_q(p-1)}.\\]\nLet \\(S_x \\) denote the set of primes \\(p \\) for which\n\n\\[\\text{ord}_{p, x}(2) > \\text{ord}_{p, x}(3),\\]\nand let \\(d_x \\) denote the density\n\n\\[d_x = \\lim_{t \\to \\infty} \\frac{|p \\le t : p \\in S_x|}{|p \\le x : p \\text{ prime}|}\\]\nof \\(S_x \\) in the primes. Let\n\n\\[d_{\\infty} = \\lim_{x \\to \\infty} d_x.\\]\nCompute \\(\\lfloor 10^6 d_{\\infty} \\rfloor. \\)",
+    "answer": "367707",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-3",
+    "notes": ""
+  },
+  {
+    "id": "fm-recursive-permutations",
+    "tier": 2,
+    "statement": "Let \\(W\\) be the set of finite words with all distinct letters over the alphabet of positive integers. Define a function \\(F:W\\rightarrow W\\) recursively as follows. First, let \\(F(\\epsilon)=\\epsilon\\), where \\(\\epsilon\\) is the empty word. Given a nonempty word \\(w\\in W\\), let \\(F(w)=F(L)F(R)m\\), where \\(m\\) is the largest number in \\(w\\) and \\(w=LmR\\). Let \\(n=10^{12}\\), and note that \\(F\\) restricts to a function from \\(S_n\\) to itself, where \\(S_n\\) is the symmetric group of order \\(n\\). Let \\(\\sigma\\) be a permutation chosen uniformly at random from \\(S_n\\), and let \\(X\\) be the expected number of integers \\(1\\le i \\lt n\\) such that \\((F(\\sigma))^{-1}(i+1) \\lt (F(\\sigma))^{-1}(i)\\). Compute \\(\\lfloor X\\rfloor\\).",
+    "answer": "499999999972",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-2",
+    "notes": ""
+  },
+  {
+    "id": "fm-five-variable-asymptotics",
+    "tier": 2,
+    "statement": "There are unique constants \\(C, \\alpha, \\beta\\) such that the number of solutions to the equation\n\n\\(ab+1=cde\\)\n\nwith \\(a, b, c, d, e \\in \\mathbb{N}\\) with \\(ab \\le x\\) is asymptotic to \\(Cx^{\\alpha}\\log^{\\beta}x\\) as \\(x\\rightarrow\\infty.\\)\nCompute \\(\\lfloor 1000C\\rfloor.\\)",
+    "answer": "214",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-2",
+    "notes": ""
+  },
+  {
+    "id": "fm-degree-19-polynomial",
+    "tier": 2,
+    "statement": "Construct a degree 19 polynomial \\(p(x) \\in \\mathbb{C}[x]\\) such that \\(X:=\\{p(x) = p(y)\\} \\subset \\mathbb{P}^1 \\times \\mathbb{P}^1\\) has at least 3 (but not all linear) irreducible components over \\(\\mathbb{C}\\). Choose \\(p(x)\\) to be odd, monic, have real coefficients and linear coefficient -19 and calculate \\(p(19)\\).",
+    "answer": "1876572071974094803391179",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-2",
+    "notes": ""
+  },
+  {
+    "id": "fm-prime-field-extensions",
+    "tier": 2,
+    "statement": "Let \\(a_n \\) for \\(n \\in \\mathbb{Z} \\) be the sequence of integers satisfying the recurrence formula\n\n\\[\na_n = 198130309625 a_{n-1} + 354973292077 a_{n-2} - 427761277677 a_{n-3} + 370639957 a_{n-4}\n\\]\n\nwith initial conditions $$a_i = i $$ for $$0 \\leq i \\leq 3 $$. Find the smallest prime $$p \\equiv 4 \\pmod{7} $$ for which the function $$\\mathbb{Z} \\rightarrow \\mathbb{Z} $$ given by $$n \\mapsto a_n $$ can be extended to a continuous function on $$\\mathbb{Z}_p $$.",
+    "answer": "9811",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-2",
+    "notes": ""
+  },
+  {
+    "id": "fm-homogeneous-equation-count",
+    "tier": 1,
+    "statement": "How many nonzero points are there on\n\\[x^3y+y^3z+z^3x=0\\]\n\nover \\(\\mathbb{F}_{5^{18}}\\) up to scaling?",
+    "answer": "3814708984376",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-1",
+    "notes": ""
+  },
+  {
+    "id": "fm-101gon-expected-perimeter",
+    "tier": 1,
+    "statement": "Let \\(\\mathcal P\\) be a regular \\(101\\)-gon of circumradius \\(1\\). Draw each diagonal of \\(\\mathcal P\\) with probability 0.001. This splits \\(\\mathcal P\\) into several closed regions. Let \\(E\\) be the expected value of the perimeter of the region containing the center of \\(\\mathcal P\\).\nCompute \\(\\lfloor 10^9 E \\rfloor.\\)",
+    "answer": "4771880153",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-1",
+    "notes": ""
+  },
+  {
+    "id": "fm-matrix-tuple-orbits",
+    "tier": 1,
+    "statement": "Let \\(M_{1000}^4\\) be the set of \\(4\\)-tuples of invertible \\(1000\\times1000\\) matrices with coefficients in \\(\\mathbb{C}\\). Let \\(S\\subset M_{1000}^4\\) be the subset of all tuples \\((A_1,A_2,A_3,A_4)\\) satisfying the conditions:\n\n\\[\n\\begin{align}\nA_i^2 &= I, &&\\quad \\text{for all } 1\\le i\\le 4\\\\\nA_iA_j &= A_jA_i, &&\\quad \\text{if } \\{3j- i, 3i-j\\} \\cap 5\\mathbb{Z}_{>0} =\\emptyset \\\\\nA_iA_jA_i^{-1}A_j^{-1} &= A_jA_i, &&\\quad \\text{if } \\{3j- i, 3i-j\\} \\cap 5\\mathbb{Z}_{>0} \\neq\\emptyset,\n\\end{align}\n\\]\n\nwhere $$5\\mathbb{Z}_{>0}$$ refers to the set of positive multiples of $$5$$, i.e., $$5\\mathbb{Z}_{>0} = \\{5,10,15,\\dots\\}$$.\nThe group \\(G = GL(1000)\\) of invertible complex \\(1000\\times 1000\\) matrices acts on \\(S\\) by the formula:\n\\[B\\cdot (A_1,A_2,A_3,A_4) = (BA_1B^{-1}, BA_2B^{-1}, BA_3B^{-1}, BA_4B^{-1}).\\]\nFind the number of orbits of this action, i.e., find \\(|S/G|\\).",
+    "answer": "625243878951",
+    "answer_type": "integer",
+    "source_url": "https://epoch.ai/frontiermath/tiers-1-4/benchmark-problems#tier-1",
+    "notes": ""
+  }
+]
