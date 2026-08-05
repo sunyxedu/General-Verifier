@@ -1,0 +1,19 @@
+# Terminal-Bench 2.1 subset — short-to-medium tasks spanning categories,
+# tolerable under amd64 emulation on Apple Silicon. One task name per line;
+# lines starting with # are ignored. Edit freely; all arms read this file.
+fix-git
+git-multibranch
+sanitize-git-repo
+regex-log
+log-summary-date-ranges
+filter-js-from-html
+openssl-selfsigned-cert
+nginx-request-logging
+sqlite-db-truncate
+password-recovery
+vulnerable-secret
+fix-code-vulnerability
+overfull-hbox
+chess-best-move
+largest-eigenval
+count-dataset-tokens

@@ -1,0 +1,133 @@
+"""Harbor custom agent: Claude Code with the full General Verifier mounted.
+
+Runs inside the Terminal-Bench task container exactly like the stock
+`claude-code` agent (same install, same headless invocation), plus:
+
+  - the General Verifier codebase is shipped into the container
+    (/opt/general-verifier) and `uv sync`ed with a uv-managed Python
+  - the MCP sidecar is registered user-scope (Harbor's own mechanism), so
+    the solver gets the gv.* verbs with no trust dialog
+  - Pre/PostToolUse hooks are wired via the user-level settings.json in
+    $CLAUDE_CONFIG_DIR, feeding /gv-state/hook_feed.jsonl
+  - the solver protocol is installed as user-level CLAUDE.md, and a short
+    reminder is appended to the task instruction
+
+The solver still receives ONE prompt: the task instruction. Everything else
+is the system under measurement.
+
+Used via:
+  PYTHONPATH=experiments/terminal_bench harbor run \
+      -a gv_agent:GVClaudeCode -m anthropic/sonnet ...
+"""
+import json
+import shlex
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import override
+
+from harbor.agents.installed.claude_code import ClaudeCode
+from harbor.environments.base import BaseEnvironment
+from harbor.models.agent.context import AgentContext
+from harbor.models.task.config import MCPServerConfig
+from harbor.models.trial.paths import EnvironmentPaths
+
+GV_ROOT = Path(__file__).resolve().parents[2]      # the General Verifier repo
+GV_DEST = "/opt/general-verifier"
+STATE_DIR = "/gv-state"
+TOOLCHAIN = "/opt/gv-toolchain"
+SIDECAR = "/usr/local/bin/gv-sidecar"
+
+TAR_EXCLUDES = [".git", ".venv", "__pycache__", "experiments", ".gv",
+                ".gv-demo", ".idea", ".pytest_cache", "docs", "report",
+                "general-verifier-report", "*.pdf"]
+
+GV_SUFFIX = (
+    "\n\nFollow the claim protocol in your CLAUDE.md while you work: commit "
+    "your key intermediate conclusions as claims, commit a final claim "
+    "stating that the task above is complete, and request gv.certificate "
+    "on it before you finish."
+)
+
+
+class GVClaudeCode(ClaudeCode):
+    @staticmethod
+    @override
+    def name() -> str:
+        return "gv-claude-code"
+
+    def __init__(self, logs_dir: Path, *args, **kwargs):
+        super().__init__(logs_dir, *args, **kwargs)
+        # user-scoped MCP registration; ClaudeCode.run() writes it into
+        # $CLAUDE_CONFIG_DIR/.claude.json before invoking claude
+        self.mcp_servers.append(MCPServerConfig(
+            name="gv", transport="stdio", command=SIDECAR, args=[]))
+
+    # -- payload -----------------------------------------------------------
+    def _make_tarball(self) -> str:
+        tmp = tempfile.NamedTemporaryFile(suffix=".tgz", delete=False)
+        tmp.close()
+        cmd = ["tar", "czf", tmp.name]
+        for pat in TAR_EXCLUDES:
+            cmd += ["--exclude", pat]
+        cmd += ["-C", str(GV_ROOT), "."]
+        subprocess.run(cmd, check=True)
+        return tmp.name
+
+    @override
+    async def install(self, environment: BaseEnvironment) -> None:
+        await super().install(environment)
+
+        tarball = self._make_tarball()
+        await environment.upload_file(tarball, "/tmp/gv-src.tgz")
+        await self.exec_as_root(environment, command=(
+            "set -e; "
+            f"rm -rf {GV_DEST} && mkdir -p {GV_DEST} && "
+            f"tar xzf /tmp/gv-src.tgz -C {GV_DEST} && rm /tmp/gv-src.tgz && "
+            f"mkdir -p {STATE_DIR} {TOOLCHAIN} && "
+            f"chmod -R 777 {GV_DEST} {STATE_DIR} {TOOLCHAIN}"))
+
+        # uv + a managed Python + the verifier's deps (mcp, claude-agent-sdk,
+        # openai). One-time per task container.
+        await self.exec_as_agent(environment, command=(
+            'set -e; export PATH="$HOME/.local/bin:$PATH"; '
+            "command -v uv >/dev/null 2>&1 || "
+            "  (curl -LsSf https://astral.sh/uv/install.sh | sh); "
+            f"cd {GV_DEST} && uv sync"))
+
+        # stable entry point for the MCP registration (claude spawns it with
+        # the agent user's env, so ANTHROPIC_API_KEY / PATH are inherited)
+        model = (self.model_name or "sonnet").split("/")[-1]
+        wrapper = (
+            "#!/bin/sh\n"
+            'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"\n'
+            f"exec uv run --project {GV_DEST} python -m verifier.sidecar "
+            f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
+            f'--model {model} "$@"\n')
+        await self.exec_as_root(environment, command=(
+            f"printf %s {shlex.quote(wrapper)} > {SIDECAR} && "
+            f"chmod 755 {SIDECAR}"))
+
+    # -- per-run config ----------------------------------------------------
+    def _settings_json(self) -> str:
+        hook = lambda script: {"type": "command", "command": (  # noqa: E731
+            f"GV_HOOK_FEED={STATE_DIR}/hook_feed.jsonl "
+            f"{GV_DEST}/.venv/bin/python {GV_DEST}/hooks/{script}")}
+        return json.dumps({"hooks": {
+            "PreToolUse": [{"matcher": "*",
+                            "hooks": [hook("pre_tool_use.py")]}],
+            "PostToolUse": [{"matcher": "*",
+                             "hooks": [hook("post_tool_use.py")]}],
+        }})
+
+    @override
+    async def run(self, instruction: str, environment: BaseEnvironment,
+                  context: AgentContext) -> None:
+        cfg = (EnvironmentPaths.agent_dir / "sessions").as_posix()
+        protocol = (GV_ROOT / "protocol" / "solver-protocol.md").read_text()
+        await self.exec_as_agent(environment, command=(
+            f"mkdir -p {cfg} && "
+            f"printf %s {shlex.quote(self._settings_json())} "
+            f"> {cfg}/settings.json && "
+            f"printf %s {shlex.quote(protocol)} > {cfg}/CLAUDE.md"))
+        await super().run(instruction + GV_SUFFIX, environment, context)
