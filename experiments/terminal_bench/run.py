@@ -9,14 +9,15 @@ Arms (identical task subset from tasks.txt, resumable by job name):
                  LLM-as-a-Verifier Claude Code plugin, as shipped: the
                  proxy runs on the host and the in-container Claude Code
                  reaches it via ANTHROPIC_BASE_URL=host.docker.internal
-                 (needs ANTHROPIC_API_KEY + VERTEX_API_KEY)
+                 (needs VERTEX_API_KEY; generations use the built-in
+                 DeepSeek key)
 
 Scoring is Harbor's own (task verifiers write reward 0/1). The GV arm also
 downloads /gv-state as a trial artifact so certificate verdicts can be
 compared with rewards in summarize.py.
 
-Requires: docker running, `uv tool install harbor`, ANTHROPIC_API_KEY (and
-codex auth for the codex arm).
+Requires: docker running, `uv tool install harbor` (and codex auth for the
+codex arm). Claude arms run on DeepSeek-V4-Flash via verifier/llm/provider.
 
 Usage:
   uv run python experiments/terminal_bench/run.py --arm plain --k 3
@@ -32,6 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from common import turbo                                 # noqa: E402
+from verifier.llm import provider                        # noqa: E402
 
 DATASET = "terminal-bench/terminal-bench-2-1"
 JOBS_DIR = os.path.join(HERE, "results", "jobs")
@@ -55,11 +57,21 @@ def main():
                     "claude arms; codex CLI default for codex)")
     ap.add_argument("--n-concurrent", type=int, default=2)
     ap.add_argument("--job-name", default=None)
+    ap.add_argument("--task", default=None,
+                    help="run only this task from tasks.txt (e.g. fix-git); "
+                    "gets its own job name so it never collides with a full "
+                    "run's resumable job")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     tasks = read_tasks()
-    job = args.job_name or f"{args.arm}"
+    if args.task:
+        if args.task not in tasks:
+            sys.exit(f"task {args.task!r} not in tasks.txt ({len(tasks)} "
+                     "tasks); add it there first")
+        tasks = [args.task]
+    job = args.job_name or (f"{args.arm}-{args.task}" if args.task
+                            else f"{args.arm}")
     cmd = ["harbor", "run", "-d", DATASET, "-o", JOBS_DIR,
            "--job-name", job, "-k", str(args.k),
            "-n", str(args.n_concurrent)]
@@ -67,7 +79,11 @@ def main():
         # registry task names are org-prefixed: terminal-bench/<task>
         cmd += ["-i", f"terminal-bench/{t}"]
 
-    env = dict(os.environ)
+    # DeepSeek env on the host; harbor forwards ANTHROPIC_BASE_URL and the
+    # key (as ANTHROPIC_API_KEY — the endpoint accepts x-api-key) into the
+    # container, and the endpoint maps claude-* aliases to deepseek-v4-flash
+    # server-side, so `-m anthropic/sonnet` lands on DeepSeek too.
+    env = provider.claude_env()
     if args.arm == "plain":
         cmd += ["-a", "claude-code", "-m", args.model or "anthropic/sonnet"]
     elif args.arm == "codex":
@@ -84,8 +100,10 @@ def main():
     else:  # gv
         cmd += ["-a", "gv_agent:GVClaudeCode",
                 "-m", args.model or "anthropic/sonnet",
-                # GV verification is slow by design; give it room
-                "--agent-timeout-multiplier", "4",
+                # GV verification is slow by design; give it room (measured:
+                # fix-git on deepseek = ~10 min solving + ~50 min verifying,
+                # so 4x/3600s got killed mid-certificate)
+                "--agent-timeout-multiplier", "8",
                 "--agent-setup-timeout-multiplier", "4",
                 # pull the verifier state out for verdict-vs-reward analysis
                 "--artifact", "/gv-state"]

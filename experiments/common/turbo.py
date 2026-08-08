@@ -10,9 +10,10 @@ The turbo arm is the plugin used exactly as documented:
     turbo-agent            # with a turbo-agent.yaml in cwd
     ANTHROPIC_BASE_URL=http://localhost:8888 claude
 
-Keys: ANTHROPIC_API_KEY for the backend generations, plus VERTEX_API_KEY —
-the verifier scores with Gemini logprobs (Anthropic models expose no
-logprobs, the paper's own App. A).
+Keys: DEEPSEEK_API_KEY for the backend generations (defaulted from
+verifier.llm.provider), plus VERTEX_API_KEY — the verifier scores with
+Gemini logprobs (the backend models expose no logprobs, the paper's own
+App. A).
 """
 import os
 import subprocess
@@ -20,15 +21,17 @@ import sys
 import time
 import urllib.request
 
+from verifier.llm import provider   # DeepSeek wiring (single source of truth)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 VENDOR = os.path.join(os.path.dirname(HERE), "vendor", "TurboAgent")
 GIT_URL = "https://github.com/llm-as-a-verifier/TurboAgent.git"
 
-# claude CLI aliases -> concrete API model ids for the litellm backend
+# claude CLI aliases -> the configured provider's litellm model id
 MODEL_IDS = {
-    "sonnet": "claude-sonnet-5",
-    "opus": "claude-opus-5",
-    "haiku": "claude-haiku-4-5-20251001",
+    "sonnet": provider.LITELLM_MODEL,
+    "opus": provider.LITELLM_MODEL,
+    "haiku": provider.LITELLM_MODEL,
 }
 
 CONFIG_TEMPLATE = """\
@@ -36,8 +39,8 @@ log_dir: default
 
 backend:
   models:
-    - name: anthropic/{backend_model}
-      api_key: $ANTHROPIC_API_KEY
+    - name: {backend_model}
+      api_key: ${key_env}
       num_candidates: {num_candidates}
       temperature: 1
 
@@ -80,7 +83,8 @@ def write_config(config_dir, solver_model="sonnet", num_candidates=3,
     backend = MODEL_IDS.get(solver_model, solver_model)
     with open(os.path.join(config_dir, "turbo-agent.yaml"), "w") as f:
         f.write(CONFIG_TEMPLATE.format(
-            backend_model=backend, num_candidates=num_candidates,
+            backend_model=backend, key_env=provider.KEY_ENV,
+            num_candidates=num_candidates,
             verifier_model=verifier_model, n_verifications=n_verifications))
 
 
@@ -94,14 +98,17 @@ class Proxy:
 
     def __enter__(self):
         ensure_vendor()
+        # the proxy's litellm backend reads the provider key from its env
+        os.environ.setdefault(provider.KEY_ENV, provider.API_KEY)
         log = open(os.path.join(self.config_dir, "turbo-agent.log"), "a")
         self.proc = subprocess.Popen(
             ["uv", "tool", "run", "--from", VENDOR, "turbo-agent",
              "-p", str(self.port)],
             cwd=self.config_dir, stdout=log, stderr=log)
-        deadline = time.time() + 180
+        # no startup deadline: first launch may build the vendored package,
+        # which can take arbitrarily long. We only fail if the process dies.
         url = f"http://localhost:{self.port}/v1/models"
-        while time.time() < deadline:
+        while True:
             if self.proc.poll() is not None:
                 raise RuntimeError(
                     f"turbo-agent exited (see {self.config_dir}/"
@@ -112,7 +119,6 @@ class Proxy:
                 return f"http://localhost:{self.port}"
             except OSError:
                 time.sleep(1)
-        raise RuntimeError("turbo-agent did not come up in 180s")
 
     def __exit__(self, *exc):
         if self.proc and self.proc.poll() is None:
@@ -125,8 +131,11 @@ class Proxy:
 
 
 def check_keys():
-    missing = [k for k in ("ANTHROPIC_API_KEY", "VERTEX_API_KEY")
-               if not os.environ.get(k)]
-    if missing:
-        sys.exit(f"turbo arm needs {' and '.join(missing)} exported "
-                 "(generations + logprob verifier)")
+    os.environ.setdefault(provider.KEY_ENV, provider.API_KEY)
+    vertex = provider.cfg("VERTEX_API_KEY")
+    if vertex:
+        os.environ.setdefault("VERTEX_API_KEY", vertex)
+    if not os.environ.get("VERTEX_API_KEY"):
+        sys.exit("turbo arm needs VERTEX_API_KEY exported or in .env (the "
+                 "logprob verifier scores with Gemini; generations use the "
+                 f"configured provider key ${provider.KEY_ENV})")

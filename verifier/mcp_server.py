@@ -207,9 +207,12 @@ def _default_kernel(sc: Service, model, seats, game) -> Kernel:
                       discharger=discharger, binder=binder,
                       memory=sc.memory)
     if seats == "sandbox":
+        from .llm import provider
         from .llm.roles import OpenAIBackend
 
-        backend = OpenAIBackend(model=model or "gpt-4o")
+        backend = OpenAIBackend(model=model or provider.MODEL,
+                                base_url=provider.OPENAI_BASE_URL,
+                                api_key=provider.API_KEY)
         return Kernel(sc.store, sc.log, backend, sc.artifacts)
     raise ValueError(f"unknown seats: {seats}")
 

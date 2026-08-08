@@ -12,3 +12,6 @@ experiments/*/results/
 experiments/*/vendor/
 experiments/vendor/
 experiments/frontiermath/_raw/
+
+# provider secrets
+.env

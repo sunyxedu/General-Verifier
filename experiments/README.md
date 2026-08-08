@@ -25,10 +25,19 @@ Docker running (SWE-bench Pro + Terminal-Bench), `uv tool install harbor`
 images under emulation — slow but supported.
 
 Turbo arm: TurboAgent is auto-cloned to `experiments/vendor/TurboAgent/`
-(gitignored) and started per run. It needs `ANTHROPIC_API_KEY` (candidate
-generations) **and** `VERTEX_API_KEY` (its verifier scores with Gemini
-**logprobs** — Anthropic models cannot serve the verifier side; the
-paper's own App. A).
+(gitignored) and started per run. Candidate generations use the built-in
+DeepSeek key (`DEEPSEEK_API_KEY` overrides); it still needs
+`VERTEX_API_KEY` (its verifier scores with Gemini **logprobs** — chat
+backends cannot serve the verifier side; the paper's own App. A).
+
+Provider: every Claude Code invocation in the experiments runs on the
+provider configured in `.env` at the repo root — default
+**DeepSeek-V4-Flash** via DeepSeek's Anthropic-compatible endpoint; also
+supported: `openrouter` (any OpenRouter model id) and `custom` (any
+Anthropic-compatible endpoint). Copy `.env.example` to `.env` and edit;
+`verifier/llm/provider.py` is the single source of truth. Host spawns use
+a dedicated `CLAUDE_CONFIG_DIR=~/.claude-gv-<provider>` so a logged-in
+`~/.claude` cannot shadow the provider credentials.
 
 ## 1. FrontierMath (official public sample — 12 problems)
 

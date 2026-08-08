@@ -28,8 +28,8 @@ uv run python experiments/swebench_pro/evaluate.py --arm codex
 uv run python experiments/swebench_pro/summarize.py
 ```
 
-The turbo arm needs `ANTHROPIC_API_KEY` + `VERTEX_API_KEY` (TurboAgent's
-logprob verifier).
+The turbo arm needs `VERTEX_API_KEY` (TurboAgent's logprob verifier);
+generations use the built-in DeepSeek key.
 
 Subset selection is deterministic (`--seed`, round-robin over the repo
 pool); delete `instances.json` to reselect. Image pull + extraction caches

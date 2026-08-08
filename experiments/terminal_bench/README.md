@@ -26,15 +26,16 @@ uv run python experiments/terminal_bench/summarize.py
 
 The turbo arm starts the TurboAgent proxy on the host; the in-container
 Claude Code reaches it via `ANTHROPIC_BASE_URL=http://host.docker.internal:<port>`
-(Docker Desktop resolves this natively). Needs `ANTHROPIC_API_KEY` +
-`VERTEX_API_KEY` (TurboAgent's logprob verifier).
+(Docker Desktop resolves this natively). Needs `VERTEX_API_KEY`
+(TurboAgent's logprob verifier); generations use the built-in DeepSeek key.
 
 Notes:
 - jobs land in `results/jobs/<arm>/` and resume by job name; add
   `--dry-run` to print the harbor command without running.
-- `ANTHROPIC_API_KEY` must be exported (Harbor forwards it into the
-  container); the codex arm needs codex auth (`CODEX_API_KEY`/OpenAI key
-  per Harbor's codex agent).
+- claude arms run on DeepSeek-V4-Flash: run.py exports the DeepSeek env
+  (`verifier/llm/provider.py`) and Harbor forwards `ANTHROPIC_BASE_URL` +
+  the key into the container; the codex arm needs codex auth
+  (`CODEX_API_KEY`/OpenAI key per Harbor's codex agent).
 - first GV trial per task pays a one-time in-container `uv sync` (slow
   under amd64 emulation) — the agent-setup timeout is already multiplied.
 - registry task names are org-prefixed (`terminal-bench/fix-git`); run.py

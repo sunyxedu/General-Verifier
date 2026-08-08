@@ -19,6 +19,7 @@ Used via:
   PYTHONPATH=experiments/terminal_bench harbor run \
       -a gv_agent:GVClaudeCode -m anthropic/sonnet ...
 """
+import importlib.util
 import json
 import shlex
 import subprocess
@@ -33,6 +34,13 @@ from harbor.models.task.config import MCPServerConfig
 from harbor.models.trial.paths import EnvironmentPaths
 
 GV_ROOT = Path(__file__).resolve().parents[2]      # the General Verifier repo
+
+# DeepSeek wiring — file-loaded because this module runs under Harbor's own
+# Python, where the `verifier` package is not installed
+_spec = importlib.util.spec_from_file_location(
+    "gv_provider", GV_ROOT / "verifier" / "llm" / "provider.py")
+provider = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(provider)
 GV_DEST = "/opt/general-verifier"
 STATE_DIR = "/gv-state"
 TOOLCHAIN = "/opt/gv-toolchain"
@@ -113,12 +121,17 @@ class GVClaudeCode(ClaudeCode):
         hook = lambda script: {"type": "command", "command": (  # noqa: E731
             f"GV_HOOK_FEED={STATE_DIR}/hook_feed.jsonl "
             f"{GV_DEST}/.venv/bin/python {GV_DEST}/hooks/{script}")}
-        return json.dumps({"hooks": {
-            "PreToolUse": [{"matcher": "*",
-                            "hooks": [hook("pre_tool_use.py")]}],
-            "PostToolUse": [{"matcher": "*",
-                             "hooks": [hook("post_tool_use.py")]}],
-        }})
+        return json.dumps({
+            # pin the in-container claude (and the MCP server it spawns) to
+            # DeepSeek — harbor only forwards BASE_URL + key, not the
+            # DEFAULT_* model pins
+            "env": dict(provider.CLAUDE_ENV),
+            "hooks": {
+                "PreToolUse": [{"matcher": "*",
+                                "hooks": [hook("pre_tool_use.py")]}],
+                "PostToolUse": [{"matcher": "*",
+                                 "hooks": [hook("post_tool_use.py")]}],
+            }})
 
     @override
     async def run(self, instruction: str, environment: BaseEnvironment,

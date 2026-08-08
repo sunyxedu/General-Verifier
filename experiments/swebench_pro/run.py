@@ -13,7 +13,7 @@ differs:
   --arm turbo    Claude Code + TurboAgent, the official LLM-as-a-Verifier
                  Claude Code plugin, as shipped (proxy fans out candidates
                  per model call, logprob verifier picks; needs
-                 ANTHROPIC_API_KEY + VERTEX_API_KEY)
+                 VERTEX_API_KEY)
   --arm plain    stock headless Claude Code
   --arm codex    stock headless Codex CLI
 
@@ -116,7 +116,8 @@ def main():
     ap.add_argument("--n", type=int, default=1, help="samples per instance")
     ap.add_argument("--model", default="sonnet", help="claude model for "
                     "plain/gv/turbo; ignored for codex")
-    ap.add_argument("--timeout", type=int, default=3600)
+    ap.add_argument("--timeout", type=int, default=0,
+                    help="per-task seconds; 0 = no timeout (default)")
     ap.add_argument("--candidates", type=int, default=3,
                     help="turbo: parallel candidates per model call")
     args = ap.parse_args()

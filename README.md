@@ -85,11 +85,23 @@ dependencies — `mcp` (MCP server), `claude-agent-sdk` (agent seats), `openai`
 uv sync
 ```
 
-Credentials: agent seats go through the Claude Agent SDK (`ANTHROPIC_API_KEY` or an
-authenticated Claude Code environment); one-shot roles use the OpenAI SDK and honor
-`OPENAI_API_KEY` / `OPENAI_BASE_URL` (OpenAI, Anthropic's compat endpoint, local vLLM, …).
+Credentials: all seats run on the provider configured in `.env` at the repo root
+(copy `.env.example`) — default **DeepSeek-V4-Flash**; `openrouter` and `custom`
+Anthropic-compatible endpoints are also supported. Agent seats go through the Claude
+Agent SDK against the provider's Anthropic-compatible endpoint, one-shot roles use
+the OpenAI SDK against its OpenAI-compatible endpoint; the wiring lives in
+`verifier/llm/provider.py`.
 
 ### Online — MCP server for a stock Claude Code session
+
+One-command interactive session (mounts everything below into a workdir and
+opens the TUI on the `.env`-configured provider):
+
+```bash
+uv run python gv_tui.py ~/gv-workspace
+```
+
+Manual setup:
 
 1. **Mount the MCP server** in the solver's project — copy `protocol/mcp.example.json`
    into `.mcp.json` (if the solver project is not this repo, add

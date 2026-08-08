@@ -11,7 +11,7 @@ differs:
   --arm turbo    Claude Code + TurboAgent, the official LLM-as-a-Verifier
                  Claude Code plugin, as shipped (proxy fans out candidates
                  per model call, logprob verifier picks; needs
-                 ANTHROPIC_API_KEY + VERTEX_API_KEY)
+                 VERTEX_API_KEY)
   --arm plain    stock headless Claude Code
   --arm codex    stock headless Codex CLI
 
@@ -63,9 +63,12 @@ def main():
                     choices=["gv", "turbo", "plain", "codex"])
     ap.add_argument("--n", type=int, default=1, help="samples per problem")
     ap.add_argument("--model", default="sonnet")
-    ap.add_argument("--timeout", type=int, default=5400)
+    ap.add_argument("--timeout", type=int, default=0,
+                    help="per-problem seconds; 0 = no timeout (default)")
     ap.add_argument("--candidates", type=int, default=3,
                     help="turbo: parallel candidates per model call")
+    ap.add_argument("--pid", default=None,
+                    help="run only this problem id (e.g. fm-bmo-optimization)")
     args = ap.parse_args()
 
     with open(os.path.join(HERE, "problems.json")) as f:
@@ -74,6 +77,8 @@ def main():
     done = res.recorded(results_path, "pid", "sample")
     todo = [(p, s) for p in problems for s in range(args.n)
             if (p["id"], s) not in done]
+    if args.pid:
+        todo = [(p, s) for p, s in todo if p["id"] == args.pid]
     print(f"[fm:{args.arm}] {len(todo)} runs ({len(done)} recorded)",
           flush=True)
 

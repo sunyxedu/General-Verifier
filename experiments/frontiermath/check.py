@@ -38,7 +38,7 @@ def matches(candidate: str | None, problem: dict) -> bool:
     try:
         proc = subprocess.run(
             ["uv", "run", "--no-project", "--with", "sympy", "python", "-c",
-             code], capture_output=True, text=True, timeout=120)
+             code], capture_output=True, text=True, timeout=600)
         return proc.stdout.strip().endswith("EQUAL")
     except Exception:
         return False

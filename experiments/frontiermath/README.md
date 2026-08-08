@@ -23,7 +23,7 @@ uv run python experiments/frontiermath/summarize.py
 
 Every arm gets one prompt per problem. Solvers work in scratch dirs under
 `/tmp/gv-frontiermath/` and may run code. All runners resume. The turbo
-arm needs `ANTHROPIC_API_KEY` + `VERTEX_API_KEY` (TurboAgent's logprob
+arm needs `VERTEX_API_KEY` (TurboAgent's logprob
 verifier). Expect very low absolute solve rates — that is the point of the
 benchmark; the comparison of interest is what each harness adds, and
 certificate honesty (verified&WRONG count) on whatever the solvers

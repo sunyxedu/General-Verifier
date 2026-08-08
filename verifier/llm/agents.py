@@ -27,6 +27,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from . import provider
 from .roles import RoleError, validate
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
@@ -224,6 +225,9 @@ class AgentBackend:
             max_turns=role.max_turns,
             cwd=self.cwd,
             setting_sources=[],                # hermetic: no ambient project settings
+            env=provider.claude_env(base={}),  # every seat runs on the
+                                               # configured provider (SDK
+                                               # merges over os.environ)
             output_format={
                 "type": "json_schema",
                 "schema": to_json_schema(role.schema),

@@ -54,7 +54,10 @@ class PythonSandbox:
 
     name = "python"
 
-    def __init__(self, timeout: float = 10.0):
+    def __init__(self, timeout: float = 600.0):
+        # generous guard, not a work budget: only exists so a generated
+        # check with an infinite loop cannot deadlock the verifier forever
+        # (fail-closed: a timeout is reported as failed, never as a pass)
         self.timeout = timeout
 
     def probe(self) -> bool:

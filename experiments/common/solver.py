@@ -27,10 +27,14 @@ import sqlite3
 import subprocess
 import time
 
+from verifier.llm import provider   # DeepSeek wiring (single source of truth)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))          # the General Verifier repo
 TOOLCHAIN = os.path.expanduser("~/.cache/gv-toolchain")
-DEFAULT_TIMEOUT = 3600
+# We impose no time limits of our own — only the official benchmark
+# harnesses do. Pass an explicit `timeout` to opt in.
+DEFAULT_TIMEOUT = None
 
 
 def mcp_json(model: str | None = None) -> dict:
@@ -71,23 +75,25 @@ def mount_gv(work: str, model: str | None = None,
 
 
 def run_claude(work: str, prompt: str, model: str = "sonnet",
-               mcp: bool = False, timeout: int = DEFAULT_TIMEOUT,
+               mcp: bool = False, timeout: int | None = DEFAULT_TIMEOUT,
                base_url: str | None = None):
-    """Headless Claude Code. Returns (stdout, seconds).
+    """Headless Claude Code on the configured provider (see .env /
+    provider.py). Returns (stdout, seconds).
 
-    `base_url` points ANTHROPIC_BASE_URL at a proxy (e.g. TurboAgent).
+    `base_url` points ANTHROPIC_BASE_URL at a proxy (e.g. TurboAgent)
+    instead of the provider's endpoint; the rest of the provider env stays.
     """
     cmd = ["claude", "-p", prompt, "--model", model,
            "--dangerously-skip-permissions"]
     if mcp:
         cmd += ["--mcp-config", ".mcp.json", "--strict-mcp-config"]
-    env = None
+    env = provider.claude_env()
     if base_url:
-        env = dict(os.environ, ANTHROPIC_BASE_URL=base_url)
+        env["ANTHROPIC_BASE_URL"] = base_url
     t0 = time.time()
     try:
         proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True,
-                              timeout=timeout, env=env)
+                              timeout=timeout or None, env=env)
         out = proc.stdout
     except subprocess.TimeoutExpired:
         out = "<timeout>"
@@ -95,7 +101,7 @@ def run_claude(work: str, prompt: str, model: str = "sonnet",
 
 
 def run_codex(work: str, prompt: str, model: str | None = None,
-              timeout: int = DEFAULT_TIMEOUT):
+              timeout: int | None = DEFAULT_TIMEOUT):
     """Headless Codex CLI. Returns (stdout, seconds)."""
     cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
            "--skip-git-repo-check", prompt]
@@ -104,7 +110,7 @@ def run_codex(work: str, prompt: str, model: str | None = None,
     t0 = time.time()
     try:
         proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True,
-                              timeout=timeout)
+                              timeout=timeout or None)
         out = proc.stdout
     except subprocess.TimeoutExpired:
         out = "<timeout>"
