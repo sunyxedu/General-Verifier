@@ -100,11 +100,11 @@ def main():
     else:  # gv
         cmd += ["-a", "gv_agent:GVClaudeCode",
                 "-m", args.model or "anthropic/sonnet",
-                # GV verification is slow by design; give it room (measured:
-                # fix-git on deepseek = ~10 min solving + ~50 min verifying,
-                # so 4x/3600s got killed mid-certificate)
-                "--agent-timeout-multiplier", "8",
-                "--agent-setup-timeout-multiplier", "4",
+                # effectively no agent time limit (user directive): harbor
+                # only offers multipliers over the per-task official base,
+                # so use one large enough to never bind (900s base -> ~10d)
+                "--agent-timeout-multiplier", "1000",
+                "--agent-setup-timeout-multiplier", "100",
                 # pull the verifier state out for verdict-vs-reward analysis
                 "--artifact", "/gv-state"]
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
