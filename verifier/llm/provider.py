@@ -133,6 +133,10 @@ CLAUDE_ENV = {
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",  # no stray Anthropic calls
     "API_TIMEOUT_MS": "3600000",   # effectively no per-request time limit
                                    # (this EXTENDS claude's own default)
+    "MCP_TIMEOUT": "600000",       # MCP server startup handshake: claude's
+                                   # ~30s default dropped the gv tools on 2/16
+                                   # terminal-bench trials under heavy load
+    "MCP_TOOL_TIMEOUT": "14400000",  # gv.certificate legitimately runs long
     KEY_ENV: API_KEY,                                 # litellm-style consumers
 }
 
