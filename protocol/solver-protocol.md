@@ -16,6 +16,15 @@ on it — a solver that ignores the protocol simply gets no certificate, never a
     everything downstream of it are automatically invalidated
 - A claim's statement must be **self-contained and checkable**: write "for all 1≤n≤100,
   6 divides n³−n", not "the property above holds".
+- **Give every claim a temporal index.** A claim about the current/final state is checked
+  against the live world at verification time — keep it true through the end, or revise it
+  when your own later actions change the state it describes. A claim about a **past action
+  or past state** ("the test run succeeded", "at discovery, X was unreachable") must say so
+  explicitly ("as of effect:<seq>", "before <event>") and cite the tool execution that
+  witnessed it in `deps` (`effect:<seq>`): the hooks record every tool call and its output
+  in the verifier's ledger, so such claims verify against the record even after the world
+  has legitimately moved on. Present-tense claims about past observations are the single
+  most common cause of refuted-but-honest claims.
 - You do **not** need to prove it yourself — verification is the verifier's job, and when
   it happens is decided by the trigger rule (the first time a claim is depended on).
 

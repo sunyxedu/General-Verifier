@@ -2,8 +2,10 @@
 """PostToolUse hook: append a raw tool_result line to the MCP server's hook feed.
 
 The response is digested (sha256 over its canonical JSON) plus a bounded
-excerpt: the ledger check needs identity, not bulk; full outputs live in the
-solver's own transcript.
+excerpt. The excerpt is generous: the ledger is first-class verification
+evidence — claims about past events/states are discharged against what the
+hooks recorded here, so the recorded output must carry the substance, not
+just the identity.
 
 Settings (.claude/settings.json):
   {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [
@@ -31,7 +33,7 @@ def main() -> None:
                 "tool": data.get("tool_name"),
                 "response_sha256": hashlib.sha256(
                     canonical.encode("utf-8")).hexdigest(),
-                "excerpt": canonical[:2000],
+                "excerpt": canonical[:20000],
                 "session": data.get("session_id"),
                 "agent": data.get("agent_id"),
             },

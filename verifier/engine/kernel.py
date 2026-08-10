@@ -12,6 +12,7 @@ came from — the verifier is auditable through its own ledger.
 from __future__ import annotations
 
 import json
+import os
 from typing import Dict, List
 
 from ..execution.discharge import SandboxDischarger
@@ -224,6 +225,7 @@ class Kernel:
             self.backend,
             {"claim_text": row["text"],
              "claim_kind": row["kind"],
+             "ledger_path": os.path.abspath(self.log.path),
              "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
              "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
              "graph": json.dumps(
