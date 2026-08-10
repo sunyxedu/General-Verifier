@@ -76,17 +76,29 @@ def mount_gv(work: str, model: str | None = None,
 
 def run_claude(work: str, prompt: str, model: str = "sonnet",
                mcp: bool = False, timeout: int | None = DEFAULT_TIMEOUT,
-               base_url: str | None = None):
+               base_url: str | None = None, task: str | None = None):
     """Headless Claude Code on the configured provider (see .env /
     provider.py). Returns (stdout, seconds).
 
     `base_url` points ANTHROPIC_BASE_URL at a proxy (e.g. TurboAgent)
     instead of the provider's endpoint; the rest of the provider env stays.
+    `task` is the clean task statement for the verifier's task.md (defaults
+    to `prompt`; pass it when the prompt carries protocol plumbing like the
+    GV suffix, which is not task content).
     """
     cmd = ["claude", "-p", prompt, "--model", model,
            "--dangerously-skip-permissions"]
     if mcp:
         cmd += ["--mcp-config", ".mcp.json", "--strict-mcp-config"]
+        # harness ground truth for the verifier: the authoritative task
+        # statement + a pre-task snapshot (obligation compiler reads both;
+        # the solver's paraphrase of the task is untrusted)
+        from verifier import baseline
+        state = os.path.join(work, ".gv")
+        os.makedirs(state, exist_ok=True)
+        with open(os.path.join(state, "task.md"), "w") as f:
+            f.write(task or prompt)
+        baseline.snapshot(work, os.path.join(state, "baseline"))
     env = provider.claude_env()
     if base_url:
         env["ANTHROPIC_BASE_URL"] = base_url

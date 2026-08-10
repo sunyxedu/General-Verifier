@@ -41,3 +41,7 @@ on it — a solver that ignores the protocol simply gets no certificate, never a
   anything beyond plain pass/fail wording.
 - `unverified` is not a failure — it means "couldn't be verified": you can add supporting
   grounds and resubmit with a revise.
+- **Never leave a `refuted` or `unverified` final standing.** Read the obligation reasons
+  and the counterexample witness out of the certificate, fix the world (or the wording, if
+  the statement no longer matches reality — e.g. it describes a state that your own later
+  actions changed), resubmit with `revises=`, and request the certificate again.

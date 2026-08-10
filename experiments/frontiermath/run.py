@@ -97,10 +97,12 @@ def main():
         prompt = BASE_PROMPT.format(statement=p["statement"],
                                     answer_spec=ANSWER_SPEC[p["answer_type"]])
         if args.arm == "gv":
+            task = prompt                  # clean statement for task.md
             prompt += GV_SUFFIX
             solver.mount_gv(work, model=args.model)
             out, seconds = solver.run_claude(work, prompt, model=args.model,
-                                             mcp=True, timeout=args.timeout)
+                                             mcp=True, timeout=args.timeout,
+                                             task=task)
         elif args.arm == "codex":
             out, seconds = solver.run_codex(work, prompt,
                                             timeout=args.timeout)

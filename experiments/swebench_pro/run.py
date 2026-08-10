@@ -150,7 +150,8 @@ def main():
         if args.arm == "gv":
             solver.mount_gv(work, model=args.model)
             out, seconds = solver.run_claude(work, prompt, model=args.model,
-                                             mcp=True, timeout=args.timeout)
+                                             mcp=True, timeout=args.timeout,
+                                             task=build_prompt(inst, gv=False))
         elif args.arm == "codex":
             out, seconds = solver.run_codex(work, prompt,
                                             timeout=args.timeout)

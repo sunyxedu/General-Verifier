@@ -30,6 +30,8 @@ def main():
                  "(claude would adopt the repo as its project)")
     os.makedirs(work, exist_ok=True)
     solver.mount_gv(work)
+    from verifier import baseline
+    baseline.snapshot(work, os.path.join(work, ".gv", "baseline"))
 
     env = solver.provider.claude_env()
     env.pop("CLAUDECODE", None)          # allow launching from inside a session

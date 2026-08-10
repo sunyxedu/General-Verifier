@@ -143,4 +143,12 @@ class GVClaudeCode(ClaudeCode):
             f"printf %s {shlex.quote(self._settings_json())} "
             f"> {cfg}/settings.json && "
             f"printf %s {shlex.quote(protocol)} > {cfg}/CLAUDE.md"))
+        # harness ground truth for the verifier: verbatim task statement +
+        # pre-task snapshot of /app (the T-Bench working-tree convention),
+        # both written before the solver gets to act
+        await self.exec_as_agent(environment, command=(
+            f"printf %s {shlex.quote(instruction)} > {STATE_DIR}/task.md; "
+            'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"; '
+            f"uv run --project {GV_DEST} python -m verifier.baseline "
+            f"/app {STATE_DIR}/baseline || true"))
         await super().run(instruction + GV_SUFFIX, environment, context)

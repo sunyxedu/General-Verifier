@@ -223,6 +223,7 @@ class Kernel:
         payload = self.obligations_role.call(
             self.backend,
             {"claim_text": row["text"],
+             "claim_kind": row["kind"],
              "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
              "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
              "graph": json.dumps(
