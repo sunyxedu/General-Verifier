@@ -41,6 +41,14 @@ from .stream.tail import Tail
 VERB_ERRORS = (TraceError, UnknownDependency, RoleError, ValueError)
 
 
+def _witness(obligation: dict) -> str:
+    """The counterexample recorded on an obligation node, if any."""
+    for ev in reversed(obligation.get("evidence") or []):
+        if ev.get("witness"):
+            return str(ev["witness"])[:300]
+    return ""
+
+
 def _obligation_summary(store, claim_id: str) -> list:
     """Obligation-level detail straight from the graph nodes."""
     out = []
@@ -130,7 +138,11 @@ class Service:
         except VERB_ERRORS as err:
             return {"error": str(err)}
         result = {"claim_id": claim_id, "status": status}
-        if status == "partial":
+        if status != "verified":
+            # every non-verified status owes the solver its residue: which
+            # obligation failed and the counterexample witness. Withholding
+            # it on `refuted` left the solver with nothing to act on but the
+            # claim's wording — the mechanism behind claim-shopping.
             result["obligations"] = _obligation_summary(self.store, claim_id)
         return result
 
@@ -145,11 +157,13 @@ class Service:
         slice_summary = []
         for e in cert["slice"]:
             entry = {"text": e["text"], "status": e["status"]}
-            if e["status"] == "partial":
+            if e["status"] != "verified":
                 obligations = [
                     {"text": o["text"], "status": o["status"],
-                     **({"reason": o["reason"]} if o.get("reason") else {})}
+                     **({"reason": o["reason"] or _witness(o)}
+                        if (o["reason"] or _witness(o)) else {})}
                     for o in e.get("obligations", [])
+                    if o["status"] != "verified"
                 ]
                 if obligations:
                     entry["obligations"] = obligations
@@ -169,7 +183,7 @@ class Service:
                 return {"error": str(err)}
             row = self.store.get(claim_id)
             result = {k: row[k] for k in ("id", "kind", "text", "status")}
-            if row["status"] == "partial":
+            if row["status"] != "verified":
                 result["obligations"] = _obligation_summary(self.store, claim_id)
             return result
         return {
