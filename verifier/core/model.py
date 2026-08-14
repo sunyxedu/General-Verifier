@@ -26,13 +26,19 @@ CLAIM_FINAL = "final"
 KINDS = (CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL)
 CLAIM_KINDS = Literal["assertion", "effect", "final"]
 
-# status machine: unverified -> verified(grade) | refuted ; anything -> stale
-UNVERIFIED = "unverified"
-VERIFIED = "verified"
-REFUTED = "refuted"
-STALE = "stale"
-PARTIAL = "partial"
+# status machine: unverified -> verified | refuted | partial; anything -> stale
+STATUS_UNVERIFIED = "unverified"
+STATUS_VERIFIED = "verified"
+STATUS_REFUTED = "refuted"
+STATUS_STALE = "stale"
+STATUS_PARTIAL = "partial"
 
+# verify outcome
+OUTCOME_HOLDS = "holds"
+OUTCOME_REFUTED = "refuted"
+OUTCOME_FAILED = "failed"
+OUTCOME_UNOBTAINABLE = "unobtainable"
+OUTCOME_KINDS = Literal["holds", "refuted", "failed", "unobtainable"]
 
 @dataclass(frozen=True)
 class Claim:
@@ -66,7 +72,7 @@ KIND_OBLIGATION = "obligation"
 
 @dataclass(frozen=True)
 class Obligation:
-    claim_id: str            # context only — excluded from identity
+    claim_id: str  # context only — excluded from identity
     text: str
 
     @property
@@ -83,7 +89,7 @@ class Obligation:
 class Evidence:
     obligation_id: str
     instrument: str
-    outcome: str            # "holds" | "refuted" | "failed" | "unobtainable"
+    outcome: OUTCOME_KINDS
     artifacts: dict = field(default_factory=dict)
     witness: Optional[Any] = None
 
@@ -98,9 +104,3 @@ class Evidence:
                 "witness": self.witness,
             }
         )
-
-
-OUTCOME_HOLDS = "holds"
-OUTCOME_REFUTED = "refuted"
-OUTCOME_FAILED = "failed"
-OUTCOME_UNOBTAINABLE = "unobtainable"

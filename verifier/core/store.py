@@ -14,7 +14,7 @@ window, and pins the check to the world the claimant was talking about.
 Two mechanical carve-outs keep the rule cheap and total:
   * EFFECT claims stay lazy. They are the ledger — hundreds per run, mechanical
     digest checks, and meaningful only once some claim leans on one.
-  * The first-dependent moment still fires for anything left UNVERIFIED, so a
+  * The first-dependent moment still fires for anything left unverified, so a
     claim whose check failed closed gets retried when it becomes load-bearing.
 The certificate remains the backstop: it settles the final's whole slice.
 
@@ -30,7 +30,8 @@ from typing import Callable, Dict, List, Optional, Set
 
 from .model import (
     Claim, CLAIM_EFFECT, KIND_OBLIGATION,
-    UNVERIFIED, VERIFIED, REFUTED, STALE, PARTIAL, KINDS,
+    STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_REFUTED, STATUS_STALE, STATUS_PARTIAL,
+    KINDS,
 )
 
 TriggerCallback = Callable[[str], None]
@@ -118,7 +119,7 @@ class ClaimStore:
                 "INSERT OR IGNORE INTO deps (child, parent) VALUES (?,?)",
                 (claim.id, dep),
             )
-            if not had_dependents and self.status(dep) == UNVERIFIED:
+            if not had_dependents and self.status(dep) == STATUS_UNVERIFIED:
                 fired.append(dep)
 
         if claim.revises is not None:
@@ -141,13 +142,13 @@ class ClaimStore:
         return row["status"]
 
     def set_verified(self, claim_id: str) -> None:
-        self._transition(claim_id, VERIFIED, allowed={UNVERIFIED, STALE, PARTIAL})
+        self._transition(claim_id, STATUS_VERIFIED, allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL})
 
     def set_refuted(self, claim_id: str, reason: str) -> None:
-        self._transition(claim_id, REFUTED, allowed={UNVERIFIED, STALE, PARTIAL}, reason=reason)
+        self._transition(claim_id, STATUS_REFUTED, allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL}, reason=reason)
 
     def set_partial(self, claim_id: str) -> None:
-        self._transition(claim_id, PARTIAL, allowed={UNVERIFIED, STALE, PARTIAL})
+        self._transition(claim_id, STATUS_PARTIAL, allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL})
 
     def _transition(self, claim_id, new, allowed, reason=None):
         current = self.status(claim_id)
@@ -161,7 +162,7 @@ class ClaimStore:
 
     def _mark_stale_cone(self, claim_id: str) -> None:
         for cid in [claim_id, *self.downstream(claim_id)]:
-            self.db.execute("UPDATE claims SET status=? WHERE id=?", (STALE, cid))
+            self.db.execute("UPDATE claims SET status=? WHERE id=?", (STATUS_STALE, cid))
 
     # ---- evidence ------------------------------------------------------------
 
@@ -278,7 +279,7 @@ class ClaimStore:
             "SELECT id, status FROM claims "
             "WHERE text=? AND kind IN ('assertion', 'final') "
             "AND status IN (?, ?) AND id != ? LIMIT 1",
-            (text, VERIFIED, REFUTED, exclude or ""),
+            (text, STATUS_VERIFIED, STATUS_REFUTED, exclude or ""),
         )
         row = cur.fetchone()
         return {"id": row[0], "status": row[1]} if row else None

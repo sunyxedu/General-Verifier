@@ -15,7 +15,7 @@ from typing import Dict
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
 from .kernel import Kernel
-from ..core.model import UNVERIFIED, STALE, REFUTED, PARTIAL
+from ..core.model import STATUS_UNVERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL
 from ..core.store import ClaimStore
 
 
@@ -27,7 +27,7 @@ def request_certificate(
 
     slice_ids = store.backward_slice(final_id)
     for claim_id in reversed(slice_ids):
-        if store.status(claim_id) in (UNVERIFIED, STALE):
+        if store.status(claim_id) in (STATUS_UNVERIFIED, STATUS_STALE):
             kernel.verify(claim_id)
 
     entries, statuses = [], []
@@ -54,11 +54,11 @@ def request_certificate(
             }
         )
 
-    if any(s == REFUTED for s in statuses):
+    if any(s == STATUS_REFUTED for s in statuses):
         verdict = "refuted"
-    elif any(s in (UNVERIFIED, STALE) for s in statuses):
+    elif any(s in (STATUS_UNVERIFIED, STATUS_STALE) for s in statuses):
         verdict = "unverified"
-    elif any(s == PARTIAL for s in statuses):
+    elif any(s == STATUS_PARTIAL for s in statuses):
         verdict = "partial"
     else:
         verdict = "verified"

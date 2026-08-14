@@ -20,7 +20,8 @@ from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore, LedgerInstrument, PythonSandbox
 from ..core.model import (
     Claim, Evidence, Obligation,
-    CLAIM_EFFECT, UNVERIFIED, VERIFIED, STALE, REFUTED, PARTIAL,
+    CLAIM_EFFECT,
+    STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
 from ..llm.roles import COMPILE_OBLIGATIONS
@@ -66,7 +67,7 @@ class Kernel:
     def verify(self, claim_id: str) -> str:
         """Verify one claim; returns its resulting status. Idempotent."""
         row = self.store.get(claim_id)
-        if row["status"] not in (UNVERIFIED, STALE, PARTIAL):
+        if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL):
             return row["status"]
         if row["kind"] == CLAIM_EFFECT:
             self._verify_effect(row)
@@ -100,7 +101,7 @@ class Kernel:
     def _verify_assertion(self, row: Dict) -> None:
         refuted_deps = [
             p for p in self.store.parents(row["id"])
-            if self.store.status(p) == REFUTED
+            if self.store.status(p) == STATUS_REFUTED
         ]
         if refuted_deps:
             self.store.record_evidence(
@@ -110,7 +111,7 @@ class Kernel:
             )
             self.log.append(
                 "status_change",
-                {"claim": row["id"], "status": UNVERIFIED,
+                {"claim": row["id"], "status": STATUS_UNVERIFIED,
                  "reason": "depends on refuted claim"},
             )
             return
@@ -124,7 +125,7 @@ class Kernel:
             )
             self.log.append(
                 "status_change",
-                {"claim": row["id"], "status": UNVERIFIED,
+                {"claim": row["id"], "status": STATUS_UNVERIFIED,
                  "reason": "no obligations"},
             )
             return
@@ -134,13 +135,13 @@ class Kernel:
         for obligation in obligations:
             oid = self.store.add_obligation(row["id"], obligation)
             known = self.store.status(oid)
-            if known in (VERIFIED, REFUTED, PARTIAL):
+            if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 # content-addressed reuse: the same world-condition was
                 # already settled under another claim — the verdict and its
                 # evidence transfer without re-spending instruments
-                outcome = {VERIFIED: OUTCOME_HOLDS,
-                           REFUTED: OUTCOME_REFUTED,
-                           PARTIAL: OUTCOME_UNOBTAINABLE}[known]
+                outcome = {STATUS_VERIFIED: OUTCOME_HOLDS,
+                           STATUS_REFUTED: OUTCOME_REFUTED,
+                           STATUS_PARTIAL: OUTCOME_UNOBTAINABLE}[known]
                 self.log.append("dedup_hit",
                                 {"claim": row["id"], "obligation": oid,
                                  "status": known})
@@ -173,7 +174,7 @@ class Kernel:
             status = self.store.status(row["id"])
             self.memory.record_obligations(
                 row["text"], [o.text for o in obligations], status)
-            if status == REFUTED:
+            if status == STATUS_REFUTED:
                 self.memory.record_attack(
                     row["text"], row["text"],
                     str(refuting_witness), kind="refutation")
@@ -192,7 +193,7 @@ class Kernel:
             prow = self.store.get(pid)
             label = ("[a verified tool-execution record]"
                      if prow["kind"] == CLAIM_EFFECT else prow["text"])
-            if prow["status"] == VERIFIED:
+            if prow["status"] == STATUS_VERIFIED:
                 verified_deps.append(label)
             else:
                 pending_deps.append(f"{label} (status: {prow['status']})")
@@ -225,11 +226,11 @@ class Kernel:
         oid = obligation.id
         ev = self.store.evidence_for(src["id"])
         witness = ev[-1].get("witness") if ev else None
-        if witness is None and src["status"] == REFUTED:
+        if witness is None and src["status"] == STATUS_REFUTED:
             # a claim's concrete counterexample lives on its refuting
             # obligation node, one hop down — carry it over
             for kid in self.store.obligation_children(src["id"]):
-                if kid["status"] == REFUTED and kid["reason"]:
+                if kid["status"] == STATUS_REFUTED and kid["reason"]:
                     witness = kid["reason"]
                     break
         if witness is None:
@@ -311,5 +312,5 @@ class Kernel:
             self.store.set_partial(claim_id)
             new_status = "partial"
         else:
-            new_status = UNVERIFIED
+            new_status = STATUS_UNVERIFIED
         self.log.append("status_change", {"claim": claim_id, "status": new_status})
