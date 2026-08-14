@@ -83,7 +83,7 @@ class Obligation:
 class Evidence:
     obligation_id: str
     instrument: str
-    outcome: str            # "holds" | "refuted" | "failed"  (failed == fail-closed)
+    outcome: str            # "holds" | "refuted" | "failed" | "unobtainable"
     artifacts: dict = field(default_factory=dict)
     witness: Optional[Any] = None
 
@@ -103,6 +103,4 @@ class Evidence:
 OUTCOME_HOLDS = "holds"
 OUTCOME_REFUTED = "refuted"
 OUTCOME_FAILED = "failed"
-# the method is right but its instrument cannot be obtained in this
-# environment; settles the claim at partial, never silently upgraded
 OUTCOME_UNOBTAINABLE = "unobtainable"
