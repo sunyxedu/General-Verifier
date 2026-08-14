@@ -2,8 +2,25 @@
 backward slicer. SQLite-backed materialized view of the stream.
 
 The one scheduling rule of the whole system:
-    when an UNVERIFIED claim gains its FIRST dependent, verify it.
+    a claim is verified the moment it is COMMITTED.
 The store owns detecting that moment; what "verify" means belongs to the kernel.
+
+Checking a claim when it is first *used* instead leaves a window in which the
+solver keeps building on a statement nobody has looked at yet — every claim
+written inside that window and every certificate requested inside it can be
+work spent on a premise that was already false. Checking at commit closes the
+window, and pins the check to the world the claimant was talking about.
+
+Two mechanical carve-outs keep the rule cheap and total:
+  * EFFECT claims stay lazy. They are the ledger — hundreds per run, mechanical
+    digest checks, and meaningful only once some claim leans on one.
+  * The first-dependent moment still fires for anything left UNVERIFIED, so a
+    claim whose check failed closed gets retried when it becomes load-bearing.
+The certificate remains the backstop: it settles the final's whole slice.
+
+`trigger="on-first-dependent"` restores the old lazy policy — the CI gate uses
+it (there is no live solver to give early feedback to) and it is the control
+arm for measuring what eager scheduling costs.
 """
 from __future__ import annotations
 
@@ -12,18 +29,21 @@ import sqlite3
 from typing import Callable, Dict, List, Optional, Set
 
 from .model import (
-    Claim, KIND_OBLIGATION,
+    Claim, CLAIM_EFFECT, KIND_OBLIGATION,
     UNVERIFIED, VERIFIED, REFUTED, STALE, PARTIAL, KINDS,
 )
 
 TriggerCallback = Callable[[str], None]
+
+TRIGGER_ON_COMMIT = "on-commit"
+TRIGGER_ON_FIRST_DEPENDENT = "on-first-dependent"
+TRIGGERS = (TRIGGER_ON_COMMIT, TRIGGER_ON_FIRST_DEPENDENT)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS claims (
     id      TEXT PRIMARY KEY,
     kind    TEXT NOT NULL,
     text    TEXT NOT NULL,
-    branch  TEXT,
     revises TEXT,
     status  TEXT NOT NULL DEFAULT 'unverified',
     reason  TEXT
@@ -56,16 +76,21 @@ class IllegalTransition(ValueError):
 
 
 class ClaimStore:
-    def __init__(self, path: str = ":memory:"):
+    def __init__(self, path: str = ":memory:",
+                 trigger: str = TRIGGER_ON_COMMIT):
+        if trigger not in TRIGGERS:
+            raise ValueError(f"unknown trigger policy: {trigger}")
         self.db = sqlite3.connect(path)
         self.db.executescript(_SCHEMA)
+        self.trigger = trigger
         self._trigger_callbacks: List[TriggerCallback] = []
 
     # ---- wiring --------------------------------------------------------------
 
     def on_trigger(self, cb: TriggerCallback) -> None:
-        """Register the kernel. cb(claim_id) fires when an unverified claim
-        gains its first dependent — the system's only scheduling event."""
+        """Register the kernel. cb(claim_id) fires when a claim is committed
+        (and, either way, when an unverified claim gains its first dependent)
+        — the system's only scheduling event."""
         self._trigger_callbacks.append(cb)
 
     # ---- graph construction --------------------------------------------------
@@ -82,8 +107,8 @@ class ClaimStore:
             raise UnknownDependency(f"revises {claim.revises[:12]}… not in store")
 
         self.db.execute(
-            "INSERT INTO claims (id, kind, text, branch, revises) VALUES (?,?,?,?,?)",
-            (claim.id, claim.kind, claim.text, claim.branch, claim.revises),
+            "INSERT INTO claims (id, kind, text, revises) VALUES (?,?,?,?)",
+            (claim.id, claim.kind, claim.text, claim.revises),
         )
 
         fired: List[str] = []
@@ -100,6 +125,10 @@ class ClaimStore:
             self._mark_stale_cone(claim.revises)
 
         self.db.commit()
+        # deps first, then the claim itself: its own check reads their statuses
+        # (a refuted premise must already be refuted when the taint guard looks)
+        if self.trigger == TRIGGER_ON_COMMIT and claim.kind != CLAIM_EFFECT:
+            fired.append(claim.id)
         for claim_id in fired:  # fire after commit: callbacks see consistent state
             for cb in self._trigger_callbacks:
                 cb(claim_id)
@@ -192,14 +221,14 @@ class ClaimStore:
 
     def _row(self, claim_id: str) -> Dict:
         cur = self.db.execute(
-            "SELECT id, kind, text, branch, revises, status, reason "
+            "SELECT id, kind, text, revises, status, reason "
             "FROM claims WHERE id=?",
             (claim_id,),
         )
         row = cur.fetchone()
         if row is None:
             raise UnknownDependency(f"{claim_id[:12]}… not in store")
-        keys = ("id", "kind", "text", "branch", "revises", "status", "reason")
+        keys = ("id", "kind", "text", "revises", "status", "reason")
         return dict(zip(keys, row))
 
     def parents(self, claim_id: str) -> List[str]:
@@ -242,7 +271,7 @@ class ClaimStore:
         """A currently-trusted CLAIM (assertion/final) that settled exactly
         this statement — verified or refuted, identical text. Lets an
         obligation node inherit the verdict of a same-text claim: the two
-        live in different identity spaces (claim id hashes kind/deps/branch
+        live in different identity spaces (claim id hashes kind/deps
         too), so plain node dedup cannot see across. Stale and partial
         claims never transfer; effects are ledger refs, not statements."""
         cur = self.db.execute(
@@ -273,45 +302,3 @@ class ClaimStore:
                 break
         return out
 
-    # ---- search support (M3) -------------------------------------------------
-
-    def find_equivalent(self, claim_id: str) -> Optional[str]:
-        """A settled claim with identical (kind, text, dep set) on ANOTHER
-        branch. Claim identity includes the branch, so parallel hypotheses that
-        re-derive the same lemma are distinct nodes — but verification work is
-        content-addressed and transfers."""
-        row = self._row(claim_id)
-        my_deps = set(self.parents(claim_id))
-        cur = self.db.execute(
-            "SELECT id FROM claims WHERE kind=? AND text=? AND id!=? "
-            "AND status IN (?, ?)",
-            (row["kind"], row["text"], claim_id, VERIFIED, REFUTED),
-        )
-        for (other,) in cur.fetchall():
-            if set(self.parents(other)) == my_deps:
-                return other
-        return None
-
-    def branches(self) -> Dict[str, List[Dict]]:
-        cur = self.db.execute(
-            "SELECT branch, id, status FROM claims WHERE branch IS NOT NULL"
-        )
-        out: Dict[str, List[Dict]] = {}
-        for branch, cid, status in cur.fetchall():
-            out.setdefault(branch, []).append({"id": cid, "status": status})
-        return out
-
-    def dead_branches(self) -> List[str]:
-        """Branches touched by a refutation or its downstream cone — pruning
-        is advisory bookkeeping for the searcher; soundness never relied on it
-        (the taint guard already blocks anything built on a refuted claim)."""
-        cur = self.db.execute("SELECT id FROM claims WHERE status=?", (REFUTED,))
-        dead_ids: Set[str] = set()
-        for (cid,) in cur.fetchall():
-            dead_ids.add(cid)
-            dead_ids.update(self.downstream(cid))
-        dead: Set[str] = set()
-        for branch, members in self.branches().items():
-            if any(m["id"] in dead_ids for m in members):
-                dead.add(branch)
-        return sorted(dead)

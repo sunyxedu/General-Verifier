@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 from ..core.events import EventLog
-from ..core.model import Claim, canonical, KIND_EFFECT
+from ..core.model import Claim, canonical, CLAIM_EFFECT
 from ..core.store import ClaimStore
 
 
@@ -51,7 +51,7 @@ class Builder:
         if etype == "tool_call":
             self._pending_tool = event["payload"].get("tool")
         elif etype == "tool_result":
-            claim = Claim(KIND_EFFECT, effect_text(event, self._pending_tool))
+            claim = Claim(CLAIM_EFFECT, effect_text(event, self._pending_tool))
             self.store.add_claim(claim)
             self.labels[f"effect:{event['seq']}"] = claim.id
             self._pending_tool = None
@@ -63,14 +63,17 @@ class Builder:
                 kind=payload["kind"],
                 text=payload["text"],
                 deps=deps,
-                branch=payload.get("branch"),
                 revises=self.resolve(revises) if revises else None,
             )
-            self.store.add_claim(claim)
+            # register before inserting: the claim id is its content hash, and
+            # under the on-commit rule add_claim runs the whole verification
+            # inline — if a check blows up, the claim is still in the store and
+            # its label must still resolve for gv.status / gv.verify
             if "label" in payload:
                 self.labels[payload["label"]] = claim.id
             if payload["kind"] == "final":
                 self.finals.append(claim.id)
+            self.store.add_claim(claim)
         # session_start / message / stop / verifier-side events: no graph action
 
     def replay(self) -> "Builder":

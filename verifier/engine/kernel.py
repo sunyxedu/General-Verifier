@@ -20,7 +20,7 @@ from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore, LedgerInstrument, PythonSandbox
 from ..core.model import (
     Claim, Evidence, Obligation,
-    KIND_EFFECT, UNVERIFIED, VERIFIED, STALE, REFUTED, PARTIAL,
+    CLAIM_EFFECT, UNVERIFIED, VERIFIED, STALE, REFUTED, PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
 from ..llm.roles import COMPILE_OBLIGATIONS
@@ -68,36 +68,11 @@ class Kernel:
         row = self.store.get(claim_id)
         if row["status"] not in (UNVERIFIED, STALE, PARTIAL):
             return row["status"]
-        if row["kind"] != KIND_EFFECT and self._dedup(row):
-            return self.store.status(claim_id)
-        if row["kind"] == KIND_EFFECT:
+        if row["kind"] == CLAIM_EFFECT:
             self._verify_effect(row)
         else:
             self._verify_assertion(row)
         return self.store.status(claim_id)
-
-    def _dedup(self, row: Dict) -> bool:
-        """Cross-branch content-addressed reuse: identical (kind, text, deps)
-        already settled on another branch -> transfer its verdict + evidence
-        instead of re-spending the instruments."""
-        other = self.store.find_equivalent(row["id"])
-        if other is None:
-            return False
-        other_row = self.store.get(other)
-        self.store.record_evidence(
-            row["id"],
-            {"outcome": OUTCOME_HOLDS if other_row["status"] == "verified"
-             else OUTCOME_REFUTED,
-             "instrument": "dedup", "source": other},
-        )
-        if other_row["status"] == "verified":
-            self.store.set_verified(row["id"])
-        else:
-            self.store.set_refuted(row["id"], reason=f"dedup of {other[:12]}")
-            self._prune(row["id"])
-        self.log.append("dedup_hit", {"claim": row["id"], "source": other,
-                                      "status": other_row["status"]})
-        return True
 
     # ---- effect: ledger check (component 25) ---------------------------------
 
@@ -216,7 +191,7 @@ class Kernel:
         for pid in self.store.parents(row["id"]):
             prow = self.store.get(pid)
             label = ("[a verified tool-execution record]"
-                     if prow["kind"] == KIND_EFFECT else prow["text"])
+                     if prow["kind"] == CLAIM_EFFECT else prow["text"])
             if prow["status"] == VERIFIED:
                 verified_deps.append(label)
             else:
@@ -338,21 +313,3 @@ class Kernel:
         else:
             new_status = UNVERIFIED
         self.log.append("status_change", {"claim": claim_id, "status": new_status})
-        if new_status == "refuted":
-            self._prune(claim_id)
-
-    def _prune(self, claim_id: str) -> None:
-        """Asymmetric pruning (M3): a refutation hard-kills its downstream
-        cone for the SEARCHER. Advisory: statuses are untouched (the taint
-        guard already refuses to build on refuted claims); this event just
-        tells the search loop where to stop spending."""
-        cone = self.store.downstream(claim_id)
-        branches = sorted(
-            {self.store.get(c)["branch"] for c in [claim_id, *cone]}
-            - {None}
-        )
-        if cone or branches:
-            self.log.append(
-                "branch_pruned",
-                {"refuted": claim_id, "dead_cone": cone, "branches": branches},
-            )

@@ -21,6 +21,7 @@ Used via:
 """
 import importlib.util
 import json
+import os
 import shlex
 import subprocess
 import tempfile
@@ -68,8 +69,12 @@ class GVClaudeCode(ClaudeCode):
         super().__init__(logs_dir, *args, **kwargs)
         # user-scoped MCP registration; ClaudeCode.run() writes it into
         # $CLAUDE_CONFIG_DIR/.claude.json before invoking claude
+        # GV_TRIGGER=on-first-dependent runs the lazy control arm; unset means
+        # the default (verify at commit)
+        args = (["--trigger", os.environ["GV_TRIGGER"]]
+                if os.environ.get("GV_TRIGGER") else [])
         self.mcp_servers.append(MCPServerConfig(
-            name="gv", transport="stdio", command=MCP_SERVER, args=[]))
+            name="gv", transport="stdio", command=MCP_SERVER, args=args))
 
     # -- payload -----------------------------------------------------------
     def _make_tarball(self) -> str:

@@ -32,8 +32,13 @@ output is always a FAILED check, never a pass (fail-closed).
 1. **Commit.** The solver commits claims (`assertion` / `final`) over MCP; hooks turn
    its tool calls into `effect` claims. Everything is one append-only JSONL stream —
    replay of that file is the whole offline mode.
-2. **Trigger.** One scheduling rule: an unverified claim is verified the moment another
-   claim first depends on it.
+2. **Trigger.** One scheduling rule: a claim is verified the moment it is **committed** —
+   `gv.commit` returns only after the check, carrying the failing obligation and its
+   counterexample, so the solver never writes a second claim on top of an unexamined
+   first one. `effect` claims (the ledger) stay lazy until something leans on one, a
+   claim left unverified is retried when it first gains a dependent, and the certificate
+   is the backstop over the whole slice. `--trigger on-first-dependent` restores the old
+   lazy policy (the CI gate uses it: replaying a finished trace has no solver to warn).
 3. **Obligations.** A graph-aware agent compiles the claim into concretely checkable
    obligations. It sees the whole claim graph: premises already verified may be relied
    on (obligations can be *residual*), and a condition already proven anywhere is

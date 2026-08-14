@@ -23,7 +23,7 @@ from .stream.builder import Builder
 from .engine.certificate import request_certificate
 from .core.events import EventLog
 from .mcp_server import Service
-from .core.store import ClaimStore
+from .core.store import ClaimStore, TRIGGER_ON_FIRST_DEPENDENT
 
 
 def certify(events_path: str, state_dir: str, final_label: Optional[str] = None,
@@ -34,8 +34,13 @@ def certify(events_path: str, state_dir: str, final_label: Optional[str] = None,
     if os.path.abspath(events_path) != os.path.abspath(target):
         shutil.copyfile(events_path, target)   # the gate works on its own copy
 
+    # the gate replays a finished trace: there is no live solver to warn early,
+    # and the verdict depends only on the final's slice — so verify lazily and
+    # let the certificate pull in the residue, instead of checking every claim
+    # in the trace including the ones no final rests on.
     sc = Service(state_dir, kernel_factory=kernel_factory,
-                 model=model, seats=seats, game=game)
+                 model=model, seats=seats, game=game,
+                 trigger=TRIGGER_ON_FIRST_DEPENDENT)
     if final_label is not None:
         final_id = sc.builder.resolve(final_label)
     elif sc.builder.finals:

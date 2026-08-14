@@ -80,7 +80,7 @@
 <rect x="48" y="278" width="588" height="328" rx="11" fill="#EEF3FA" stroke="#B7CCE6" stroke-width="1.3"/>
 <g transform="translate(84 288) scale(0.83333)" fill="none" stroke="#14161C" stroke-width="1.920" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12.5c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67 0C7.5 20 4 17.5 4 12.5V5.8a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.7a1.17 1.17 0 0 1 1.52 0C14.5 3.6 17 4.8 19 4.8a1 1 0 0 1 1 1Z"/><path d="m8.9 12.2 2.1 2.1 4.1-4.1"/></g>
 <text x="112" y="304" font-size="11.5" fill="#14161C" font-weight="bold">KERNEL — verifies one claim at a time</text>
-<text x="342.0" y="270" font-size="7.0" fill="#6C7382" text-anchor="middle" font-style="italic">trigger — a claim is verified the moment it gains its first dependent</text>
+<text x="342.0" y="270" font-size="7.0" fill="#6C7382" text-anchor="middle" font-style="italic">trigger — a claim is verified the moment it is committed, before anything leans on it</text>
 <rect x="64" y="312" width="560" height="66" rx="9" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.35"/>
 <g transform="translate(80 329) scale(0.79167)" fill="none" stroke="#C96A1E" stroke-width="2.021" stroke-linecap="round" stroke-linejoin="round"><path d="M10.2 4.5A9.4 9.4 0 0 1 12 4.35c7 0 10 7.65 10 7.65a18.6 18.6 0 0 1-2.4 3.44"/><path d="M6.6 6.9A18.4 18.4 0 0 0 2 12s3 7.65 10 7.65a9.4 9.4 0 0 0 5-1.35"/><path d="M13.9 13.9a2.7 2.7 0 1 1-3.8-3.8"/><path d="M2.6 2.6 21.4 21.4"/></g>
 <text x="108" y="335" font-size="9.5" fill="#14161C" font-weight="bold">OBLIGATION COMPILER — graph-aware, answer-blind</text>

@@ -1,8 +1,10 @@
 """Certificate.
 
-A certificate request is the final claim gaining a dependent — the same single
-rule. The slicer walks the dependency closure, the kernel settles residual
-unverified claims, and the freezer exports the slice with its evidence chain.
+A certificate request is the backstop, not the schedule: the slicer walks the
+dependency closure, the kernel settles whatever is still unverified, and the
+freezer exports the slice with its evidence chain. Under the on-commit rule
+that residue is normally empty (every claim was checked as it was made); under
+the lazy policy the request is what settles the slice.
 Verdicts never collapse dishonestly: any refuted -> refuted; any unresolved ->
 unverified; else verified.
 """

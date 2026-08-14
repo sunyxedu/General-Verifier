@@ -25,20 +25,12 @@ on it — a solver that ignores the protocol simply gets no certificate, never a
   in the verifier's ledger, so such claims verify against the record even after the world
   has legitimately moved on. Present-tense claims about past observations are the single
   most common cause of refuted-but-honest claims.
-- You do **not** need to prove it yourself — verification is the verifier's job, and when
-  it happens is decided by the trigger rule (the first time a claim is depended on).
-
-## Parallel hypotheses (AND-OR search)
-
-- Explore mutually exclusive hypotheses in parallel with subagents; each subagent commits
-  its claims with `branch=<hypothesis name or agent id>`.
-- Call `gv.branches` at any time to inspect: once a branch yields a `refuted`, its entire
-  downstream cone is a dead branch (**hard kill**: stop spending budget on it immediately);
-  `verified` serves only as a soft ordering hint.
-- When a claim is refuted, treat it as a **learned exclusion**: read the counterexample
-  (witness) out, so later hypotheses don't fall into the same pit.
-- Identical conclusions re-derived on different branches are deduplicated by content
-  addressing: the second derivation costs no verification.
+- You do **not** need to prove it yourself — verification is the verifier's job, and it
+  happens **at commit**: `gv.commit` returns only once the claim has been checked. Expect
+  the call to take a while; that wait is the check running. Any status other than
+  `verified` comes back with the obligation that failed and its counterexample (or, if
+  the claim rests on something already refuted, the fail-closed reason) — read that
+  residue and revise **before** building anything on top of the claim.
 
 ## Wrap-up
 

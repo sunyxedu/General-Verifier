@@ -1,11 +1,16 @@
 """MCP server: the verifier as a separate process.
 
 The solver stays a vanilla Claude Code session; it mounts this server over
-stdio and gets five verbs — commit, verify, certificate, status, branches. Every
+stdio and gets four verbs — commit, verify, certificate, status. Every
 call is an event in the server's own append-only log, verification runs
 inside the server (through the same kernel as offline replay, zero changes),
 and the certificate returns to the solver over MCP; only CI bypasses it via
 `python -m verifier.cli`.
+
+`commit` is where verification happens (`--trigger on-commit`, the default):
+the call blocks until the claim it just recorded has been checked, and returns
+the failing obligation with its counterexample. The solver therefore cannot
+write a second claim on top of an unchecked first one.
 
 Hook events (tool_call/tool_result written by the solver's PreToolUse /
 PostToolUse hooks) arrive on a separate raw feed file: hooks are concurrent
@@ -16,7 +21,7 @@ referenceable (`effect:<seq>`) at commit time.
 
 Run:
   uv run python -m verifier.mcp_server --state-dir .gv [--model m] [--seats agent|sandbox]
-      [--game/--no-game]
+      [--game/--no-game] [--trigger on-commit|on-first-dependent]
 
 Claude Code config (.mcp.json):
   {"mcpServers": {"gv": {"type": "stdio", "command": "uv",
@@ -35,7 +40,9 @@ from .core.events import EventLog
 from .execution.instruments import ArtifactStore
 from .engine.kernel import Kernel
 from .llm.roles import RoleError
-from .core.store import ClaimStore, UnknownDependency
+from .core.store import (
+    ClaimStore, UnknownDependency, TRIGGER_ON_COMMIT, TRIGGERS,
+)
 from .stream.tail import Tail
 
 VERB_ERRORS = (TraceError, UnknownDependency, RoleError, ValueError)
@@ -64,6 +71,24 @@ def _obligation_summary(store, claim_id: str) -> list:
         out.append(entry)
     return out
 
+
+def _residue(store, claim_id: str) -> Dict[str, Any]:
+    """What a non-verified claim owes the solver: the obligations that did not
+    hold with their counterexamples — or, when no obligation was ever compiled,
+    the fail-closed reason (a refuted premise, say), which is otherwise
+    invisible to the solver."""
+    obligations = _obligation_summary(store, claim_id)
+    if obligations:
+        return {"obligations": obligations}
+    for ev in reversed(store.evidence_for(claim_id)):
+        if ev.get("error"):
+            out = {"error": ev["error"]}
+            if ev.get("refuted_deps"):
+                out["refuted_deps"] = [d[:12] for d in ev["refuted_deps"]]
+            return out
+    return {"obligations": []}
+
+
 HOOK_FEED = "hook_feed.jsonl"
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 
@@ -73,7 +98,8 @@ class Service:
                  model: Optional[str] = None, seats: str = "agent",
                  game: bool = True,
                  memory_dir: Optional[str] = None,
-                 toolchain_dir: Optional[str] = None):
+                 toolchain_dir: Optional[str] = None,
+                 trigger: str = TRIGGER_ON_COMMIT):
         self.toolchain_dir = toolchain_dir
         os.makedirs(state_dir, exist_ok=True)
         self.state_dir = state_dir
@@ -82,7 +108,8 @@ class Service:
             from .memory import Memory
             self.memory = Memory(memory_dir)
         self.log = EventLog(os.path.join(state_dir, "events.jsonl"))
-        self.store = ClaimStore(os.path.join(state_dir, "claims.sqlite"))
+        self.store = ClaimStore(os.path.join(state_dir, "claims.sqlite"),
+                                trigger=trigger)
         self.artifacts = ArtifactStore(os.path.join(state_dir, "artifacts"))
         self.builder = Builder(self.log, self.store)
 
@@ -113,21 +140,33 @@ class Service:
     # ---- MCP verbs -----------------------------------------------------------
 
     def commit(self, label: str, kind: str, text: str,
-               deps: List[str], branch: Optional[str] = None,
+               deps: List[str],
                revises: Optional[str] = None) -> Dict[str, Any]:
         self.drain_hooks()
         payload = {"label": label, "kind": kind, "text": text, "deps": deps}
-        if branch:
-            payload["branch"] = branch
         if revises:
             payload["revises"] = revises
+        failure = None
         try:
             event = self.log.append("commit", payload)
-            self.builder.feed(event)   # trigger rule may verify deps inline
+            # under the on-commit rule this is where verification happens: the
+            # call returns only once the claim has been checked
+            self.builder.feed(event)
         except VERB_ERRORS as err:
-            return {"error": str(err)}
+            failure = str(err)
+        if label not in self.builder.labels:
+            return {"error": failure or "commit failed"}
         claim_id = self.builder.labels[label]
-        return {"claim_id": claim_id, "status": self.store.status(claim_id)}
+        status = self.store.status(claim_id)
+        result = {"claim_id": claim_id, "status": status}
+        if failure is not None:
+            # the claim is recorded; its check did not finish — fail-closed, so
+            # the status stands as unverified and the solver is told why
+            result["error"] = failure
+        if kind != "effect" and status != "verified":
+            # the verdict lands on the commit call now, so its residue must too
+            result.update(_residue(self.store, claim_id))
+        return result
 
     def verify(self, label: str) -> Dict[str, Any]:
         self.drain_hooks()
@@ -143,7 +182,7 @@ class Service:
             # obligation failed and the counterexample witness. Withholding
             # it on `refuted` left the solver with nothing to act on but the
             # claim's wording — the mechanism behind claim-shopping.
-            result["obligations"] = _obligation_summary(self.store, claim_id)
+            result.update(_residue(self.store, claim_id))
         return result
 
     def certificate(self, final_label: str) -> Dict[str, Any]:
@@ -184,20 +223,12 @@ class Service:
             row = self.store.get(claim_id)
             result = {k: row[k] for k in ("id", "kind", "text", "status")}
             if row["status"] != "verified":
-                result["obligations"] = _obligation_summary(self.store, claim_id)
+                result.update(_residue(self.store, claim_id))
             return result
         return {
             label: self.store.status(cid)
             for label, cid in self.builder.labels.items()
         }
-
-    def branches(self) -> Dict[str, Any]:
-        """Search bookkeeping (M3): per-branch statuses + which branches are
-        dead (touched by a refutation cone). Advisory for the searcher."""
-        self.drain_hooks()
-        return {"branches": self.store.branches(),
-                "dead": self.store.dead_branches()}
-
 
 def _default_kernel(sc: Service, model, seats, game) -> Kernel:
     if seats == "agent":
@@ -240,13 +271,15 @@ def build_server(service: Service):
 
     @server.tool()
     def commit(label: str, kind: str, text: str, deps: List[str],
-               branch: str = "", revises: str = "") -> str:
+               revises: str = "") -> str:
         """Commit a claim (kind: assertion|effect|final). deps is a list of
-        labels of already-committed claims (including effect:<seq>). Returns
-        the claim_id and current status."""
+        labels of already-committed claims (including effect:<seq>). The claim
+        is VERIFIED BEFORE THIS RETURNS, so the call blocks for as long as its
+        checks take; the result carries the resulting status, and on anything
+        but `verified` the obligation that failed plus its counterexample."""
         return json.dumps(
             service.commit(label, kind, text, deps,
-                           branch or None, revises or None),
+                           revises or None),
             ensure_ascii=False)
 
     @server.tool()
@@ -265,12 +298,6 @@ def build_server(service: Service):
         """Query the status of one label or of all labels."""
         return json.dumps(service.status(label or None), ensure_ascii=False)
 
-    @server.tool()
-    def branches() -> str:
-        """Statuses of parallel hypothesis branches and the dead-branch list
-        (refuted pruning, advisory)."""
-        return json.dumps(service.branches(), ensure_ascii=False)
-
     return server
 
 
@@ -282,11 +309,14 @@ def main() -> None:
     ap.add_argument("--game", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--memory-dir", default=None)
     ap.add_argument("--toolchain-dir", default=None)
+    ap.add_argument("--trigger", default=TRIGGER_ON_COMMIT, choices=list(TRIGGERS),
+                    help="when a claim is verified (default: at commit)")
     args = ap.parse_args()
     service = Service(args.state_dir, model=args.model, seats=args.seats,
                       game=args.game,
                       memory_dir=args.memory_dir,
-                      toolchain_dir=args.toolchain_dir)
+                      toolchain_dir=args.toolchain_dir,
+                      trigger=args.trigger)
     build_server(service).run()   # stdio
 
 

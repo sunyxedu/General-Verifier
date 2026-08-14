@@ -31,7 +31,6 @@ EVENT_TYPES = (
     "method_bound",
     # search support
     "dedup_hit",
-    "branch_pruned",
     # memory (advisory)
     "memory_recorded",
 )
