@@ -29,7 +29,7 @@ import sqlite3
 from typing import Callable, Dict, List, Optional, Set
 
 from .model import (
-    Claim, CLAIM_EFFECT, KIND_OBLIGATION,
+    Claim, CLAIM_EFFECT, OBLIGATION_KINDS,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_REFUTED, STATUS_STALE, STATUS_PARTIAL,
     KINDS,
 )
@@ -249,7 +249,7 @@ class ClaimStore:
         if not cur.fetchone():
             self.db.execute(
                 "INSERT INTO claims (id, kind, text) VALUES (?,?,?)",
-                (oid, KIND_OBLIGATION, obligation.text),
+                (oid, OBLIGATION_KINDS, obligation.text),
             )
         self.db.execute(
             "INSERT OR IGNORE INTO obligation_edges (claim, obligation) "

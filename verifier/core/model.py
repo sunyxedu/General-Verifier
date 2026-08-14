@@ -40,6 +40,10 @@ OUTCOME_FAILED = "failed"
 OUTCOME_UNOBTAINABLE = "unobtainable"
 OUTCOME_KINDS = Literal["holds", "refuted", "failed", "unobtainable"]
 
+# internal graph node kind for obligations; deliberately NOT in KINDS so a
+# solver can never commit one — only the kernel materializes them
+OBLIGATION_KINDS = "obligation"
+
 @dataclass(frozen=True)
 class Claim:
     kind: CLAIM_KINDS
@@ -63,11 +67,6 @@ class Claim:
                 "deps": sorted(self.deps),
             }
         )
-
-
-# internal graph node kind for obligations; deliberately NOT in KINDS so a
-# solver can never commit one — only the kernel materializes them
-KIND_OBLIGATION = "obligation"
 
 
 @dataclass(frozen=True)
