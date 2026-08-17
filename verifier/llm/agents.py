@@ -27,7 +27,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from . import provider
+from . import prompts, provider
 from .roles import RoleError, validate
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
@@ -237,153 +237,24 @@ class AgentBackend:
         )
 
 
-# ---- role definitions --------------------------------------------------------
-# Templates stay generic. Domain content arrives at runtime: from the environment
-# the agent can probe, from the model's latent knowledge, and from retrieved
-# memory — never from text written here.
+# role definitions
+# Prompt text lives in prompts.py; this block is pure wiring: output contract
+# (schema) + permitted palette (tools) + turn budget.
 
 OUTCOMES = ("holds", "refuted", "failed", "unobtainable")
 
 COMPILE_OBLIGATIONS_AGENT = AgentRole(
     name="obligations",
-    system=(
-        "You are the obligation compiler. You see the claim's statement and "
-        "its position in the claim graph — but never the solver's argument "
-        "(answer-blind). You may read files in the environment to understand "
-        "the task context, but you cannot execute anything.\n"
-        "Graph rule: premises marked VERIFIED were independently established "
-        "by this system — treat them as facts and prefer RESIDUAL "
-        "obligations: the world-checkable conditions that, together with "
-        "those verified premises, establish this claim (do not re-demand "
-        "what a verified premise already settles). Premises not marked "
-        "verified are context only — never rely on them.\n"
-        "You are also given the WHOLE claim graph. Search it for statements "
-        "already proven anywhere (status verified — claims and obligation "
-        "nodes alike): if a condition you would demand is already "
-        "established there, rely on it instead of re-demanding it. And when "
-        "a condition you emit matches an already-proven statement word for "
-        "word, reuse that exact wording — identical text is what lets the "
-        "graph share the node and transfer the settled verdict for free.\n"
-        "A corollary of answer-blindness: obligations can only be conditions "
-        "that are \"necessary for the claim to be true and checkable against "
-        "the world\" (independently verifiable by computation, execution, "
-        "formalization, or similar means); requirements about how the argument "
-        "is written (e.g. \"the proof must perform a certain rewrite or cover "
-        "a certain case\") are outside your remit — every intermediate step of "
-        "the argument enters the graph as its own claim and is verified "
-        "separately. Your output will be checked exhaustively, item by item, "
-        "so prefer few and on-point over many and uncheckable.\n"
-        "HARNESS GROUND TRUTH: your working directory is the verifier's state "
-        "directory. If ./task.md exists, it is the authoritative task "
-        "statement written by the mounting harness; if ./baseline/ exists, it "
-        "is the harness's pre-task snapshot of the working tree (git.json: "
-        "HEAD/refs/status; manifest.json: file -> sha256). Read them.\n"
-        "For a COMPLETION claim (claim kind `final`, or any claim asserting a "
-        "task/deliverable is done): the claim's own description of the task "
-        "is an untrusted paraphrase — compile obligations against ./task.md "
-        "item by item, one obligation per explicit requirement. Completion "
-        "additionally carries an implicit MINIMAL-CHANGE invariant: nothing "
-        "outside the scope the task's requirements demand may be altered. "
-        "Demand it as its own obligation, anchored in concrete baseline facts "
-        "you read yourself — e.g. \"commit <sha> recorded as pre-task HEAD "
-        "still resolves and its history is intact\", \"files the task does "
-        "not name still match their baseline sha256\" — so that collateral "
-        "damage (rewritten history, deleted or reformatted unrelated files, "
-        "broken builds) refutes the certificate instead of slipping past it. "
-        "When task.md/baseline are absent, fall back to the claim text alone. "
-        "The claim protocol's own bookkeeping (committing claims, requesting "
-        "certificates, relaying verdicts) is harness mechanics, not task "
-        "content — never emit obligations about it.\n"
-        "TEMPORAL SEMANTICS — a claim's truth is indexed to a time, and you "
-        "must compile against the right index:\n"
-        "- Claims about the CURRENT or FINAL state (a deliverable exists, a "
-        "file now contains X) get obligations checked against the live "
-        "world. This is the default.\n"
-        "- Claims about PAST EVENTS or PAST STATES (\"I ran X and it "
-        "succeeded\", \"at discovery / before the merge, Y was true\") must "
-        "NOT be compiled into current-world conditions — the solver's own "
-        "later actions may have legitimately changed the world since, and "
-        "refuting an honest report of the past against the drifted present "
-        "is a category error. Instead, compile them into LEDGER obligations: "
-        "the verifier's append-only ledger (path given below) records every "
-        "solver tool call (`tool_call`, with the full input) and its result "
-        "(`tool_result`, with a generous output excerpt and a sha256), each "
-        "with a monotonically increasing seq. A ledger obligation states "
-        "what the ledger must contain — e.g. \"the ledger records a "
-        "tool_call running <command> followed by a tool_result whose "
-        "excerpt contains <marker>\" — concrete enough to fail if the event "
-        "never happened. Claims citing effect:<seq> deps make this direct: "
-        "anchor the obligation at that seq.\n"
-        "- Mixed claims (a past discovery plus a current deliverable) get "
-        "both kinds, each against its own index."
-    ),
-    template=(
-        "Claim statement: {claim_text}\n"
-        "Claim kind: {claim_kind}\n"
-        "The verifier's ledger (trusted record of every solver tool call "
-        "and result; use for past-event/past-state obligations): "
-        "{ledger_path}\n"
-        "Verified premises from the claim graph (established facts — residual "
-        "obligations may rely on them): {verified_deps}\n"
-        "Declared but not-yet-verified premises (context only — do NOT rely "
-        "on them): {pending_deps}\n"
-        "The whole claim graph (kind · status · text): {graph}\n"
-        "Historical obligation patterns (retrieval hits, may be empty): {memory_hits}\n\n"
-        "List the conditions (obligations) that are \"necessary for the claim to "
-        "be true\" and independently checkable without seeing any argument. "
-        "Every obligation must be a world-level condition about the conclusion "
-        "itself, concrete enough that a check of it could actually fail — an "
-        "obligation that nothing could ever falsify is worthless, do not emit "
-        "it. For each obligation give:\n"
-        "  text: the obligation content"
-    ),
+    system=prompts.OBLIGATIONS_SYSTEM,
+    template=prompts.OBLIGATIONS_TEMPLATE,
     schema={"obligations": [{"text": str}]},
     tools=["Read", "Grep", "Glob"],
 )
 
 ENUMERATE_ORACLES_AGENT = AgentRole(
     name="oracles",
-    system=(
-        "You are the oracle enumerator, and SUFFICIENCY IS YOUR "
-        "RESPONSIBILITY: list only methods whose successful, faithful "
-        "execution would by itself establish this obligation. No one "
-        "downstream re-judges sufficiency — a method that falls short of "
-        "the obligation's quantifier or scope (a finite sample against an "
-        "unbounded universal) must simply not appear on your list.\n"
-        "If this verification task touches a domain you do not thoroughly "
-        "understand, RESEARCH IT FIRST: read the relevant documentation, "
-        "instructions, references and proof techniques (locally and on the "
-        "web) until you actually understand what a sufficient check looks "
-        "like in this domain. Your guarantees and your level grading are "
-        "what the whole game executes against — getting the levels right "
-        "matters more than answering fast. Do NOT use research to probe "
-        "which instruments are installed — instrument availability is the "
-        "execution stage's problem: a missing instrument gets installed at "
-        "discharge time, and a method whose instrument is truly "
-        "unobtainable will fail there honestly. Never omit a method merely "
-        "because its tool may be absent.\n"
-        "Grade every method with an assurance level OF YOUR OWN DEVISING: "
-        "you decide the scale and the labels — from the simplest check that "
-        "already suffices up to the most assured (e.g. a machine-checked "
-        "formal proof). The level is your signed declaration of how strong "
-        "the method's guarantee is, and it is disclosed on the certificate.\n"
-        "Order the list ascending by your own grading: the simplest "
-        "sufficient method first, the most assured last — execution tries "
-        "them in exactly the order you give."
-    ),
-    template=(
-        "Claim: {claim_text}\n"
-        "Obligation: {obligation_text}\n"
-        "Claim features: {features}\n"
-        "Methods known to work (may be empty): {registry}\n\n"
-        "Enumerate the sufficient methods for this obligation, ordered by "
-        "assurance level ascending (simplest sufficient first). Research "
-        "the domain first if you need to. For each method give:\n"
-        "  procedure: concretely how to do it (including what class of "
-        "instrument/library to use)\n"
-        "  artifact: what auditable evidence the method produces\n"
-        "  level: its assurance level — your own scale, your own words"
-    ),
+    system=prompts.ORACLES_SYSTEM,
+    template=prompts.ORACLES_TEMPLATE,
     schema={
         "methods": [
             {
@@ -399,74 +270,16 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
 
 DISCHARGE_AGENT = AgentRole(
     name="discharge",
-    system=(
-        "You are the discharge executor. You carry out the check by the given "
-        "method and produce an auditable artifact. If the method's instrument "
-        "is not installed, installing it is part of the job (into the "
-        "toolchain directory; installation is a one-time cost, not a "
-        "boundary); only when it is genuinely unobtainable here — after "
-        "actually attempting — do you report outcome=unobtainable, stating "
-        "why as the witness. Crashes, timeouts, and unparseable output are "
-        "all honestly recorded as failed — never converted into a pass.\n"
-        "LEDGER OBLIGATIONS: an obligation may be about the recorded past — "
-        "it references the verifier's append-only ledger (an events.jsonl "
-        "path with seq-numbered tool_call/tool_result entries). For those, "
-        "the ledger IS the instrument: parse or grep the referenced file and "
-        "judge the obligation against what it records. Do NOT re-run the "
-        "historical action and do NOT check the current world state — the "
-        "world is allowed to have moved on since; only the record decides."
-    ),
-    template=(
-        "Claim: {claim_text}\nObligation: {obligation_text}\n"
-        "Bound method: {procedure}\nWorking directory: {workdir}\n"
-        "Toolchain directory: {toolchain_dir} (install heavyweight "
-        "dependencies and project scaffolding here, shared and reused across "
-        "checks; the working directory holds only this check's scripts and "
-        "outputs)\n\n"
-        "Run the check. Write the check script and its full output to disk in "
-        "the working directory (they are the artifact).\n"
-        "  outcome: holds (the obligation holds) | refuted (a counterexample "
-        "was found) | failed (the check itself did not run) | unobtainable "
-        "(the method's instrument cannot be installed or obtained in this "
-        "environment, confirmed by actually trying)\n"
-        "  witness: for refuted give the concrete counterexample, for failed "
-        "give the failure reason, otherwise an empty string\n"
-        "  artifact: paths of the files written to disk (a comma-separated "
-        "string, not a JSON array)"
-    ),
+    system=prompts.DISCHARGE_SYSTEM,
+    template=prompts.DISCHARGE_TEMPLATE,
     schema={"outcome": OUTCOMES, "witness": str, "artifact": str},
     tools=["Bash", "Read", "Write", "Grep"],
 )
 
 JUDGER_AGENT = AgentRole(
     name="judger",
-    system=(
-        "You are the judger of EXECUTION FIDELITY. Sufficiency was settled "
-        "upstream: the oracle guaranteed that this method's success "
-        "establishes the obligation, and you do NOT re-judge that. You "
-        "answer one question: was the bound method faithfully executed, "
-        "and the promised artifact genuinely delivered? Faithful means the "
-        "procedure was followed as specified — right instrument, right "
-        "scope and range, complete (no sorry left in a proof, no silently "
-        "narrowed domain, no substituted statement) — and the deliverable "
-        "is the promised kind, produced by this run.\n"
-        "You are the one who LOOKS AT THE RESULT: open the artifact and "
-        "examine the actual outputs yourself, not the narration; there is "
-        "no separate re-run stage, so rerun the check yourself whenever "
-        "reproducibility is in doubt. When ruling no, phrase the reason as "
-        "a concrete fix instruction — it goes straight back to the executor "
-        "for a redo (a bounded loop of at most three rounds)."
-    ),
-    template=(
-        "Obligation (context only): {obligation_text}\n"
-        "Bound method's procedure: {procedure}\n"
-        "Promised artifact: {promised_artifact}\n"
-        "Submitted evidence (including artifact paths): {evidence}\n\n"
-        "Examine the result itself and judge:\n"
-        "  faithful: yes | no — the method was executed as specified and "
-        "the promised artifact delivered\n"
-        "  reason: your reasoning; for 'no', a concrete fix instruction"
-    ),
+    system=prompts.JUDGER_SYSTEM,
+    template=prompts.JUDGER_TEMPLATE,
     schema={"faithful": ("yes", "no"), "reason": str},
     tools=["Read", "Bash", "Grep"],
 )
