@@ -13,9 +13,9 @@ claude verbatim (e.g. `gv -c` to continue the previous session).
 Unlike the experiment mount, nothing is written into the directory itself
 except the `.gv/` state dir: the MCP config and hook settings live under
 `.gv/` and are passed to claude by absolute path, and the solver protocol
-is injected with --append-system-prompt instead of overwriting a CLAUDE.md
-the project may already have. The project's own CLAUDE.md / settings (if
-any) still load normally alongside the harness. No pre-task baseline is
+arrives as the gv server's MCP instructions — nothing to inject, and no
+CLAUDE.md the project may already have gets touched. The project's own
+CLAUDE.md / settings (if any) still load normally alongside the harness. No pre-task baseline is
 recorded (unlike the experiment mount): completion claims are compiled
 from the claim text alone.
 
@@ -52,8 +52,6 @@ def main():
         json.dump(solver.mcp_json(), f)
     with open(settings_path, "w") as f:
         json.dump(solver.SETTINGS_JSON, f)
-    with open(os.path.join(ROOT, "protocol", "solver-protocol.md")) as f:
-        protocol = f.read()
 
     env = solver.provider.claude_env()
     env.pop("CLAUDECODE", None)   # allow launching from inside a Claude session
@@ -63,7 +61,6 @@ def main():
         "claude",
         "--mcp-config", mcp_path, "--strict-mcp-config",
         "--settings", settings_path,
-        "--append-system-prompt", protocol,
         *sys.argv[1:],
     ], env)
 

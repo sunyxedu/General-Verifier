@@ -1,8 +1,9 @@
-# Verification-driven search protocol (solver side, advisory)
+# Verification-driven search protocol
 
-Put this text into the solver's CLAUDE.md (or an appendix to the system prompt). It
-specifies **mechanism** only and contains no domain knowledge; soundness does not depend
-on it — a solver that ignores the protocol simply gets no certificate, never a wrong one.
+The `gv` tools mounted in this session (`commit`, `verify`, `certificate`, `status`)
+connect you to an independent verifier: it checks every claim you commit, and certifies
+your final answer. This protocol specifies **mechanism** only — how to submit claims and
+read verdicts; it contains no knowledge about your task.
 
 ## Submission discipline
 
@@ -25,7 +26,7 @@ on it — a solver that ignores the protocol simply gets no certificate, never a
   in the verifier's ledger, so such claims verify against the record even after the world
   has legitimately moved on. Present-tense claims about past observations are the single
   most common cause of refuted-but-honest claims.
-- You do **not** need to prove it yourself — verification is the verifier's job, and it
+- You do **not** need to prove it yourself. Verification is the verifier's job, and it
   happens **at commit**: `gv.commit` returns only once the claim has been checked. Expect
   the call to take a while; that wait is the check running. Any status other than
   `verified` comes back with the obligation that failed and its counterexample (or, if
