@@ -99,12 +99,20 @@ the OpenAI SDK against its OpenAI-compatible endpoint; the wiring lives in
 
 ### Online — MCP server for a stock Claude Code session
 
-One-command interactive session (mounts everything below into a workdir and
-opens the TUI on the `.env`-configured provider):
+One-command interactive session (mounts everything below for the current
+directory and opens the TUI on the `.env`-configured provider; extra args
+are forwarded to `claude`, e.g. `-c` to continue):
 
 ```bash
-uv run python gv_tui.py ~/gv-workspace
+uv run python gv_tui.py
 ```
+
+With the shim installed at `~/.local/bin/gv` (a two-line `exec uv run
+--project <this repo> python gv_tui.py "$@"`), that's just `gv` in any
+directory. Nothing is written into the directory except the `.gv/` state
+dir — the MCP config and hooks are passed by absolute path and the solver
+protocol via `--append-system-prompt`, so an existing `CLAUDE.md` /
+`.claude/` is left untouched.
 
 Manual setup:
 
