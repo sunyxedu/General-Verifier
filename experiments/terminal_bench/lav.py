@@ -22,6 +22,7 @@ Usage (installs the baseline into a throwaway env):
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -31,9 +32,22 @@ sys.path.insert(0, HERE)
 
 import harborjobs                                        # noqa: E402
 from common import results as res                        # noqa: E402
-from verifier.stream import codex as codex_stream        # noqa: E402
 
 TRACE_CHARS = 60000        # per-candidate cap; tournaments send pairs
+
+GIT_URL = "https://github.com/llm-as-a-verifier/llm-as-a-verifier"
+VENDOR = os.path.join(os.path.dirname(HERE), "vendor", "llm-as-a-verifier")
+
+
+def ensure_vendor():
+    """The published wheel does not ship the criteria/ prompts the
+    benchmark configs name, so we take them from the source tree — the
+    baseline is run as its authors wrote it, not as we paraphrase it."""
+    if not os.path.isdir(os.path.join(VENDOR, "criteria")):
+        os.makedirs(os.path.dirname(VENDOR), exist_ok=True)
+        subprocess.run(["git", "clone", "--depth", "1", GIT_URL, VENDOR],
+                       check=True)
+    return os.path.join(VENDOR, "criteria", "terminal_bench.md")
 
 
 def render_trace(state_dir):
@@ -106,6 +120,7 @@ def main():
 
     import llm_verifier
 
+    criteria_path = ensure_vendor()
     base_url = os.environ.get("OPENAI_BASE_URL")
     degraded = bool(base_url)      # our codex endpoint serves no logprobs
     print(f"[lav] endpoint={base_url or 'default provider'} "
@@ -129,7 +144,7 @@ def main():
             print(f"[lav] {task}: only {len(trials)} candidate — skipped",
                   flush=True)
             continue
-        kwargs = dict(criteria="terminal_bench", pivots=args.pivots,
+        kwargs = dict(criteria=criteria_path, pivots=args.pivots,
                       n_evaluations=args.n_evaluations,
                       max_workers=args.max_workers)
         if args.model:
