@@ -20,6 +20,7 @@ EVENT_TYPES = (
     "verify_request",
     # verifier-side events (the kernel is auditable through the same stream)
     "obligations_compiled",
+    "decomposition_attacked",
     "discharge",
     "status_change",
     "certificate",

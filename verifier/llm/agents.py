@@ -251,6 +251,18 @@ COMPILE_OBLIGATIONS_AGENT = AgentRole(
     tools=["Read", "Grep", "Glob"],
 )
 
+CRITIC_AGENT = AgentRole(
+    name="critic",
+    system=prompts.CRITIC_SYSTEM,
+    template=prompts.CRITIC_TEMPLATE,
+    schema={
+        "verdict": ("pass", "insufficient"),
+        "counterexample_world": str,
+        "missing_condition": str,
+    },
+    tools=["Read", "Grep", "Glob"],   # answer-blind like the compiler; no execution
+)
+
 ENUMERATE_ORACLES_AGENT = AgentRole(
     name="oracles",
     system=prompts.ORACLES_SYSTEM,
@@ -288,6 +300,7 @@ ALL_AGENT_ROLES = {
     role.name: role
     for role in (
         COMPILE_OBLIGATIONS_AGENT,
+        CRITIC_AGENT,
         ENUMERATE_ORACLES_AGENT,
         DISCHARGE_AGENT,
         JUDGER_AGENT,

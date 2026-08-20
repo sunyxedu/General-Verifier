@@ -24,8 +24,15 @@ from ..core.model import (
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
-from ..llm.agents import COMPILE_OBLIGATIONS_AGENT
+from ..llm import prompts
+from ..llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
 from ..core.store import ClaimStore
+
+# attack rounds on a decomposition before the claim fails closed: each round
+# is one critic attempt; an `insufficient` verdict sends the decomposition
+# back for one repair, and a counterexample still standing after the last
+# round leaves the claim unverified
+MAX_CRITIC_ROUNDS = 2
 
 
 class Kernel:
@@ -42,6 +49,7 @@ class Kernel:
         artifacts: ArtifactStore,
         memory_hits: str = "[]",
         obligations_role=None,
+        critic_role=CRITIC_AGENT,
         discharger=None,
         binder=None,
         memory=None,
@@ -53,6 +61,7 @@ class Kernel:
         self.ledger = LedgerInstrument(log)
         self.memory_hits = memory_hits
         self.obligations_role = obligations_role or COMPILE_OBLIGATIONS_AGENT
+        self.critic_role = critic_role   # None -> no adversarial review
         self.discharger = discharger or AgentDischarger(backend, artifacts)
         self.binder = binder      # binding game; None -> direct discharge (tests)
         self.memory = memory      # advisory stores; None -> static hints
@@ -113,6 +122,8 @@ class Kernel:
             return
 
         obligations = self._compile_obligations(row)
+        if obligations is None:
+            return  # critic fail-closed: evidence and status already recorded
         if not obligations:
             # fail-closed: nothing checkable means nothing verified
             self.store.record_evidence(
@@ -193,18 +204,22 @@ class Kernel:
                 verified_deps.append(label)
             else:
                 pending_deps.append(f"{label} (status: {prow['status']})")
-        payload = self.obligations_role.call(
-            self.backend,
-            {"claim_text": row["text"],
-             "claim_kind": row["kind"],
-             "ledger_path": os.path.abspath(self.log.path),
-             "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
-             "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
-             "graph": json.dumps(
-                 self.store.graph_snapshot(exclude=row["id"]),
-                 ensure_ascii=False),
-             "memory_hits": memory_hits},
-        )
+        variables = {
+            "claim_text": row["text"],
+            "claim_kind": row["kind"],
+            "ledger_path": os.path.abspath(self.log.path),
+            "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
+            "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
+            "graph": json.dumps(
+                self.store.graph_snapshot(exclude=row["id"]),
+                ensure_ascii=False),
+            "memory_hits": memory_hits,
+            "critic_feedback": "",
+        }
+        payload = self.obligations_role.call(self.backend, variables)
+        payload = self._critique(row, payload, variables)
+        if payload is None:
+            return None
         obligations = [
             Obligation(row["id"], o["text"]) for o in payload["obligations"]
         ]
@@ -214,6 +229,58 @@ class Kernel:
              "obligations": [o.text for o in obligations]},
         )
         return obligations
+
+    def _critique(self, row: Dict, payload: Dict, variables: Dict):
+        """Adversarial second signature on the decomposition: the critic
+        tries to construct a world where every obligation and every verified
+        premise holds and the claim is still false. It never sees the
+        compiler's reasoning — only the claim, the obligations, and the
+        verified premises. An attack that stands sends the decomposition
+        back for repair; one still standing after MAX_CRITIC_ROUNDS fails
+        closed (returns None, claim stays unverified)."""
+        if self.critic_role is None:
+            return payload
+        verdict = None
+        for round_no in range(MAX_CRITIC_ROUNDS):
+            verdict = self.critic_role.call(
+                self.backend,
+                {"claim_text": row["text"],
+                 "obligations_json": json.dumps(
+                     [o["text"] for o in payload["obligations"]],
+                     ensure_ascii=False),
+                 "verified_deps": variables["verified_deps"]},
+            )
+            self.log.append(
+                "decomposition_attacked",
+                {"claim": row["id"], "round": round_no,
+                 "verdict": verdict["verdict"],
+                 "counterexample_world": verdict["counterexample_world"],
+                 "missing_condition": verdict["missing_condition"]},
+            )
+            if verdict["verdict"] == "pass":
+                return payload
+            if round_no + 1 == MAX_CRITIC_ROUNDS:
+                break  # last attack stands; a repair would go unreviewed
+            variables = dict(
+                variables,
+                critic_feedback=prompts.CRITIC_FEEDBACK_TEMPLATE.format(
+                    counterexample_world=verdict["counterexample_world"],
+                    missing_condition=verdict["missing_condition"]),
+            )
+            payload = self.obligations_role.call(self.backend, variables)
+        self.store.record_evidence(
+            row["id"],
+            {"outcome": OUTCOME_FAILED,
+             "error": "decomposition failed critic",
+             "counterexample_world": verdict["counterexample_world"],
+             "missing_condition": verdict["missing_condition"]},
+        )
+        self.log.append(
+            "status_change",
+            {"claim": row["id"], "status": STATUS_UNVERIFIED,
+             "reason": "decomposition failed critic"},
+        )
+        return None
 
     def _inherit(self, row: Dict, obligation: Obligation, src: Dict):
         """Transfer a same-text settled CLAIM's verdict onto an obligation

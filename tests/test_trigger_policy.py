@@ -49,7 +49,7 @@ def build(tmp_path, trigger, outcome="holds", witness=None):
     backend = FixtureBackend({"obligations": COMPILE})
     discharger = StubDischarger(outcome, witness)
     Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
-           discharger=discharger)
+           critic_role=None, discharger=discharger)
     return store, discharger
 
 
@@ -122,7 +122,7 @@ def test_effect_is_checked_when_a_claim_leans_on_it(tmp_path):
     store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
     backend = FixtureBackend({"obligations": COMPILE})
     Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
-           discharger=StubDischarger())
+           critic_role=None, discharger=StubDischarger())
     builder = Builder(log, store)
 
     builder.feed(log.append("tool_call", {"tool": "Bash"}))
@@ -153,7 +153,7 @@ def service(tmp_path, outcome="holds", witness=None):
     def factory(sc):
         backend = FixtureBackend({"obligations": COMPILE})
         return Kernel(sc.store, sc.log, backend, sc.artifacts,
-                      discharger=discharger)
+                      critic_role=None, discharger=discharger)
 
     return Service(str(tmp_path / "gv"), kernel_factory=factory), discharger
 
