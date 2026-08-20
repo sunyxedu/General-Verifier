@@ -69,8 +69,8 @@ def main():
                     "claude arms; codex CLI default for codex)")
     ap.add_argument("--n-concurrent", type=int, default=2)
     ap.add_argument("--job-name", default=None)
-    ap.add_argument("--task", default=None,
-                    help="run only this task from tasks.txt (e.g. fix-git); "
+    ap.add_argument("--task", default=None, nargs="+",
+                    help="run only these tasks from tasks.txt (e.g. fix-git); "
                     "gets its own job name so it never collides with a full "
                     "run's resumable job")
     ap.add_argument("--dry-run", action="store_true")
@@ -78,11 +78,12 @@ def main():
 
     tasks = read_tasks()
     if args.task:
-        if args.task not in tasks:
-            sys.exit(f"task {args.task!r} not in tasks.txt ({len(tasks)} "
-                     "tasks); add it there first")
-        tasks = [args.task]
-    job = args.job_name or (f"{args.arm}-{args.task}" if args.task
+        missing = [t for t in args.task if t not in tasks]
+        if missing:
+            sys.exit(f"tasks {missing} not in tasks.txt ({len(tasks)} "
+                     "tasks); add them there first")
+        tasks = list(args.task)
+    job = args.job_name or (f"{args.arm}-{'-'.join(args.task)}" if args.task
                             else f"{args.arm}")
     cmd = ["harbor", "run", "-d", DATASET, "-o", JOBS_DIR,
            "--job-name", job, "-k", str(args.k),
