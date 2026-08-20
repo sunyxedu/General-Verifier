@@ -16,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from common import results as res                        # noqa: E402
-from verifier import offline                             # noqa: E402
+from common import scoring                                # noqa: E402
 
 
 def main():
@@ -25,6 +25,8 @@ def main():
                     help="verifier seats' model (default: provider default)")
     ap.add_argument("--pid", default=None, help="score only this problem id")
     ap.add_argument("--max-rounds", type=int, default=3)
+    ap.add_argument("--workers", type=int, default=4,
+                    help="traces scored concurrently (they share nothing)")
     args = ap.parse_args()
 
     results_path = os.path.join(HERE, "results", "rec", "results.jsonl")
@@ -36,15 +38,12 @@ def main():
         todo = [r for r in todo if r["pid"] == args.pid]
     print(f"[fm:score] {len(todo)} traces ({len(done)} scored)", flush=True)
 
-    for i, r in enumerate(todo, 1):
-        state = os.path.join(r["workdir"], ".gv")
-        features = offline.score(state, model=args.model,
-                                 max_rounds=args.max_rounds)
-        res.append(scores_path, {"pid": r["pid"], "sample": r["sample"],
-                                 "features": features})
-        print(f"[fm:score {i}/{len(todo)}] {r['pid']}#{r['sample']} "
-              f"verdict={features.get('verdict')} "
-              f"rank={offline.rank_key(features)}", flush=True)
+    jobs = [({"pid": r["pid"], "sample": r["sample"]},
+             os.path.join(r["workdir"], ".gv")) for r in todo]
+    scoring.score_many(jobs, scores_path, workers=args.workers,
+                       model=args.model, max_rounds=args.max_rounds,
+                       label=lambda r: f"{r['pid']}#{r['sample']}",
+                       tag="fm:score")
     print("[fm:score] done", flush=True)
 
 

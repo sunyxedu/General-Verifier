@@ -118,7 +118,11 @@ def main():
         # harbor already copies it to trial_dir/agent/sessions/.
         cmd += ["-a", "codex", "-m", args.model or "gpt-5.6-luna",
                 "--agent-timeout-multiplier", "1000",
-                "--agent-setup-timeout-multiplier", "100"]
+                "--agent-setup-timeout-multiplier", "100",
+                # the final working tree, so offline obligations about the
+                # delivered state have a world to be checked against —
+                # without it only ledger obligations can discharge
+                "--artifact", "/app"]
         env["CODEX_FORCE_AUTH_JSON"] = "1"
         env.pop("OPENAI_API_KEY", None)      # subscription auth, not a key
     elif args.arm == "rec":

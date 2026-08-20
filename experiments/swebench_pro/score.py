@@ -16,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from common import results as res                        # noqa: E402
-from verifier import offline                             # noqa: E402
+from common import scoring                                # noqa: E402
 
 
 def main():
@@ -25,6 +25,8 @@ def main():
                     help="verifier seats' model (default: provider default)")
     ap.add_argument("--iid", default=None, help="score only this instance id")
     ap.add_argument("--max-rounds", type=int, default=3)
+    ap.add_argument("--workers", type=int, default=4,
+                    help="traces scored concurrently (they share nothing)")
     args = ap.parse_args()
 
     results_path = os.path.join(HERE, "results", "rec", "results.jsonl")
@@ -37,16 +39,12 @@ def main():
     print(f"[swebench:score] {len(todo)} traces ({len(done)} scored)",
           flush=True)
 
-    for i, r in enumerate(todo, 1):
-        state = os.path.join(r["workdir"], ".gv")
-        features = offline.score(state, model=args.model,
-                                 max_rounds=args.max_rounds)
-        res.append(scores_path, {"instance_id": r["instance_id"],
-                                 "sample": r["sample"], "features": features})
-        print(f"[swebench:score {i}/{len(todo)}] "
-              f"{r['instance_id']}#{r['sample']} "
-              f"verdict={features.get('verdict')} "
-              f"rank={offline.rank_key(features)}", flush=True)
+    jobs = [({"instance_id": r["instance_id"], "sample": r["sample"]},
+             os.path.join(r["workdir"], ".gv")) for r in todo]
+    scoring.score_many(jobs, scores_path, workers=args.workers,
+                       model=args.model, max_rounds=args.max_rounds,
+                       label=lambda r: f"{r['instance_id']}#{r['sample']}",
+                       tag="swebench:score")
     print("[swebench:score] done", flush=True)
 
 

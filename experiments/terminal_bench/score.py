@@ -29,7 +29,7 @@ sys.path.insert(0, HERE)
 
 import harborjobs                                        # noqa: E402
 from common import results as res                        # noqa: E402
-from verifier import offline                             # noqa: E402
+from common import scoring                                # noqa: E402
 from verifier.stream import codex as codex_stream        # noqa: E402
 
 
@@ -67,6 +67,8 @@ def main():
     ap.add_argument("--model", default=None,
                     help="verifier seats' model (default: provider default)")
     ap.add_argument("--max-rounds", type=int, default=3)
+    ap.add_argument("--workers", type=int, default=4,
+                    help="traces scored concurrently (they share nothing)")
     args = ap.parse_args()
 
     job_dir = os.path.join(HERE, "results", "jobs", args.job)
@@ -76,25 +78,24 @@ def main():
             if (args.job, t["trial"]) not in done]
     print(f"[tb:score] {len(todo)} trials ({len(done)} scored)", flush=True)
 
-    for i, t in enumerate(todo, 1):
+    jobs = []
+    for t in todo:
         state = find_state(t["trial_dir"]) or codex_state(t)
         if state is None:
-            print(f"[tb:score {i}/{len(todo)}] {t['trial']} no ledger "
-                  "(neither gv-state nor a codex rollout) — skipped",
-                  flush=True)
+            print(f"[tb:score] {t['trial']} no ledger (neither gv-state nor "
+                  "a codex rollout) — skipped", flush=True)
             continue
         final_path = os.path.join(state, "final.txt")
         if not os.path.exists(final_path) or not open(final_path).read().strip():
             with open(final_path, "w") as f:
                 f.write(harborjobs.log_tail(t["agent_log"]))
-        features = offline.score(state, model=args.model,
-                                 max_rounds=args.max_rounds)
-        res.append(scores_path, {"job": args.job, "task": t["task"],
-                                 "trial": t["trial"], "reward": t["reward"],
-                                 "features": features})
-        print(f"[tb:score {i}/{len(todo)}] {t['trial']} "
-              f"verdict={features.get('verdict')} reward={t['reward']} "
-              f"rank={offline.rank_key(features)}", flush=True)
+        jobs.append(({"job": args.job, "task": t["task"], "trial": t["trial"],
+                      "reward": t["reward"]}, state))
+
+    scoring.score_many(jobs, scores_path, workers=args.workers,
+                       model=args.model, max_rounds=args.max_rounds,
+                       label=lambda r: f"{r['trial']} reward={r['reward']}",
+                       tag="tb:score")
     print("[tb:score] done", flush=True)
 
 
