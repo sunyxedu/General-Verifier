@@ -1,9 +1,15 @@
-"""Terminal-Bench — offline ORM scoring of the `rec` arm's trials.
+"""Terminal-Bench — offline ORM scoring of a recorder arm's trials.
 
-Walks the Harbor job's trial dirs, finds each pulled /gv-state artifact,
-fills in final.txt from the agent log (the solver's last words), and runs
-the offline extract+certify pipeline on the host. Scores append to
-results/rec_scores.jsonl (resume by (job, trial)).
+Two trace sources, one pipeline:
+  - `rec` (claude-code): the container's recording hooks wrote the ledger
+    directly; harbor pulled /gv-state as a trial artifact.
+  - `rec-codex`: codex has no hooks, but harbor copies its own rollout log
+    to trial_dir/agent/sessions/. verifier.stream.codex rewrites that into
+    the same feed format, so both arms score identically.
+
+Each trial is scored independently: its own extraction, its own claim
+graph, its own certificate. Scores append to results/rec_scores.jsonl
+(resume by (job, trial)).
 
 Caveat: the task container is gone by scoring time, so the final world is
 NOT reachable — obligations about the live state discharge as failed or
@@ -24,14 +30,34 @@ sys.path.insert(0, HERE)
 import harborjobs                                        # noqa: E402
 from common import results as res                        # noqa: E402
 from verifier import offline                             # noqa: E402
+from verifier.stream import codex as codex_stream        # noqa: E402
 
 
 def find_state(trial_dir):
     """The pulled /gv-state artifact inside a trial dir."""
-    for root, dirs, files in os.walk(trial_dir):
+    for root, _dirs, files in os.walk(trial_dir):
         if os.path.basename(root) == "gv-state" or "hook_feed.jsonl" in files:
             return root
     return None
+
+
+def codex_state(trial):
+    """Build a state dir from a codex trial's own rollout log. The ledger
+    is converted from the rollout; task.md comes from the trial config
+    (the harness's authoritative instruction), and there is no baseline —
+    a vanilla codex container carries no GV payload to snapshot with."""
+    sessions = os.path.join(trial["trial_dir"], "agent", "sessions")
+    rollout = codex_stream.newest_rollout(sessions) \
+        if os.path.isdir(sessions) else None
+    if rollout is None:
+        return None
+    state = os.path.join(trial["trial_dir"], "gv-offline")
+    codex_stream.convert(rollout, state)
+    instruction = harborjobs.instruction_of(trial["trial_dir"])
+    if instruction:
+        with open(os.path.join(state, "task.md"), "w") as f:
+            f.write(instruction)
+    return state
 
 
 def main():
@@ -51,13 +77,14 @@ def main():
     print(f"[tb:score] {len(todo)} trials ({len(done)} scored)", flush=True)
 
     for i, t in enumerate(todo, 1):
-        state = find_state(t["trial_dir"])
+        state = find_state(t["trial_dir"]) or codex_state(t)
         if state is None:
-            print(f"[tb:score {i}/{len(todo)}] {t['trial']} no gv-state "
-                  "artifact — skipped", flush=True)
+            print(f"[tb:score {i}/{len(todo)}] {t['trial']} no ledger "
+                  "(neither gv-state nor a codex rollout) — skipped",
+                  flush=True)
             continue
         final_path = os.path.join(state, "final.txt")
-        if not os.path.exists(final_path):
+        if not os.path.exists(final_path) or not open(final_path).read().strip():
             with open(final_path, "w") as f:
                 f.write(harborjobs.log_tail(t["agent_log"]))
         features = offline.score(state, model=args.model,

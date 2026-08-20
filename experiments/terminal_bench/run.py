@@ -14,6 +14,14 @@ Arms (identical task subset from tasks.txt, resumable by job name):
   --arm rec      gv_agent:RecClaudeCode — stock claude-code + recording
                  hooks only (no MCP, no protocol); /gv-state is pulled as
                  an artifact for offline ORM scoring (score.py)
+  --arm rec-codex
+                 stock codex agent on the user's ChatGPT subscription
+                 (CODEX_FORCE_AUTH_JSON uploads the host auth.json), fully
+                 vanilla — no GV payload in the container at all. Codex
+                 writes its own rollout log, which harbor copies to
+                 trial_dir/agent/sessions/; score.py converts it into the
+                 ledger format (verifier.stream.codex) and scores it.
+                 Default model gpt-5.6-luna.
 
 Scoring is Harbor's own (task verifiers write reward 0/1). The GV arm also
 downloads /gv-state as a trial artifact so certificate verdicts can be
@@ -51,7 +59,8 @@ def read_tasks():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True,
-                    choices=["plain", "gv", "turbo", "codex", "rec"])
+                    choices=["plain", "gv", "turbo", "codex", "rec",
+                             "rec-codex"])
     ap.add_argument("--k", type=int, default=1, help="attempts per task")
     ap.add_argument("--candidates", type=int, default=3,
                     help="turbo: parallel candidates per model call")
@@ -100,6 +109,17 @@ def main():
         # resolves it itself; the proxy substitutes its backend model anyway.
         cmd += ["-a", "claude-code", "-m", args.model or "sonnet",
                 "--agent-timeout-multiplier", "3"]
+    elif args.arm == "rec-codex":
+        # stock codex agent, ChatGPT-subscription auth: harbor uploads the
+        # host ~/.codex/auth.json into the container's CODEX_HOME and
+        # deletes it afterwards, so host token state is untouched. No GV
+        # payload at all — codex's own rollout log IS the ledger, and
+        # harbor already copies it to trial_dir/agent/sessions/.
+        cmd += ["-a", "codex", "-m", args.model or "gpt-5.6-luna",
+                "--agent-timeout-multiplier", "1000",
+                "--agent-setup-timeout-multiplier", "100"]
+        env["CODEX_FORCE_AUTH_JSON"] = "1"
+        env.pop("OPENAI_API_KEY", None)      # subscription auth, not a key
     elif args.arm == "rec":
         cmd += ["-a", "gv_agent:RecClaudeCode",
                 "-m", args.model or "anthropic/sonnet",
