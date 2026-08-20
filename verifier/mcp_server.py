@@ -20,8 +20,9 @@ seq itself. The feed is drained before every MCP verb so effect claims are
 referenceable (`effect:<seq>`) at commit time.
 
 Run:
-  uv run python -m verifier.mcp_server --state-dir .gv [--model m] [--seats agent|sandbox]
-      [--game/--no-game] [--trigger on-commit|on-first-dependent]
+  uv run python -m verifier.mcp_server --state-dir .gv [--model m]
+      [--memory-dir d] [--toolchain-dir d]
+      [--trigger on-commit|on-first-dependent]
 
 Claude Code config (.mcp.json):
   {"mcpServers": {"gv": {"type": "stdio", "command": "uv",
@@ -34,6 +35,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from verifier.core.model import CLAIM_KINDS
 from .stream.builder import Builder, TraceError
 from .engine.certificate import request_certificate
 from .core.events import EventLog
@@ -95,8 +97,7 @@ HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 
 class Service:
     def __init__(self, state_dir: str, kernel_factory=None,
-                 model: Optional[str] = None, seats: str = "agent",
-                 game: bool = True,
+                 model: Optional[str] = None,
                  memory_dir: Optional[str] = None,
                  toolchain_dir: Optional[str] = None,
                  trigger: str = TRIGGER_ON_COMMIT):
@@ -114,9 +115,7 @@ class Service:
         self.builder = Builder(self.log, self.store)
 
         if kernel_factory is None:
-            kernel_factory = lambda sc: _default_kernel(  # noqa: E731
-                sc, model=model, seats=seats, game=game
-            )
+            kernel_factory = lambda sc: _default_kernel(sc, model=model)  # noqa: E731
         self.kernel = kernel_factory(self)  # factory receives the service
 
         self._feed = Tail(os.path.join(state_dir, HOOK_FEED),
@@ -125,8 +124,7 @@ class Service:
         for event in self.log.replay():
             self.builder.feed(event)
 
-    # ---- hook feed -----------------------------------------------------------
-
+    # hook feed
     def _ingest_hook_event(self, raw_event: Dict[str, Any]) -> None:
         etype = raw_event.get("type")
         if etype not in HOOK_EVENT_TYPES:
@@ -137,8 +135,7 @@ class Service:
     def drain_hooks(self) -> int:
         return self._feed.poll()
 
-    # ---- MCP verbs -----------------------------------------------------------
-
+    # MCP verbs
     def commit(self, label: str, kind: str, text: str,
                deps: List[str],
                revises: Optional[str] = None) -> Dict[str, Any]:
@@ -230,47 +227,67 @@ class Service:
             for label, cid in self.builder.labels.items()
         }
 
-def _default_kernel(sc: Service, model, seats, game) -> Kernel:
-    if seats == "agent":
-        from .llm.agents import (
-            ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
-        )
-        from .execution.discharge import AgentDischarger
-        from .engine.game import BindingGame
+def _default_kernel(sc: Service, model) -> Kernel:
+    from dataclasses import replace
 
-        backend = AgentBackend(roles=ALL_AGENT_ROLES, cwd=sc.state_dir,
-                               model=model)
-        discharger = AgentDischarger(
-            backend, sc.artifacts,
-            workdir_base=os.path.join(sc.state_dir, "work"),
-            cleanup=True,   # snapshots are the evidence; workdirs are scratch
-            toolchain_dir=sc.toolchain_dir)
-        binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
-                             memory=sc.memory) if game else None
-        return Kernel(sc.store, sc.log, backend, sc.artifacts,
-                      obligations_role=COMPILE_OBLIGATIONS_AGENT,
-                      discharger=discharger, binder=binder,
-                      memory=sc.memory)
-    if seats == "sandbox":
-        from .llm import provider
-        from .llm.roles import OpenAIBackend
+    from .llm import prompts
+    from .llm.agents import (
+        ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
+    )
+    from .execution.discharge import AgentDischarger
+    from .engine.game import BindingGame
 
-        backend = OpenAIBackend(model=model or provider.MODEL,
-                                base_url=provider.OPENAI_BASE_URL,
-                                api_key=provider.API_KEY)
-        return Kernel(sc.store, sc.log, backend, sc.artifacts)
-    raise ValueError(f"unknown seats: {seats}")
+    # The mounting harness's ground truth (task.md / baseline/) is the
+    # toggle: when present (experiment mounts write it; the interactive
+    # mount does not), the obligation compiler is told to compile
+    # against it. The backend resolves roles by name, so the swapped
+    # role must go into its registry too, not just into the Kernel.
+    obligations = COMPILE_OBLIGATIONS_AGENT
+    if os.path.exists(os.path.join(sc.state_dir, "task.md")) or \
+            os.path.isdir(os.path.join(sc.state_dir, "baseline")):
+        obligations = replace(
+            obligations, system=obligations.system + "\n"
+            + prompts.OBLIGATIONS_HARNESS_ADDENDUM)
+    backend = AgentBackend(roles=dict(ALL_AGENT_ROLES,
+                                      obligations=obligations),
+                           cwd=sc.state_dir, model=model)
+    discharger = AgentDischarger(
+        backend, sc.artifacts,
+        workdir_base=os.path.join(sc.state_dir, "work"),
+        cleanup=True,   # snapshots are the evidence; workdirs are scratch
+        toolchain_dir=sc.toolchain_dir)
+    binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
+                         memory=sc.memory)
+    return Kernel(sc.store, sc.log, backend, sc.artifacts,
+                  obligations_role=obligations,
+                  discharger=discharger, binder=binder,
+                  memory=sc.memory)
 
 
-# ---- MCP wiring --------------------------------------------------------------
+# MCP wiring
+
+_PROTOCOL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "protocol", "solver-protocol.md")
+
+
+def _solver_protocol() -> str:
+    """The solver-side protocol, served as MCP server instructions: every
+    client that mounts gv gets it injected into the solver's context, so
+    there is no CLAUDE.md copy to keep in sync. Advisory only — soundness
+    does not depend on the solver following it; ignoring it forfeits the
+    certificate, never corrupts one."""
+    with open(_PROTOCOL_PATH, encoding="utf-8") as f:
+        return f.read()
+
 
 def build_server(service: Service):
     from mcp.server.fastmcp import FastMCP
 
-    server = FastMCP("gv")
+    server = FastMCP("gv", instructions=_solver_protocol())
 
     @server.tool()
-    def commit(label: str, kind: str, text: str, deps: List[str],
+    def commit(label: str, kind: CLAIM_KINDS, text: str, deps: List[str],
                revises: str = "") -> str:
         """Commit a claim (kind: assertion|effect|final). deps is a list of
         labels of already-committed claims (including effect:<seq>). The claim
@@ -305,15 +322,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--state-dir", required=True)
     ap.add_argument("--model", default=None)
-    ap.add_argument("--seats", default="agent", choices=["agent", "sandbox"])
-    ap.add_argument("--game", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--memory-dir", default=None)
     ap.add_argument("--toolchain-dir", default=None)
     ap.add_argument("--trigger", default=TRIGGER_ON_COMMIT, choices=list(TRIGGERS),
                     help="when a claim is verified (default: at commit)")
     args = ap.parse_args()
-    service = Service(args.state_dir, model=args.model, seats=args.seats,
-                      game=args.game,
+    service = Service(args.state_dir, model=args.model,
                       memory_dir=args.memory_dir,
                       toolchain_dir=args.toolchain_dir,
                       trigger=args.trigger)

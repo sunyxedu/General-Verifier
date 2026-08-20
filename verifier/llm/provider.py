@@ -13,7 +13,7 @@ wins; see .env.example for the full reference):
   GV_PROVIDER = deepseek (default) | openrouter | custom
   GV_MODEL    = model id on that provider (defaults below)
   DEEPSEEK_API_KEY / OPENROUTER_API_KEY = the key for the chosen provider
-  GV_ANTHROPIC_BASE_URL / GV_OPENAI_BASE_URL / GV_API_KEY / GV_LITELLM_MODEL
+  GV_ANTHROPIC_BASE_URL / GV_API_KEY / GV_LITELLM_MODEL
               = everything explicit, for GV_PROVIDER=custom
 """
 import os
@@ -54,7 +54,6 @@ PROVIDER = (cfg("GV_PROVIDER", "deepseek") or "deepseek").lower()
 if PROVIDER == "deepseek":
     MODEL = cfg("GV_MODEL", "deepseek-v4-flash")
     ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
-    OPENAI_BASE_URL = "https://api.deepseek.com"
     API_KEY = cfg("DEEPSEEK_API_KEY")
     if not API_KEY:
         raise RuntimeError("GV_PROVIDER=deepseek needs DEEPSEEK_API_KEY "
@@ -65,7 +64,6 @@ if PROVIDER == "deepseek":
 elif PROVIDER == "openrouter":
     MODEL = cfg("GV_MODEL", "deepseek/deepseek-v4-flash")
     ANTHROPIC_BASE_URL = "https://openrouter.ai/api"
-    OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
     API_KEY = cfg("OPENROUTER_API_KEY")
     if not API_KEY:
         raise RuntimeError("GV_PROVIDER=openrouter needs OPENROUTER_API_KEY "
@@ -77,7 +75,6 @@ elif PROVIDER == "openrouter":
 elif PROVIDER == "custom":
     MODEL = cfg("GV_MODEL")
     ANTHROPIC_BASE_URL = cfg("GV_ANTHROPIC_BASE_URL")
-    OPENAI_BASE_URL = cfg("GV_OPENAI_BASE_URL")
     API_KEY = cfg("GV_API_KEY")
     if not (MODEL and ANTHROPIC_BASE_URL and API_KEY):
         raise RuntimeError("GV_PROVIDER=custom needs GV_MODEL, "

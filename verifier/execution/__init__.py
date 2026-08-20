@@ -1,1 +1,1 @@
-"""The hands: sandbox instruments, discharge seats, fabrication detector."""
+"""The hands: discharge executor, artifact store, ledger instrument."""

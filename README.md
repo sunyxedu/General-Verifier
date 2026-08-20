@@ -19,11 +19,15 @@ Two observations drive the design:
    against that promise — feeding its reasons back for redos, at most 3 rounds. Every
    verdict traces back to a named guarantee.
 
-Master principle: **LLM generation affects efficiency only, never correctness.** Every
-prompt template under `verifier/` carries zero domain knowledge — domain content emerges
-at runtime (environment probing, the model's knowledge, memory retrieval) — and
-correctness is guarded entirely by mechanical gates. A crash, timeout, or unparseable
-output is always a FAILED check, never a pass (fail-closed).
+Master principle: **every prompt template under `verifier/` carries zero domain
+knowledge** — domain content emerges at runtime (environment probing, the model's
+knowledge, memory retrieval). What is guarded *mechanically*, fail-closed, is the
+frame around every LLM seat: output schemas (malformed output = FAILED, never a
+pass), crashes and timeouts (FAILED), effect claims (ledger digest re-hash), and
+the settlement/certificate folds (a verdict never rounds up). The *substance* of a
+discharge verdict is the executor agent's own attested outcome, audited by the
+judger agent — an LLM check on an LLM report, with the full workdir snapshot kept
+as evidence so any pass is auditable after the fact.
 
 ## How it works
 
@@ -69,22 +73,23 @@ output is always a FAILED check, never a pass (fail-closed).
 
 Design notes:
 
-- **Dual-track SDK**: roles that act (probe / execute / audit) are Claude Agent SDK
-  agents with structured output and a hard tool panel (`verifier/llm/agents.py`); pure
-  text-in/JSON-out roles are one-shot OpenAI SDK calls, provider-agnostic
-  (`verifier/llm/roles.py`).
-- **Search support**: the branch is part of a claim's identity; solvers can explore
-  hypotheses in parallel, `refuted` kills a branch's downstream cone, and identical
-  conclusions reached on different branches deduplicate and reuse evidence.
+- **Every seat acts**: all four roles (obligation compiler, oracle, discharge
+  executor, judger) are Claude Agent SDK agents with structured output and a hard
+  tool palette (`verifier/llm/agents.py`) — the palette is the capability boundary
+  (the compiler has no execution tool: that is what makes it answer-blind).
+  `verifier/llm/roles.py` holds the shared schema gate and the deterministic
+  fixture backend used by tests.
+- **Revision, not branches**: a wrong claim is resubmitted with `revises=`; the old
+  claim and its downstream cone go stale, and content addressing dedups identical
+  resubmissions and reuses settled obligation verdicts across claims.
 - **Memory is advisory only**: three stores (obligation patterns / attack patterns /
   instrument registry) feed prompt slots via deterministic retrieval. Hits make the
   system faster; they can never make a wrong claim verify.
 
 ## Usage
 
-Managed with [uv](https://docs.astral.sh/uv/) (Python 3.12+). Three third-party
-dependencies — `mcp` (MCP server), `claude-agent-sdk` (agent seats), `openai`
-(one-shot roles):
+Managed with [uv](https://docs.astral.sh/uv/) (Python 3.12+). Two third-party
+dependencies — `mcp` (MCP server) and `claude-agent-sdk` (agent seats):
 
 ```bash
 uv sync
@@ -92,10 +97,9 @@ uv sync
 
 Credentials: all seats run on the provider configured in `.env` at the repo root
 (copy `.env.example`) — default **DeepSeek-V4-Flash**; `openrouter` and `custom`
-Anthropic-compatible endpoints are also supported. Agent seats go through the Claude
-Agent SDK against the provider's Anthropic-compatible endpoint, one-shot roles use
-the OpenAI SDK against its OpenAI-compatible endpoint; the wiring lives in
-`verifier/llm/provider.py`.
+Anthropic-compatible endpoints are also supported. Every seat goes through the
+Claude Agent SDK against the provider's Anthropic-compatible endpoint; the wiring
+lives in `verifier/llm/provider.py`.
 
 ### Online — MCP server for a stock Claude Code session
 
@@ -118,10 +122,10 @@ Manual setup:
 
 1. **Mount the MCP server** in the solver's project — copy `protocol/mcp.example.json`
    into `.mcp.json` (if the solver project is not this repo, add
-   `"--project", "/path/to/General-Verifier"` after `"run"`). The solver gets five
-   verbs: `gv.commit`, `gv.verify`, `gv.certificate`, `gv.status`, `gv.branches`.
-   Server flags: `--state-dir` (required), `--seats agent|sandbox`, `--model`,
-   `--no-game`, `--memory-dir`, `--toolchain-dir`.
+   `"--project", "/path/to/General-Verifier"` after `"run"`). The solver gets four
+   verbs: `gv.commit`, `gv.verify`, `gv.certificate`, `gv.status`.
+   Server flags: `--state-dir` (required), `--model`, `--memory-dir`,
+   `--toolchain-dir`, `--trigger`.
 2. **Wire the hooks** so tool calls become referenceable effect claims — in the
    solver's `.claude/settings.json`:
 
@@ -142,7 +146,7 @@ Manual setup:
 ```bash
 # exit 0 iff the verdict is `verified` (partial/unverified/refuted → 1, no final claim → 2)
 uv run python -m verifier.cli certify --events trace.jsonl --state-dir .gv-ci \
-    [--final F] [--seats agent|sandbox] [--model m] [--no-game]
+    [--final F] [--model m]
 
 # LLM-free: rebuild the claim graph from a trace, print label -> status
 uv run python -m verifier.cli replay --events trace.jsonl
@@ -164,8 +168,8 @@ sample, SWE-bench Pro's public set, and Terminal-Bench 2.1 — see
 |---|---|
 | `verifier/core/` | data contracts: content addressing + status machine (`model.py`), append-only event stream (`events.py`), claim store + obligation nodes + single trigger rule + slices/branches (`store.py`) |
 | `verifier/stream/` | ingestion: incremental graph building (`builder.py`), torn-line-tolerant online tail (`tail.py`) |
-| `verifier/llm/` | LLM seats: one-shot roles with schema gate (`roles.py`, OpenAI SDK), acting agent roles (`agents.py`, Claude Agent SDK) |
-| `verifier/execution/` | the hands: python sandbox + artifact store, fail-closed (`instruments.py`), two discharge seats (`discharge.py`); `strength.py` retained but unused |
+| `verifier/llm/` | LLM seats: acting agent roles with hard tool palettes (`agents.py`, Claude Agent SDK), shared schema gate + fixture backend (`roles.py`), provider wiring (`provider.py`), prompt text (`prompts.py`) |
+| `verifier/execution/` | the hands: artifact store + ledger instrument, fail-closed (`instruments.py`), the agent discharge seat with workdir snapshots (`discharge.py`) |
 | `verifier/engine/` | verification core: trigger entry + settlement + obligation-node reuse + pruning (`kernel.py`), binding game: oracle-ordered sufficient methods + fidelity judger with a bounded redo loop (`game.py`), certificate with nested obligations (`certificate.py`) |
 | `verifier/memory.py` | three stores (advisory only) |
 | `verifier/mcp_server.py` + `cli.py` | entry points: MCP server + hook ingestion; CI gate |

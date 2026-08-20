@@ -15,24 +15,24 @@ import json
 import os
 from typing import Dict, List
 
-from ..execution.discharge import SandboxDischarger
+from ..execution.discharge import AgentDischarger
 from ..core.events import EventLog
-from ..execution.instruments import ArtifactStore, LedgerInstrument, PythonSandbox
+from ..execution.instruments import ArtifactStore, LedgerInstrument
 from ..core.model import (
     Claim, Evidence, Obligation,
     CLAIM_EFFECT,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
-from ..llm.roles import COMPILE_OBLIGATIONS
+from ..llm.agents import COMPILE_OBLIGATIONS_AGENT
 from ..core.store import ClaimStore
 
 
 class Kernel:
-    """Role seats (obligations compiler, discharger) are injectable: the same
-    kernel runs on fixture-backed text roles (offline, deterministic) or on
-    Claude Agent SDK agents (see verifier.agents / verifier.discharge) without
-    knowing which is seated."""
+    """Role seats (obligations compiler, discharger, binder) are injectable:
+    the same kernel runs on fixture-backed seats (tests, deterministic) or on
+    the Claude Agent SDK agents (the shipped configuration) without knowing
+    which is seated."""
 
     def __init__(
         self,
@@ -40,7 +40,6 @@ class Kernel:
         log: EventLog,
         backend,
         artifacts: ArtifactStore,
-        sandbox: PythonSandbox = None,
         memory_hits: str = "[]",
         obligations_role=None,
         discharger=None,
@@ -51,14 +50,11 @@ class Kernel:
         self.log = log
         self.backend = backend
         self.artifacts = artifacts
-        self.sandbox = sandbox or PythonSandbox()
         self.ledger = LedgerInstrument(log)
         self.memory_hits = memory_hits
-        self.obligations_role = obligations_role or COMPILE_OBLIGATIONS
-        self.discharger = discharger or SandboxDischarger(
-            backend, self.sandbox, artifacts
-        )
-        self.binder = binder      # binding game; None -> direct discharge
+        self.obligations_role = obligations_role or COMPILE_OBLIGATIONS_AGENT
+        self.discharger = discharger or AgentDischarger(backend, artifacts)
+        self.binder = binder      # binding game; None -> direct discharge (tests)
         self.memory = memory      # advisory stores; None -> static hints
         store.on_trigger(self.verify)  # the single rule wires straight in
 
@@ -235,7 +231,7 @@ class Kernel:
                     break
         if witness is None:
             witness = self.store.get(src["id"])["reason"]
-        outcome = (OUTCOME_HOLDS if src["status"] == VERIFIED
+        outcome = (OUTCOME_HOLDS if src["status"] == STATUS_VERIFIED
                    else OUTCOME_REFUTED)
         self.store.record_evidence(
             oid,

@@ -1,14 +1,10 @@
-"""Discharge strategies: how an obligation actually gets checked.
+"""Discharge: how an obligation actually gets checked.
 
-Two seats for the same contract:
-
-- SandboxDischarger: a role writes a check program, the kernel runs it
-  mechanically in the python sandbox.
-
-- AgentDischarger: a Claude Agent SDK agent executes the check itself and
-  reports outcome/witness plus on-disk artifacts, which we snapshot into the
-  content-addressed store. Re-verification (strength.py) independently re-runs
-  any extractable check script as a fabrication detector.
+One seat: AgentDischarger — a Claude Agent SDK agent executes the check
+itself and reports outcome/witness plus on-disk artifacts, which we snapshot
+into the content-addressed store. The reported outcome is the agent's own
+attestation; what audits it is the binding game's judger (which opens the
+artifact and may rerun the check), not a mechanical gate.
 """
 from __future__ import annotations
 
@@ -18,47 +14,17 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
-from .instruments import ArtifactStore, PythonSandbox
+from .instruments import ArtifactStore
 from ..core.model import Obligation, OUTCOME_FAILED
-from ..llm.roles import Role, RoleError, WRITE_CHECK
+from ..llm.roles import RoleError
 
 
 @dataclass(frozen=True)
 class DischargeResult:
-    outcome: str                 # holds | refuted | failed
+    outcome: str                 # holds | refuted | failed | unobtainable
     witness: Optional[Any]
     artifact: str                # digest in the artifact store
     instrument: str
-
-
-class SandboxDischarger:
-    """write_check role -> python sandbox -> mechanical verdict."""
-
-    def __init__(self, backend, sandbox: PythonSandbox, artifacts: ArtifactStore,
-                 role: Role = WRITE_CHECK):
-        self.backend = backend
-        self.sandbox = sandbox
-        self.artifacts = artifacts
-        self.role = role
-
-    def discharge(self, row: Dict, obligation: Obligation,
-                  method: Optional[Dict[str, str]] = None,
-                  tag: str = "") -> DischargeResult:
-        # method/tag are part of the shared discharger contract (used by the
-        # binding game); the sandbox path has a fixed instrument, so both are
-        # accepted and ignored.
-        check = self.role.call(
-            self.backend,
-            {"claim_text": row["text"], "obligation_text": obligation.text},
-        )
-        result = self.sandbox.run(check["check_source"])
-        digest = self.artifacts.put(result.artifacts)
-        return DischargeResult(
-            outcome=result.outcome,
-            witness=result.witness,
-            artifact=digest,
-            instrument=self.sandbox.name,
-        )
 
 
 class AgentDischarger:
@@ -94,7 +60,7 @@ class AgentDischarger:
         os.makedirs(workdir, exist_ok=True)
         os.makedirs(self.toolchain_dir, exist_ok=True)
         method = method or {
-            "procedure": "no bound method (oracle binding arrives in M1): "
+            "procedure": "no bound method (direct discharge, no binding game): "
                          "choose the strongest reachable check yourself, and "
                          "write the check script and its complete output to disk",
         }

@@ -1,1 +1,1 @@
-"""LLM seats: one-shot roles (OpenAI SDK) and acting agents (Claude Agent SDK)."""
+"""LLM seats: Claude Agent SDK agent roles (agents.py) + role plumbing (roles.py)."""

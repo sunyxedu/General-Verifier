@@ -80,7 +80,7 @@ class AgentRole:
         return self.template.format(**variables)
 
     def call(self, backend, variables: Dict[str, Any]) -> Dict[str, Any]:
-        """Same contract as roles.Role.call: two attempts, then RoleError."""
+        """Two attempts (schema error fed back once), then RoleError."""
         prompt = self.render(variables)
         last_error: Optional[RoleError] = None
         for _attempt in range(2):

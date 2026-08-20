@@ -46,7 +46,7 @@ class StubDischarger:
 def build(tmp_path, trigger, outcome="holds", witness=None):
     log = EventLog(os.path.join(tmp_path, "events.jsonl"))
     store = ClaimStore(trigger=trigger)
-    backend = FixtureBackend({"compile_obligations": COMPILE})
+    backend = FixtureBackend({"obligations": COMPILE})
     discharger = StubDischarger(outcome, witness)
     Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
            discharger=discharger)
@@ -120,7 +120,7 @@ def test_effect_is_checked_when_a_claim_leans_on_it(tmp_path):
 
     log = EventLog(os.path.join(tmp_path, "events.jsonl"))
     store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
-    backend = FixtureBackend({"compile_obligations": COMPILE})
+    backend = FixtureBackend({"obligations": COMPILE})
     Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
            discharger=StubDischarger())
     builder = Builder(log, store)
@@ -151,7 +151,7 @@ def service(tmp_path, outcome="holds", witness=None):
     discharger = StubDischarger(outcome, witness)
 
     def factory(sc):
-        backend = FixtureBackend({"compile_obligations": COMPILE})
+        backend = FixtureBackend({"obligations": COMPILE})
         return Kernel(sc.store, sc.log, backend, sc.artifacts,
                       discharger=discharger)
 
@@ -189,7 +189,7 @@ def test_a_check_that_blows_up_still_returns_the_claim(tmp_path):
     out = sc.commit("A1", "assertion", "the tree is clean", [])
 
     assert out["status"] == "unverified"
-    assert "compile_obligations" in out["error"]
+    assert "obligations" in out["error"]
     assert sc.status("A1")["status"] == "unverified"
 
 

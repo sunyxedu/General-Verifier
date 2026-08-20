@@ -4,7 +4,7 @@ The solver is never forced to verify; the CONSUMER refuses to merge without a
 certificate. This CLI is that refusal, shaped for CI:
 
   uv run python -m verifier.cli certify --events trace.jsonl --state-dir .gv-ci \
-      [--final F] [--seats agent] [--model m] [--no-game]
+      [--final F] [--model m]
   -> exit 0 iff the verdict is `verified`; prints the certificate summary.
 
   uv run python -m verifier.cli replay --events trace.jsonl
@@ -27,8 +27,7 @@ from .core.store import ClaimStore, TRIGGER_ON_FIRST_DEPENDENT
 
 
 def certify(events_path: str, state_dir: str, final_label: Optional[str] = None,
-            seats: str = "agent", model: Optional[str] = None,
-            game: bool = True, kernel_factory=None) -> int:
+            model: Optional[str] = None, kernel_factory=None) -> int:
     os.makedirs(state_dir, exist_ok=True)
     target = os.path.join(state_dir, "events.jsonl")
     if os.path.abspath(events_path) != os.path.abspath(target):
@@ -38,8 +37,7 @@ def certify(events_path: str, state_dir: str, final_label: Optional[str] = None,
     # and the verdict depends only on the final's slice — so verify lazily and
     # let the certificate pull in the residue, instead of checking every claim
     # in the trace including the ones no final rests on.
-    sc = Service(state_dir, kernel_factory=kernel_factory,
-                 model=model, seats=seats, game=game,
+    sc = Service(state_dir, kernel_factory=kernel_factory, model=model,
                  trigger=TRIGGER_ON_FIRST_DEPENDENT)
     if final_label is not None:
         final_id = sc.builder.resolve(final_label)
@@ -86,17 +84,14 @@ def main(argv=None) -> int:
     c.add_argument("--events", required=True)
     c.add_argument("--state-dir", required=True)
     c.add_argument("--final", default=None)
-    c.add_argument("--seats", default="agent", choices=["agent", "sandbox"])
     c.add_argument("--model", default=None)
-    c.add_argument("--game", action=argparse.BooleanOptionalAction, default=True)
 
     r = sub.add_parser("replay")
     r.add_argument("--events", required=True)
 
     args = ap.parse_args(argv)
     if args.cmd == "certify":
-        return certify(args.events, args.state_dir, args.final,
-                       args.seats, args.model, args.game)
+        return certify(args.events, args.state_dir, args.final, args.model)
     return replay(args.events)
 
 

@@ -1,20 +1,12 @@
-"""Instruments: the hands of the verifier.
+"""Instruments: the mechanical fixtures of the verifier.
 
 Contract (report, fail-closed iron rule): any crash / timeout / unparseable
 output is a FAILED discharge — never converted into a pass.
-
-check_spec protocol for the python sandbox: the check program must print, as
-its LAST stdout line, a JSON object
-    {"holds": true}                       -> obligation holds
-    {"holds": false, "witness": ...}      -> counterexample found (refutes)
-Anything else is FAILED.
 """
 from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -47,55 +39,6 @@ class ArtifactStore:
     def get(self, digest: str) -> Dict[str, Any]:
         with open(os.path.join(self.root, digest + ".json"), "r", encoding="utf-8") as f:
             return json.load(f)
-
-
-class PythonSandbox:
-    """Runs a check_spec in an isolated python subprocess (component 26)."""
-
-    name = "python"
-
-    def __init__(self, timeout: float = 600.0):
-        # generous guard, not a work budget: only exists so a generated
-        # check with an infinite loop cannot deadlock the verifier forever
-        # (fail-closed: a timeout is reported as failed, never as a pass)
-        self.timeout = timeout
-
-    def probe(self) -> bool:
-        return True  # we are running python
-
-    def run(self, check_source: str) -> RunResult:
-        src_hash = content_hash(check_source)
-        base = {"instrument": self.name, "check_src_sha256": src_hash}
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-I", "-c", check_source],
-                capture_output=True, text=True, timeout=self.timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return RunResult(OUTCOME_FAILED, {**base, "error": "timeout"})
-
-        artifacts = {
-            **base,
-            "exit_code": proc.returncode,
-            "stdout": proc.stdout[-4000:],
-            "stderr": proc.stderr[-4000:],
-        }
-        if proc.returncode != 0:
-            return RunResult(OUTCOME_FAILED, {**artifacts, "error": "nonzero exit"})
-
-        last_line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
-        try:
-            verdict = json.loads(last_line)
-            holds = verdict["holds"]
-            assert isinstance(holds, bool)
-        except Exception:
-            return RunResult(OUTCOME_FAILED, {**artifacts, "error": "unparseable verdict"})
-
-        if holds:
-            return RunResult(OUTCOME_HOLDS, artifacts)
-        return RunResult(
-            OUTCOME_REFUTED, artifacts, witness=verdict.get("witness")
-        )
 
 
 class LedgerInstrument:
