@@ -1,5 +1,4 @@
-"""Claim stor + the single trigger rule +
-backward slicer. SQLite-backed materialized view of the stream.
+"""Claim store + the single trigger rule + backward slicer. SQLite-backed materialized view of the stream.
 
 The one scheduling rule of the whole system:
     a claim is verified the moment it is COMMITTED.
@@ -31,7 +30,6 @@ from typing import Callable, Dict, List, Optional, Set
 from .model import (
     Claim, CLAIM_EFFECT, OBLIGATION_KINDS,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_REFUTED, STATUS_STALE, STATUS_PARTIAL,
-    KINDS,
 )
 
 TriggerCallback = Callable[[str], None]
@@ -77,8 +75,7 @@ class IllegalTransition(ValueError):
 
 
 class ClaimStore:
-    def __init__(self, path: str = ":memory:",
-                 trigger: str = TRIGGER_ON_COMMIT):
+    def __init__(self, path: str = ":memory:", trigger: str = TRIGGER_ON_COMMIT):
         if trigger not in TRIGGERS:
             raise ValueError(f"unknown trigger policy: {trigger}")
         self.db = sqlite3.connect(path)

@@ -39,6 +39,12 @@ class Builder:
         self.store = store
         self.labels: Dict[str, str] = {}   # label -> claim id
         self.finals: list = []
+        # tool_call/tool_result pairing. Keyed by tool_use_id when the hook
+        # recorded one — concurrent tool calls interleave in the feed, so
+        # adjacency lies about which call a result belongs to. The single
+        # slot survives only as the fallback for ledgers written before
+        # tool_use_id existed, preserving their replay byte-for-byte.
+        self._pending_by_id: Dict[str, Optional[str]] = {}
         self._pending_tool: Optional[str] = None
 
     def resolve(self, ref: str) -> str:
@@ -49,12 +55,20 @@ class Builder:
     def feed(self, event: dict) -> None:
         etype = event["type"]
         if etype == "tool_call":
-            self._pending_tool = event["payload"].get("tool")
+            call_id = event["payload"].get("tool_use_id")
+            if call_id:
+                self._pending_by_id[call_id] = event["payload"].get("tool")
+            else:
+                self._pending_tool = event["payload"].get("tool")
         elif etype == "tool_result":
-            claim = Claim(CLAIM_EFFECT, effect_text(event, self._pending_tool))
+            call_id = event["payload"].get("tool_use_id")
+            if call_id:
+                tool = self._pending_by_id.pop(call_id, None)
+            else:
+                tool, self._pending_tool = self._pending_tool, None
+            claim = Claim(CLAIM_EFFECT, effect_text(event, tool))
             self.store.add_claim(claim)
             self.labels[f"effect:{event['seq']}"] = claim.id
-            self._pending_tool = None
         elif etype == "commit":
             payload = event["payload"]
             deps = tuple(self.resolve(r) for r in payload.get("deps", []))

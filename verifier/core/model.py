@@ -1,5 +1,9 @@
-"""Data contracts. Everything content-addressed; statuses are a
-small state machine enforced by the store, not here."""
+"""
+Data contracts. 
+Everything content-addressed; 
+statuses are a small state machine enforced by the store, not here.
+"""
+
 from __future__ import annotations
 from typing import Literal
 
@@ -9,7 +13,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Tuple
 
 # canonical hashing
-
 def canonical(obj: Any) -> str:
     """Deterministic JSON encoding used for every content hash."""
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))

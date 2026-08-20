@@ -31,9 +31,9 @@ def main() -> None:
             "type": "tool_result",
             "payload": {
                 "tool": data.get("tool_name"),
-                "response_sha256": hashlib.sha256(
-                    canonical.encode("utf-8")).hexdigest(),
-                "excerpt": canonical[:20000],
+                "tool_use_id": data.get("tool_use_id"),
+                "response_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                "excerpt": canonical[:30000],
                 "session": data.get("session_id"),
                 "agent": data.get("agent_id"),
             },

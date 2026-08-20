@@ -6,8 +6,23 @@ event log — they append bare JSON lines to a feed file (GV_HOOK_FEED); the
 server, the log's single writer, ingests them in arrival order.
 
 Settings (.claude/settings.json):
-  {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
-      {"type": "command", "command": "python3 hooks/pre_tool_use.py"}]}]}}
+{
+  "hooks":
+  {
+    "PreToolUse":
+    [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 hooks/pre_tool_use.py"
+          }
+        ]
+      }
+    ]
+  }
+}
 """
 import json
 import os
@@ -25,6 +40,7 @@ def main() -> None:
             "type": "tool_call",
             "payload": {
                 "tool": data.get("tool_name"),
+                "tool_use_id": data.get("tool_use_id"),
                 "input": data.get("tool_input"),
                 "session": data.get("session_id"),
                 "agent": data.get("agent_id"),
