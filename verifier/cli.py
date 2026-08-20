@@ -9,6 +9,11 @@ certificate. This CLI is that refusal, shaped for CI:
 
   uv run python -m verifier.cli replay --events trace.jsonl
   -> LLM-free: rebuilds the claim graph and prints label -> status.
+
+  uv run python -m verifier.cli score --state-dir .gv [--model m]
+  -> offline ORM path: the state dir holds a vanilla trace (hook_feed.jsonl
+     + task.md + baseline/ + final.txt); extract the claim graph, certify,
+     print the feature dict. Exit 0 iff the verdict is `verified`.
 """
 from __future__ import annotations
 
@@ -76,6 +81,15 @@ def replay(events_path: str) -> int:
     return 0
 
 
+def score(state_dir: str, model: Optional[str] = None,
+          max_rounds: int = 3) -> int:
+    from . import offline
+
+    features = offline.score(state_dir, model=model, max_rounds=max_rounds)
+    print(json.dumps(features, ensure_ascii=False, indent=1))
+    return 0 if features.get("verdict") == "verified" else 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="verifier.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -89,9 +103,16 @@ def main(argv=None) -> int:
     r = sub.add_parser("replay")
     r.add_argument("--events", required=True)
 
+    s = sub.add_parser("score")
+    s.add_argument("--state-dir", required=True)
+    s.add_argument("--model", default=None)
+    s.add_argument("--max-rounds", type=int, default=3)
+
     args = ap.parse_args(argv)
     if args.cmd == "certify":
         return certify(args.events, args.state_dir, args.final, args.model)
+    if args.cmd == "score":
+        return score(args.state_dir, args.model, args.max_rounds)
     return replay(args.events)
 
 

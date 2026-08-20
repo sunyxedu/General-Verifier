@@ -79,6 +79,47 @@ def main():
     print(f"GV verified&passed: {stats['ver_ok']} · "
           f"verified&FAILED (false certificate): {stats['ver_BAD']}")
 
+    rec_selection()
+
+
+def rec_selection():
+    """Best-of-k over the rec arm's offline scores (rewards are Harbor's
+    own ground truth): pass@1 / verifier argmax / pass@k oracle."""
+    from common import results as res
+    from verifier import offline, selection
+
+    scores_path = os.path.join(HERE, "results", "rec_scores.jsonl")
+    rows = res.load(scores_path)
+    if not rows:
+        return
+    by_task = defaultdict(list)
+    for r in rows:
+        by_task[r["task"]].append(
+            {"solved": bool(r.get("reward")), "features": r["features"],
+             "trial": r["trial"]})
+    totals = Counter()
+    print(f"\n{'best-of-k (rec)':<28}{'k':>4}{'picked verdict':>16}"
+          f"{'pass@1':>8}{'argmax':>8}{'oracle':>8}")
+    for task in sorted(by_task):
+        trials = by_task[task]
+        chosen = selection.argmax(trials)
+        p1 = selection.pass_at_1(trials)
+        argmax_ok = bool(chosen and chosen["solved"])
+        oracle_ok = selection.oracle(trials)
+        totals["pass@1"] += p1
+        totals["argmax"] += argmax_ok
+        totals["oracle"] += oracle_ok
+        totals["n"] += 1
+        print(f"{task:<28}{len(trials):>4}"
+              f"{str(chosen['features'].get('verdict')):>16}"
+              f"{p1:>8.2f}{str(argmax_ok):>8}{str(oracle_ok):>8}")
+    n = totals["n"]
+    if n:
+        argmax_cell = "%d/%d" % (totals["argmax"], n)
+        oracle_cell = "%d/%d" % (totals["oracle"], n)
+        print(f"{'TOTAL':<28}{'':>4}{'':>16}"
+              f"{totals['pass@1'] / n:>8.2f}{argmax_cell:>8}{oracle_cell:>8}")
+
 
 if __name__ == "__main__":
     main()

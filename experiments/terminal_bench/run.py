@@ -11,6 +11,9 @@ Arms (identical task subset from tasks.txt, resumable by job name):
                  reaches it via ANTHROPIC_BASE_URL=host.docker.internal
                  (needs VERTEX_API_KEY; generations use the built-in
                  DeepSeek key)
+  --arm rec      gv_agent:RecClaudeCode — stock claude-code + recording
+                 hooks only (no MCP, no protocol); /gv-state is pulled as
+                 an artifact for offline ORM scoring (score.py)
 
 Scoring is Harbor's own (task verifiers write reward 0/1). The GV arm also
 downloads /gv-state as a trial artifact so certificate verdicts can be
@@ -48,7 +51,7 @@ def read_tasks():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True,
-                    choices=["plain", "gv", "turbo", "codex"])
+                    choices=["plain", "gv", "turbo", "codex", "rec"])
     ap.add_argument("--k", type=int, default=1, help="attempts per task")
     ap.add_argument("--candidates", type=int, default=3,
                     help="turbo: parallel candidates per model call")
@@ -97,6 +100,14 @@ def main():
         # resolves it itself; the proxy substitutes its backend model anyway.
         cmd += ["-a", "claude-code", "-m", args.model or "sonnet",
                 "--agent-timeout-multiplier", "3"]
+    elif args.arm == "rec":
+        cmd += ["-a", "gv_agent:RecClaudeCode",
+                "-m", args.model or "anthropic/sonnet",
+                "--agent-timeout-multiplier", "1000",
+                "--agent-setup-timeout-multiplier", "100",
+                # pull the ledger out for offline scoring (score.py)
+                "--artifact", "/gv-state"]
+        env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
     else:  # gv
         cmd += ["-a", "gv_agent:GVClaudeCode",
                 "-m", args.model or "anthropic/sonnet",

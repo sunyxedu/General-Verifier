@@ -296,6 +296,28 @@ JUDGER_AGENT = AgentRole(
     tools=["Read", "Bash", "Grep"],
 )
 
+EXTRACT_CLAIMS_AGENT = AgentRole(
+    name="extract",
+    system=prompts.EXTRACT_SYSTEM,
+    template=prompts.EXTRACT_TEMPLATE,
+    # revises is required-but-"" like discharge's witness (the mini-DSL has
+    # no optional keys); kinds exclude "effect" — effects come from the
+    # ledger replay, never from the extractor
+    schema={
+        "commits": [
+            {
+                "label": str,
+                "kind": ("assertion", "final"),
+                "text": str,
+                "deps": [str],
+                "revises": str,
+            }
+        ]
+    },
+    tools=["Read", "Grep", "Glob"],   # reconstruction, no execution
+    max_turns=30,                     # long ledgers take reading room
+)
+
 ALL_AGENT_ROLES = {
     role.name: role
     for role in (
@@ -304,5 +326,6 @@ ALL_AGENT_ROLES = {
         ENUMERATE_ORACLES_AGENT,
         DISCHARGE_AGENT,
         JUDGER_AGENT,
+        EXTRACT_CLAIMS_AGENT,
     )
 }

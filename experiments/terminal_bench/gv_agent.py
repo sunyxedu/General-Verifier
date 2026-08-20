@@ -157,3 +157,40 @@ class GVClaudeCode(ClaudeCode):
             f"uv run --project {GV_DEST} python -m verifier.baseline "
             f"/app {STATE_DIR}/baseline || true"))
         await super().run(instruction + GV_SUFFIX, environment, context)
+
+
+class RecClaudeCode(GVClaudeCode):
+    """Recording-only arm for the offline ORM path: same container payload
+    as GVClaudeCode (its venv python runs the hooks; uv runs the baseline
+    snapshot), but no MCP server registration, no protocol CLAUDE.md, and
+    no prompt suffix — the solver is stock claude-code with its
+    distribution untouched. The ledger + task.md + baseline land in
+    /gv-state for the --artifact pull; scoring happens on the host
+    (score.py) after the fact."""
+
+    @staticmethod
+    @override
+    def name() -> str:
+        return "rec-claude-code"
+
+    def __init__(self, logs_dir: Path, *args, **kwargs):
+        super().__init__(logs_dir, *args, **kwargs)
+        # GVClaudeCode.__init__ registered the gv MCP server; the recorder
+        # must not — its absence is the whole point of the arm
+        self.mcp_servers = [s for s in self.mcp_servers if s.name != "gv"]
+
+    @override
+    async def run(self, instruction: str, environment: BaseEnvironment,
+                  context: AgentContext) -> None:
+        cfg = (EnvironmentPaths.agent_dir / "sessions").as_posix()
+        await self.exec_as_agent(environment, command=(
+            f"mkdir -p {cfg} && "
+            f"printf %s {shlex.quote(self._settings_json())} "
+            f"> {cfg}/settings.json"))
+        await self.exec_as_agent(environment, command=(
+            f"printf %s {shlex.quote(instruction)} > {STATE_DIR}/task.md; "
+            'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"; '
+            f"uv run --project {GV_DEST} python -m verifier.baseline "
+            f"/app {STATE_DIR}/baseline || true"))
+        # grandparent run: plain instruction, no protocol, no suffix
+        await ClaudeCode.run(self, instruction, environment, context)

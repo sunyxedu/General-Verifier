@@ -20,8 +20,9 @@ class RoleError(RuntimeError):
 
 # ---- minimal schema validation (no external deps) ----------------------------
 # schema: {"field": type} where type in {str, bool, int, float, list, dict},
-# {"field": [element_schema]} for a list of dicts, or {"field": ("a", "b")}
-# for a closed string enum.
+# {"field": [element_spec]} for a list (elements may be any spec, e.g. [str]
+# or [{...}]), or {"field": ("a", "b")} for a closed string enum. Mirrors
+# agents.to_json_schema — the two must accept the same specs.
 
 def validate(schema: Dict[str, Any], payload: Any, path: str = "$") -> None:
     if not isinstance(payload, dict):
@@ -29,23 +30,26 @@ def validate(schema: Dict[str, Any], payload: Any, path: str = "$") -> None:
     for key, spec in schema.items():
         if key not in payload:
             raise RoleError(f"{path}.{key}: missing")
-        value = payload[key]
-        if isinstance(spec, tuple):
-            if value not in spec:
-                raise RoleError(f"{path}.{key}: {value!r} not in {spec}")
-        elif isinstance(spec, list):
-            if not isinstance(value, list):
-                raise RoleError(f"{path}.{key}: expected list")
-            for i, item in enumerate(value):
-                validate(spec[0], item, f"{path}.{key}[{i}]")
-        elif isinstance(spec, dict):
-            validate(spec, value, f"{path}.{key}")
-        else:
-            if not isinstance(value, spec):
-                raise RoleError(
-                    f"{path}.{key}: expected {spec.__name__}, "
-                    f"got {type(value).__name__}"
-                )
+        _check(spec, payload[key], f"{path}.{key}")
+
+
+def _check(spec: Any, value: Any, path: str) -> None:
+    if isinstance(spec, tuple):
+        if value not in spec:
+            raise RoleError(f"{path}: {value!r} not in {spec}")
+    elif isinstance(spec, list):
+        if not isinstance(value, list):
+            raise RoleError(f"{path}: expected list")
+        for i, item in enumerate(value):
+            _check(spec[0], item, f"{path}[{i}]")
+    elif isinstance(spec, dict):
+        validate(spec, value, path)
+    else:
+        if not isinstance(value, spec):
+            raise RoleError(
+                f"{path}: expected {spec.__name__}, "
+                f"got {type(value).__name__}"
+            )
 
 
 # ---- fixture backend ---------------------------------------------------------

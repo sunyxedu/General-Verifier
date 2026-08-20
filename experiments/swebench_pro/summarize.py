@@ -82,6 +82,60 @@ def main():
         print(f"\nGV verified&resolved: {ver_ok} · "
               f"verified&UNRESOLVED (false certificate): {ver_bad}")
 
+    rec_selection(evals)
+
+
+def rec_selection(evals):
+    """Best-of-N over the rec arm's offline scores. Patches are not
+    comparable answers, so no vote strategies here — argmax vs pass@1 vs
+    the pass@N oracle, using the rec_s<sample> eval tags as ground truth
+    (rank-only table when evaluation has not run yet)."""
+    from verifier import offline, selection
+
+    recs = res.load(os.path.join(HERE, "results", "rec", "results.jsonl"))
+    scores = {(r["instance_id"], r["sample"]): r["features"] for r in
+              res.load(os.path.join(HERE, "results", "rec", "scores.jsonl"))}
+    if not scores:
+        return
+    by_iid = defaultdict(list)
+    for r in recs:
+        features = scores.get((r["instance_id"], r["sample"]))
+        if features is None:
+            continue
+        verdict = evals.get(f"rec_s{r['sample']}", {}).get(r["instance_id"])
+        by_iid[r["instance_id"]].append(
+            {"sample": r["sample"], "features": features,
+             "solved": bool(verdict), "evaluated": verdict is not None})
+    evaluated = all(row["evaluated"] for rows in by_iid.values() for row in rows)
+    totals = defaultdict(float)
+    print(f"\n{'best-of-N (rec)':<30}{'N':>4}{'picked':>8}"
+          f"{'verdict':>12}" + (f"{'pass@1':>8}{'argmax':>8}{'oracle':>8}"
+                                if evaluated else "  (not evaluated yet)"))
+    for iid in sorted(by_iid):
+        rows = by_iid[iid]
+        chosen = selection.argmax(rows)
+        picked = "s%d" % chosen["sample"]
+        short_iid = iid.split("__")[-1][:28]
+        line = (f"{short_iid:<30}{len(rows):>4}{picked:>8}"
+                f"{str(chosen['features'].get('verdict')):>12}")
+        if evaluated:
+            p1 = selection.pass_at_1(rows)
+            argmax_ok = bool(chosen["solved"])
+            oracle_ok = selection.oracle(rows)
+            line += f"{p1:>8.2f}{str(argmax_ok):>8}{str(oracle_ok):>8}"
+            totals["pass@1"] += p1
+            totals["argmax"] += argmax_ok
+            totals["oracle"] += oracle_ok
+        totals["n"] += 1
+        print(line)
+    if evaluated and totals["n"]:
+        n = int(totals["n"])
+        argmax_cell = "%d/%d" % (totals["argmax"], n)
+        oracle_cell = "%d/%d" % (totals["oracle"], n)
+        print(f"{'TOTAL':<30}{'':>4}{'':>8}{'':>12}"
+              f"{totals['pass@1'] / n:>8.2f}"
+              f"{argmax_cell:>8}{oracle_cell:>8}")
+
 
 if __name__ == "__main__":
     main()

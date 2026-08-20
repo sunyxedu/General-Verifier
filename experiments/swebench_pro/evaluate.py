@@ -7,7 +7,8 @@ images. On Apple Silicon the script auto-selects linux/amd64 emulation.
 
 Arms:
   --arm gv | turbo | codex   evaluates sample 0 of that arm
-  --arm plain                evaluates EVERY sample
+  --arm plain | rec          evaluates EVERY sample (rec needs per-sample
+                             verdicts for best-of-N selection accounting)
 
 Usage:
   uv run python experiments/swebench_pro/evaluate.py --arm gv
@@ -46,8 +47,8 @@ def patches_for(arm, sample):
             patch = f.read()
         if patch.strip():
             out.append({"instance_id": r["instance_id"], "patch": patch,
-                        "prefix": f"{arm}_s{sample}" if arm == "plain"
-                                  else arm})
+                        "prefix": f"{arm}_s{sample}"
+                                  if arm in ("plain", "rec") else arm})
     return out
 
 
@@ -87,7 +88,7 @@ def run_eval(tag, patches, instances, workers):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True,
-                    choices=["gv", "turbo", "plain", "codex"])
+                    choices=["gv", "turbo", "plain", "codex", "rec"])
     ap.add_argument("--num_workers", type=int, default=2)
     args = ap.parse_args()
 
@@ -96,12 +97,12 @@ def main():
     with open(os.path.join(HERE, "instances.json")) as f:
         instances = json.load(f)
 
-    if args.arm == "plain":
-        rows = res.load(os.path.join(HERE, "results", "plain",
+    if args.arm in ("plain", "rec"):
+        rows = res.load(os.path.join(HERE, "results", args.arm,
                                      "results.jsonl"))
         samples = sorted({r["sample"] for r in rows})
         for s in samples:
-            run_eval(f"plain_s{s}", patches_for("plain", s), instances,
+            run_eval(f"{args.arm}_s{s}", patches_for(args.arm, s), instances,
                      args.num_workers)
     else:
         run_eval(args.arm, patches_for(args.arm, 0), instances,

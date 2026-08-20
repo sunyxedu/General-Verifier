@@ -16,12 +16,16 @@ differs:
                  VERTEX_API_KEY)
   --arm plain    stock headless Claude Code
   --arm codex    stock headless Codex CLI
+  --arm rec      stock headless Claude Code + recording hooks only (no MCP,
+                 no protocol — the solver's distribution is untouched);
+                 leaves a ledger for the offline ORM path (score.py)
 
 Usage:
   uv run python experiments/swebench_pro/run.py --arm gv
   uv run python experiments/swebench_pro/run.py --arm turbo
   uv run python experiments/swebench_pro/run.py --arm plain
   uv run python experiments/swebench_pro/run.py --arm codex
+  uv run python experiments/swebench_pro/run.py --arm rec --n 4
 """
 import argparse
 import json
@@ -112,7 +116,7 @@ def build_prompt(inst, gv):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True,
-                    choices=["gv", "turbo", "plain", "codex"])
+                    choices=["gv", "turbo", "plain", "codex", "rec"])
     ap.add_argument("--n", type=int, default=1, help="samples per instance")
     ap.add_argument("--model", default="sonnet", help="claude model for "
                     "plain/gv/turbo; ignored for codex")
@@ -152,6 +156,12 @@ def main():
             out, seconds = solver.run_claude(work, prompt, model=args.model,
                                              mcp=True, timeout=args.timeout,
                                              task=build_prompt(inst, gv=False))
+        elif args.arm == "rec":
+            solver.mount_recorder(work)
+            out, seconds = solver.run_claude(work, prompt, model=args.model,
+                                             record=True,
+                                             timeout=args.timeout)
+            solver.record_final(work, out)
         elif args.arm == "codex":
             out, seconds = solver.run_codex(work, prompt,
                                             timeout=args.timeout)

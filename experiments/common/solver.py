@@ -6,10 +6,11 @@ Three ways to run a solver on ONE prompt in ONE working directory:
   run_codex(...)             stock headless Codex CLI
   mount_gv(...) + run_claude(..., mcp=True)
                              Claude Code with the full General Verifier
-                             mounted — MCP server + Pre/PostToolUse hooks +
-                             the solver protocol as CLAUDE.md. The solver is
-                             simply given a prompt; everything else is the
-                             system being measured.
+                             mounted — MCP server + Pre/PostToolUse hooks;
+                             the solver protocol arrives as the gv server's
+                             MCP instructions. The solver is simply given a
+                             prompt; everything else is the system being
+                             measured.
 
 Hard-won details baked in (learned on earlier live runs):
   - the repo path contains a space — hook commands are shell-parsed, so the
@@ -61,21 +62,41 @@ SETTINGS_JSON = {
 
 def mount_gv(work: str, model: str | None = None,
              claude_md_extra: str = "") -> None:
-    """Write .mcp.json / .claude/settings.json / CLAUDE.md into `work`."""
+    """Write .mcp.json / .claude/settings.json into `work`. The solver
+    protocol is NOT copied here: the gv server serves it as MCP server
+    instructions, so it arrives with the mount and cannot drift."""
     os.makedirs(os.path.join(work, ".claude"), exist_ok=True)
     with open(os.path.join(work, ".mcp.json"), "w") as f:
         json.dump(mcp_json(model), f)
     with open(os.path.join(work, ".claude", "settings.json"), "w") as f:
         json.dump(SETTINGS_JSON, f)
-    with open(os.path.join(ROOT, "protocol", "solver-protocol.md")) as f:
-        protocol = f.read()
-    with open(os.path.join(work, "CLAUDE.md"), "w") as f:
-        f.write(protocol + ("\n\n" + claude_md_extra if claude_md_extra
-                            else ""))
+    if claude_md_extra:
+        with open(os.path.join(work, "CLAUDE.md"), "w") as f:
+            f.write(claude_md_extra)
+
+
+def mount_recorder(work: str) -> None:
+    """Hooks-only mount for the offline ORM path: the solver stays fully
+    vanilla (no MCP server, no protocol in context — its distribution is
+    untouched); the recording hooks just write the ledger feed that the
+    offline extractor scores after the fact."""
+    os.makedirs(os.path.join(work, ".claude"), exist_ok=True)
+    with open(os.path.join(work, ".claude", "settings.json"), "w") as f:
+        json.dump(SETTINGS_JSON, f)
+
+
+def record_final(work: str, stdout: str) -> None:
+    """Persist the solver's final output where the offline extractor
+    expects it (state-dir/final.txt)."""
+    state = os.path.join(work, ".gv")
+    os.makedirs(state, exist_ok=True)
+    with open(os.path.join(state, "final.txt"), "w") as f:
+        f.write(stdout)
 
 
 def run_claude(work: str, prompt: str, model: str = "sonnet",
-               mcp: bool = False, timeout: int | None = DEFAULT_TIMEOUT,
+               mcp: bool = False, record: bool = False,
+               timeout: int | None = DEFAULT_TIMEOUT,
                base_url: str | None = None, task: str | None = None):
     """Headless Claude Code on the configured provider (see .env /
     provider.py). Returns (stdout, seconds).
@@ -85,11 +106,14 @@ def run_claude(work: str, prompt: str, model: str = "sonnet",
     `task` is the clean task statement for the verifier's task.md (defaults
     to `prompt`; pass it when the prompt carries protocol plumbing like the
     GV suffix, which is not task content).
+    `record` writes the verifier ground truth (task.md + pre-run baseline)
+    without mounting the MCP server — the recorder arm for offline scoring.
     """
     cmd = ["claude", "-p", prompt, "--model", model,
            "--dangerously-skip-permissions"]
     if mcp:
         cmd += ["--mcp-config", ".mcp.json", "--strict-mcp-config"]
+    if mcp or record:
         # harness ground truth for the verifier: the authoritative task
         # statement + a pre-task snapshot (obligation compiler reads both;
         # the solver's paraphrase of the task is untrusted)
