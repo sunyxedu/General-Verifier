@@ -1,4 +1,5 @@
-"""Offline scoring of a finished vanilla trace (the ORM path).
+"""
+Offline scoring of a finished vanilla trace (the ORM path).
 
 The solver ran with nothing mounted but the recording hooks: its
 distribution is untouched, and all it leaves behind is a state dir with
@@ -55,9 +56,11 @@ def _read(path: str) -> str:
 
 
 def ingest_feed(feed_path: str, log: EventLog) -> int:
-    """Raw hook-feed lines -> canonical ledger events (seq/ts assigned).
+    """
+    Raw hook-feed lines -> canonical ledger events (seq/ts assigned).
     Mirrors Service._ingest_hook_event; unknown lines are ignored (the
-    feed is untrusted input)."""
+    feed is untrusted input).
+    """
     count = 0
     if not os.path.exists(feed_path):
         return count
@@ -75,8 +78,10 @@ def ingest_feed(feed_path: str, log: EventLog) -> int:
 
 
 def events_index(log: EventLog) -> str:
-    """Compact one-line-per-event rendering for the extractor's prompt;
-    the full ledger file stays available to Read/Grep."""
+    """
+    Compact one-line-per-event rendering for the extractor's prompt;
+    the full ledger file stays available to Read/Grep.
+    """
     lines: List[str] = []
     for event in log.replay():
         if len(lines) >= INDEX_MAX_EVENTS:
@@ -92,9 +97,11 @@ def events_index(log: EventLog) -> str:
 
 
 def _apply_commits(log: EventLog, commits: List[Dict[str, Any]]) -> Optional[str]:
-    """Append the extractor's commits to the candidate log, validating
+    """
+    Append the extractor's commits to the candidate log, validating
     LLM-free through a trigger-less Builder replay. Returns the first
-    structural error as text, or None on success."""
+    structural error as text, or None on success.
+    """
     builder = Builder(log, ClaimStore())
     for event in log.replay():
         builder.feed(event)
@@ -123,10 +130,12 @@ def _apply_commits(log: EventLog, commits: List[Dict[str, Any]]) -> Optional[str
 
 def extract(state_dir: str, backend=None, model: Optional[str] = None,
             max_rounds: int = 3) -> Dict[str, Any]:
-    """Reconstruct commit events for the trace in `state_dir` and write
-    the full events.jsonl. Retries feed back structural errors only —
-    never verification results. Raises ExtractionError when every round
-    fails; on success returns (and persists to extract.json) the meta."""
+    """
+    Reconstruct commit events for the trace in `state_dir` and write
+    the full events.jsonl. Retries feed back structural errors only.
+    Never verification results. Raises ExtractionError when every round
+    fails. On success returns (and persists to extract.json) the meta.
+    """
     if backend is None:
         from .llm.agents import AgentBackend
         backend = AgentBackend(cwd=state_dir, model=model)
@@ -139,7 +148,7 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
 
     feedback, last_error = "", None
     for round_no in range(1, max_rounds + 1):
-        # fresh candidate per attempt: a failed round's partial commits
+        # Fresh candidate per attempt: a failed round's partial commits
         # must not survive into the next
         if os.path.exists(candidate):
             os.remove(candidate)
@@ -218,13 +227,15 @@ def _features(cert: Dict[str, Any], extract_rounds: int) -> Dict[str, Any]:
 def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           backend=None, max_rounds: int = 3,
           seats: Optional[str] = None) -> Dict[str, Any]:
-    """Extract (if not already done) + certify + fold into features.
+    """
+    Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
     and persists it to score.json.
 
     seats="codex" runs every seat (extractor included) through the Codex
     CLI on a ChatGPT-subscription model instead of the Claude Agent SDK;
-    `model` then names the codex model (default gpt-5.6-luna)."""
+    `model` then names the codex model (default gpt-5.6-luna).
+    """
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
         if backend is None:
@@ -265,8 +276,7 @@ def _write_score(state_dir: str, features: Dict[str, Any]) -> Dict[str, Any]:
     return features
 
 
-# ---- ranking -----------------------------------------------------------------
-
+# ranking  
 VERDICT_RANK = {"verified": 3, "partial": 2, "unverified": 1, "refuted": 0}
 
 
