@@ -204,10 +204,16 @@ class Kernel:
                 verified_deps.append(label)
             else:
                 pending_deps.append(f"{label} (status: {prow['status']})")
+        # a run scored after the fact (offline ORM) has no live world; the
+        # harness may instead have captured the delivered tree next to the
+        # ledger. Absolute, like ledger_path: the checker runs elsewhere.
+        world = os.path.join(os.path.dirname(os.path.abspath(self.log.path)),
+                             "world")
         variables = {
             "claim_text": row["text"],
             "claim_kind": row["kind"],
             "ledger_path": os.path.abspath(self.log.path),
+            "world_path": world if os.path.isdir(world) else "",
             "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
             "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
             "graph": json.dumps(

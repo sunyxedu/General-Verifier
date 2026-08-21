@@ -41,6 +41,19 @@ def find_state(trial_dir):
     return None
 
 
+def link_world(trial_dir, state):
+    """Point <state>/world at the pulled working tree, if the run captured
+    one. Without it the container is gone by scoring time and every
+    delivered-state obligation can only fail — the ledger would be the
+    sole evidence, which proves reporting accuracy, not task success."""
+    world = os.path.join(state, "world")
+    if os.path.exists(world):
+        return
+    app = os.path.join(trial_dir, "artifacts", "app")
+    if os.path.isdir(app):
+        os.symlink(os.path.abspath(app), world)
+
+
 def codex_state(trial):
     """Build a state dir from a codex trial's own rollout log. The ledger
     is converted from the rollout; task.md comes from the trial config
@@ -85,6 +98,7 @@ def main():
             print(f"[tb:score] {t['trial']} no ledger (neither gv-state nor "
                   "a codex rollout) — skipped", flush=True)
             continue
+        link_world(t["trial_dir"], state)
         final_path = os.path.join(state, "final.txt")
         if not os.path.exists(final_path) or not open(final_path).read().strip():
             with open(final_path, "w") as f:

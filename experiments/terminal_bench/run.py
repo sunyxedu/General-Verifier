@@ -130,8 +130,9 @@ def main():
                 "-m", args.model or "anthropic/sonnet",
                 "--agent-timeout-multiplier", "1000",
                 "--agent-setup-timeout-multiplier", "100",
-                # pull the ledger out for offline scoring (score.py)
-                "--artifact", "/gv-state"]
+                # ledger + the delivered tree: offline scoring needs both,
+                # the second so delivered-state obligations have a world
+                "--artifact", "/gv-state", "--artifact", "/app"]
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
     else:  # gv
         cmd += ["-a", "gv_agent:GVClaudeCode",
