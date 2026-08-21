@@ -1,176 +1,176 @@
 # General Verifier
 
-A test-time verification harness for LLM solvers (e.g. Claude Code). It verifies the
-claims a solver produces **during** reasoning — not by asking a model for a second
-opinion, but by forcing every claim through an evidence chain that ends in mechanical
-gates, and issuing a certificate a consumer (you, or CI) can refuse to merge without.
+An **outcome verifier for agent traces**. A stock agent (Claude Code, Codex) solves a
+task N times with nothing attached but a pair of recording hooks; afterwards, each
+finished trace is scored in isolation — the verifier reconstructs the **claim graph**
+the run implicitly relied on, checks every claim down to mechanical gates, freezes a
+**certificate**, and folds it into a rank. Best-of-N selection then happens over the
+N certificates. The verifier never touches the generator: no feedback, no protocol in
+the solver's context, no change to its distribution — the same contract as an
+LLM-as-a-Verifier reward model, with one difference: **the score is backed by
+executed checks, not by a model's opinion of the transcript.**
 
-## Why
+## Why not just ask a model?
 
-Two observations drive the design:
+An LLM judge reads a trajectory and rates it. That fails in a specific, systematic
+way: a run that *confidently reports* wrong actions reads exactly like a run that did
+the right thing — the judge sees reporting quality, not task success. This system is
+built around three counters to that failure:
 
-1. **Opinions are not evidence.** A verifier that only reasons cannot check claims that
-   require touching the environment — running code, probing what is installed. Roles
-   that must act are agents with tools, not text completions.
-2. **Every "yes" must have an owner.** A pass nobody is accountable for is worthless.
-   The responsibilities are named: the oracle signs the guarantee that a method
-   suffices (and grades its assurance level on a scale of its own devising), the
-   executor owns doing it faithfully, and a judger examines the delivered result
-   against that promise — feeding its reasons back for redos, at most 3 rounds. Every
-   verdict traces back to a named guarantee.
+1. **Claims, not vibes.** A trace is decomposed into atomic, falsifiable claims with
+   explicit dependencies. Every claim is either checked against evidence or its
+   status says it wasn't — nothing is silently absorbed into an overall impression.
+2. **Two evidence indexes, never mixed.** A claim about a *past action* ("the solver
+   ran X and it printed Y") is checked against the **ledger** — the hooks' trusted
+   record of every tool call and result. A claim about the *delivered state* ("the
+   answer file now contains Z") is checked against the **delivered world** — the
+   working tree captured when the run ended. A trace whose claims are all accurate
+   past reports proves only that the solver narrates honestly; the delivered-state
+   claims are what carry the verdict.
+3. **Opinions propose, mechanics decide.** LLM seats compile obligations, pick
+   methods, run checks — but every seat's output passes a schema gate, every check
+   leaves an auditable artifact, effect claims are re-hashed against the ledger, and
+   the status folds (claim ← obligations, certificate ← slice) always take the worst
+   case. Crashes, timeouts, malformed output: FAILED, never a pass. A wrong
+   extraction or a lazy decomposition can cost recall; it cannot mint a false
+   `verified`.
 
-Master principle: **every prompt template under `verifier/` carries zero domain
-knowledge** — domain content emerges at runtime (environment probing, the model's
-knowledge, memory retrieval). What is guarded *mechanically*, fail-closed, is the
-frame around every LLM seat: output schemas (malformed output = FAILED, never a
-pass), crashes and timeouts (FAILED), effect claims (ledger digest re-hash), and
-the settlement/certificate folds (a verdict never rounds up). The *substance* of a
-discharge verdict is the executor agent's own attested outcome, audited by the
-judger agent — an LLM check on an LLM report, with the full workdir snapshot kept
-as evidence so any pass is auditable after the fact.
-
-## How it works
+## Architecture
 
 ![General Verifier architecture](docs/architecture.svg)
 
-1. **Commit.** The solver commits claims (`assertion` / `final`) over MCP; hooks turn
-   its tool calls into `effect` claims. Everything is one append-only JSONL stream —
-   replay of that file is the whole offline mode.
-2. **Trigger.** One scheduling rule: a claim is verified the moment it is **committed** —
-   `gv.commit` returns only after the check, carrying the failing obligation and its
-   counterexample, so the solver never writes a second claim on top of an unexamined
-   first one. `effect` claims (the ledger) stay lazy until something leans on one, a
-   claim left unverified is retried when it first gains a dependent, and the certificate
-   is the backstop over the whole slice. `--trigger on-first-dependent` restores the old
-   lazy policy (the CI gate uses it: replaying a finished trace has no solver to warn).
-3. **Obligations.** A graph-aware agent compiles the claim into concretely checkable
-   obligations. It sees the whole claim graph: premises already verified may be relied
-   on (obligations can be *residual*), and a condition already proven anywhere is
-   reused verbatim instead of re-demanded. Obligations materialize as first-class,
-   content-addressed graph nodes: the same check under two claims is **one node**, so
-   a settled verdict transfers across claims for free. An obligation whose text
-   matches a claim the graph already settled inherits that verdict the same way —
-   verified passes, refuted refutes, evidence carried over. There is no count cap:
-   however many obligations compile, all are verified.
-4. **Binding game** (per obligation node): the oracle lists only *sufficient* methods —
-   sufficiency is its own signed guarantee, researched first when the domain is
-   unfamiliar — each graded with an assurance level **of the oracle's own devising**
-   and listed ascending; execution follows the oracle's order exactly (simplest
-   sufficient first, most assured last). The discharge executor carries the method out
-   faithfully (a missing instrument is installed on the spot; a truly unobtainable one
-   settles the claim at `partial`). A **judger** then examines the delivered result:
-   was the bound method faithfully executed and the promised artifact delivered?
-   Unfaithful → the judger's reason goes back to the executor for a redo and a blind
-   re-judge — a loop of at most **3 rounds**. Exhaustion = failed, with every attempt
-   on record.
-5. **Settlement** is honest per claim: a claim's status is the fold of its obligation
-   nodes — any refuted node → `refuted` (and the downstream cone is hard-killed); all
-   verified → `verified`; some verified and some not → `partial`; blocked only by an
-   unobtainable instrument → `partial` as well. The
-   certificate freezes the slice with each claim's obligation nodes and their evidence
-   nested inside, and collapses the same way: refuted > unverified > partial >
-   verified.
+Solid lines are the **offline ORM path** (the primary object). The dashed teal
+overlay is the **online, interactive mode**: the same graph, kernel and certificate,
+but the live solver commits claims itself over MCP (no extractor) and the verdict
+flows back to it — feedback that the ORM path deliberately does not have.
 
-Design notes:
+Per trace, left to right:
 
-- **Every seat acts**: all four roles (obligation compiler, oracle, discharge
-  executor, judger) are Claude Agent SDK agents with structured output and a hard
-  tool palette (`verifier/llm/agents.py`) — the palette is the capability boundary
-  (the compiler has no execution tool: that is what makes it answer-blind).
-  `verifier/llm/roles.py` holds the shared schema gate and the deterministic
-  fixture backend used by tests.
-- **Revision, not branches**: a wrong claim is resubmitted with `revises=`; the old
-  claim and its downstream cone go stale, and content addressing dedups identical
-  resubmissions and reuses settled obligation verdicts across claims.
-- **Memory is advisory only**: three stores (obligation patterns / attack patterns /
-  instrument registry) feed prompt slots via deterministic retrieval. Hits make the
-  system faster; they can never make a wrong claim verify.
+1. **Record.** The solver runs untouched; `PreToolUse`/`PostToolUse` hooks append
+   every tool call and result to a raw feed. The run leaves behind the feed, the
+   authoritative task statement, a pre-run baseline snapshot, the solver's final
+   output, and the delivered working tree.
+2. **Ingest.** Feed lines become a seq-validated, append-only event stream —
+   deterministic, no LLM.
+3. **Extract.** An LLM seat reconstructs the commit events the solver never made:
+   atomic claims in topological order, past observations anchored to ledger events
+   (`effect:<seq>`), delivered-state claims in the present tense, exactly one
+   `final`. The extractor is **outcome-blind**: structural errors (an unresolvable
+   reference, no final) bounce back for a bounded retry, but verification verdicts
+   never reach it — extraction stays independent of scoring.
+4. **Gate.** The extracted graph is replayed LLM-free through the same builder that
+   serves every other mode; only a structurally valid graph proceeds.
+5. **Verify.** The kernel settles the final claim's dependency closure, one claim at
+   a time. The **obligation compiler** (answer-blind, graph-aware) turns a claim into
+   world-checkable obligations; the **decomposition critic** attacks their
+   sufficiency by constructing a counterexample world, sending the compiler back to
+   repair (≤2 rounds). Each obligation node then plays the **binding game**: an
+   oracle lists only *sufficient* methods, graded on a scale of its own devising; a
+   discharge executor carries the chosen method out faithfully (installing missing
+   instruments on the spot); a judger examines the delivered artifact and sends
+   unfaithful executions back (≤3 rounds). Obligation nodes are content-addressed:
+   the same check under two claims is one node, and settled verdicts transfer for
+   free.
+6. **Certify.** A claim's status is the fold of its obligation nodes (one refuted ⇒
+   refuted, and the downstream cone is killed; all verified ⇒ verified; mixed or
+   instrument-blocked ⇒ partial). The certificate freezes the final's slice with
+   every claim's obligations and evidence nested inside; its verdict is the worst
+   case over the slice and never rounds up.
+7. **Rank.** A certificate folds into a lexicographic key — `(verdict, verified
+   fraction of the slice, verified obligation count)`. Verdict dominates absolutely;
+   the obligation count breaks ties because obligation nodes are roughly invariant
+   under extraction granularity (claim counts are not), which makes the rank
+   resistant to extractor noise. No tuned weights anywhere — selection only needs an
+   order.
+8. **Select.** Across the N traces: argmax by rank, or verdict-weighted voting when
+   answers are comparable. A trace whose extraction fails outright ranks below
+   everything — fail-closed, like the rest of the system.
 
 ## Usage
 
-Managed with [uv](https://docs.astral.sh/uv/) (Python 3.12+). Two third-party
-dependencies — `mcp` (MCP server) and `claude-agent-sdk` (agent seats):
+Managed with [uv](https://docs.astral.sh/uv/) (Python 3.12+):
 
 ```bash
 uv sync
 ```
 
-Credentials: all seats run on the provider configured in `.env` at the repo root
-(copy `.env.example`) — default **DeepSeek-V4-Flash**; `openrouter` and `custom`
-Anthropic-compatible endpoints are also supported. Every seat goes through the
-Claude Agent SDK against the provider's Anthropic-compatible endpoint; the wiring
-lives in `verifier/llm/provider.py`.
+### Score a recorded trace
 
-### Online — MCP server for a stock Claude Code session
-
-One-command interactive session (mounts everything below for the current
-directory and opens the TUI on the `.env`-configured provider; extra args
-are forwarded to `claude`, e.g. `-c` to continue):
+A state dir is what a recorded run leaves behind: `hook_feed.jsonl`, `task.md`,
+`baseline/`, `final.txt`, optionally `world/` (the delivered tree).
 
 ```bash
-uv run python gv_tui.py
-```
-
-With the shim installed at `~/.local/bin/gv` (a two-line `exec uv run
---project <this repo> python gv_tui.py "$@"`), that's just `gv` in any
-directory. Nothing is written into the directory except the `.gv/` state
-dir — the MCP config and hooks are passed by absolute path and the solver
-protocol via `--append-system-prompt`, so an existing `CLAUDE.md` /
-`.claude/` is left untouched.
-
-Manual setup:
-
-1. **Mount the MCP server** in the solver's project — copy `protocol/mcp.example.json`
-   into `.mcp.json` (if the solver project is not this repo, add
-   `"--project", "/path/to/General-Verifier"` after `"run"`). The solver gets four
-   verbs: `gv.commit`, `gv.verify`, `gv.certificate`, `gv.status`.
-   Server flags: `--state-dir` (required), `--model`, `--memory-dir`,
-   `--toolchain-dir`, `--trigger`.
-2. **Wire the hooks** so tool calls become referenceable effect claims — in the
-   solver's `.claude/settings.json`:
-
-   ```json
-   {"hooks": {
-     "PreToolUse":  [{"matcher": "*", "hooks": [{"type": "command", "command": "python3 hooks/pre_tool_use.py"}]}],
-     "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "python3 hooks/post_tool_use.py"}]}]}}
-   ```
-
-   Hooks append to a raw feed file (`GV_HOOK_FEED`, default `.gv/hook_feed.jsonl`);
-   the server drains it before every MCP verb.
-3. **Give the solver the protocol** — put `protocol/solver-protocol.md` into the
-   solver's CLAUDE.md. It is advisory: a solver that ignores it simply gets no
-   certificate, never a wrong one.
-
-### Offline — CI certificate gate
-
-```bash
-# exit 0 iff the verdict is `verified` (partial/unverified/refuted → 1, no final claim → 2)
-uv run python -m verifier.cli certify --events trace.jsonl --state-dir .gv-ci \
-    [--final F] [--model m]
+# extract + certify + rank; prints the feature dict; exit 0 iff verdict == verified
+uv run python -m verifier.cli score --state-dir path/to/.gv [--model m]
 
 # LLM-free: rebuild the claim graph from a trace, print label -> status
-uv run python -m verifier.cli replay --events trace.jsonl
+uv run python -m verifier.cli replay --events path/to/.gv/events.jsonl
+
+# render the extracted graph for inspection (full claim text, obligations, witnesses)
+uv run python script/claim_graph.py --state-dir path/to/.gv -o graph.svg --png
 ```
 
-Enforcement is inverted: the solver is never forced to verify — the consumer refuses to
-merge without a certificate.
+Codex traces score through the same pipeline: `verifier/stream/codex.py` rewrites a
+Codex rollout log into the hook-feed format — the ledger format is the interface, not
+the agent.
+
+### Verifier seat backends
+
+Every LLM seat (extractor, compiler, critic, oracle, discharge, judger) runs through
+one of two interchangeable backends:
+
+- **Claude Agent SDK** (default): seats are Claude Code agents with hard tool
+  palettes, on the provider configured in `.env` (copy `.env.example`; default
+  DeepSeek-V4-Flash, `openrouter`/`custom` Anthropic-compatible endpoints supported).
+- **Codex CLI** (`--seats codex` on the experiment scorers): seats run as
+  `codex exec` calls on a ChatGPT-subscription model (default `gpt-5.6-luna`), which
+  also lets the verifier and an LLM-as-a-Verifier baseline share the same verifier
+  model. Same schema gate, same retries; see `verifier/llm/codex_backend.py` for the
+  fidelity notes.
+
+### Interactive mode (online)
+
+The same kernel also serves a live Claude Code session over MCP — the solver commits
+claims as it works (`gv.commit` verifies before returning, handing back the failing
+obligation and its counterexample), and requests `gv.certificate` at the end. This
+mode *does* feed verdicts back into generation, so it is a different object from the
+offline verifier above — useful interactively, kept out of the ORM experiments.
+
+```bash
+uv run python gv_tui.py     # one-command session: mounts server + hooks + protocol
+```
+
+Manual mounting (`.mcp.json`, hooks, solver protocol) is documented in
+[protocol/](protocol/); the CI gate is `uv run python -m verifier.cli certify
+--events trace.jsonl --state-dir .gv-ci`.
 
 ## Experiments
 
-Three-way benchmark comparisons (General Verifier vs an LLM-as-a-Verifier
-judge vs stock Claude Code / Codex) on FrontierMath's official public
-sample, SWE-bench Pro's public set, and Terminal-Bench 2.1 — see
-[experiments/README.md](experiments/README.md) for one-command runners.
+Benchmark harnesses under [experiments/](experiments/) (FrontierMath public sample,
+SWE-bench Pro, Terminal-Bench 2.1). The ORM comparison is built on **recorder arms**
+(`rec`: stock Claude Code + recording hooks; `rec-codex`: stock Codex, its own
+rollout log as the ledger): generate k trials per task, score them offline
+(`score.py`, resumable, `--task` to spend verification where selection differs), and
+compare selection strategies in `summarize.py` — pass@1, verifier argmax, pass@k
+oracle, plus verified-precision (a `verified` certificate on a wrong trace is the
+one number that must stay at zero). `lav.py` runs the official
+[LLM-as-a-Verifier](https://github.com/llm-as-a-verifier/llm-as-a-verifier) selector
+over the *same* candidate traces for a head-to-head baseline; TurboAgent (its
+Claude Code plugin) is wired as an online arm. See
+[experiments/README.md](experiments/README.md).
 
 ## Module map
 
 | Module | Contents |
 |---|---|
-| `verifier/core/` | data contracts: content addressing + status machine (`model.py`), append-only event stream (`events.py`), claim store + obligation nodes + single trigger rule + slices/branches (`store.py`) |
-| `verifier/stream/` | ingestion: incremental graph building (`builder.py`), torn-line-tolerant online tail (`tail.py`) |
-| `verifier/llm/` | LLM seats: acting agent roles with hard tool palettes (`agents.py`, Claude Agent SDK), shared schema gate + fixture backend (`roles.py`), provider wiring (`provider.py`), prompt text (`prompts.py`) |
-| `verifier/execution/` | the hands: artifact store + ledger instrument, fail-closed (`instruments.py`), the agent discharge seat with workdir snapshots (`discharge.py`) |
-| `verifier/engine/` | verification core: trigger entry + settlement + obligation-node reuse + pruning (`kernel.py`), binding game: oracle-ordered sufficient methods + fidelity judger with a bounded redo loop (`game.py`), certificate with nested obligations (`certificate.py`) |
-| `verifier/memory.py` | three stores (advisory only) |
-| `verifier/mcp_server.py` + `cli.py` | entry points: MCP server + hook ingestion; CI gate |
-| `hooks/` + `protocol/` | solver-side PreToolUse/PostToolUse hooks; MCP mount example + solver protocol |
+| `verifier/core/` | data contracts: content addressing + status machine (`model.py`), append-only event stream (`events.py`), claim store + obligation nodes + trigger rule + slices (`store.py`) |
+| `verifier/stream/` | ingestion: incremental graph building (`builder.py`), online tail (`tail.py`), Codex rollout → hook feed (`codex.py`) |
+| `verifier/offline.py` | the ORM path: feed ingestion, outcome-blind extraction with structural retry, certify, feature fold, lexicographic `rank_key` |
+| `verifier/selection.py` | best-of-N strategies: argmax, majority vote, verdict-weighted vote, pass@N oracle |
+| `verifier/llm/` | LLM seats: agent roles with hard tool palettes (`agents.py`), schema gate + fixture backend (`roles.py`), Codex CLI backend (`codex_backend.py`), provider wiring (`provider.py`), all prompt text (`prompts.py` — zero domain knowledge by design) |
+| `verifier/execution/` | the hands: artifact store + ledger instrument (`instruments.py`), discharge seat with workdir snapshots (`discharge.py`) |
+| `verifier/engine/` | verification core: settlement + obligation-node reuse + pruning (`kernel.py`), binding game (`game.py`), certificate (`certificate.py`) |
+| `verifier/mcp_server.py` + `cli.py` | entry points: interactive MCP server; `score` / `certify` / `replay` CLI |
+| `hooks/` + `protocol/` | recording hooks (record, never intervene); MCP mount example + solver protocol (interactive mode) |
+| `script/claim_graph.py` | graph inspector: any state dir → laid-out SVG/PNG with full claim text, obligations, witnesses |
+| `experiments/` | benchmark harnesses, recorder arms, offline scorers, LLM-as-a-Verifier baseline |
