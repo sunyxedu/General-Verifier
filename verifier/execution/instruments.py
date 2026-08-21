@@ -1,8 +1,9 @@
-"""Instruments: the mechanical fixtures of the verifier.
-
-Contract (report, fail-closed iron rule): any crash / timeout / unparseable
-output is a FAILED discharge — never converted into a pass.
 """
+Instruments: the mechanical components of the verifier.
+
+Contract (report, fail-closed iron rule): any crash / timeout / unparseable output is a FAILED discharge. Never converted into a pass.
+"""
+
 from __future__ import annotations
 
 import json
@@ -22,7 +23,7 @@ class RunResult:
 
 
 class ArtifactStore:
-    """Content-addressed artifact directory (component 11)."""
+    """Content-addressed artifact directory."""
 
     def __init__(self, root: str):
         self.root = root
@@ -42,11 +43,12 @@ class ArtifactStore:
 
 
 class LedgerInstrument:
-    """Audit instrument (component 25): verifies effect claims against the event stream.
+    """
+    Verifies effect claims against the event stream.
 
     An effect claim's text is the canonical JSON produced by the mechanical
     parser: {"event_seq": n, "tool": ..., "digest": <event_digest>}. The check
-    recomputes the digest from the log — the ledger, not the narration, is the
+    recomputes the digest from the log. The ledger, not the narration, is the
     source of truth for "this happened".
     """
 

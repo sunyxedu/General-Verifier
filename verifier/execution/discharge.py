@@ -1,6 +1,7 @@
-"""Discharge: how an obligation actually gets checked.
+"""
+Discharge: how an obligation actually gets checked.
 
-One seat: AgentDischarger — a Claude Agent SDK agent executes the check
+One seat: AgentDischarger. A Claude Agent SDK agent executes the check
 itself and reports outcome/witness plus on-disk artifacts, which we snapshot
 into the content-addressed store. The reported outcome is the agent's own
 attestation; what audits it is the binding game's judger (which opens the
@@ -28,10 +29,10 @@ class DischargeResult:
 
 
 class AgentDischarger:
-    """discharge agent executes the check itself; we snapshot its workdir.
+    """
+    Discharge agent executes the check itself; we snapshot its workdir.
 
-    Fail-closed: a RoleError (agent produced no conforming answer even after
-    retries) is a FAILED discharge, on record — never a pass.
+    Fail-closed: a RoleError (agent produced no conforming answer even after retries) is a FAILED discharge, on record. Never a pass.
     """
 
     instrument = "agent:discharge"
@@ -45,12 +46,12 @@ class AgentDischarger:
         self.artifacts = artifacts
         self.role = role
         self.workdir_base = workdir_base or tempfile.mkdtemp(prefix="gv-discharge-")
-        # heavyweight installs (a Lean project with mathlib, a node_modules…)
+        # Heavyweight installs (a Lean project with mathlib, a node_modules…)
         # live here and survive across discharges, claims, and runs when the
-        # caller passes a stable path — cache warming without a warming step
+        # caller passes a stable path. Cache warming without a warming step.
         self.toolchain_dir = toolchain_dir or os.path.join(
             self.workdir_base, "_toolchains")
-        self.cleanup = cleanup  # remove workdir after snapshot (scratch, not evidence)
+        self.cleanup = cleanup  # Remove workdir after snapshot (scratch, not evidence).
 
     def discharge(self, row: Dict, obligation: Obligation,
                   method: Optional[Dict[str, str]] = None,
@@ -103,9 +104,8 @@ class AgentDischarger:
             shutil.rmtree(workdir, ignore_errors=True)
 
 
-# Mechanical infra exclusions — vendored trees and VCS internals are toolchain
-# plumbing, never evidence. (A Lean discharge once vendored all of mathlib into
-# its workdir; the snapshot must survive that.)
+# Mechanical infra exclusions. Vendored trees and VCS internals are toolchain plumbing, never evidence. 
+# (A Lean discharge once vendored all of mathlib into its workdir; the snapshot must survive that.)
 SNAPSHOT_SKIP_DIRS = {
     ".git", ".lake", "node_modules", "__pycache__", ".venv", ".cache",
     "build", "dist", "target",
@@ -114,9 +114,10 @@ SNAPSHOT_SKIP_DIRS = {
 
 def _snapshot(workdir: str, per_file_cap: int = 65536,
               max_files: int = 200, max_total: int = 2_000_000) -> Dict[str, str]:
-    """Bounded content snapshot of what the agent left on disk. Caps are
-    mechanical: per file, file count, and total bytes; truncation is marked,
-    never silent."""
+    """
+    Bounded content snapshot of what the agent left on disk. 
+    Caps are mechanical: per file, file count, and total bytes; truncation is marked.
+    """
     files: Dict[str, str] = {}
     total = 0
     skipped = 0
