@@ -85,6 +85,10 @@ def main():
     ap.add_argument("--task", default=None, nargs="+",
                     help="score only these tasks (verification is the "
                     "expensive stage; spend it where selection differs)")
+    ap.add_argument("--seats", default=None, choices=["codex"],
+                    help="codex: run every verifier seat through the Codex "
+                    "CLI on the ChatGPT subscription (default model "
+                    "gpt-5.6-luna) instead of the SDK/provider path")
     args = ap.parse_args()
 
     job_dir = os.path.join(HERE, "results", "jobs", args.job)
@@ -112,6 +116,7 @@ def main():
 
     scoring.score_many(jobs, scores_path, workers=args.workers,
                        model=args.model, max_rounds=args.max_rounds,
+                       seats=args.seats,
                        label=lambda r: f"{r['trial']} reward={r['reward']}",
                        tag="tb:score")
     print("[tb:score] done", flush=True)

@@ -227,7 +227,7 @@ class Service:
             for label, cid in self.builder.labels.items()
         }
 
-def _default_kernel(sc: Service, model) -> Kernel:
+def _default_kernel(sc: Service, model, backend=None) -> Kernel:
     from dataclasses import replace
 
     from .llm import prompts
@@ -248,9 +248,13 @@ def _default_kernel(sc: Service, model) -> Kernel:
         obligations = replace(
             obligations, system=obligations.system + "\n"
             + prompts.OBLIGATIONS_HARNESS_ADDENDUM)
-    backend = AgentBackend(roles=dict(ALL_AGENT_ROLES,
-                                      obligations=obligations),
-                           cwd=sc.state_dir, model=model)
+    roles = dict(ALL_AGENT_ROLES, obligations=obligations)
+    if backend is None:
+        backend = AgentBackend(roles=roles, cwd=sc.state_dir, model=model)
+    else:
+        # an injected backend (e.g. CodexBackend) still needs the
+        # harness-swapped role registry — same double-registration rule
+        backend.roles = roles
     discharger = AgentDischarger(
         backend, sc.artifacts,
         workdir_base=os.path.join(sc.state_dir, "work"),

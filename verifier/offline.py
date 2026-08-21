@@ -216,10 +216,25 @@ def _features(cert: Dict[str, Any], extract_rounds: int) -> Dict[str, Any]:
 
 
 def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
-          backend=None, max_rounds: int = 3) -> Dict[str, Any]:
+          backend=None, max_rounds: int = 3,
+          seats: Optional[str] = None) -> Dict[str, Any]:
     """Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
-    and persists it to score.json."""
+    and persists it to score.json.
+
+    seats="codex" runs every seat (extractor included) through the Codex
+    CLI on a ChatGPT-subscription model instead of the Claude Agent SDK;
+    `model` then names the codex model (default gpt-5.6-luna)."""
+    if seats == "codex":
+        from .llm.codex_backend import CodexBackend
+        if backend is None:
+            backend = CodexBackend(cwd=state_dir, model=model)
+        if kernel_factory is None:
+            def kernel_factory(sc):
+                from .mcp_server import _default_kernel
+                return _default_kernel(
+                    sc, model,
+                    backend=CodexBackend(cwd=sc.state_dir, model=model))
     events_path = os.path.join(state_dir, "events.jsonl")
     extract_rounds = 0
     if not _has_commits(events_path):
