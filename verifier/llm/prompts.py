@@ -1,12 +1,12 @@
-"""Prompt text for the verifier's agent roles.
+"""
+Prompt text for the verifier's agent roles.
 
-Every role has two parts: SYSTEM (the role's identity and rules, appended to
-the SDK's claude_code preset) and TEMPLATE (the per-call prompt, rendered
-with str.format over the role's variables).
+Every role has two parts: SYSTEM (the role's identity and rules, appended to the SDK's claude_code preset) 
+and TEMPLATE (the per-call prompt, rendered with str.format over the role's variables).
 
-Templates stay generic. Domain content arrives at runtime: from the
-environment the agent can probe, from the model's latent knowledge, and from
-retrieved memory — never from text written here.
+Temapltes stay generic. 
+Domain content arrives at runtime: from the environment the agent can probe, from the model's latent knowledge, 
+and from retrieved memory, but never from text written in the prompts.
 """
 
 OBLIGATIONS_SYSTEM = (

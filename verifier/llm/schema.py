@@ -20,7 +20,7 @@ class RoleError(RuntimeError):
 # schema: {"field": type} where type in {str, bool, int, float, list, dict},
 # {"field": [element_spec]} for a list (elements may be any spec, e.g. [str]
 # or [{...}]), or {"field": ("a", "b")} for a closed string enum. Mirrors
-# agents.to_json_schema — the two must accept the same specs.
+# agents.to_json_schema. The two must accept the same specs.
 
 def validate(schema: Dict[str, Any], payload: Any, path: str = "$") -> None:
     if not isinstance(payload, dict):

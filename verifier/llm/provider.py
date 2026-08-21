@@ -1,20 +1,22 @@
-"""Provider wiring: every Claude Code invocation in this repo runs on the
-provider configured in `.env` at the repo root (default: DeepSeek-V4-Flash).
+"""
+Provider wiring: every Claude Code invocation in this repo runs on the provider configured in `.env` at the repo root.
 
-One source of truth. The CLI spawns (experiments/common/solver.py), the
-Agent SDK seats (verifier/llm/agents.py), the TurboAgent proxy backend
-(experiments/common/turbo.py) and the Harbor container agents
-(experiments/terminal_bench/) all take their provider env from here —
-experiments import it through the installed `verifier` package; gv_agent.py
-(which runs under Harbor's own Python) file-loads it from GV_ROOT.
+This part doesn't include OpenAI backend. (Codex SDK)
 
-Configuration (.env, or real environment variables — the real environment
-wins; see .env.example for the full reference):
+One source of truth. 
+Agents ll take their provider env from here:
+- CLI spawns (experiments/common/solver.py), 
+- Agent SDK seats (verifier/llm/agents.py), 
+- TurboAgent proxy backend (experiments/common/turbo.py)
+- Harbor container agents (experiments/terminal_bench/)
+
+Experiments import it through the installed `verifier` package; gv_agent.py file-loads it from GV_ROOT.
+
+Configuration (.env, or real environment variables. The real environment wins; see .env.example for the full reference):
   GV_PROVIDER = deepseek (default) | openrouter | custom
   GV_MODEL    = model id on that provider (defaults below)
-  DEEPSEEK_API_KEY / OPENROUTER_API_KEY = the key for the chosen provider
-  GV_ANTHROPIC_BASE_URL / GV_API_KEY / GV_LITELLM_MODEL
-              = everything explicit, for GV_PROVIDER=custom
+  DEEPSEEK_API_KEY / OPENROUTER_API_KEY = the key for the chosen provider.
+  GV_ANTHROPIC_BASE_URL / GV_API_KEY / GV_LITELLM_MODEL = everything explicit, for GV_PROVIDER=custom.
 """
 import os
 
@@ -111,9 +113,10 @@ CLAUDE_ENV = {
 
 
 def claude_env(base=None):
-    """Full process env for spawning `claude` (or anything that spawns it)
-    against the configured provider: the current environment overlaid with
-    CLAUDE_ENV, plus a login-free CLAUDE_CONFIG_DIR (see CONFIG_DIR above)."""
+    """
+    Full process env for spawning `claude` (or anything that spawns it) against the configured provider.    
+    The current environment overlaid with CLAUDE_ENV, plus a login-free CLAUDE_CONFIG_DIR.
+    """
     env = dict(os.environ if base is None else base)
     env.update(CLAUDE_ENV)
     os.makedirs(CONFIG_DIR, exist_ok=True)

@@ -1,4 +1,5 @@
-"""Verifier roles as Claude Agent SDK agents.
+"""
+Verifier roles as Claude Agent SDK agents.
 
 Why agents rather than single-shot completions: most verifier roles genuinely
 need to act, not just emit text. The oracle enumerator must probe what is
@@ -21,6 +22,7 @@ reach Bash. The palette is part of a role's identity (the obligation compiler
 being unable to execute anything is what makes it answer-blind), so it must
 be a hard boundary.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -36,7 +38,8 @@ class _TransientSDKError(RuntimeError):
 
 
 def to_json_schema(spec: Any) -> Dict[str, Any]:
-    """Mini-DSL (schema.validate) -> JSON Schema draft-07.
+    """
+    Mini-DSL (schema.validate) -> JSON.
 
     One schema source of truth: the same spec drives the SDK's output gate
     and our own post-hoc validate().  str -> string; (a, b, ...) -> string
@@ -95,7 +98,8 @@ class AgentRole:
 
 
 class AgentBackend:
-    """Runs AgentRoles through the Claude Agent SDK.
+    """
+    Runs AgentRoles through the Claude Agent SDK.
 
     One SDK session per call: roles are stateless by construction, which is
     what keeps the auditors independent of the things they audit.
@@ -119,12 +123,11 @@ class AgentBackend:
         self.transcripts: List[Dict[str, Any]] = []
 
     def complete(self, role_name: str, prompt: str, variables: Dict[str, Any]) -> Any:
-        """Backend entry point (same signature as FixtureBackend.complete).
+        """
+        Backend entry point (same signature as FixtureBackend.complete).
 
-        Loop-safe sync wrapper: callable from plain sync code AND from code
-        executing inside a running event loop (e.g. an MCP tool handler in the
-        MCP server) — in the latter case the coroutine runs on a private loop in
-        a worker thread, because asyncio.run would raise on a running loop.
+        Loop-safe sync wrapper: callable from plain sync code AND from code executing inside a running event loop (e.g. an MCP tool handler in the MCP server).
+        In the latter case the coroutine runs on a private loop in a worker thread, because asyncio.run would raise on a running loop.
         """
         role = self.roles.get(role_name)
         if role is None:
@@ -144,10 +147,12 @@ class AgentBackend:
     transient_delays = (0, 20, 60, 120)   # seconds before each attempt
 
     async def run(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
-        """One role run with backoff on transient infrastructure failures.
+        """
+        One role run with backoff on transient infrastructure failures.
         Immediate re-prompts against a rate limit are useless (the Role-level
         retry exists for GENERATION failures); infrastructure failures back
-        off and retry here, and only then surface as RoleError."""
+        off and retry here, and only then surface as RoleError.
+        """
         last: Optional[str] = None
         for delay in self.transient_delays:
             if delay:
@@ -176,21 +181,18 @@ class AgentBackend:
         except Exception as err:  # noqa: BLE001 - classified below
             error = err
 
-        self.transcripts.append(
-            {
-                "role": role.name,
-                "session_id": getattr(result, "session_id", None),
-                "subtype": getattr(result, "subtype", None),
-                "num_turns": getattr(result, "num_turns", None),
-                "total_cost_usd": getattr(result, "total_cost_usd", None),
-                "usage": getattr(result, "usage", None),
-                "api_error_status": getattr(result, "api_error_status", None),
-                "stderr_tail": list(stderr_tail),
-            }
-        )
+        self.transcripts.append({
+            "role": role.name,
+            "session_id": getattr(result, "session_id", None),
+            "subtype": getattr(result, "subtype", None),
+            "num_turns": getattr(result, "num_turns", None),
+            "total_cost_usd": getattr(result, "total_cost_usd", None),
+            "usage": getattr(result, "usage", None),
+            "api_error_status": getattr(result, "api_error_status", None),
+            "stderr_tail": list(stderr_tail),
+        })
 
-        if result is not None and result.structured_output is not None \
-                and result.subtype == "success":
+        if result is not None and result.structured_output is not None and result.subtype == "success":
             payload = result.structured_output
             validate(role.schema, payload)  # our gate, independent of the SDK's
             return payload
@@ -203,10 +205,9 @@ class AgentBackend:
         )
         if status in self.TRANSIENT_STATUSES:
             raise _TransientSDKError(f"{role.name}: {detail}")
-        if status is None and error is not None \
-                and "error result: success" in str(error):
-            # the CLI's opaque placeholder — usually a rate limit; retrying
-            # then failing also covers the non-transient (e.g. auth) case
+        if status is None and error is not None and "error result: success" in str(error):
+            # the CLI's opaque placeholder. Usually a rate limit; retrying
+            # then failing also covers the non-transient case (e.g. auth).
             raise _TransientSDKError(f"{role.name}: {detail}")
         if error is not None:
             raise RoleError(f"{role.name}: sdk failure: {detail}") from error
@@ -300,9 +301,9 @@ EXTRACT_CLAIMS_AGENT = AgentRole(
     name="extract",
     system=prompts.EXTRACT_SYSTEM,
     template=prompts.EXTRACT_TEMPLATE,
-    # revises is required-but-"" like discharge's witness (the mini-DSL has
-    # no optional keys); kinds exclude "effect" — effects come from the
-    # ledger replay, never from the extractor
+    # revises is required-but-empty like discharge's witness (the mini-DSL has
+    # no optional keys); kinds exclude "effect". Effects come from the
+    # ledger replay, never from the extractor.
     schema={
         "commits": [
             {
