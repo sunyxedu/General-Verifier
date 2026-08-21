@@ -1,4 +1,5 @@
-"""Kernel.
+"""
+Kernel.
 
 Compile obligations (graph-aware, answer-blind) -> materialize each as an
 obligation NODE in the claim graph (identical text anywhere = same node, so
@@ -7,7 +8,7 @@ binding game (oracle levels -> execute -> judger) -> settle the claim as a
 fold over its obligation nodes.
 
 All kernel activity is appended to the same event stream the solver's activity
-came from — the verifier is auditable through its own ledger.
+came from. The verifier is auditable through its own ledger.
 """
 from __future__ import annotations
 
@@ -36,10 +37,12 @@ MAX_CRITIC_ROUNDS = 2
 
 
 class Kernel:
-    """Role seats (obligations compiler, discharger, binder) are injectable:
+    """
+    Role seats (obligations compiler, discharger, binder) are injectable:
     the same kernel runs on fixture-backed seats (tests, deterministic) or on
     the Claude Agent SDK agents (the shipped configuration) without knowing
-    which is seated."""
+    which is seated.
+    """
 
     def __init__(
         self,
@@ -67,8 +70,7 @@ class Kernel:
         self.memory = memory      # advisory stores; None -> static hints
         store.on_trigger(self.verify)  # the single rule wires straight in
 
-    # ---- entry ---------------------------------------------------------------
-
+    # entry
     def verify(self, claim_id: str) -> str:
         """Verify one claim; returns its resulting status. Idempotent."""
         row = self.store.get(claim_id)
@@ -80,8 +82,7 @@ class Kernel:
             self._verify_assertion(row)
         return self.store.status(claim_id)
 
-    # ---- effect: ledger check (component 25) ---------------------------------
-
+    # effect: ledger check
     def _verify_effect(self, row: Dict) -> None:
         result = self.ledger.check(row["text"])
         digest = self.artifacts.put(result.artifacts)
@@ -101,8 +102,7 @@ class Kernel:
         )
         self._settle(row["id"], [result.outcome])
 
-    # ---- assertion / final ---------------------------------------------------
-
+    # assertion / final
     def _verify_assertion(self, row: Dict) -> None:
         refuted_deps = [
             p for p in self.store.parents(row["id"])
@@ -144,7 +144,7 @@ class Kernel:
             known = self.store.status(oid)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 # content-addressed reuse: the same world-condition was
-                # already settled under another claim — the verdict and its
+                # already settled under another claim. The verdict and its
                 # evidence transfer without re-spending instruments
                 outcome = {STATUS_VERIFIED: OUTCOME_HOLDS,
                            STATUS_REFUTED: OUTCOME_REFUTED,
@@ -162,7 +162,7 @@ class Kernel:
                                                exclude=row["id"])
             if src is not None:
                 # the graph already settled this exact statement as a CLAIM
-                # (different identity space, so node dedup cannot see it) —
+                # (different identity space, so node dedup cannot see it).
                 # the verdict and its evidence transfer, no instrument spent
                 outcome, witness = self._inherit(row, obligation, src)
                 outcomes.append(outcome)
@@ -231,30 +231,34 @@ class Kernel:
         ]
         self.log.append(
             "obligations_compiled",
-            {"claim": row["id"],
-             "obligations": [o.text for o in obligations]},
+            {"claim": row["id"], "obligations": [o.text for o in obligations]},
         )
         return obligations
 
     def _critique(self, row: Dict, payload: Dict, variables: Dict):
-        """Adversarial second signature on the decomposition: the critic
+        """
+        Adversarial second signature on the decomposition: the critic
         tries to construct a world where every obligation and every verified
         premise holds and the claim is still false. It never sees the
-        compiler's reasoning — only the claim, the obligations, and the
+        compiler's reasoning. Only the claim, the obligations, and the
         verified premises. An attack that stands sends the decomposition
         back for repair; one still standing after MAX_CRITIC_ROUNDS fails
-        closed (returns None, claim stays unverified)."""
+        closed (returns None, claim stays unverified).
+        """
         if self.critic_role is None:
             return payload
         verdict = None
         for round_no in range(MAX_CRITIC_ROUNDS):
             verdict = self.critic_role.call(
                 self.backend,
-                {"claim_text": row["text"],
-                 "obligations_json": json.dumps(
-                     [o["text"] for o in payload["obligations"]],
-                     ensure_ascii=False),
-                 "verified_deps": variables["verified_deps"]},
+                {
+                    "claim_text": row["text"],
+                    "obligations_json": json.dumps(
+                        [o["text"] for o in payload["obligations"]],
+                        ensure_ascii=False
+                    ),
+                    "verified_deps": variables["verified_deps"],
+                },
             )
             self.log.append(
                 "decomposition_attacked",
@@ -276,28 +280,36 @@ class Kernel:
             payload = self.obligations_role.call(self.backend, variables)
         self.store.record_evidence(
             row["id"],
-            {"outcome": OUTCOME_FAILED,
-             "error": "decomposition failed critic",
-             "counterexample_world": verdict["counterexample_world"],
-             "missing_condition": verdict["missing_condition"]},
+            {
+                "outcome": OUTCOME_FAILED,
+                "error": "decomposition failed critic",
+                "counterexample_world": verdict["counterexample_world"],
+                "missing_condition": verdict["missing_condition"],
+            },
         )
         self.log.append(
             "status_change",
-            {"claim": row["id"], "status": STATUS_UNVERIFIED,
-             "reason": "decomposition failed critic"},
+            {
+                "claim": row["id"], 
+                "status": STATUS_UNVERIFIED,
+                "reason": "decomposition failed critic",
+            },
         )
         return None
 
     def _inherit(self, row: Dict, obligation: Obligation, src: Dict):
-        """Transfer a same-text settled CLAIM's verdict onto an obligation
+        """
+        Transfer a same-text settled CLAIM's verdict onto an obligation
         node. The node is settled too, so every later claim sharing it gets
-        the plain node-dedup path. Returns (outcome, witness)."""
+        the plain node-dedup path. Returns (outcome, witness).
+        """
+
         oid = obligation.id
         ev = self.store.evidence_for(src["id"])
         witness = ev[-1].get("witness") if ev else None
         if witness is None and src["status"] == STATUS_REFUTED:
             # a claim's concrete counterexample lives on its refuting
-            # obligation node, one hop down — carry it over
+            # obligation node, one hop down. Carry it over.
             for kid in self.store.obligation_children(src["id"]):
                 if kid["status"] == STATUS_REFUTED and kid["reason"]:
                     witness = kid["reason"]
@@ -308,8 +320,13 @@ class Kernel:
                    else OUTCOME_REFUTED)
         self.store.record_evidence(
             oid,
-            {"obligation": obligation.text, "instrument": "graph",
-             "outcome": outcome, "source": src["id"], "witness": witness},
+            {
+                "obligation": obligation.text, 
+                "instrument": "graph",
+                "outcome": outcome, 
+                "source": src["id"], 
+                "witness": witness,
+            },
         )
         if outcome == OUTCOME_HOLDS:
             self.store.set_verified(oid)
@@ -323,9 +340,12 @@ class Kernel:
         return outcome, witness
 
     def _discharge(self, row: Dict, obligation: Obligation):
-        """Discharge one obligation NODE: evidence lands on the node, and
+        """
+        Discharge one obligation NODE: evidence lands on the node, and
         the node's status is settled so any other claim sharing this
-        obligation reuses the verdict. Returns (outcome, witness)."""
+        obligation reuses the verdict. Returns (outcome, witness).
+        """
+
         oid = obligation.id
         if self.binder is not None:
             result = self.binder.run(row, obligation)
@@ -363,8 +383,7 @@ class Kernel:
         )
         return result.outcome, result.witness
 
-    # ---- settlement ----------------------------------------------------------
-
+    # settlement
     def _settle(self, claim_id: str, outcomes: List[str]) -> None:
         if any(o == OUTCOME_REFUTED for o in outcomes):
             self.store.set_refuted(claim_id, reason="counterexample on record")
