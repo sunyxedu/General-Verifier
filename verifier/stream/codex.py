@@ -1,21 +1,9 @@
-"""Codex CLI rollout log -> General Verifier hook feed.
+"""
+Codex CLI rollout log -> General Verifier hook feed.
 
-The recording hooks only exist for Claude Code. Codex writes its own
-append-only rollout JSONL (~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl),
-which carries the same substance: one `function_call` per tool
-invocation and one `function_call_output` per result, paired by
-`call_id`. This module rewrites those into the exact feed lines the
-hooks would have produced, so a Codex trace scores through the same
-offline pipeline as a Claude Code trace — the ledger format is the
-interface, not the agent.
-
-Fidelity notes:
-  - the digest is computed over the same canonical JSON shape the
-    PostToolUse hook uses, so ledger obligations read identically;
-  - reasoning/message events carry no world effect and are dropped, as
-    the hooks drop everything that is not a tool call;
-  - the solver's final output is its last assistant message, which
-    `final_text` extracts for the extractor's final.txt.
+The recording hooks only exist for Claude Code. Codex writes its own append-only rollout JSONL (~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl)。
+So, it carries the same substance: one `function_call` per tool invocation and one `function_call_output` per result, paired by `call_id`. 
+This module rewrites those into the exact feed lines the hooks would have produced, so a Codex trace scores through the same offline pipeline as a Claude Code trace.
 
 Usage:
   python -m verifier.stream.codex ROLLOUT.jsonl STATE_DIR
@@ -41,8 +29,11 @@ def _payload(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _tool_input(p: Dict[str, Any]) -> Any:
-    """Codex ships call arguments as a JSON string; decode when possible so
-    the recorded input matches the hooks' structured tool_input."""
+    """
+    Codex ships call arguments as a JSON string; 
+    decode when possible so the recorded input matches the hooks' structured tool_input.
+    """
+    
     raw = p.get("arguments") if "arguments" in p else p.get("input")
     if isinstance(raw, str):
         try:
@@ -50,7 +41,6 @@ def _tool_input(p: Dict[str, Any]) -> Any:
         except json.JSONDecodeError:
             return raw
     return raw
-
 
 def _tool_output(p: Dict[str, Any]) -> Any:
     out = p.get("output")
@@ -64,6 +54,7 @@ def _tool_output(p: Dict[str, Any]) -> Any:
 
 def feed_lines(rollout_path: str) -> Iterator[Dict[str, Any]]:
     """Rollout events -> hook-feed lines, in file order."""
+
     with open(rollout_path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -72,35 +63,42 @@ def feed_lines(rollout_path: str) -> Iterator[Dict[str, Any]]:
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
-                continue        # torn or non-JSON line: the feed is untrusted
+                continue
             if event.get("type") != "response_item":
                 continue
             p = _payload(event)
             kind = p.get("type")
             if kind in CALL_TYPES:
-                yield {"type": "tool_call", "payload": {
-                    "tool": p.get("name"),
-                    "tool_use_id": p.get("call_id"),
-                    "input": _tool_input(p),
-                    "session": None,
-                    "agent": None,
-                }}
+                yield {
+                    "type": "tool_call", 
+                    "payload": {
+                        "tool": p.get("name"),
+                        "tool_use_id": p.get("call_id"),
+                        "input": _tool_input(p),
+                        "session": None,
+                        "agent": None,
+                    }
+                }
             elif kind in OUTPUT_TYPES:
                 response = _tool_output(p)
                 blob = canonical(response)
-                yield {"type": "tool_result", "payload": {
-                    "tool": None,   # the builder pairs it back by call_id
-                    "tool_use_id": p.get("call_id"),
-                    "response_sha256": hashlib.sha256(
-                        blob.encode("utf-8")).hexdigest(),
-                    "excerpt": blob[:EXCERPT_CHARS],
-                    "session": None,
-                    "agent": None,
-                }}
+                yield {
+                    "type": "tool_result", 
+                    "payload": {
+                        "tool": None,   # the builder pairs it back by call_id
+                        "tool_use_id": p.get("call_id"),
+                        "response_sha256": hashlib.sha256(
+                            blob.encode("utf-8")).hexdigest(),
+                        "excerpt": blob[:EXCERPT_CHARS],
+                        "session": None,
+                        "agent": None,
+                    }
+                }
 
 
 def final_text(rollout_path: str) -> str:
-    """The solver's last assistant message — its final output."""
+    """The solver's last assistant message (final output)."""
+
     last = ""
     with open(rollout_path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -124,8 +122,7 @@ def final_text(rollout_path: str) -> str:
 
 
 def convert(rollout_path: str, state_dir: str) -> Dict[str, int]:
-    """Write hook_feed.jsonl + final.txt into `state_dir` (the layout
-    verifier.offline expects). Returns counts."""
+    """Write hook_feed.jsonl + final.txt into `state_dir` (the layout verifier.offline expects). Returns counts."""
     os.makedirs(state_dir, exist_ok=True)
     lines: List[Dict[str, Any]] = list(feed_lines(rollout_path))
     feed = os.path.join(state_dir, "hook_feed.jsonl")
@@ -138,10 +135,8 @@ def convert(rollout_path: str, state_dir: str) -> Dict[str, int]:
     return {"events": len(lines), "tool_calls": calls}
 
 
-def newest_rollout(sessions_dir: str,
-                   since: Optional[float] = None) -> Optional[str]:
-    """Most recently modified rollout-*.jsonl under a codex sessions tree
-    (optionally only those touched after `since`)."""
+def newest_rollout(sessions_dir: str, since: Optional[float] = None) -> Optional[str]:
+    """Find the most recently modified rollout-*.jsonl under a codex sessions tree (optionally only those touched after `since`)."""
     best, best_mtime = None, -1.0
     for root, _dirs, files in os.walk(sessions_dir):
         for name in files:

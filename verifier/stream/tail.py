@@ -1,11 +1,14 @@
-"""Log tail: follow an append-only JSONL.
-
-The stream may be mid-append when we read it, so a torn final line is normal:
-read by byte offset, publish only up to the last newline, keep the remainder
-for the next poll. Sequence continuity is validated exactly as in replay —
-a gap means the file was truncated or reordered, which is corruption, not
-latency, and must raise rather than be absorbed.
 """
+Follow an append-only JSONL log (similar to `tail -f`).
+
+When reading mid-append, incomplete trailing lines are expected. The tailer reads
+by byte offset, publishes only complete lines up to the final newline, and buffers
+the remainder for the next poll.
+Sequence continuity is validated strictly against expected `seq` numbers: gaps or
+reordering represent data corruption rather than latency, and immediately raise
+`TailError` instead of being silently absorbed.
+"""
+
 from __future__ import annotations
 
 import json
@@ -21,8 +24,11 @@ class TailError(ValueError):
 class Tail:
     def __init__(self, path: str, on_event: Callable[[Dict], None],
                  start_seq: int = 0, raw: bool = False):
-        """raw=True: a feed of bare JSON lines with no seq discipline (e.g.
-        hook processes appending concurrently); torn-line handling only."""
+        """
+        raw=True: a feed of bare JSON lines with no seq discipline 
+        (e.g. hook processes appending concurrently); 
+        torn-line handling only.
+        """
         self.path = path
         self.on_event = on_event
         self.raw = raw

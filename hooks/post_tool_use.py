@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """PostToolUse hook: append a raw tool_result line to the MCP server's hook feed.
 
-The response is digested (sha256 over its canonical JSON) plus a bounded
-excerpt. The excerpt is generous: the ledger is first-class verification
-evidence — claims about past events/states are discharged against what the
-hooks recorded here, so the recorded output must carry the substance, not
-just the identity.
+The response is digested (sha256 over its canonical JSON) plus a bounded excerpt. 
+The excerpt is generous: the ledger is first-class verification evidence. 
+Claims about past events/states are discharged against what the hooks recorded here, so the recorded output must carry the substance, not just the identity.
 
 Settings (.claude/settings.json):
-  {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [
-      {"type": "command", "command": "python3 hooks/post_tool_use.py"}]}]}}
+  {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [ {"type": "command", "command": "python3 hooks/post_tool_use.py"}]}]}}
 """
+
 import hashlib
 import json
 import os
