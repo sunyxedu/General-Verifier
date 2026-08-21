@@ -1,12 +1,12 @@
-"""Certificate.
+"""
+Certificate.
 
 A certificate request is the backstop, not the schedule: the slicer walks the
 dependency closure, the kernel settles whatever is still unverified, and the
-freezer exports the slice with its evidence chain. Under the on-commit rule
-that residue is normally empty (every claim was checked as it was made); under
-the lazy policy the request is what settles the slice.
-Verdicts never collapse dishonestly: any refuted -> refuted; any unresolved ->
-unverified; else verified.
+freezer exports the slice with its evidence chain. 
+Under the on-commit rule that residue is normally empty (every claim was checked as it was made). 
+Under the lazy policy the request is what settles the slice.
+Verdicts never collapse dishonestly: any refuted -> refuted; any unresolved -> unverified; else verified.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def request_certificate(
                 "reason": row["reason"],
                 "evidence": store.evidence_for(claim_id),
                 # obligations are first-class graph nodes: the certificate
-                # carries each one with its own status and evidence — the
+                # carries each one with its own status and evidence. The
                 # structured residue is native, not a summary bolted on
                 "obligations": [
                     {"id": o["id"], "text": o["text"],
