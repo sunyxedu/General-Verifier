@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="660" viewBox="0 0 960 660" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#5B6272"/>
+    </marker>
+    <marker id="arr" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#C0483B"/>
+    </marker>
+    <marker id="arv" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#7A5CC9"/>
+    </marker>
+  </defs>
+  <rect width="960" height="660" fill="#FFFFFF"/>
+  <text x="30" y="28" font-size="9.5" font-weight="bold" fill="#7C838F" letter-spacing="2">LIFE OF ONE CLAIM — EVERYTHING BELOW HAPPENS INSIDE THE BLOCKING gv.commit CALL</text>
+
+  <!-- commit -->
+  <rect x="30" y="42" width="440" height="50" rx="9" fill="#FFFFFF" stroke="#5B6272" stroke-width="1.5"/>
+  <text x="48" y="63" font-size="11.5" font-weight="bold" fill="#14161C" font-family="Menlo, monospace">gv.commit(label, kind, text, deps, revises?)</text>
+  <text x="48" y="80" font-size="9.5" fill="#4A5160">content-addressed id = hash(kind, text, sorted deps) — resubmit dedups</text>
+
+  <path d="M 250 92 L 250 112" fill="none" stroke="#5B6272" stroke-width="1.4" marker-end="url(#ar)"/>
+
+  <!-- taint gate -->
+  <rect x="30" y="114" width="440" height="52" rx="9" fill="#EAF1FA" stroke="#4A82C4" stroke-width="1.35"/>
+  <text x="48" y="135" font-size="11" font-weight="bold" fill="#14161C">1 · TAINT GATE (mechanical)</text>
+  <text x="48" y="152" font-size="9.5" fill="#4A5160">is any parent already refuted? nothing is built on a known-false premise</text>
+  <path d="M 470 140 L 528 140" fill="none" stroke="#C0483B" stroke-width="1.2" stroke-dasharray="3.5 2.5" marker-end="url(#arr)"/>
+  <rect x="530" y="114" width="400" height="52" rx="9" fill="#FBEDEB" stroke="#C0483B" stroke-width="1.2"/>
+  <text x="546" y="135" font-size="10" font-weight="bold" fill="#C0483B">fail closed — status stays unverified</text>
+  <text x="546" y="152" font-size="9.5" fill="#4A5160">residue tells the solver: "depends on refuted claim" + which deps</text>
+
+  <path d="M 250 166 L 250 186" fill="none" stroke="#5B6272" stroke-width="1.4" marker-end="url(#ar)"/>
+
+  <!-- compiler -->
+  <rect x="30" y="188" width="440" height="82" rx="9" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.35"/>
+  <text x="48" y="209" font-size="11" font-weight="bold" fill="#14161C">2 · OBLIGATION COMPILER (LLM agent · Read/Grep/Glob only)</text>
+  <text x="48" y="226" font-size="9.5" fill="#4A5160">answer-blind: sees the statement + whole claim graph, never the argument</text>
+  <text x="48" y="241" font-size="9.5" fill="#4A5160">residual on verified premises · reuses already-proven statements verbatim</text>
+  <text x="48" y="256" font-size="9.5" fill="#4A5160">temporal indexing: live-world obligations vs ledger obligations (past tense)</text>
+  <path d="M 470 229 L 528 229" fill="none" stroke="#C0483B" stroke-width="1.2" stroke-dasharray="3.5 2.5" marker-end="url(#arr)"/>
+  <rect x="530" y="203" width="400" height="52" rx="9" fill="#FBEDEB" stroke="#C0483B" stroke-width="1.2"/>
+  <text x="546" y="224" font-size="10" font-weight="bold" fill="#C0483B">zero obligations, or the role crashes →</text>
+  <text x="546" y="241" font-size="9.5" fill="#4A5160">fail closed: nothing checkable means nothing verified</text>
+
+  <path d="M 250 270 L 250 290" fill="none" stroke="#5B6272" stroke-width="1.4" marker-end="url(#ar)"/>
+
+  <!-- per-obligation panel -->
+  <rect x="30" y="292" width="900" height="216" rx="12" fill="#F6F7F9" stroke="#E1E5EC" stroke-width="1.2"/>
+  <text x="48" y="314" font-size="10" font-weight="bold" fill="#7C838F" letter-spacing="1.5">3 · FOR EACH OBLIGATION NODE   (content-addressed: identical text anywhere = one node)</text>
+
+  <rect x="48" y="326" width="272" height="58" rx="8" fill="#E8F4ED" stroke="#2E8B57" stroke-width="1.2"/>
+  <text x="62" y="346" font-size="10" font-weight="bold" fill="#14161C">node already settled?</text>
+  <text x="62" y="362" font-size="9.5" fill="#4A5160">reuse verdict + evidence — a dedup hit,</text>
+  <text x="62" y="376" font-size="9.5" fill="#4A5160">no instrument spent</text>
+
+  <rect x="336" y="326" width="272" height="58" rx="8" fill="#E8F4ED" stroke="#2E8B57" stroke-width="1.2"/>
+  <text x="350" y="346" font-size="10" font-weight="bold" fill="#14161C">same-text claim already settled?</text>
+  <text x="350" y="362" font-size="9.5" fill="#4A5160">inherit its verdict across the two identity</text>
+  <text x="350" y="376" font-size="9.5" fill="#4A5160">spaces (claim ids also hash kind + deps)</text>
+
+  <rect x="624" y="326" width="286" height="58" rx="8" fill="#FFFFFF" stroke="#C3C9D4" stroke-width="1.2"/>
+  <text x="638" y="346" font-size="10" font-weight="bold" fill="#14161C">otherwise: play the binding game ↓</text>
+  <text x="638" y="362" font-size="9.5" fill="#4A5160">the only path that actually touches the</text>
+  <text x="638" y="376" font-size="9.5" fill="#4A5160">world — everything else is graph reuse</text>
+
+  <!-- binding game strip -->
+  <rect x="48" y="398" width="862" height="96" rx="9" fill="#FFFFFF" stroke="#CBD1DB" stroke-width="1.15"/>
+  <text x="479" y="416" font-size="9" font-weight="bold" fill="#7C838F" text-anchor="middle" letter-spacing="1.2">BINDING GAME · PER OBLIGATION</text>
+
+  <rect x="64" y="424" width="250" height="56" rx="7" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.25"/>
+  <text x="78" y="443" font-size="10" font-weight="bold" fill="#14161C">ORACLE</text>
+  <text x="78" y="458" font-size="9" fill="#4A5160">lists only SUFFICIENT methods, researches</text>
+  <text x="78" y="471" font-size="9" fill="#4A5160">first; self-graded assurance levels, ordered</text>
+
+  <path d="M 314 452 L 342 452" fill="none" stroke="#5B6272" stroke-width="1.3" marker-end="url(#ar)"/>
+
+  <rect x="344" y="424" width="250" height="56" rx="7" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.25"/>
+  <text x="358" y="443" font-size="10" font-weight="bold" fill="#14161C">DISCHARGE EXECUTOR</text>
+  <text x="358" y="458" font-size="9" fill="#4A5160">runs the method faithfully (Bash); installs</text>
+  <text x="358" y="471" font-size="9" fill="#4A5160">missing instruments; workdir snapshotted</text>
+
+  <path d="M 594 452 L 622 452" fill="none" stroke="#5B6272" stroke-width="1.3" marker-end="url(#ar)"/>
+
+  <rect x="624" y="424" width="250" height="56" rx="7" fill="#FDF2E7" stroke="#E08A45" stroke-width="1.25"/>
+  <text x="638" y="443" font-size="10" font-weight="bold" fill="#14161C">JUDGER (fidelity only)</text>
+  <text x="638" y="458" font-size="9" fill="#4A5160">opens the artifact itself; reruns when in</text>
+  <text x="638" y="471" font-size="9" fill="#4A5160">doubt; sufficiency is NOT re-judged</text>
+
+  <path d="M 749 480 L 749 488 L 469 488 L 469 480" fill="none" stroke="#7A5CC9" stroke-width="1.15" stroke-dasharray="3.6 2.6" marker-end="url(#arv)"/>
+  <text x="609" y="486" font-size="8.5" fill="#7A5CC9" text-anchor="middle">unfaithful → reason back, redo ≤ 3, blind re-judge</text>
+
+  <text x="479" y="505" font-size="9" fill="#8B92A1" text-anchor="middle">refuted short-circuits with a concrete witness · methods exhausted → failed · instrument truly unobtainable → partial</text>
+
+  <path d="M 250 508 L 250 528" fill="none" stroke="#5B6272" stroke-width="1.4" marker-end="url(#ar)"/>
+
+  <!-- settle -->
+  <rect x="30" y="530" width="440" height="96" rx="9" fill="#EAF1FA" stroke="#4A82C4" stroke-width="1.35"/>
+  <text x="48" y="551" font-size="11" font-weight="bold" fill="#14161C">4 · SETTLE (mechanical fold over the nodes)</text>
+  <text x="48" y="569" font-size="9.5" fill="#4A5160">any refuted → refuted (dependents now fail the taint gate)</text>
+  <text x="48" y="584" font-size="9.5" fill="#4A5160">all hold → verified · some hold → partial · unobtainable → partial</text>
+  <text x="48" y="599" font-size="9.5" fill="#4A5160">otherwise → unverified (a later dependent retriggers the check)</text>
+  <text x="48" y="617" font-size="9" fill="#8B92A1">outcomes feed advisory memory: obligation / attack / instrument patterns</text>
+
+  <path d="M 470 578 L 528 578" fill="none" stroke="#5B6272" stroke-width="1.4" marker-end="url(#ar)"/>
+
+  <rect x="530" y="530" width="400" height="96" rx="9" fill="#FFFFFF" stroke="#5B6272" stroke-width="1.5"/>
+  <text x="546" y="551" font-size="11" font-weight="bold" fill="#14161C">RETURN — the commit call resolves</text>
+  <text x="546" y="569" font-size="9.5" fill="#4A5160">status, plus the residue on anything not verified:</text>
+  <text x="546" y="584" font-size="9.5" fill="#4A5160">each failing obligation with its reason and counterexample</text>
+  <text x="546" y="599" font-size="9.5" fill="#4A5160">witness — the solver revises (revises=) before building on it</text>
+  <text x="546" y="617" font-size="9" fill="#8B92A1">revision marks the old claim + its downstream cone stale</text>
+</svg>
