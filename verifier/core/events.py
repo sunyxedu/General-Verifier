@@ -1,6 +1,7 @@
-"""Unified event stream: append-only JSONL, the system's only
-input and its only log. Replay = reading the same file; "offline" is just a
-high-latency stream (see report)."""
+"""
+Unified event stream: append-only JSONL, the system's only input and its only log. 
+Replay = reading the same file.
+"""
 from __future__ import annotations
 
 import json
@@ -11,37 +12,45 @@ from typing import Any, Dict, Iterator, Optional
 from .model import content_hash
 
 EVENT_TYPES = (
+    # solver-side behaviors
     "session_start",
     "tool_call",
     "tool_result",
     "message",
-    "commit",        # solver-volunteered claim (cooperative path)
+    "commit",
     "stop",
+
+    # scheduling
     "verify_request",
-    # verifier-side events (the kernel is auditable through the same stream)
-    "obligations_compiled",
-    "decomposition_attacked",
-    "discharge",
     "status_change",
     "certificate",
+
+    # obligation & critic agent
+    "obligations_compiled",
+    "decomposition_attacked",
+    
     # binding game
     "methods_enumerated",
     "judger_verdict",
     "method_rejected",
     "method_redo",
     "method_bound",
+    "discharge",
+
     # search support
     "dedup_hit",
+    
     # memory (advisory)
     "memory_recorded",
 )
 
 
 class EventLog:
-    """Append-only JSONL. Every event gets a monotonically increasing seq.
+    """
+    Append-only JSONL. Every event gets a monotonically increasing seq.
 
-    The file is only ever opened in append mode; replay validates monotonicity
-    so silent truncation/reordering is detected rather than absorbed.
+    The file is only ever opened in append mode;
+    replay validates monotonicity so silent truncation/reordering is detected rather than absorbed.
     """
 
     def __init__(self, path: str):
@@ -95,6 +104,8 @@ class EventLog:
     def event_digest(event: Dict[str, Any]) -> str:
         """Digest over the immutable identity of an event (ts excluded so the
         ledger check does not depend on wall-clock noise)."""
-        return content_hash(
-            {"seq": event["seq"], "type": event["type"], "payload": event["payload"]}
-        )
+        return content_hash({
+            "seq": event["seq"], 
+            "type": event["type"], 
+            "payload": event["payload"]
+        })

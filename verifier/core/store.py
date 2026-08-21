@@ -1,14 +1,5 @@
-"""Claim store + the single trigger rule + backward slicer. SQLite-backed materialized view of the stream.
-
-The one scheduling rule of the whole system:
-    a claim is verified the moment it is COMMITTED.
-The store owns detecting that moment; what "verify" means belongs to the kernel.
-
-Checking a claim when it is first *used* instead leaves a window in which the
-solver keeps building on a statement nobody has looked at yet — every claim
-written inside that window and every certificate requested inside it can be
-work spent on a premise that was already false. Checking at commit closes the
-window, and pins the check to the world the claimant was talking about.
+"""
+Claim store + the single trigger rule + backward slicer. SQLite-backed materialized view of the stream.
 
 Two mechanical carve-outs keep the rule cheap and total:
   * EFFECT claims stay lazy. They are the ledger — hundreds per run, mechanical
@@ -16,11 +7,8 @@ Two mechanical carve-outs keep the rule cheap and total:
   * The first-dependent moment still fires for anything left unverified, so a
     claim whose check failed closed gets retried when it becomes load-bearing.
 The certificate remains the backstop: it settles the final's whole slice.
-
-`trigger="on-first-dependent"` restores the old lazy policy — the CI gate uses
-it (there is no live solver to give early feedback to) and it is the control
-arm for measuring what eager scheduling costs.
 """
+
 from __future__ import annotations
 
 import json
@@ -83,16 +71,15 @@ class ClaimStore:
         self.trigger = trigger
         self._trigger_callbacks: List[TriggerCallback] = []
 
-    # ---- wiring --------------------------------------------------------------
-
+    # wiring
     def on_trigger(self, cb: TriggerCallback) -> None:
-        """Register the kernel. cb(claim_id) fires when a claim is committed
-        (and, either way, when an unverified claim gains its first dependent)
-        — the system's only scheduling event."""
+        """
+        Register the kernel. 
+        cb(claim_id) fires when a claim is committed (or has afirst dependent), the system's only scheduling event.
+        """
         self._trigger_callbacks.append(cb)
 
-    # ---- graph construction --------------------------------------------------
-
+    # graph construction
     def add_claim(self, claim: Claim) -> str:
         cur = self.db.execute("SELECT 1 FROM claims WHERE id=?", (claim.id,))
         if cur.fetchone():
@@ -123,17 +110,15 @@ class ClaimStore:
             self._mark_stale_cone(claim.revises)
 
         self.db.commit()
-        # deps first, then the claim itself: its own check reads their statuses
-        # (a refuted premise must already be refuted when the taint guard looks)
+        
         if self.trigger == TRIGGER_ON_COMMIT and claim.kind != CLAIM_EFFECT:
             fired.append(claim.id)
-        for claim_id in fired:  # fire after commit: callbacks see consistent state
+        for claim_id in fired:
             for cb in self._trigger_callbacks:
                 cb(claim_id)
         return claim.id
 
-    # ---- status machine ------------------------------------------------------
-
+    # status machine
     def status(self, claim_id: str) -> str:
         row = self._row(claim_id)
         return row["status"]
@@ -161,8 +146,7 @@ class ClaimStore:
         for cid in [claim_id, *self.downstream(claim_id)]:
             self.db.execute("UPDATE claims SET status=? WHERE id=?", (STATUS_STALE, cid))
 
-    # ---- evidence ------------------------------------------------------------
-
+    # evidence
     def record_evidence(self, claim_id: str, payload: dict) -> None:
         self.db.execute(
             "INSERT INTO evidence (claim_id, payload) VALUES (?,?)",
@@ -174,8 +158,7 @@ class ClaimStore:
         cur = self.db.execute("SELECT payload FROM evidence WHERE claim_id=?", (claim_id,))
         return [json.loads(r[0]) for r in cur.fetchall()]
 
-    # ---- graph queries -------------------------------------------------------
-
+    # graph queries
     def backward_slice(self, claim_id: str) -> List[str]:
         """The dependency closure including the claim itself (cert scope)."""
         return self._walk(claim_id, "SELECT parent FROM deps WHERE child=?")
@@ -204,8 +187,7 @@ class ClaimStore:
     def get(self, claim_id: str) -> Dict:
         return self._row(claim_id)
 
-    # ---- internals -----------------------------------------------------------
-
+    # internals
     def _exists(self, claim_id: str) -> bool:
         return self.db.execute(
             "SELECT 1 FROM claims WHERE id=?", (claim_id,)
@@ -233,8 +215,7 @@ class ClaimStore:
         cur = self.db.execute("SELECT parent FROM deps WHERE child=?", (claim_id,))
         return [r[0] for r in cur.fetchall()]
 
-    # ---- obligation nodes ----------------------------------------------------
-
+    # obligation nodes
     def add_obligation(self, claim_id: str, obligation) -> str:
         """Materialize an obligation as a first-class graph node
         (kind='obligation') and link it to its claim. Content-addressed:

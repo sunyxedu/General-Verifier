@@ -80,8 +80,8 @@ class Obligation:
     @property
     def id(self) -> str:
         """
-        identity is the CONTENT of the check alone: the same
-        world-condition compiled under different claims is one graph node,
+        identity is the CONTENT of the check alone: 
+        the same world-condition compiled under different claims is one graph node,
         so settled verification work transfers across claims for free
         """
         return content_hash({"text": self.text})
