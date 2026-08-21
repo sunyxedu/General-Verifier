@@ -72,8 +72,7 @@ class Tail:
             fired += 1
         return fired
 
-    def follow(self, interval: float = 0.2,
-               should_stop: Callable[[], bool] = lambda: False) -> None:
+    def follow(self, interval: float = 0.2, should_stop: Callable[[], bool] = lambda: False) -> None:
         while not should_stop():
             self.poll()
             time.sleep(interval)
