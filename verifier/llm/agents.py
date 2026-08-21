@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from . import prompts, provider
-from .roles import RoleError, validate
+from .schema import RoleError, validate
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 class _TransientSDKError(RuntimeError):
@@ -36,7 +36,7 @@ class _TransientSDKError(RuntimeError):
 
 
 def to_json_schema(spec: Any) -> Dict[str, Any]:
-    """Mini-DSL (roles.validate) -> JSON Schema draft-07.
+    """Mini-DSL (schema.validate) -> JSON Schema draft-07.
 
     One schema source of truth: the same spec drives the SDK's output gate
     and our own post-hoc validate().  str -> string; (a, b, ...) -> string

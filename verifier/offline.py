@@ -35,7 +35,7 @@ from .core.events import EventLog
 from .core.model import canonical
 from .core.store import ClaimStore, TRIGGER_ON_FIRST_DEPENDENT, UnknownDependency
 from .engine.certificate import request_certificate
-from .llm.roles import RoleError
+from .llm.schema import RoleError
 from .stream.builder import Builder, TraceError
 
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")

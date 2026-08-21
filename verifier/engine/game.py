@@ -36,7 +36,7 @@ from ..core.model import (
     Obligation,
     OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
-from ..llm.roles import RoleError
+from ..llm.schema import RoleError
 
 
 @dataclass

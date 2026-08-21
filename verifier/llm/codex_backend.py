@@ -30,7 +30,7 @@ import tempfile
 from typing import Any, Dict, Optional
 
 from .agents import ALL_AGENT_ROLES, to_json_schema
-from .roles import RoleError, validate
+from .schema import RoleError, validate
 
 DEFAULT_MODEL = "gpt-5.6-luna"
 

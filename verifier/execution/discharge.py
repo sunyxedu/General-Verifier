@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
 from .instruments import ArtifactStore
 from ..core.model import Obligation, OUTCOME_FAILED
-from ..llm.roles import RoleError
+from ..llm.schema import RoleError
 
 
 @dataclass(frozen=True)

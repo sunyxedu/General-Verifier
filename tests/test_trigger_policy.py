@@ -16,7 +16,7 @@ from verifier.core.store import (
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm.roles import FixtureBackend
+from verifier.llm.schema import FixtureBackend
 
 import pytest
 

@@ -167,7 +167,7 @@ Claude Code plugin) is wired as an online arm. See
 | `verifier/stream/` | ingestion: incremental graph building (`builder.py`), online tail (`tail.py`), Codex rollout → hook feed (`codex.py`) |
 | `verifier/offline.py` | the ORM path: feed ingestion, outcome-blind extraction with structural retry, certify, feature fold, lexicographic `rank_key` |
 | `verifier/selection.py` | best-of-N strategies: argmax, majority vote, verdict-weighted vote, pass@N oracle |
-| `verifier/llm/` | LLM seats: agent roles with hard tool palettes (`agents.py`), schema gate + fixture backend (`roles.py`), Codex CLI backend (`codex_backend.py`), provider wiring (`provider.py`), all prompt text (`prompts.py` — zero domain knowledge by design) |
+| `verifier/llm/` | LLM seats: agent roles with hard tool palettes (`agents.py`), schema gate + fixture backend (`schema.py`), Codex CLI backend (`codex_backend.py`), provider wiring (`provider.py`), all prompt text (`prompts.py` — zero domain knowledge by design) |
 | `verifier/execution/` | the hands: artifact store + ledger instrument (`instruments.py`), discharge seat with workdir snapshots (`discharge.py`) |
 | `verifier/engine/` | verification core: settlement + obligation-node reuse + pruning (`kernel.py`), binding game (`game.py`), certificate (`certificate.py`) |
 | `verifier/mcp_server.py` + `cli.py` | entry points: interactive MCP server; `score` / `certify` / `replay` CLI |

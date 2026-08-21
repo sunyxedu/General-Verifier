@@ -1,1 +1,1 @@
-"""LLM seats: Claude Agent SDK agent roles (agents.py) + role plumbing (roles.py)."""
+"""LLM seats: Claude Agent SDK agent roles (agents.py) + schema plumbing (schema.py)."""

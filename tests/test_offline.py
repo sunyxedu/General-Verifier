@@ -16,7 +16,7 @@ from verifier.core.events import EventLog
 from verifier.core.store import ClaimStore
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
-from verifier.llm.roles import FixtureBackend
+from verifier.llm.schema import FixtureBackend
 from verifier.stream.builder import Builder
 
 COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}"}]}  # noqa: E731

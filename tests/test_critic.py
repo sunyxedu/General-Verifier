@@ -17,7 +17,7 @@ from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.agents import CRITIC_AGENT
-from verifier.llm.roles import FixtureBackend
+from verifier.llm.schema import FixtureBackend
 
 
 COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}"}]}  # noqa: E731

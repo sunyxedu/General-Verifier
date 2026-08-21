@@ -3,7 +3,7 @@ split). The subprocess round-trip is exercised by live smokes, not here."""
 import pytest
 
 from verifier.llm.codex_backend import CodexBackend, extract_json
-from verifier.llm.roles import RoleError
+from verifier.llm.schema import RoleError
 
 
 def test_extract_json_tolerates_fences_and_prose():

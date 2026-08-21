@@ -1,4 +1,5 @@
-"""Shared role plumbing for the agent seats (verifier/llm/agents.py).
+"""
+Schema mini-DSL, validation gate, and fixture backend for verifier seats.
 
 Two pieces, both mechanical:
   - the schema mini-DSL + validate(): the output gate every seat's answer
@@ -52,10 +53,9 @@ def _check(spec: Any, value: Any, path: str) -> None:
             )
 
 
-# ---- fixture backend ---------------------------------------------------------
-
+# fixture backend
 class FixtureBackend:
-    """Deterministic backend: role name -> payload or callable(vars)->payload."""
+    """Deterministic backend: role name -> payload or callable(vars)->payload. Used as a seam."""
 
     def __init__(self, fixtures: Dict[str, Any]):
         self.fixtures = fixtures

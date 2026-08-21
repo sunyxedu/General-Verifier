@@ -41,7 +41,7 @@ from .engine.certificate import request_certificate
 from .core.events import EventLog
 from .execution.instruments import ArtifactStore
 from .engine.kernel import Kernel
-from .llm.roles import RoleError
+from .llm.schema import RoleError
 from .core.store import (
     ClaimStore, UnknownDependency, TRIGGER_ON_COMMIT, TRIGGERS,
 )
