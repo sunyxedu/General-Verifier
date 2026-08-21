@@ -1,11 +1,12 @@
-"""Binding game: per obligation, bind one sufficient method to real evidence.
+"""
+Binding game: per obligation, bind one sufficient method to real evidence.
 
 Per obligation:
 
 1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
    oracle's own guarantee, researched first when the domain is
    unfamiliar) and grades each with an assurance level of its own
-   devising, listing them ascending — simplest sufficient first, most
+   devising, listing them ascending. Simplest sufficient first, most
    assured last. Execution follows the oracle's order exactly.
 2. For each method in order the discharge executor carries it out
    faithfully (a missing instrument is installed at discharge time; a
@@ -17,10 +18,11 @@ Per obligation:
      executed and the promised artifact delivered? It opens the artifact
      itself and reruns when reproducibility is in doubt. Unfaithful ->
      the judger's reason goes back to the executor for a redo and the
-     redone result is re-judged BLIND — a loop of at most three rounds.
+     redone result is re-judged BLIND. A loop of at most three rounds.
 3. All candidates exhausted -> failed (or unobtainable when a missing
    instrument blocked the way), with every attempt on record.
 """
+
 from __future__ import annotations
 
 import json
@@ -77,16 +79,13 @@ class BindingGame:
         self.registry = registry
         self.memory = memory  # advisory; feeds the oracle's registry slot
 
-    # ---- entry ---------------------------------------------------------------
-
+    # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
         attempts: List[Attempt] = []
         methods = self._enumerate(row, obligation)
         if not methods:
             return self._fail(row, obligation, attempts,
                               "no candidate methods")
-        # execution order IS the oracle's order: it lists methods ascending
-        # by its own assurance grading (simplest sufficient first)
 
         unobtainable_seen = False   # a missing, uninstallable instrument
                                     # blocked a candidate -> settles partial
@@ -124,9 +123,8 @@ class BindingGame:
 
             # judger-discharger loop: an unfaithful delivery hands the
             # judger's reason back to the executor for a redo, and the
-            # redone evidence is re-judged BLIND — at most redo_rounds
-            # rounds. (a judger infrastructure failure never awards a
-            # redo; a refutation surfacing mid-loop settles immediately)
+            # redone evidence is re-judged BLIND. At most redo_rounds rounds.
+            # (a judger infrastructure failure never awards a redo; a refutation surfacing mid-loop settles immediately)
             reason = None
             rounds = 0
             while (verdict["faithful"] == "no"
@@ -161,8 +159,7 @@ class BindingGame:
                           "all candidate methods rejected",
                           unobtainable=unobtainable_seen)
 
-    # ---- enumeration and advisory review -------------------------------------
-
+    # enumeration and advisory review
     def _enumerate(self, row: Dict,
                    obligation: Obligation) -> List[Dict[str, str]]:
         registry = (self.memory.registry_summary()
@@ -192,8 +189,7 @@ class BindingGame:
         )
         return methods
 
-    # ---- the judger ----------------------------------------------------------
-
+    # the judger
     def _judge(self, obligation, method, result, attempt,
                redo: int = 0) -> Dict[str, str]:
         evidence = {
@@ -232,9 +228,12 @@ class BindingGame:
         return verdict
 
     def _redo(self, row, obligation, method, verdict, attempt, round_no: int):
-        """One arm of the judger-discharger loop: re-execute with every
+        """
+        One arm of the judger-discharger loop: re-execute with every
         judger reason so far attached (latest last); the result goes back
-        for a blind re-judge."""
+        for a blind re-judge.
+        """
+        
         self.log.append(
             "method_redo",
             {"claim": row["id"], "obligation": obligation.id,
@@ -256,8 +255,7 @@ class BindingGame:
         attempt.redos[-1]["artifact"] = result.artifact
         return result
 
-    # ---- settlement ----------------------------------------------------------
-
+    # settlement
     def _reject(self, row, obligation, method, reason: str) -> None:
         self.log.append(
             "method_rejected",
@@ -307,7 +305,7 @@ class BindingGame:
 
 
 def _features(row: Dict) -> str:
-    """Mechanical claim features — no interpretation, just surface signals."""
+    """Mechanical claim features"""
     text = row["text"]
     return json.dumps(
         {
