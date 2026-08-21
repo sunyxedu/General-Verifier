@@ -82,13 +82,17 @@ def main():
     ap.add_argument("--max-rounds", type=int, default=3)
     ap.add_argument("--workers", type=int, default=4,
                     help="traces scored concurrently (they share nothing)")
+    ap.add_argument("--task", default=None, nargs="+",
+                    help="score only these tasks (verification is the "
+                    "expensive stage; spend it where selection differs)")
     args = ap.parse_args()
 
     job_dir = os.path.join(HERE, "results", "jobs", args.job)
     scores_path = os.path.join(HERE, "results", "rec_scores.jsonl")
     done = res.recorded(scores_path, "job", "trial")
     todo = [t for t in harborjobs.trials(job_dir)
-            if (args.job, t["trial"]) not in done]
+            if (args.job, t["trial"]) not in done
+            and (not args.task or t["task"] in args.task)]
     print(f"[tb:score] {len(todo)} trials ({len(done)} scored)", flush=True)
 
     jobs = []
