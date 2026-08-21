@@ -2,13 +2,10 @@
 Schema mini-DSL, validation gate, and fixture backend for verifier seats.
 
 Two pieces, both mechanical:
-  - the schema mini-DSL + validate(): the output gate every seat's answer
-    must pass. Validation failures retry once with the error attached, then
-    raise — a role that cannot produce well-formed output is a FAILED
-    generation, and per the master principle that must surface, not be
-    papered over.
-  - FixtureBackend: deterministic role-name -> payload backend for tests
-    and replay.
+  - The schema mini-DSL + validate(): the output gate every seat's answer must pass. 
+    Validation failures retry once with the error attached, then raise. 
+    A role that cannot produce well-formed output is a FAILED generation, and per the master principle that must surface, not be papered over.
+  - FixtureBackend: deterministic role-name -> payload backend for tests and replay. Used as a seam.
 """
 from __future__ import annotations
 
@@ -19,7 +16,7 @@ class RoleError(RuntimeError):
     pass
 
 
-# ---- minimal schema validation (no external deps) ----------------------------
+# Minimal schema validation (no external deps).
 # schema: {"field": type} where type in {str, bool, int, float, list, dict},
 # {"field": [element_spec]} for a list (elements may be any spec, e.g. [str]
 # or [{...}]), or {"field": ("a", "b")} for a closed string enum. Mirrors
