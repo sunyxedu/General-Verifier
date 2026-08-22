@@ -341,7 +341,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
 
     from .mcp_server import Service
     sc = Service(state_dir, kernel_factory=kernel_factory, model=model,
-                 trigger=TRIGGER_ON_FIRST_DEPENDENT)
+                 trigger=TRIGGER_ON_FIRST_DEPENDENT, live_world=False)
     if not sc.builder.finals:
         return _write_score(
             state_dir,

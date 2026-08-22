@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
-from .instruments import ArtifactStore
+from .instruments import ArtifactStore, world_evidence_context
 from ..core.model import BASIS_RECORD, Obligation, OUTCOME_FAILED
 from ..llm.schema import RoleError
 
@@ -47,7 +47,8 @@ class AgentDischarger:
                  workdir_base: Optional[str] = None,
                  cleanup: bool = False,
                  toolchain_dir: Optional[str] = None,
-                 state_dir: Optional[str] = None):
+                 state_dir: Optional[str] = None,
+                 live_world: bool = True):
         self.backend = backend
         self.artifacts = artifacts
         self.role = role
@@ -59,6 +60,7 @@ class AgentDischarger:
         # checked against the scoring machine and refutes spuriously.
         # Resolved per discharge, not here: world/ may be linked later.
         self.state_dir = os.path.abspath(state_dir) if state_dir else None
+        self.live_world = live_world
         self.workdir_base = workdir_base or tempfile.mkdtemp(prefix="gv-discharge-")
         # Heavyweight installs (a Lean project with mathlib, a node_modules…)
         # live here and survive across discharges, claims, and runs when the
@@ -79,14 +81,12 @@ class AgentDischarger:
                          "choose the strongest reachable check yourself, and "
                          "write the check script and its complete output to disk",
         }
-        ledger, world, manifest = "", "", ""
+        ledger = ""
         if self.state_dir:
             path = os.path.join(self.state_dir, "events.jsonl")
             ledger = path if os.path.exists(path) else ""
-            path = os.path.join(self.state_dir, "world")
-            world = path if os.path.isdir(path) else ""
-            path = os.path.join(self.state_dir, "world_manifest.json")
-            manifest = path if os.path.exists(path) else ""
+        world_mode, world, manifest = world_evidence_context(
+            self.state_dir, live_world=self.live_world)
         variables = {
             "claim_text": row["text"],
             "obligation_text": obligation.text,
@@ -94,6 +94,7 @@ class AgentDischarger:
             "workdir": workdir,
             "toolchain_dir": self.toolchain_dir,
             "ledger_path": ledger,
+            "world_mode": world_mode,
             "world_path": world,
             "world_manifest": manifest,
         }

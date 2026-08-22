@@ -68,8 +68,10 @@ def test_pass_on_the_first_round_admits_the_decomposition(tmp_path):
     # the critic saw the claim, its kind, the task context, the obligations,
     # and the premises — never the solver's argument
     critic_vars = backend.calls[1]["variables"]
-    assert set(critic_vars) == {"claim_text", "claim_kind", "task_context",
-                                "obligations_json", "verified_deps"}
+    assert set(critic_vars) == {
+        "claim_text", "claim_kind", "task_context", "ledger_path",
+        "world_mode", "world_path", "obligations_json", "verified_deps",
+    }
     assert critic_vars["claim_kind"] == "assertion"
     assert critic_vars["task_context"] == "(none supplied)"
     # floors ride along so the critic attacks the decomposition AS FLOORED
@@ -146,6 +148,51 @@ def test_prompts_gate_task_definitions_and_attack_scope_projection():
     assert "MANDATORY SCOPE-PRESERVATION ATTACK" in prompts.CRITIC_SYSTEM
     assert "proper subset" in prompts.CRITIC_SYSTEM
     assert "proper-subset/component/proxy world" in prompts.CRITIC_TEMPLATE
+
+
+def test_prompts_preserve_temporal_targets_across_every_semantic_seat():
+    """Pin the no-replay contract where each role can accidentally undo it."""
+    assert "Every obligation must be a world-level condition" \
+        not in prompts.OBLIGATIONS_TEMPLATE
+    assert "MANDATORY TEMPORAL CHECK" in prompts.OBLIGATIONS_TEMPLATE
+    assert "required_basis=record; never replay" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "actual past world truth stays" in prompts.OBLIGATIONS_TEMPLATE
+    assert "MANDATORY TEMPORAL ATTACK" in prompts.CRITIC_SYSTEM
+    assert "record-floor paraphrase" in prompts.CRITIC_SYSTEM
+    assert "TEMPORAL TARGET IS PART OF SUFFICIENCY" \
+        in prompts.ORACLES_SYSTEM
+    assert "Do NOT re-run the historical action" in prompts.DISCHARGE_SYSTEM
+    assert "Never re-execute the historical tool" in prompts.JUDGER_SYSTEM
+
+
+def test_compiler_and_critic_receive_explicit_world_evidence_mode(tmp_path):
+    store, _, backend, _ = build(
+        tmp_path, {"obligations": COMPILE, "critic": PASS})
+
+    store.add_claim(Claim(CLAIM_ASSERTION, "the historical report exists"))
+
+    compiler = backend.calls[0]["variables"]
+    critic = backend.calls[1]["variables"]
+    assert compiler["world_mode"] == critic["world_mode"] == "live"
+    assert compiler["world_path"] == critic["world_path"] == ""
+    assert compiler["ledger_path"] == critic["ledger_path"]
+
+
+def test_offline_without_capture_is_not_mislabeled_live(tmp_path):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": COMPILE, "critic": PASS})
+    Kernel(
+        store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
+        critic_role=CRITIC_AGENT, discharger=StubDischarger(),
+        live_world=False,
+    )
+
+    store.add_claim(Claim(CLAIM_ASSERTION, "the historical report exists"))
+
+    assert backend.calls[0]["variables"]["world_mode"] == "unavailable"
+    assert backend.calls[1]["variables"]["world_mode"] == "unavailable"
 
 
 def test_task_defined_aggregate_projection_is_repaired(tmp_path):

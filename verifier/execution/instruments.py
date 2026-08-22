@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from ..core.events import EventLog
 from ..core.model import content_hash, OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED
@@ -40,6 +40,30 @@ class ArtifactStore:
     def get(self, digest: str) -> Dict[str, Any]:
         with open(os.path.join(self.root, digest + ".json"), "r", encoding="utf-8") as f:
             return json.load(f)
+
+
+def world_evidence_context(
+    state_dir: Optional[str], live_world: bool = True,
+) -> Tuple[str, str, str]:
+    """Return ``(mode, world_path, manifest_path)`` for a verifier seat.
+
+    An empty captured-world path is ambiguous on its own: during an online
+    run it means the original world is still live, while in offline replay it
+    means that world is gone and was not captured.  Keep that distinction
+    explicit at every semantic seat instead of asking an LLM to infer it from
+    a missing path.
+    """
+    if state_dir:
+        state = os.path.abspath(state_dir)
+        world = os.path.join(state, "world")
+        if os.path.isdir(world):
+            manifest = os.path.join(state, "world_manifest.json")
+            return (
+                "captured",
+                world,
+                manifest if os.path.exists(manifest) else "",
+            )
+    return ("live", "", "") if live_world else ("unavailable", "", "")
 
 
 class LedgerInstrument:

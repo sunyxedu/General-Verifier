@@ -35,7 +35,7 @@ from typing import Dict, List, Optional
 from ..llm.agents import ENUMERATE_ORACLES_AGENT, JUDGER_AGENT
 from ..execution.discharge import DischargeResult
 from ..core.events import EventLog
-from ..execution.instruments import ArtifactStore
+from ..execution.instruments import ArtifactStore, world_evidence_context
 from ..core.model import (
     BASIS_RECORD, Obligation, basis_satisfies,
     OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
@@ -70,6 +70,7 @@ class BindingGame:
         redo_rounds: int = 3,
         registry: str = "[]",
         memory=None,
+        live_world: bool = True,
     ):
         self.backend = backend
         self.artifacts = artifacts
@@ -80,6 +81,7 @@ class BindingGame:
         self.redo_rounds = redo_rounds
         self.registry = registry
         self.memory = memory  # advisory; feeds the oracle's registry slot
+        self.live_world = live_world
 
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
@@ -219,8 +221,8 @@ class BindingGame:
         # refutations against the delivered world and its capture
         # manifest, so it needs the same paths the executor had
         state = os.path.dirname(os.path.abspath(self.log.path))
-        world = os.path.join(state, "world")
-        manifest = os.path.join(state, "world_manifest.json")
+        world_mode, world, manifest = world_evidence_context(
+            state, live_world=self.live_world)
         try:
             verdict = self.judger_role.call(
                 self.backend,
@@ -232,9 +234,10 @@ class BindingGame:
                     # audits it as part of fidelity, and it is what the
                     # settled verdict will carry downstream
                     "basis": method.get("basis", ""),
-                    "world_path": world if os.path.isdir(world) else "",
-                    "world_manifest": (manifest if os.path.exists(manifest)
-                                       else ""),
+                    "ledger_path": os.path.abspath(self.log.path),
+                    "world_mode": world_mode,
+                    "world_path": world,
+                    "world_manifest": manifest,
                     "evidence": json.dumps(evidence, ensure_ascii=False),
                 },
             )

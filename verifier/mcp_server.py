@@ -100,8 +100,10 @@ class Service:
                  model: Optional[str] = None,
                  memory_dir: Optional[str] = None,
                  toolchain_dir: Optional[str] = None,
-                 trigger: str = TRIGGER_ON_COMMIT):
+                 trigger: str = TRIGGER_ON_COMMIT,
+                 live_world: bool = True):
         self.toolchain_dir = toolchain_dir
+        self.live_world = live_world
         os.makedirs(state_dir, exist_ok=True)
         self.state_dir = state_dir
         self.memory = None
@@ -260,13 +262,14 @@ def _default_kernel(sc: Service, model, backend=None) -> Kernel:
         workdir_base=os.path.join(sc.state_dir, "work"),
         cleanup=True,   # snapshots are the evidence; workdirs are scratch
         toolchain_dir=sc.toolchain_dir,
-        state_dir=sc.state_dir)
+        state_dir=sc.state_dir,
+        live_world=sc.live_world)
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
-                         memory=sc.memory)
+                         memory=sc.memory, live_world=sc.live_world)
     return Kernel(sc.store, sc.log, backend, sc.artifacts,
                   obligations_role=obligations,
                   discharger=discharger, binder=binder,
-                  memory=sc.memory)
+                  memory=sc.memory, live_world=sc.live_world)
 
 
 # MCP wiring

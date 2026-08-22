@@ -34,13 +34,14 @@ class StubDischarger:
                                artifact="d1", instrument="stub")
 
 
-def game(tmp_path, roles):
+def game(tmp_path, roles, live_world=True):
     backend = FixtureBackend(roles)
     return BindingGame(
         backend,
         ArtifactStore(os.path.join(tmp_path, "art")),
         EventLog(os.path.join(tmp_path, "events.jsonl")),
         StubDischarger(),
+        live_world=live_world,
     ), backend
 
 
@@ -75,6 +76,9 @@ def test_judger_sees_world_and_manifest_when_present(tmp_path):
         "variables"]
     assert judger_vars["world_path"] == os.path.join(str(tmp_path), "world")
     assert judger_vars["world_manifest"] == manifest
+    assert judger_vars["world_mode"] == "captured"
+    assert judger_vars["ledger_path"] == os.path.join(str(tmp_path),
+                                                       "events.jsonl")
 
 
 def test_judger_world_vars_empty_when_absent(tmp_path):
@@ -86,6 +90,21 @@ def test_judger_world_vars_empty_when_absent(tmp_path):
         "variables"]
     assert judger_vars["world_path"] == ""
     assert judger_vars["world_manifest"] == ""
+    assert judger_vars["world_mode"] == "live"
+
+
+def test_judger_knows_when_offline_world_was_not_captured(tmp_path):
+    g, backend = game(
+        tmp_path, {"oracles": ORACLE, "judger": JUDGE_YES},
+        live_world=False,
+    )
+
+    g.run(ROW, Obligation("c1", "answer equals 42"))
+
+    variables = [c for c in backend.calls if c["role"] == "judger"][-1][
+        "variables"]
+    assert variables["world_mode"] == "unavailable"
+    assert variables["world_path"] == ""
 
 
 def test_missing_declaration_fails_closed_to_record(tmp_path):

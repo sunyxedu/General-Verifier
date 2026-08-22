@@ -18,7 +18,9 @@ from typing import Dict, List
 
 from ..execution.discharge import AgentDischarger, DischargeResult
 from ..core.events import EventLog
-from ..execution.instruments import ArtifactStore, LedgerInstrument
+from ..execution.instruments import (
+    ArtifactStore, LedgerInstrument, world_evidence_context,
+)
 from ..core.model import (
     Claim, Evidence, Obligation, basis_satisfies,
     BASIS_RECORD, BASIS_WORLD,
@@ -69,6 +71,7 @@ class Kernel:
         discharger=None,
         binder=None,
         memory=None,
+        live_world: bool = True,
     ):
         self.store = store
         self.log = log
@@ -76,11 +79,13 @@ class Kernel:
         self.artifacts = artifacts
         self.ledger = LedgerInstrument(log)
         self.memory_hits = memory_hits
+        self.live_world = live_world
         self.obligations_role = obligations_role or COMPILE_OBLIGATIONS_AGENT
         self.critic_role = critic_role   # None -> no adversarial review
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
-            state_dir=os.path.dirname(os.path.abspath(log.path)))
+            state_dir=os.path.dirname(os.path.abspath(log.path)),
+            live_world=live_world)
         self.binder = binder      # binding game; None -> direct discharge (tests)
         self.memory = memory      # advisory stores; None -> static hints
         store.on_trigger(self.verify)  # the single rule wires straight in
@@ -249,14 +254,16 @@ class Kernel:
         # a run scored after the fact (offline ORM) has no live world; the
         # harness may instead have captured the delivered tree next to the
         # ledger. Absolute, like ledger_path: the checker runs elsewhere.
-        world = os.path.join(os.path.dirname(os.path.abspath(self.log.path)),
-                             "world")
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        world_mode, world, _ = world_evidence_context(
+            state, live_world=self.live_world)
         variables = {
             "claim_text": row["text"],
             "claim_kind": row["kind"],
             "task_context": _authoritative_task_context(self.log.path),
             "ledger_path": os.path.abspath(self.log.path),
-            "world_path": world if os.path.isdir(world) else "",
+            "world_mode": world_mode,
+            "world_path": world,
             "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
             "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
             "graph": json.dumps(
@@ -307,6 +314,9 @@ class Kernel:
                     "claim_text": row["text"],
                     "claim_kind": row["kind"],
                     "task_context": task_context,
+                    "ledger_path": variables["ledger_path"],
+                    "world_mode": variables["world_mode"],
+                    "world_path": variables["world_path"],
                     # floors ride along: the critic must attack the
                     # decomposition AS FLOORED — a record-floor
                     # obligation's holding fixes only the ledger, not
