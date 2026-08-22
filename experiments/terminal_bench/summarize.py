@@ -95,17 +95,25 @@ def rec_selection():
     rows = res.load(scores_path)
     if not rows:
         return
-    by_job = defaultdict(lambda: defaultdict(list))
+    # one pool per (job, config, rep): a pool mixing configs would blend
+    # different verifiers' judgments, and mixing reps would let one
+    # repetition's scores select another's trials. Records predating
+    # config identity group under "legacy" and never blend with new ones.
+    by_pool = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        by_job[r.get("job", "?")][r["task"]].append(
+        key = (r.get("job", "?"), r.get("config", "legacy"),
+               r.get("rep", "-"))
+        by_pool[key][r["task"]].append(
             {"solved": bool(r.get("reward")), "features": r["features"],
              "trial": r["trial"]})
-    for job in sorted(by_job):
+    for key in sorted(by_pool):
+        job, config, rep = key
         totals = Counter()
-        print(f"\n{'best-of-k [' + job + ']':<28}{'k':>4}"
+        label = f"{job} · {config[:8]} · {rep}"
+        print(f"\n{'best-of-k [' + label + ']':<44}{'k':>4}"
               f"{'picked verdict':>16}{'pass@1':>8}{'argmax':>8}{'oracle':>8}")
-        for task in sorted(by_job[job]):
-            trials = by_job[job][task]
+        for task in sorted(by_pool[key]):
+            trials = by_pool[key][task]
             chosen = selection.argmax(trials)
             p1 = selection.pass_at_1(trials)
             argmax_ok = bool(chosen and chosen["solved"])
@@ -114,14 +122,14 @@ def rec_selection():
             totals["argmax"] += argmax_ok
             totals["oracle"] += oracle_ok
             totals["n"] += 1
-            print(f"{task:<28}{len(trials):>4}"
+            print(f"{task:<44}{len(trials):>4}"
                   f"{str(chosen['features'].get('verdict')):>16}"
                   f"{p1:>8.2f}{str(argmax_ok):>8}{str(oracle_ok):>8}")
         n = totals["n"]
         if n:
             argmax_cell = "%d/%d" % (totals["argmax"], n)
             oracle_cell = "%d/%d" % (totals["oracle"], n)
-            print(f"{'TOTAL':<28}{'':>4}{'':>16}"
+            print(f"{'TOTAL':<44}{'':>4}{'':>16}"
                   f"{totals['pass@1'] / n:>8.2f}{argmax_cell:>8}{oracle_cell:>8}")
 
 
