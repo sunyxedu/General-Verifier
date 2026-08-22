@@ -9,13 +9,19 @@ matching the role's schema; it is parsed and re-validated by the same
 mini-DSL gate as always, so a malformed generation surfaces as RoleError
 and retries through AgentRole.call exactly like the SDK path.
 
-Capability boundaries: every seat runs in codex's YOLO mode
-(--dangerously-bypass-approvals-and-sandbox, user directive) — approvals
-and sandboxing off, so exec-mode runs never stall on a permission stop.
-The SDK path enforces the non-executing seats' no-execution palette as a
-hard boundary; here it holds only at the prompt level ("you cannot
-execute anything"), which is a fidelity gap to keep in mind when
-comparing backends.
+Capability boundaries: semantic seats and live-world execution retain the
+user-requested YOLO mode (--dangerously-bypass-approvals-and-sandbox), so
+exec-mode runs never stall on a permission stop.  Offline evidence seats
+(discharge and judger in captured/unavailable world modes) instead run in a
+workspace profile with command network disabled, host caches denied, and a
+fresh state-local HOME/cache/tmp.  That prevents a historical check from
+silently becoming a replay against a mutable remote or a cache left by a
+different run while preserving writes to the state's work/toolchain tree.
+
+The SDK path enforces the non-executing seats' no-execution palette as a hard
+boundary; for the Codex backend it holds only at the prompt level ("you cannot
+execute anything"), which is a fidelity gap to keep in mind when comparing
+backends.
 
 Fidelity note: codex drives its own agent loop; per-turn budgets and the
 exact tool set differ from the SDK seats. Scores from the two backends
@@ -33,6 +39,15 @@ from .agents import ALL_AGENT_ROLES, to_json_schema
 from .schema import RoleError, validate
 
 DEFAULT_MODEL = "gpt-5.6-luna"
+
+_OFFLINE_EVIDENCE_ROLES = frozenset({"discharge", "judger"})
+_OFFLINE_WORLD_MODES = frozenset({"captured", "unavailable"})
+_OFFLINE_PROFILE = "gv-offline"
+
+
+def _toml_string(value: str) -> str:
+    """A JSON string is also a valid TOML basic string."""
+    return json.dumps(value, ensure_ascii=False)
 
 
 def extract_json(text: str) -> Any:
@@ -60,6 +75,71 @@ class CodexBackend:
         self.effort = effort
         self.timeout = timeout
 
+    def _execution_policy_args(self, role_name: str,
+                               variables: Dict[str, Any]) -> list[str]:
+        """Return the CLI boundary for this seat and evidence context."""
+        offline_evidence = (
+            role_name in _OFFLINE_EVIDENCE_ROLES
+            and variables.get("world_mode") in _OFFLINE_WORLD_MODES
+        )
+        if not offline_evidence:
+            return ["--dangerously-bypass-approvals-and-sandbox"]
+
+        # Offline score() constructs the backend with cwd=state_dir.  Keep a
+        # fallback for direct callers that provide only the ledger path, but
+        # fail closed rather than place an allegedly isolated HOME in an
+        # unrelated process directory.
+        state_dir = self.cwd
+        if not state_dir and variables.get("ledger_path"):
+            state_dir = os.path.dirname(
+                os.path.abspath(str(variables["ledger_path"])))
+        if not state_dir:
+            raise RoleError(
+                f"{role_name}: offline evidence execution needs a state cwd")
+        state_dir = os.path.abspath(state_dir)
+
+        home = os.path.join(state_dir, "work", "_offline_home")
+        cache = os.path.join(home, ".cache")
+        tmp = os.path.join(home, "tmp")
+        hf = os.path.join(cache, "huggingface")
+        env = {
+            "HOME": home,
+            "XDG_CACHE_HOME": cache,
+            "TMPDIR": tmp,
+            "HF_HOME": hf,
+            "HF_DATASETS_CACHE": os.path.join(hf, "datasets"),
+            "HF_HUB_CACHE": os.path.join(hf, "hub"),
+            # Older huggingface_hub releases used the longer spelling.
+            "HUGGINGFACE_HUB_CACHE": os.path.join(hf, "hub"),
+            "TRANSFORMERS_CACHE": os.path.join(hf, "transformers"),
+            "HF_XET_CACHE": os.path.join(hf, "xet"),
+            "HF_ASSETS_CACHE": os.path.join(hf, "assets"),
+        }
+        for path in dict.fromkeys(env.values()):
+            os.makedirs(path, exist_ok=True)
+        env_table = "{" + ",".join(
+            f"{key}={_toml_string(value)}" for key, value in env.items()
+        ) + "}"
+
+        # Permission profiles and the legacy --sandbox flag do not compose:
+        # selecting the profile through default_permissions is intentional.
+        # The Codex process itself keeps its real HOME (and therefore auth);
+        # shell_environment_policy applies to commands launched by the seat.
+        return [
+            "--ignore-user-config",
+            "-c", f'default_permissions="{_OFFLINE_PROFILE}"',
+            "-c", 'approval_policy="never"',
+            "-c", f'permissions.{_OFFLINE_PROFILE}.extends=":workspace"',
+            "-c", (
+                f"permissions.{_OFFLINE_PROFILE}.filesystem="
+                '{"~/.cache"="deny","~/Library/Caches"="deny",'
+                '"~/.huggingface"="deny","~/.codex"="deny"}'
+            ),
+            "-c", f"permissions.{_OFFLINE_PROFILE}.network.enabled=false",
+            "-c", 'shell_environment_policy.inherit="core"',
+            "-c", f"shell_environment_policy.set={env_table}",
+        ]
+
     def complete(self, role_name: str, prompt: str,
                  variables: Dict[str, Any]) -> Any:
         role = self.roles.get(role_name)
@@ -72,13 +152,16 @@ class CodexBackend:
             + "\n\nYour FINAL message must be exactly one JSON object "
               "matching this JSON Schema, with no other prose around it:\n"
             + schema)
+        policy_args = self._execution_policy_args(role_name, variables)
         out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
         out.close()
         cmd = ["codex", "exec", "--model", self.model,
-               "--skip-git-repo-check",
-               "--dangerously-bypass-approvals-and-sandbox",
-               "-c", f"model_reasoning_effort={self.effort}",
-               "-o", out.name, "--", instruction]
+               "--skip-git-repo-check"]
+        cmd.extend(policy_args)
+        cmd.extend([
+            "-c", f"model_reasoning_effort={self.effort}",
+            "-o", out.name, "--", instruction,
+        ])
         try:
             with open(os.devnull) as devnull:
                 # stdin MUST be closed: codex otherwise waits on it forever
