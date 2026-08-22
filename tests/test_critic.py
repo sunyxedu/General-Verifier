@@ -231,6 +231,20 @@ def test_oracle_cannot_hide_missing_evidence_behind_an_empty_list():
     assert "report the exact unobtainable gap" in prompts.ORACLES_TEMPLATE
 
 
+def test_oracle_methods_are_decisions_bound_to_task_semantics():
+    """A target literal cannot turn Oracle enumeration into confirmation."""
+    assert "DECISION PROCEDURE, not a confirmation recipe" \
+        in prompts.ORACLES_SYSTEM
+    assert "either holds or refuted" in prompts.ORACLES_SYSTEM
+    assert "retained evidence appears to contradict" in prompts.ORACLES_SYSTEM
+    assert "SEMANTIC BINDING GATE" in prompts.ORACLES_SYSTEM
+    assert "field/component/proxy may narrow" in prompts.ORACLES_SYSTEM
+    assert "proper component or proxy is insufficient" \
+        in prompts.ORACLES_SYSTEM
+    assert "Merely reading the ledger does not determine basis" \
+        in prompts.ORACLES_SYSTEM
+
+
 def test_judger_uses_artifact_store_content_address_semantics():
     assert "ARTIFACT CONTENT ADDRESSING" in prompts.JUDGER_SYSTEM
     assert "content address of the PARSED JSON value" in prompts.JUDGER_SYSTEM
