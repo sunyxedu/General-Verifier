@@ -128,6 +128,84 @@ def test_judger_knows_when_offline_world_was_not_captured(tmp_path):
     assert variables["world_path"] == ""
 
 
+def test_oracle_sees_floor_ledger_and_fixed_world_context(tmp_path):
+    os.makedirs(os.path.join(tmp_path, "world", "app"))
+    manifest = os.path.join(tmp_path, "world_manifest.json")
+    with open(manifest, "w") as f:
+        json.dump({"captured_roots": ["/app"]}, f)
+    g, backend = game(
+        tmp_path, {"oracles": ORACLE, "judger": JUDGE_YES},
+        live_world=False,
+    )
+
+    g.run(ROW, Obligation("c1", "answer equals 42", "world"))
+
+    variables = [c for c in backend.calls if c["role"] == "oracles"][-1][
+        "variables"]
+    assert variables["required_basis"] == "world"
+    assert variables["ledger_path"] == os.path.join(str(tmp_path),
+                                                       "events.jsonl")
+    assert variables["world_mode"] == "captured"
+    assert variables["world_path"] == os.path.join(str(tmp_path), "world")
+    assert variables["world_manifest"] == manifest
+
+
+def test_explicit_empty_oracle_is_unobtainable_offline(tmp_path):
+    g, _ = game(tmp_path, {"oracles": {"methods": []}}, live_world=False)
+
+    result = g.run(ROW, Obligation("c1", "past state was X", "world"))
+
+    assert result.outcome == "unobtainable"
+    assert "no executable sufficient method" in result.witness
+
+
+def test_explicit_empty_oracle_stays_failed_live(tmp_path):
+    g, _ = game(tmp_path, {"oracles": {"methods": []}})
+
+    result = g.run(ROW, Obligation("c1", "answer equals 42", "world"))
+
+    assert result.outcome == "failed"
+    assert "no executable sufficient method" in result.witness
+
+
+def test_oracle_role_error_stays_failed_offline(tmp_path):
+    g, _ = game(tmp_path, {}, live_world=False)
+
+    result = g.run(ROW, Obligation("c1", "past state was X", "world"))
+
+    assert result.outcome == "failed"
+    assert "oracle enumeration failed" in result.witness
+
+
+def test_schema_invalid_oracle_output_stays_failed_offline(tmp_path):
+    g, backend = game(
+        tmp_path, {"oracles": {"methods": "not-a-list"}},
+        live_world=False,
+    )
+
+    result = g.run(ROW, Obligation("c1", "past state was X", "world"))
+
+    assert result.outcome == "failed"
+    assert "oracle enumeration failed" in result.witness
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
+
+
+def test_only_below_floor_methods_are_protocol_failure_offline(tmp_path):
+    methods = {"methods": [{
+        "procedure": "grep the ledger",
+        "artifact": "ledger excerpt",
+        "level": "record inspection",
+        "basis": "record",
+    }]}
+    g, _ = game(tmp_path, {"oracles": methods}, live_world=False)
+
+    result = g.run(ROW, Obligation("c1", "answer equals 42", "world"))
+
+    assert result.outcome == "failed"
+    assert "oracle protocol error" in result.witness
+    assert "required basis 'world'" in result.witness
+
+
 def test_missing_declaration_fails_closed_to_record(tmp_path):
     legacy = {"methods": [{"procedure": "p", "artifact": "a", "level": "l",
                            "basis": "record"}]}

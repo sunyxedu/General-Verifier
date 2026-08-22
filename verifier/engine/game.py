@@ -86,7 +86,35 @@ class BindingGame:
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
         attempts: List[Attempt] = []
-        methods = self._enumerate(row, obligation)
+        try:
+            methods = self._enumerate(row, obligation)
+        except RoleError as err:
+            # A crashed role or schema-invalid generation is not evidence that
+            # no sufficient method exists.  Keep generation failure distinct
+            # from the oracle's valid, explicit empty-list conclusion.
+            self.log.append(
+                "methods_enumerated",
+                {"claim": row["id"], "obligation": obligation.id,
+                 "error": str(err)},
+            )
+            return self._fail(
+                row, obligation, attempts,
+                f"oracle enumeration failed: {err}",
+            )
+
+        if not methods:
+            # In offline replay the evidence boundary is frozen: a valid empty
+            # list means the oracle found no executable sufficient method at
+            # the required basis, so the honest result is unavailable rather
+            # than a retryable execution failure.  A live world may change, so
+            # preserve its fail-closed/retryable behaviour.
+            return self._fail(
+                row, obligation, attempts,
+                "oracle found no executable sufficient method at the "
+                f"required basis {obligation.required_basis!r}",
+                unobtainable=not self.live_world,
+            )
+
         # the obligation's evidence floor is mechanical, not advisory: a
         # method whose declared basis cannot satisfy it never executes —
         # a record method faithfully run against a world-floor obligation
@@ -100,9 +128,12 @@ class BindingGame:
                          "declared basis below the obligation's floor")
         methods = [m for m in methods if m not in below]
         if not methods:
-            return self._fail(row, obligation, attempts,
-                              "no candidate methods at the required basis"
-                              if below else "no candidate methods")
+            return self._fail(
+                row, obligation, attempts,
+                "oracle protocol error: every returned method declares a "
+                "basis below the obligation's required basis "
+                f"{obligation.required_basis!r}",
+            )
 
         unavailable_reasons: List[str] = []
         failed_seen = False
@@ -192,21 +223,23 @@ class BindingGame:
                    obligation: Obligation) -> List[Dict[str, str]]:
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
-        try:
-            payload = self.oracles_role.call(
-                self.backend,
-                {
-                    "claim_text": row["text"],
-                    "obligation_text": obligation.text,
-                    "features": _features(row),
-                    "registry": registry,
-                },
-            )
-        except RoleError as err:
-            self.log.append("methods_enumerated",
-                            {"claim": row["id"], "obligation": obligation.id,
-                             "error": str(err)})
-            return []
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        world_mode, world, manifest = world_evidence_context(
+            state, live_world=self.live_world)
+        payload = self.oracles_role.call(
+            self.backend,
+            {
+                "claim_text": row["text"],
+                "obligation_text": obligation.text,
+                "required_basis": obligation.required_basis,
+                "features": _features(row),
+                "registry": registry,
+                "ledger_path": os.path.abspath(self.log.path),
+                "world_mode": world_mode,
+                "world_path": world,
+                "world_manifest": manifest,
+            },
+        )
         methods = payload["methods"]
         self.log.append(
             "methods_enumerated",

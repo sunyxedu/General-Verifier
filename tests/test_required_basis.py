@@ -151,6 +151,35 @@ def test_unavailable_obligation_makes_otherwise_proven_claim_partial(tmp_path):
     }
 
 
+def test_offline_empty_oracle_settles_obligation_and_claim_partial(tmp_path):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({
+        "obligations": compile_fixture([
+            {"text": "missing historical evidence",
+             "required_basis": "world"},
+        ]),
+        "oracles": {"methods": []},
+    })
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    discharger = BasisDischarger(BASIS_WORLD)
+    binder = BindingGame(
+        backend, artifacts, log, discharger, live_world=False)
+    Kernel(
+        store, log, backend, artifacts,
+        critic_role=None, discharger=discharger, binder=binder,
+        live_world=False,
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "past state was X"))
+
+    assert store.status(cid) == "partial"
+    (node,) = store.obligation_children(cid)
+    assert node["status"] == "partial"
+    assert store.evidence_for(node["id"])[-1]["outcome"] == "unobtainable"
+    assert discharger.seen == []
+
+
 def test_retryable_failure_is_not_partial_progress(tmp_path):
     per_text_outcome = lambda text: (                            # noqa: E731
         "failed" if "second" in text else "holds")
