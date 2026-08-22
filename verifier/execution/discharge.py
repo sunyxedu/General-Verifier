@@ -91,6 +91,14 @@ class AgentDischarger:
             "claim_text": row["text"],
             "obligation_text": obligation.text,
             "procedure": method["procedure"],
+            # The executor must see the whole contract the oracle bound,
+            # not just its procedure.  Otherwise it cannot know what
+            # artifact it promised to produce or which provenance floor its
+            # execution has to preserve; the judger would discover those
+            # omissions only after an avoidable redo.
+            "promised_artifact": method.get("artifact", ""),
+            "declared_basis": method.get("basis", BASIS_RECORD),
+            "required_basis": obligation.required_basis,
             "workdir": workdir,
             "toolchain_dir": self.toolchain_dir,
             "ledger_path": ledger,

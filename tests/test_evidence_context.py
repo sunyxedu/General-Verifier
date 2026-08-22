@@ -49,6 +49,11 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
     discharger.discharge(
         {"id": "c1", "kind": "assertion", "text": "past state was X"},
         Obligation("c1", "past state was X", "world"),
+        method={
+            "procedure": "inspect the retained snapshot",
+            "artifact": "snapshot path, digest, and parsed value",
+            "basis": "world",
+        },
     )
 
     variables = backend.calls[-1]["variables"]
@@ -56,3 +61,7 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
     assert variables["world_mode"] == "unavailable"
     assert variables["world_path"] == ""
     assert variables["world_manifest"] == ""
+    assert variables["promised_artifact"] == (
+        "snapshot path, digest, and parsed value")
+    assert variables["declared_basis"] == "world"
+    assert variables["required_basis"] == "world"

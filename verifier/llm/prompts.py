@@ -645,7 +645,13 @@ DISCHARGE_SYSTEM = (
 
 DISCHARGE_TEMPLATE = (
     "Claim: {claim_text}\nObligation: {obligation_text}\n"
-    "Bound method: {procedure}\nWorking directory: {workdir}\n"
+    "Bound method: {procedure}\n"
+    "Promised artifact: {promised_artifact}\n"
+    "Method's declared evidence basis: {declared_basis}\n"
+    "Obligation's required evidence basis: {required_basis}\n"
+    "Produce the promised artifact and preserve the declared basis at or "
+    "above the required floor; do not silently substitute weaker evidence.\n"
+    "Working directory: {workdir}\n"
     "Toolchain directory: {toolchain_dir} (install heavyweight "
     "dependencies and project scaffolding here, shared and reused across "
     "checks; the working directory holds only this check's scripts and "
