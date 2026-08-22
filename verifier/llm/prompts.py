@@ -536,6 +536,10 @@ JUDGER_SYSTEM = (
 JUDGER_TEMPLATE = (
     "Obligation (context only): {obligation_text}\n"
     "Bound method's procedure: {procedure}\n"
+    "Declared evidence basis (world = verdict derived independently of "
+    "the solver's reported values; record = the check reads the "
+    "verifier's ledger — audit that the execution matches the "
+    "declaration): {basis}\n"
     "Promised artifact: {promised_artifact}\n"
     "Submitted evidence (including artifact paths): {evidence}\n\n"
     "Examine the result itself and judge:\n"

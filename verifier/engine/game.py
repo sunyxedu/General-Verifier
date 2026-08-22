@@ -209,6 +209,10 @@ class BindingGame:
                     "obligation_text": obligation.text,
                     "procedure": method["procedure"],
                     "promised_artifact": method.get("artifact", ""),
+                    # the oracle's declared evidence basis — the judger
+                    # audits it as part of fidelity, and it is what the
+                    # settled verdict will carry downstream
+                    "basis": method.get("basis", ""),
                     "evidence": json.dumps(evidence, ensure_ascii=False),
                 },
             )
