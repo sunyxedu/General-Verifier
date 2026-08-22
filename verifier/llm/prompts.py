@@ -558,6 +558,17 @@ ORACLES_SYSTEM = (
     "produce world-basis evidence. For an actual past-world condition, "
     "only contemporaneous or immutably time-bound evidence can support "
     "a world method; a later mutable state cannot.\n"
+    "MANDATORY RETAINED-EVIDENCE PREFLIGHT: in captured or unavailable "
+    "world mode, inspect the whole ledger before listing methods for a "
+    "world-floor obligation. Look for a chain of individually complete, "
+    "correlated effects that binds both the task-authoritative definition "
+    "or provenance and a decisive computation or observation. If auditing "
+    "that retained chain could establish or refute the obligation, list the "
+    "audit before any method requiring fresh retrieval or replay. Inspect "
+    "the complete call and result for every task-relevant component and "
+    "aggregate; never cherry-pick a target-matching component or subtotal "
+    "while the same retained evidence contains the full quantity or a "
+    "counterexample.\n"
     + PROOF_CARRYING_EFFECTS
 )
 

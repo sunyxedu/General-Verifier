@@ -245,6 +245,17 @@ def test_oracle_methods_are_decisions_bound_to_task_semantics():
         in prompts.ORACLES_SYSTEM
 
 
+def test_offline_oracle_prefers_complete_retained_evidence():
+    assert "MANDATORY RETAINED-EVIDENCE PREFLIGHT" in prompts.ORACLES_SYSTEM
+    assert "establish or refute the obligation" in prompts.ORACLES_SYSTEM
+    assert "before any method requiring fresh retrieval or replay" \
+        in prompts.ORACLES_SYSTEM
+    assert "every task-relevant component and aggregate" \
+        in prompts.ORACLES_SYSTEM
+    assert "never cherry-pick a target-matching component or subtotal" \
+        in prompts.ORACLES_SYSTEM
+
+
 def test_judger_uses_artifact_store_content_address_semantics():
     assert "ARTIFACT CONTENT ADDRESSING" in prompts.JUDGER_SYSTEM
     assert "content address of the PARSED JSON value" in prompts.JUDGER_SYSTEM
