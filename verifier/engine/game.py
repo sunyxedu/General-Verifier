@@ -35,7 +35,9 @@ from typing import Dict, List, Optional
 from ..llm.agents import ENUMERATE_ORACLES_AGENT, JUDGER_AGENT
 from ..execution.discharge import DischargeResult
 from ..core.events import EventLog
-from ..execution.instruments import ArtifactStore, world_evidence_context
+from ..execution.instruments import (
+    ArtifactStore, authoritative_task_context, world_evidence_context,
+)
 from ..core.model import (
     BASIS_RECORD, Obligation, basis_satisfies,
     OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
@@ -232,6 +234,7 @@ class BindingGame:
                 "claim_text": row["text"],
                 "obligation_text": obligation.text,
                 "required_basis": obligation.required_basis,
+                "task_context": authoritative_task_context(state),
                 "features": _features(row),
                 "registry": registry,
                 "ledger_path": os.path.abspath(self.log.path),
@@ -279,6 +282,7 @@ class BindingGame:
                     # audits it as part of fidelity, and it is what the
                     # settled verdict will carry downstream
                     "basis": method.get("basis", ""),
+                    "task_context": authoritative_task_context(state),
                     "ledger_path": os.path.abspath(self.log.path),
                     "world_mode": world_mode,
                     "world_path": world,

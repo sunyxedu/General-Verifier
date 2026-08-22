@@ -30,6 +30,8 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
     state.mkdir()
     ledger = state / "events.jsonl"
     ledger.write_text("")
+    task = state / "task.md"
+    task.write_text("Count every item, not one component.")
     backend = FixtureBackend({
         "discharge": {
             "outcome": "unobtainable",
@@ -65,3 +67,7 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
         "snapshot path, digest, and parsed value")
     assert variables["declared_basis"] == "world"
     assert variables["required_basis"] == "world"
+    assert json.loads(variables["task_context"]) == {
+        "path": str(task),
+        "text": "Count every item, not one component.",
+    }

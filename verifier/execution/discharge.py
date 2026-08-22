@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
-from .instruments import ArtifactStore, world_evidence_context
+from .instruments import (
+    ArtifactStore, authoritative_task_context, world_evidence_context,
+)
 from ..core.model import BASIS_RECORD, Obligation, OUTCOME_FAILED
 from ..llm.schema import RoleError
 
@@ -99,6 +101,7 @@ class AgentDischarger:
             "promised_artifact": method.get("artifact", ""),
             "declared_basis": method.get("basis", BASIS_RECORD),
             "required_basis": obligation.required_basis,
+            "task_context": authoritative_task_context(self.state_dir),
             "workdir": workdir,
             "toolchain_dir": self.toolchain_dir,
             "ledger_path": ledger,

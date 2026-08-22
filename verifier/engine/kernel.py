@@ -19,7 +19,8 @@ from typing import Dict, List
 from ..execution.discharge import AgentDischarger, DischargeResult
 from ..core.events import EventLog
 from ..execution.instruments import (
-    ArtifactStore, LedgerInstrument, world_evidence_context,
+    ArtifactStore, LedgerInstrument, authoritative_task_context,
+    world_evidence_context,
 )
 from ..core.model import (
     Claim, Evidence, Obligation, basis_satisfies,
@@ -37,18 +38,6 @@ from ..core.store import ClaimStore
 # back for one repair, and a counterexample still standing after the last
 # round leaves the claim unverified
 MAX_CRITIC_ROUNDS = 2
-
-
-def _authoritative_task_context(log_path: str) -> str:
-    """Inline harness task truth so semantic seats cannot skip a Read."""
-    task = os.path.join(os.path.dirname(os.path.abspath(log_path)),
-                        "task.md")
-    if not os.path.isfile(task):
-        return "(none supplied)"
-    with open(task, encoding="utf-8") as handle:
-        text = handle.read()
-    return json.dumps({"path": os.path.abspath(task), "text": text},
-                      ensure_ascii=False)
 
 
 class Kernel:
@@ -260,7 +249,7 @@ class Kernel:
         variables = {
             "claim_text": row["text"],
             "claim_kind": row["kind"],
-            "task_context": _authoritative_task_context(self.log.path),
+            "task_context": authoritative_task_context(state),
             "ledger_path": os.path.abspath(self.log.path),
             "world_mode": world_mode,
             "world_path": world,

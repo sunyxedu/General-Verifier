@@ -66,6 +66,21 @@ def world_evidence_context(
     return ("live", "", "") if live_world else ("unavailable", "", "")
 
 
+def authoritative_task_context(state_dir: Optional[str]) -> str:
+    """Inline harness task truth so semantic seats cannot skip a Read."""
+    if not state_dir:
+        return "(none supplied)"
+    task = os.path.join(os.path.abspath(state_dir), "task.md")
+    if not os.path.isfile(task):
+        return "(none supplied)"
+    with open(task, encoding="utf-8") as handle:
+        text = handle.read()
+    return json.dumps(
+        {"path": os.path.abspath(task), "text": text},
+        ensure_ascii=False,
+    )
+
+
 class LedgerInstrument:
     """
     Verifies effect claims against the event stream.

@@ -89,6 +89,8 @@ def test_judger_sees_world_and_manifest_when_present(tmp_path):
     manifest = os.path.join(tmp_path, "world_manifest.json")
     with open(manifest, "w") as f:
         json.dump({"captured_roots": ["/app"]}, f)
+    task = tmp_path / "task.md"
+    task.write_text("Count every item.")
     g, backend = game(tmp_path, {"oracles": ORACLE, "judger": JUDGE_YES})
 
     g.run(ROW, Obligation("c1", "answer equals 42"))
@@ -100,6 +102,8 @@ def test_judger_sees_world_and_manifest_when_present(tmp_path):
     assert judger_vars["world_mode"] == "captured"
     assert judger_vars["ledger_path"] == os.path.join(str(tmp_path),
                                                        "events.jsonl")
+    assert json.loads(judger_vars["task_context"]) == {
+        "path": str(task), "text": "Count every item."}
 
 
 def test_judger_world_vars_empty_when_absent(tmp_path):
@@ -133,6 +137,8 @@ def test_oracle_sees_floor_ledger_and_fixed_world_context(tmp_path):
     manifest = os.path.join(tmp_path, "world_manifest.json")
     with open(manifest, "w") as f:
         json.dump({"captured_roots": ["/app"]}, f)
+    task = tmp_path / "task.md"
+    task.write_text("Count every item.")
     g, backend = game(
         tmp_path, {"oracles": ORACLE, "judger": JUDGE_YES},
         live_world=False,
@@ -148,6 +154,8 @@ def test_oracle_sees_floor_ledger_and_fixed_world_context(tmp_path):
     assert variables["world_mode"] == "captured"
     assert variables["world_path"] == os.path.join(str(tmp_path), "world")
     assert variables["world_manifest"] == manifest
+    assert json.loads(variables["task_context"]) == {
+        "path": str(task), "text": "Count every item."}
 
 
 def test_explicit_empty_oracle_is_unobtainable_offline(tmp_path):

@@ -548,6 +548,8 @@ ORACLES_TEMPLATE = (
     "Claim: {claim_text}\n"
     "Obligation: {obligation_text}\n"
     "Required evidence basis: {required_basis}\n"
+    "Authoritative task context supplied by the harness (path plus full "
+    "text, or none): {task_context}\n"
     "Claim features: {features}\n"
     "Methods known to work (may be empty): {registry}\n"
     "Verifier ledger: {ledger_path}\n"
@@ -689,6 +691,8 @@ DISCHARGE_SYSTEM = (
 
 DISCHARGE_TEMPLATE = (
     "Claim: {claim_text}\nObligation: {obligation_text}\n"
+    "Authoritative task context supplied by the harness (path plus full "
+    "text, or none): {task_context}\n"
     "Bound method: {procedure}\n"
     "Promised artifact: {promised_artifact}\n"
     "Method's declared evidence basis: {declared_basis}\n"
@@ -803,6 +807,9 @@ JUDGER_SYSTEM = (
 JUDGER_TEMPLATE = (
     "Obligation (trusted check specification, not evidence): "
     "{obligation_text}\n"
+    "Authoritative task context supplied by the harness (use only to audit "
+    "execution target/scope, not to redo Oracle sufficiency): "
+    "{task_context}\n"
     "Bound method's procedure (trusted check specification, not solver "
     "testimony): {procedure}\n"
     "Declared evidence basis (world = verdict derived independently of "
