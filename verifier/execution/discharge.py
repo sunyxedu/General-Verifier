@@ -79,12 +79,14 @@ class AgentDischarger:
                          "choose the strongest reachable check yourself, and "
                          "write the check script and its complete output to disk",
         }
-        ledger, world = "", ""
+        ledger, world, manifest = "", "", ""
         if self.state_dir:
             path = os.path.join(self.state_dir, "events.jsonl")
             ledger = path if os.path.exists(path) else ""
             path = os.path.join(self.state_dir, "world")
             world = path if os.path.isdir(path) else ""
+            path = os.path.join(self.state_dir, "world_manifest.json")
+            manifest = path if os.path.exists(path) else ""
         variables = {
             "claim_text": row["text"],
             "obligation_text": obligation.text,
@@ -93,6 +95,7 @@ class AgentDischarger:
             "toolchain_dir": self.toolchain_dir,
             "ledger_path": ledger,
             "world_path": world,
+            "world_manifest": manifest,
         }
         try:
             payload = self.role.call(self.backend, variables)

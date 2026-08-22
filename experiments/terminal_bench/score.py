@@ -36,6 +36,7 @@ Usage:
       [--seats codex] [--effort medium] [--task t ...] [--trial name ...]
 """
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -123,8 +124,17 @@ def sanitized_state(trial, root, job, config):
                 f.write(instruction)
 
     app = os.path.join(trial["trial_dir"], "artifacts", "app")
+    captured = []
     if os.path.isdir(app):
         _cow_copytree(app, os.path.join(state, "world", "app"))
+        captured.append("/app")
+    # the capture manifest keeps absence honest: harbor pulled only these
+    # roots, so a path outside them is uncaptured (its absence proves
+    # nothing), never a counterexample. Service-type deliverables
+    # (/etc/nginx, /var/www) are outside — they settle unobtainable
+    # post-hoc unless the harness captures more.
+    with open(os.path.join(state, "world_manifest.json"), "w") as f:
+        json.dump({"captured_roots": captured}, f)
     with open(marker, "w") as f:
         f.write("")
     return state
