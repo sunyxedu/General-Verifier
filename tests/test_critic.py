@@ -200,6 +200,14 @@ def test_semantic_roles_share_proof_carrying_effect_boundary():
         assert "does not upgrade the effect claim itself" in role
 
 
+def test_oracle_cannot_hide_missing_evidence_behind_an_empty_list():
+    assert "only when no method could in principle establish" \
+        in prompts.ORACLES_TEMPLATE
+    assert "list it; the executor must inspect the boundary" \
+        in prompts.ORACLES_TEMPLATE
+    assert "report the exact unobtainable gap" in prompts.ORACLES_TEMPLATE
+
+
 def test_judger_uses_artifact_store_content_address_semantics():
     assert "ARTIFACT CONTENT ADDRESSING" in prompts.JUDGER_SYSTEM
     assert "content address of the PARSED JSON value" in prompts.JUDGER_SYSTEM
