@@ -184,6 +184,22 @@ def test_execution_roles_distinguish_targets_from_input_provenance():
         in prompts.JUDGER_TEMPLATE
 
 
+def test_semantic_roles_share_proof_carrying_effect_boundary():
+    """Ledger location alone neither downgrades nor upgrades evidence."""
+    for role in (
+        prompts.OBLIGATIONS_SYSTEM,
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    ):
+        assert prompts.PROOF_CARRYING_EFFECTS in role
+        assert "ledger is a transport, not automatically" in role
+        assert "complete, correlated tool call/result" in role
+        assert "absence of a revision reduces later replayability" in role
+        assert "benchmark gold, tests, or expected-output files" in role
+        assert "does not upgrade the effect claim itself" in role
+
+
 def test_judger_uses_artifact_store_content_address_semantics():
     assert "ARTIFACT CONTENT ADDRESSING" in prompts.JUDGER_SYSTEM
     assert "content address of the PARSED JSON value" in prompts.JUDGER_SYSTEM

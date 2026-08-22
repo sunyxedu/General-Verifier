@@ -9,6 +9,31 @@ Domain content arrives at runtime: from the environment the agent can probe, fro
 and from retrieved memory, but never from text written in the prompts.
 """
 
+PROOF_CARRYING_EFFECTS = (
+    "PROOF-CARRYING EFFECTS: the ledger is a transport, not automatically "
+    "the epistemic basis. A complete, correlated tool call/result may "
+    "support world-basis evidence at its recorded time when the verifier "
+    "independently audits that the invocation itself performed a sufficient "
+    "computation or observation over task-authoritative inputs. Require an "
+    "exact call/result pairing; complete, untruncated relevant input and "
+    "output; sufficient scope under the task's authoritative definition; "
+    "auditable provenance for every substantive input; and decisive output. "
+    "When the task itself names a mutable source without pinning a revision, "
+    "a trusted recorded operation that actually accessed that named source "
+    "is a contemporaneous observation: absence of a revision reduces later "
+    "replayability but does not erase the observation or force record basis. "
+    "A later lookup of that source is never a substitute. "
+    "The result must be derived by the recorded operation, not merely echoed, "
+    "copied from solver prose, hard-coded as the answer, or obtained from "
+    "benchmark gold, tests, or expected-output files. A literal used only as "
+    "a comparison target remains governed by TARGETS ARE NOT INPUTS. A bare "
+    "report, opaque success summary, truncated result, unverifiable input "
+    "chain, or solver-authored factual input is record-only or unobtainable. "
+    "Never replay the historical operation against a later mutable world. "
+    "This does not upgrade the effect claim itself: a new verifier method "
+    "must audit the proof-carrying record for the obligation at hand.\n"
+)
+
 OBLIGATIONS_SYSTEM = (
     "You are the obligation compiler. You see the claim's statement and "
     "its position in the claim graph, but never the solver's argument "
@@ -191,7 +216,8 @@ OBLIGATIONS_SYSTEM = (
     "settle it honestly as unavailable; never weaken it into a claim only "
     "about what the ledger says.\n"
     "- Mixed claims (a past discovery plus a current deliverable) get "
-    "both kinds, each against its own index."
+    "both kinds, each against its own index.\n"
+    + PROOF_CARRYING_EFFECTS
 )
 
 # Appended to OBLIGATIONS_SYSTEM by the MCP server only when the mounting
@@ -501,8 +527,9 @@ ORACLES_SYSTEM = (
     "the recorded tool or inspecting current/final state answers a "
     "different question and is never sufficient, even if it would "
     "produce world-basis evidence. For an actual past-world condition, "
-    "only a contemporaneous or immutably time-bound snapshot can support "
-    "a world method; a later mutable state cannot."
+    "only contemporaneous or immutably time-bound evidence can support "
+    "a world method; a later mutable state cannot.\n"
+    + PROOF_CARRYING_EFFECTS
 )
 
 ORACLES_TEMPLATE = (
@@ -573,7 +600,8 @@ DISCHARGE_SYSTEM = (
     "unobtainable with that exact gap. The digest proves identity of the "
     "unseen response, not its contents. Never replay the old action in a "
     "later world to fill the gap.\n"
-    "TARGETS ARE NOT INPUTS: the obligation and bound method are "
+    + PROOF_CARRYING_EFFECTS
+    + "TARGETS ARE NOT INPUTS: the obligation and bound method are "
     "verifier-supplied check specifications. A literal used solely as the "
     "obligation's expected, accepted, or comparison target may be quoted or "
     "hard-coded in the checker, including a deterministic encoding of that "
@@ -725,7 +753,8 @@ JUDGER_SYSTEM = (
     "record-basis evidence under a world declaration, and that mislabel "
     "is itself unfaithful (the declaration decides what downstream "
     "verification may build on).\n"
-    "You are the one who LOOKS AT THE RESULT: open the artifact and "
+    + PROOF_CARRYING_EFFECTS
+    + "You are the one who LOOKS AT THE RESULT: open the artifact and "
     "examine the actual outputs yourself, not the narration; there is "
     "no separate re-run stage, so rerun the check yourself whenever "
     "reproducibility is in doubt — except that for a ledger/record "
