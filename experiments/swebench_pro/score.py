@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 from common import results as res                        # noqa: E402
 from common import scoring                                # noqa: E402
+from verifier import offline                             # noqa: E402
 
 
 def main():
@@ -32,14 +33,19 @@ def main():
     results_path = os.path.join(HERE, "results", "rec", "results.jsonl")
     scores_path = os.path.join(HERE, "results", "rec", "scores.jsonl")
     rows = res.load(results_path)
-    done = res.recorded(scores_path, "instance_id", "sample")
-    todo = [r for r in rows if (r["instance_id"], r["sample"]) not in done]
+    # resume keyed on the pipeline fingerprint: a record from different
+    # prompts/schemas is a different verifier's judgment
+    fingerprint = offline.pipeline_fingerprint()
+    done = res.recorded(scores_path, "instance_id", "sample", "fingerprint")
+    todo = [r for r in rows
+            if (r["instance_id"], r["sample"], fingerprint) not in done]
     if args.iid:
         todo = [r for r in todo if r["instance_id"] == args.iid]
-    print(f"[swebench:score] {len(todo)} traces ({len(done)} scored)",
-          flush=True)
+    print(f"[swebench:score] {len(todo)} traces ({len(done)} scored) "
+          f"fingerprint={fingerprint}", flush=True)
 
-    jobs = [({"instance_id": r["instance_id"], "sample": r["sample"]},
+    jobs = [({"instance_id": r["instance_id"], "sample": r["sample"],
+              "fingerprint": fingerprint},
              os.path.join(r["workdir"], ".gv")) for r in todo]
     scoring.score_many(jobs, scores_path, workers=args.workers,
                        model=args.model, max_rounds=args.max_rounds,

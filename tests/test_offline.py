@@ -91,7 +91,8 @@ def test_extract_writes_a_replayable_graph(tmp_path):
 
     meta = offline.extract(state, backend=backend)
 
-    assert meta == {"rounds": 1, "commits": 2}
+    assert meta["rounds"] == 1 and meta["commits"] == 2
+    assert meta["fingerprint"] == offline.pipeline_fingerprint()
     log = EventLog(os.path.join(state, "events.jsonl"))
     builder = Builder(log, ClaimStore())
     for event in log.replay():
@@ -173,6 +174,47 @@ def test_score_resumes_from_an_extracted_graph(tmp_path):
                              kernel_factory=kernel_factory)
 
     assert features["verdict"] == "verified"
+
+
+def test_pipeline_fingerprint_is_deterministic():
+    assert offline.pipeline_fingerprint() == offline.pipeline_fingerprint()
+
+
+def test_stale_fingerprint_invalidates_the_cached_extraction(tmp_path):
+    """An extraction cached under different prompts/schemas is a different
+    verifier's work: score() wipes the derived state and re-extracts."""
+    state = state_dir(tmp_path)
+    offline.extract(state, backend=FixtureBackend(
+        {"extract": lambda v: GOOD_COMMITS}))
+    meta = json.load(open(os.path.join(state, "extract.json")))
+    meta["fingerprint"] = "stale-pipeline"
+    json.dump(meta, open(os.path.join(state, "extract.json"), "w"))
+
+    backend = FixtureBackend({"extract": lambda v: GOOD_COMMITS})
+    features = offline.score(state, backend=backend,
+                             kernel_factory=kernel_factory)
+
+    assert any(c["role"] == "extract" for c in backend.calls)   # re-extracted
+    assert features["verdict"] == "verified"
+    assert features["fingerprint"] == offline.pipeline_fingerprint()
+    on_disk = json.load(open(os.path.join(state, "extract.json")))
+    assert on_disk["fingerprint"] == offline.pipeline_fingerprint()
+
+
+def test_live_trace_commits_are_never_invalidated(tmp_path):
+    """Commits made by the solver itself (no extract.json) are the run's
+    own protocol — a fingerprint change must not wipe them."""
+    state = state_dir(tmp_path)
+    offline.extract(state, backend=FixtureBackend(
+        {"extract": lambda v: GOOD_COMMITS}))
+    os.remove(os.path.join(state, "extract.json"))   # looks like a live trace
+
+    # no extract fixture: score would fail if it tried to re-extract
+    features = offline.score(state, backend=FixtureBackend({}),
+                             kernel_factory=kernel_factory)
+
+    assert features["verdict"] == "verified"
+    assert features["extract_rounds"] == 0
 
 
 # ---- ranking & selection -----------------------------------------------------

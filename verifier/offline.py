@@ -33,7 +33,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from .core.events import EventLog
-from .core.model import canonical
+from .core.model import canonical, content_hash
 from .core.store import ClaimStore, TRIGGER_ON_FIRST_DEPENDENT, UnknownDependency
 from .engine.certificate import request_certificate
 from .llm.schema import RoleError
@@ -42,6 +42,24 @@ from .stream.builder import Builder, TraceError
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 SNIPPET_CHARS = 160
 INDEX_MAX_EVENTS = 500
+
+
+def pipeline_fingerprint() -> str:
+    """Version key over everything LLM-shaped that decides extraction and
+    verdicts: the prompt module's source and every role's output schema.
+    A cached extraction, a settled claim store, or a score record stamped
+    with a different fingerprint was produced by a DIFFERENT verifier —
+    reusing it silently would attribute the old pipeline's judgments to
+    the new one, poisoning every A/B comparison."""
+    import inspect
+
+    from .llm import agents, prompts as prompt_module
+    schemas = {name: agents.to_json_schema(role.schema)
+               for name, role in sorted(agents.ALL_AGENT_ROLES.items())}
+    return content_hash({
+        "prompts": inspect.getsource(prompt_module),
+        "schemas": schemas,
+    })[:16]
 
 
 class ExtractionError(RuntimeError):
@@ -169,7 +187,8 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
         error = _apply_commits(log, payload["commits"])
         if error is None:
             os.replace(candidate, os.path.join(state_dir, "events.jsonl"))
-            meta = {"rounds": round_no, "commits": len(payload["commits"])}
+            meta = {"rounds": round_no, "commits": len(payload["commits"]),
+                    "fingerprint": pipeline_fingerprint()}
             with open(os.path.join(state_dir, "extract.json"), "w",
                       encoding="utf-8") as f:
                 json.dump(meta, f)
@@ -189,7 +208,8 @@ def _has_commits(events_path: str) -> bool:
     return False
 
 
-def _unscoreable(error: str, extract_rounds: int) -> Dict[str, Any]:
+def _unscoreable(error: str, extract_rounds: int,
+                 fingerprint: str = "") -> Dict[str, Any]:
     return {
         "unscoreable": True,
         "error": error,
@@ -199,10 +219,12 @@ def _unscoreable(error: str, extract_rounds: int) -> Dict[str, Any]:
         "obligations": {},
         "obligations_total": 0,
         "extract_rounds": extract_rounds,
+        "fingerprint": fingerprint,
     }
 
 
-def _features(cert: Dict[str, Any], extract_rounds: int) -> Dict[str, Any]:
+def _features(cert: Dict[str, Any], extract_rounds: int,
+              fingerprint: str = "") -> Dict[str, Any]:
     claims: Dict[str, int] = {}
     obligations: Dict[str, str] = {}   # obligation id -> status (dedup: shared
     for entry in cert["slice"]:        # nodes appear under several claims)
@@ -221,6 +243,7 @@ def _features(cert: Dict[str, Any], extract_rounds: int) -> Dict[str, Any]:
         "obligations": ob_counts,
         "obligations_total": len(obligations),
         "extract_rounds": extract_rounds,
+        "fingerprint": fingerprint,
     }
 
 
@@ -247,6 +270,21 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                     sc, model,
                     backend=CodexBackend(cwd=sc.state_dir, model=model))
     events_path = os.path.join(state_dir, "events.jsonl")
+    fingerprint = pipeline_fingerprint()
+    meta = json.loads(_read(os.path.join(state_dir, "extract.json")) or "{}")
+    if meta and meta.get("fingerprint") != fingerprint:
+        # stale OFFLINE state: the cached extraction and every verdict
+        # settled on top of it came from a different pipeline version.
+        # Wipe the derived files (never the trace inputs — hook feed,
+        # task.md, final.txt, world/ stay) and redo from the feed. A live
+        # trace (commits made by the solver itself, no extract.json) is
+        # never invalidated: its commits are the run's own protocol.
+        for name in ("events.jsonl", "extract.json", "claims.sqlite",
+                     "score.json"):
+            path = os.path.join(state_dir, name)
+            if os.path.exists(path):
+                os.remove(path)
+        meta = {}
     extract_rounds = 0
     if not _has_commits(events_path):
         try:
@@ -254,9 +292,9 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                            max_rounds=max_rounds)
             extract_rounds = meta["rounds"]
         except ExtractionError as err:
-            return _write_score(state_dir, _unscoreable(str(err), max_rounds))
+            return _write_score(
+                state_dir, _unscoreable(str(err), max_rounds, fingerprint))
     else:
-        meta = json.loads(_read(os.path.join(state_dir, "extract.json")) or "{}")
         extract_rounds = meta.get("rounds", 0)
 
     from .mcp_server import Service
@@ -264,10 +302,12 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                  trigger=TRIGGER_ON_FIRST_DEPENDENT)
     if not sc.builder.finals:
         return _write_score(
-            state_dir, _unscoreable("no final claim in trace", extract_rounds))
+            state_dir, _unscoreable("no final claim in trace", extract_rounds,
+                                    fingerprint))
     cert = request_certificate(sc.store, sc.kernel, sc.log, sc.artifacts,
                                sc.builder.finals[-1])
-    return _write_score(state_dir, _features(cert, extract_rounds))
+    return _write_score(state_dir,
+                        _features(cert, extract_rounds, fingerprint))
 
 
 def _write_score(state_dir: str, features: Dict[str, Any]) -> Dict[str, Any]:
