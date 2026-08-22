@@ -150,6 +150,13 @@ def test_prompts_gate_task_definitions_and_attack_scope_projection():
     assert "proper-subset/component/proxy world" in prompts.CRITIC_TEMPLATE
 
 
+def test_extractor_preserves_component_and_aggregate_labels():
+    assert "Preserve the SEMANTIC LABEL" in prompts.EXTRACT_SYSTEM
+    assert "component versus aggregate" in prompts.EXTRACT_SYSTEM
+    assert "Never promote a labeled component or subtotal" \
+        in prompts.EXTRACT_SYSTEM
+
+
 def test_prompts_preserve_temporal_targets_across_every_semantic_seat():
     """Pin the no-replay contract where each role can accidentally undo it."""
     assert "Every obligation must be a world-level condition" \
