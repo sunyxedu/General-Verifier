@@ -121,6 +121,114 @@ def test_final_with_world_evidence_verifies(tmp_path):
     assert store.status(cid) == "verified"
 
 
+def test_invalid_required_basis_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        Obligation("c", "the count is 42", "semantic")
+
+
+def test_refuted_below_the_floor_fails_closed(tmp_path):
+    """The floor is outcome-symmetric: a record counterexample of a world
+    demand is the same laundering as a record pass, mirrored."""
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": compile_fixture(
+        [{"text": "the count is 42", "required_basis": "world"}])})
+    Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
+           critic_role=None,
+           discharger=BasisDischarger(BASIS_RECORD, outcome="refuted"))
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "the count is 42"))
+
+    assert store.status(cid) == "unverified"      # not refuted
+    (node,) = store.obligation_children(cid)
+    assert node["status"] == "unverified"
+    ev = store.evidence_for(node["id"])[-1]
+    assert ev["outcome"] == "failed" and "below the" in ev["witness"]
+
+
+def test_refuted_claim_stores_the_refuting_basis(tmp_path):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": compile_fixture(
+        [{"text": "the count is 42", "required_basis": "world"}])})
+    Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art2")),
+           critic_role=None,
+           discharger=BasisDischarger(BASIS_WORLD, outcome="refuted"))
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "the count is 42"))
+
+    assert store.status(cid) == "refuted"
+    assert store.get(cid)["basis"] == BASIS_WORLD
+    (node,) = store.obligation_children(cid)
+    assert node["basis"] == BASIS_WORLD
+
+
+def test_refuted_inheritance_below_the_floor_is_refused(tmp_path):
+    """A record-established refutation cannot settle a world-floor
+    obligation by same-text inheritance — the obligation is discharged
+    fresh at its own floor."""
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    fixtures = {
+        "the count is 42":
+            {"obligations": [{"text": "the count is 42",
+                              "required_basis": "record"}]},
+        "the answer is correct":
+            {"obligations": [{"text": "the count is 42",
+                              "required_basis": "world"}]},
+    }
+    backend = FixtureBackend(
+        {"obligations": lambda v: fixtures[v["claim_text"]]})
+    discharger = BasisDischarger(BASIS_RECORD, outcome="refuted")
+    Kernel(store, log, backend,
+           ArtifactStore(os.path.join(tmp_path, "art")),
+           critic_role=None, discharger=discharger)
+
+    # claim A refuted at record level
+    a = store.add_claim(Claim(CLAIM_ASSERTION, "the count is 42"))
+    assert store.status(a) == "refuted"
+    assert store.get(a)["basis"] == BASIS_RECORD
+
+    # claim B demands the same text at world floor: the record refutation
+    # must not transfer; the fresh world-basis check refutes on its own
+    discharger.basis = BASIS_WORLD
+    b = store.add_claim(Claim(CLAIM_ASSERTION, "the answer is correct"))
+    assert store.status(b) == "refuted"
+    assert store.get(b)["basis"] == BASIS_WORLD
+    assert discharger.seen.count("the count is 42") == 2
+
+
+def test_inheritance_evidence_carries_floor_and_basis(tmp_path):
+    """A node first settled by inheritance must carry the same complete
+    evidence as a directly discharged one — later dedups reuse it."""
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    fixtures = {
+        "the count is 42":
+            {"obligations": [{"text": "the ledger shows 42",
+                              "required_basis": "record"}]},
+        "the answer is correct":
+            {"obligations": [{"text": "the count is 42",
+                              "required_basis": "record"}]},
+    }
+    backend = FixtureBackend(
+        {"obligations": lambda v: fixtures[v["claim_text"]]})
+    Kernel(store, log, backend,
+           ArtifactStore(os.path.join(tmp_path, "art")),
+           critic_role=None, discharger=BasisDischarger(BASIS_RECORD))
+
+    store.add_claim(Claim(CLAIM_ASSERTION, "the count is 42"))
+    b = store.add_claim(Claim(CLAIM_ASSERTION, "the answer is correct"))
+    assert store.status(b) == "verified"
+
+    (node,) = store.obligation_children(b)
+    ev = store.evidence_for(node["id"])[-1]
+    assert ev["instrument"] == "graph"            # settled by inheritance
+    assert ev["required_basis"] == "record"
+    assert ev["basis"] == BASIS_RECORD
+
+
 def test_inheritance_below_the_floor_is_refused(tmp_path):
     """A record-established claim cannot settle a world-floor obligation
     through same-text inheritance — the obligation is discharged fresh."""

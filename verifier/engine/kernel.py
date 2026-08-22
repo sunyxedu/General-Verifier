@@ -170,12 +170,14 @@ class Kernel:
                 continue
             src = self.store.settled_statement(obligation.text,
                                                exclude=row["id"])
-            if src is not None and src["status"] == STATUS_VERIFIED \
-                    and not basis_satisfies(
-                        self.store.get(src["id"])["basis"],
-                        obligation.required_basis):
-                # a record-established claim cannot settle a world-floor
-                # obligation by inheritance — fall through and discharge
+            if src is not None and not basis_satisfies(
+                    self.store.get(src["id"])["basis"],
+                    obligation.required_basis):
+                # evidence below the floor transfers in NEITHER direction:
+                # a record-established verdict — verified or refuted —
+                # cannot settle a world-floor obligation by inheritance
+                # (a legacy row with no basis fails closed the same way).
+                # Fall through and discharge fresh.
                 src = None
             if src is not None:
                 # the graph already settled this exact statement as a CLAIM
@@ -295,8 +297,15 @@ class Kernel:
                     "claim_text": row["text"],
                     "claim_kind": row["kind"],
                     "task_context": task_context,
+                    # floors ride along: the critic must attack the
+                    # decomposition AS FLOORED — a record-floor
+                    # obligation's holding fixes only the ledger, not
+                    # the underlying fact
                     "obligations_json": json.dumps(
-                        [o["text"] for o in payload["obligations"]],
+                        [{"text": o["text"],
+                          "required_basis": o.get("required_basis",
+                                                  BASIS_RECORD)}
+                         for o in payload["obligations"]],
                         ensure_ascii=False
                     ),
                     "verified_deps": variables["verified_deps"],
@@ -347,6 +356,10 @@ class Kernel:
         """
 
         oid = obligation.id
+        # inheritance transfers the verdict WITH its basis: a verdict
+        # settled on the solver's record does not become independent by
+        # changing identity space
+        src_basis = self.store.get(src["id"])["basis"] or BASIS_RECORD
         ev = self.store.evidence_for(src["id"])
         witness = ev[-1].get("witness") if ev else None
         if witness is None and src["status"] == STATUS_REFUTED:
@@ -364,20 +377,19 @@ class Kernel:
             oid,
             {
                 "obligation": obligation.text,
+                "required_basis": obligation.required_basis,
                 "instrument": "graph",
                 "outcome": outcome,
+                "basis": src_basis,
                 "source": src["id"],
                 "witness": witness,
             },
         )
         if outcome == OUTCOME_HOLDS:
-            # inheritance transfers the verdict WITH its basis: a verdict
-            # settled on the solver's record does not become independent
-            # by changing identity space
-            src_basis = self.store.get(src["id"])["basis"] or BASIS_RECORD
             self.store.set_verified(oid, basis=src_basis)
         else:
-            self.store.set_refuted(oid, reason=str(witness)[:200])
+            self.store.set_refuted(oid, reason=str(witness)[:200],
+                                   basis=src_basis)
         self.log.append(
             "dedup_hit",
             {"claim": row["id"], "obligation": oid, "source": src["id"],
@@ -397,17 +409,24 @@ class Kernel:
             result = self.binder.run(row, obligation)
         else:
             result = self.discharger.discharge(row, obligation)
-        if result.outcome == OUTCOME_HOLDS \
+        if result.outcome in (OUTCOME_HOLDS, OUTCOME_REFUTED) \
                 and not basis_satisfies(result.basis,
                                         obligation.required_basis):
             # backstop behind the binding game's method filter (direct
             # discharge has no filter; a mislabel can slip an audit):
-            # evidence below the obligation's floor never settles it —
-            # fails closed, never converted into a pass
+            # evidence below the obligation's floor settles NOTHING, in
+            # either direction — a record counterexample of a world
+            # demand is the same laundering as a record pass, mirrored.
+            # Fails closed to failed; the reported finding stays in the
+            # witness for audit.
+            detail = (f" (reported counterexample: {result.witness})"
+                      if result.outcome == OUTCOME_REFUTED
+                      and result.witness else "")
             result = DischargeResult(
                 outcome=OUTCOME_FAILED,
                 witness=(f"evidence basis {result.basis!r} below the "
-                         f"obligation's floor {obligation.required_basis!r}"),
+                         f"obligation's floor "
+                         f"{obligation.required_basis!r}{detail}"),
                 artifact=result.artifact,
                 instrument=result.instrument,
                 basis=result.basis,
@@ -426,6 +445,7 @@ class Kernel:
                 "required_basis": obligation.required_basis,
                 "instrument": result.instrument,
                 "outcome": result.outcome,
+                "basis": result.basis,
                 "artifact": result.artifact,
                 "witness": result.witness,
                 "evidence_id": evidence.id,
@@ -434,7 +454,8 @@ class Kernel:
         if result.outcome == OUTCOME_HOLDS:
             self.store.set_verified(oid, basis=result.basis)
         elif result.outcome == OUTCOME_REFUTED:
-            self.store.set_refuted(oid, reason=str(result.witness)[:200])
+            self.store.set_refuted(oid, reason=str(result.witness)[:200],
+                                   basis=result.basis)
         elif result.outcome == OUTCOME_UNOBTAINABLE:
             self.store.set_partial(oid)   # well-defined check, env can't host
         # failed -> the node stays unverified; a later claim may retry it
@@ -449,15 +470,21 @@ class Kernel:
     def _settle(self, claim_id: str, outcomes: List[str],
                 bases: List[str] = ()) -> None:
         if any(o == OUTCOME_REFUTED for o in outcomes):
-            self.store.set_refuted(claim_id, reason="counterexample on record")
+            # the loop breaks at the first refutation, so the refuting
+            # evidence's basis is the last one collected — stored so the
+            # refutation transfers (or is refused) at the right floor
+            self.store.set_refuted(claim_id, reason="counterexample on record",
+                                   basis=bases[-1] if bases else None)
             new_status = "refuted"
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes \
                 and self.store.get(claim_id)["kind"] == CLAIM_FINAL \
                 and BASIS_WORLD not in bases:
-            # a completion verdict must rest on at least one world-
-            # established obligation: an all-record final is the
-            # laundering signature (every check passed, none of them
-            # ever left the solver's own account of events)
+            # conservative ABSTENTION POLICY, not a logical theorem: an
+            # all-record final is the laundering signature (every check
+            # passed, none ever left the solver's own account), so it
+            # abstains. A purely process task could legitimately rest on
+            # record evidence alone — revisit if real false-unverifieds
+            # of that shape appear.
             self.store.record_evidence(
                 claim_id,
                 {"outcome": OUTCOME_FAILED,

@@ -70,8 +70,9 @@ def test_pass_on_the_first_round_admits_the_decomposition(tmp_path):
                                 "obligations_json", "verified_deps"}
     assert critic_vars["claim_kind"] == "assertion"
     assert critic_vars["task_context"] == "(none supplied)"
+    # floors ride along so the critic attacks the decomposition AS FLOORED
     assert json.loads(critic_vars["obligations_json"]) == [
-        "O of: the tree is clean"]
+        {"text": "O of: the tree is clean", "required_basis": "record"}]
 
 
 def test_a_standing_attack_forces_one_repair_with_the_attack_as_feedback(tmp_path):

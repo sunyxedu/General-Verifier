@@ -95,6 +95,14 @@ class Obligation:
     # obligation compiler; enforced mechanically at binding and settle.
     required_basis: str = BASIS_RECORD
 
+    def __post_init__(self):
+        # basis_satisfies reads any unknown value as a low floor — an
+        # unvalidated typo would silently disable the gate. The LLM
+        # boundary is schema-gated; this guards the code paths.
+        if self.required_basis not in (BASIS_WORLD, BASIS_RECORD):
+            raise ValueError(
+                f"unknown required_basis: {self.required_basis!r}")
+
     @property
     def id(self) -> str:
         """

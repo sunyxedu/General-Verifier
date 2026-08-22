@@ -34,9 +34,10 @@ CREATE TABLE IF NOT EXISTS claims (
     revises TEXT,
     status  TEXT NOT NULL DEFAULT 'unverified',
     reason  TEXT,
-    -- evidence basis of a verified node: 'world' (independently established;
+    -- evidence basis of a settled node: 'world' (independently established;
     -- downstream may rely on the content) or 'record' (the ledger attests the
-    -- solver reported/did it; proves reporting, not truth). NULL until verified.
+    -- solver reported/did it; proves reporting, not truth). For refuted nodes
+    -- it is the refuting evidence's basis. NULL until settled.
     basis   TEXT
 );
 CREATE TABLE IF NOT EXISTS deps (
@@ -138,8 +139,15 @@ class ClaimStore:
                          allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL},
                          basis=basis)
 
-    def set_refuted(self, claim_id: str, reason: str) -> None:
-        self._transition(claim_id, STATUS_REFUTED, allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL}, reason=reason)
+    def set_refuted(self, claim_id: str, reason: str,
+                    basis: Optional[str] = None) -> None:
+        # basis = the refuting evidence's achieved basis: it decides
+        # whether the refutation may transfer by inheritance (a record
+        # counterexample cannot settle a world demand) and is disclosed
+        # on the certificate
+        self._transition(claim_id, STATUS_REFUTED,
+                         allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL},
+                         reason=reason, basis=basis)
 
     def set_partial(self, claim_id: str) -> None:
         self._transition(claim_id, STATUS_PARTIAL, allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL})
