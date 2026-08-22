@@ -169,13 +169,17 @@ def test_prompts_preserve_temporal_targets_across_every_semantic_seat():
     assert "Never re-execute the historical tool" in prompts.JUDGER_SYSTEM
 
 
-def test_judger_distinguishes_specification_targets_from_input_provenance():
-    """Pin the general contract exposed by faithful checks rejected as circular."""
-    assert "CHECK SPECIFICATION IS NOT EVIDENCE" in prompts.JUDGER_SYSTEM
-    assert "literal copied from the obligation is the target being tested" \
-        in prompts.JUDGER_SYSTEM
-    assert "the method or executor INTRODUCED as an input or premise" \
-        in prompts.JUDGER_SYSTEM
+def test_execution_roles_distinguish_targets_from_input_provenance():
+    """Every seat that handles a method preserves the same trust boundary."""
+    for role in (
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    ):
+        assert "TARGETS ARE NOT INPUTS" in role
+        assert "expected, accepted, or comparison target" in role
+        assert "even if its literal text also appears in the obligation" in role
+        assert "newly introduced by the method" in role
     assert "trusted check specification, not evidence" \
         in prompts.JUDGER_TEMPLATE
 
@@ -184,6 +188,8 @@ def test_judger_uses_artifact_store_content_address_semantics():
     assert "ARTIFACT CONTENT ADDRESSING" in prompts.JUDGER_SYSTEM
     assert "content address of the PARSED JSON value" in prompts.JUDGER_SYSTEM
     assert "pretty-printed file's raw-byte" in prompts.JUDGER_SYSTEM
+    assert "canonical parsed-JSON content address" in prompts.JUDGER_TEMPLATE
+    assert "not the raw-file SHA-256" in prompts.JUDGER_TEMPLATE
 
 
 def test_compiler_and_critic_receive_explicit_world_evidence_mode(tmp_path):

@@ -6,10 +6,12 @@ judger's variables, and the settled result must carry the audited basis.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 
 from verifier.core.events import EventLog
-from verifier.core.model import BASIS_WORLD, Obligation
+from verifier.core.model import BASIS_WORLD, Obligation, content_hash
 from verifier.engine.game import BindingGame
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
@@ -55,6 +57,17 @@ def game(tmp_path, roles, live_world=True):
     ), backend
 
 
+def test_artifact_store_digest_hashes_canonical_parsed_json(tmp_path):
+    """The pretty on-disk envelope intentionally has a different byte hash."""
+    store = ArtifactStore(os.path.join(tmp_path, "art"))
+    digest = store.put({"z": "λ", "nested": {"b": 2, "a": 1}})
+    path = tmp_path / "art" / f"{digest}.json"
+
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    assert content_hash(parsed) == digest
+    assert hashlib.sha256(path.read_bytes()).hexdigest() != digest
+
+
 def test_judger_sees_the_declared_basis(tmp_path):
     g, backend = game(tmp_path, {"oracles": ORACLE, "judger": JUDGE_YES})
 
@@ -72,8 +85,6 @@ def test_judger_sees_world_and_manifest_when_present(tmp_path):
     """The judger audits refutations against the delivered world and its
     capture manifest — both paths must reach its variables (derived from
     the ledger's directory, same as the kernel and the executor)."""
-    import json
-
     os.makedirs(os.path.join(tmp_path, "world", "app"))
     manifest = os.path.join(tmp_path, "world_manifest.json")
     with open(manifest, "w") as f:
