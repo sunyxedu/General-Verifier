@@ -7,16 +7,21 @@ Two trace sources, one pipeline:
     to trial_dir/agent/sessions/. verifier.stream.codex rewrites that into
     the same feed format, so both arms score identically.
 
-ISOLATION: scoring runs in a sanitized state dir OUTSIDE the trial tree
-(scoring/<job>/<config>/<trial>/gv), holding only the verifier's
-legitimate inputs — task.md, the raw ledger feed, the final output, the
-pre-task baseline, and the delivered world (APFS clonefile when
-available). Harbor's gold (result.json, verifier/reward.txt, the official
-test output) stays outside the boundary and no path handed to any seat
-points back at it. The seats are unsandboxed processes, so this is
-isolation by construction of the inputs, not a jail — a container is the
-hard guarantee if one is ever needed. The dir is per CONFIG: two models
-never share extraction or settled state.
+ISOLATION: scoring runs in a sanitized state dir OUTSIDE the repository
+($GV_SCORING_ROOT, default ~/.gv-scoring/terminal_bench, then
+<job>/<config>/<rep>/<trial>/gv), holding only the verifier's legitimate
+inputs — task.md, the raw ledger feed, the final output, the pre-task
+baseline, and the delivered world (APFS clonefile when available).
+Harbor's gold (result.json, verifier/reward.txt, the official test
+output) stays outside the boundary, no path handed to any seat points
+back at it, and the seats' cwd has nothing above it but the user's home
+— out of reach of the emergent "look around the repo for expected
+output" failure mode. The seats are still unsandboxed processes, so
+this is isolation by construction of the inputs, not a jail; the trust
+anchor for verified certificates is the auditable artifact chain (the
+recomputation script and its rerunnable output), and a container is the
+optional hardening beyond that. The dir is per CONFIG: two models never
+share extraction or settled state.
 
 Each trial is scored independently: its own extraction, its own claim
 graph, its own certificate. Scores append to results/rec_scores.jsonl
@@ -156,7 +161,8 @@ def main():
 
     job_dir = os.path.join(HERE, "results", "jobs", args.job)
     scores_path = os.path.join(HERE, "results", "rec_scores.jsonl")
-    scoring_root = os.path.join(HERE, "scoring")
+    scoring_root = os.environ.get("GV_SCORING_ROOT") or os.path.expanduser(
+        os.path.join("~", ".gv-scoring", "terminal_bench"))
     # resume is keyed on the full CONFIG identity — verifier code+prompts
     # fingerprint plus model/seats/effort/max_rounds. A record produced by
     # a different config is a different verifier's judgment and must not
