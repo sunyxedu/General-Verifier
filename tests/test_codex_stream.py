@@ -70,6 +70,45 @@ def test_arguments_are_decoded_into_structured_input(tmp_path):
     assert call["payload"]["tool_use_id"] == "call_1"
 
 
+def test_result_carries_the_tool_name_like_the_hooks_do(tmp_path):
+    state = str(tmp_path / "gv")
+    codex.convert(rollout_file(tmp_path), state)
+
+    with open(os.path.join(state, "hook_feed.jsonl")) as f:
+        call, result = (json.loads(line) for line in f)
+    # the hooks record tool_name on results; the converted feed must too,
+    # or ledger obligations refute honest records on a null field
+    assert result["payload"]["tool"] == "exec_command"
+    assert call["payload"]["session"] == "s1"
+    assert result["payload"]["session"] == "s1"
+
+
+def test_task_instruction_skips_harness_noise(tmp_path):
+    events = [
+        {"type": "response_item", "payload": {
+            "type": "message", "role": "user", "content": [
+                {"type": "input_text",
+                 "text": "<recommended_plugins>\n- Spotify\n"},
+                {"type": "input_text",
+                 "text": "<environment_context>\n  <cwd>/app</cwd>\n"},
+            ]}},
+        {"type": "response_item", "payload": {
+            "type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "Count the tokens."}]}},
+    ]
+    path = rollout_file(tmp_path, events=events)
+    assert codex.task_instruction(path) == "Count the tokens."
+
+
+def test_task_instruction_empty_when_only_noise(tmp_path):
+    events = [
+        {"type": "response_item", "payload": {
+            "type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "<environment_context>x"}]}},
+    ]
+    assert codex.task_instruction(rollout_file(tmp_path, events)) == ""
+
+
 def test_newest_rollout_picks_the_latest(tmp_path):
     sessions = tmp_path / "sessions" / "2026" / "08" / "20"
     sessions.mkdir(parents=True)

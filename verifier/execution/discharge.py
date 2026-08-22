@@ -41,10 +41,19 @@ class AgentDischarger:
                  role: AgentRole = DISCHARGE_AGENT,
                  workdir_base: Optional[str] = None,
                  cleanup: bool = False,
-                 toolchain_dir: Optional[str] = None):
+                 toolchain_dir: Optional[str] = None,
+                 state_dir: Optional[str] = None):
         self.backend = backend
         self.artifacts = artifacts
         self.role = role
+        # The verifier's state dir anchors the check's evidence sources:
+        # events.jsonl is the ledger, and world/ (when the harness captured
+        # one) mirrors the finished run's filesystem root. Obligations are
+        # phrased in the run's own paths, so the executor must be handed
+        # the mapping explicitly — without it, a path like /app/x gets
+        # checked against the scoring machine and refutes spuriously.
+        # Resolved per discharge, not here: world/ may be linked later.
+        self.state_dir = os.path.abspath(state_dir) if state_dir else None
         self.workdir_base = workdir_base or tempfile.mkdtemp(prefix="gv-discharge-")
         # Heavyweight installs (a Lean project with mathlib, a node_modules…)
         # live here and survive across discharges, claims, and runs when the
@@ -65,12 +74,20 @@ class AgentDischarger:
                          "choose the strongest reachable check yourself, and "
                          "write the check script and its complete output to disk",
         }
+        ledger, world = "", ""
+        if self.state_dir:
+            path = os.path.join(self.state_dir, "events.jsonl")
+            ledger = path if os.path.exists(path) else ""
+            path = os.path.join(self.state_dir, "world")
+            world = path if os.path.isdir(path) else ""
         variables = {
             "claim_text": row["text"],
             "obligation_text": obligation.text,
             "procedure": method["procedure"],
             "workdir": workdir,
             "toolchain_dir": self.toolchain_dir,
+            "ledger_path": ledger,
+            "world_path": world,
         }
         try:
             payload = self.role.call(self.backend, variables)

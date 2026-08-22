@@ -8,6 +8,7 @@ pool over the traces, with the results file the single shared resource
 under a lock. Appends stay one-record-per-line, so a killed run resumes
 from what already landed.
 """
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -36,7 +37,8 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
             done.append(record)
             print(f"[{tag} {len(done)}/{len(jobs)}] {label(record)} "
                   f"verdict={features.get('verdict')} "
-                  f"rank={offline.rank_key(features)}", flush=True)
+                  f"rank={offline.rank_key(features)}",
+                  file=sys.stderr, flush=True)
         return record
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -46,5 +48,5 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
                 future.result()
             except Exception as err:            # noqa: BLE001 - reported
                 print(f"[{tag}] FAILED: {type(err).__name__}: {err}",
-                      flush=True)
+                      file=sys.stderr, flush=True)
     return done

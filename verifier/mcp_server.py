@@ -259,7 +259,8 @@ def _default_kernel(sc: Service, model, backend=None) -> Kernel:
         backend, sc.artifacts,
         workdir_base=os.path.join(sc.state_dir, "work"),
         cleanup=True,   # snapshots are the evidence; workdirs are scratch
-        toolchain_dir=sc.toolchain_dir)
+        toolchain_dir=sc.toolchain_dir,
+        state_dir=sc.state_dir)
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                          memory=sc.memory)
     return Kernel(sc.store, sc.log, backend, sc.artifacts,

@@ -65,7 +65,9 @@ class Kernel:
         self.memory_hits = memory_hits
         self.obligations_role = obligations_role or COMPILE_OBLIGATIONS_AGENT
         self.critic_role = critic_role   # None -> no adversarial review
-        self.discharger = discharger or AgentDischarger(backend, artifacts)
+        self.discharger = discharger or AgentDischarger(
+            backend, artifacts,
+            state_dir=os.path.dirname(os.path.abspath(log.path)))
         self.binder = binder      # binding game; None -> direct discharge (tests)
         self.memory = memory      # advisory stores; None -> static hints
         store.on_trigger(self.verify)  # the single rule wires straight in

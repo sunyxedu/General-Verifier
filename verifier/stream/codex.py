@@ -23,6 +23,12 @@ EXCERPT_CHARS = 30000       # same bound as hooks/post_tool_use.py
 CALL_TYPES = ("function_call", "custom_tool_call")
 OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
 
+# Harness-injected wrapper blocks in user messages: environment banners and
+# plugin advertisements, not task content. A content item opening with one
+# of these tags is dropped when hunting for the task instruction.
+NOISE_TAGS = ("<recommended_plugins>", "<environment_context>",
+              "<user_instructions>", "<turn_context>", "<permissions")
+
 
 def _payload(event: Dict[str, Any]) -> Dict[str, Any]:
     return event.get("payload") or {}
@@ -55,6 +61,8 @@ def _tool_output(p: Dict[str, Any]) -> Any:
 def feed_lines(rollout_path: str) -> Iterator[Dict[str, Any]]:
     """Rollout events -> hook-feed lines, in file order."""
 
+    session: Optional[str] = None
+    tool_of: Dict[str, Any] = {}   # call_id -> tool name, to backfill results
     with open(rollout_path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -64,18 +72,22 @@ def feed_lines(rollout_path: str) -> Iterator[Dict[str, Any]]:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            p = _payload(event)
+            if event.get("type") == "session_meta":
+                session = p.get("session_id") or p.get("id") or session
+                continue
             if event.get("type") != "response_item":
                 continue
-            p = _payload(event)
             kind = p.get("type")
             if kind in CALL_TYPES:
+                tool_of[p.get("call_id")] = p.get("name")
                 yield {
-                    "type": "tool_call", 
+                    "type": "tool_call",
                     "payload": {
                         "tool": p.get("name"),
                         "tool_use_id": p.get("call_id"),
                         "input": _tool_input(p),
-                        "session": None,
+                        "session": session,
                         "agent": None,
                     }
                 }
@@ -83,17 +95,51 @@ def feed_lines(rollout_path: str) -> Iterator[Dict[str, Any]]:
                 response = _tool_output(p)
                 blob = canonical(response)
                 yield {
-                    "type": "tool_result", 
+                    "type": "tool_result",
                     "payload": {
-                        "tool": None,   # the builder pairs it back by call_id
+                        # the hooks record the tool name on results too;
+                        # codex omits it, so pair it back by call_id
+                        "tool": tool_of.get(p.get("call_id")),
                         "tool_use_id": p.get("call_id"),
                         "response_sha256": hashlib.sha256(
                             blob.encode("utf-8")).hexdigest(),
                         "excerpt": blob[:EXCERPT_CHARS],
-                        "session": None,
+                        "session": session,
                         "agent": None,
                     }
                 }
+
+
+def task_instruction(rollout_path: str) -> str:
+    """The task statement the run was given: the first substantive user
+    message in the rollout. Harness wrapper blocks (plugin ads, environment
+    banners) are dropped; what remains of the earliest non-empty user
+    message is the instruction. Empty string when none is found."""
+    with open(rollout_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            p = _payload(event)
+            if event.get("type") != "response_item" \
+                    or p.get("type") != "message" or p.get("role") != "user":
+                continue
+            texts = []
+            for block in p.get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                text = (block.get("text") or "").strip()
+                if not text or text.startswith(NOISE_TAGS):
+                    continue
+                texts.append(text)
+            joined = "\n".join(texts).strip()
+            if joined:
+                return joined
+    return ""
 
 
 def final_text(rollout_path: str) -> str:
