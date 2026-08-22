@@ -62,14 +62,16 @@ def _obligation_summary(store, claim_id: str) -> list:
     """Obligation-level detail straight from the graph nodes."""
     out = []
     for o in store.obligation_children(claim_id):
+        if o["status"] == "verified":
+            continue
         entry = {"text": o["text"], "status": o["status"]}
-        if o["status"] != "verified":
-            reason = o.get("reason")
-            if not reason:
-                ev = store.evidence_for(o["id"])
-                reason = str(ev[-1].get("witness"))[:300] if ev and ev[-1].get("witness") else None
-            if reason:
-                entry["reason"] = reason
+        reason = o.get("reason")
+        if not reason:
+            ev = store.evidence_for(o["id"])
+            reason = (str(ev[-1].get("witness"))[:300]
+                      if ev and ev[-1].get("witness") else None)
+        if reason:
+            entry["reason"] = reason
         out.append(entry)
     return out
 
@@ -205,6 +207,11 @@ class Service:
                 ]
                 if obligations:
                     entry["obligations"] = obligations
+                else:
+                    for ev in reversed(self.store.evidence_for(e["id"])):
+                        if ev.get("error"):
+                            entry["error"] = ev["error"]
+                            break
             slice_summary.append(entry)
         return {
             "verdict": cert["verdict"],

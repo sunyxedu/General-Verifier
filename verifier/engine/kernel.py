@@ -94,7 +94,7 @@ class Kernel:
     def verify(self, claim_id: str) -> str:
         """Verify one claim; returns its resulting status. Idempotent."""
         row = self.store.get(claim_id)
-        if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL):
+        if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
             return row["status"]
         if row["kind"] == CLAIM_EFFECT:
             self._verify_effect(row)
@@ -510,6 +510,10 @@ class Kernel:
                 {"outcome": OUTCOME_FAILED,
                  "error": "no world-basis evidence for a completion claim"},
             )
+            self.store.set_unverified(
+                claim_id,
+                reason="no world-basis evidence for a completion claim",
+            )
             new_status = STATUS_UNVERIFIED
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes:
             # provenance taint fold: world only when every obligation was
@@ -524,15 +528,17 @@ class Kernel:
                      else BASIS_RECORD)
             self.store.set_verified(claim_id, basis=basis)
             new_status = "verified"
-        elif any(o == OUTCOME_HOLDS for o in outcomes):
-            self.store.set_partial(claim_id)
-            new_status = "partial"
-        elif any(o == OUTCOME_UNOBTAINABLE for o in outcomes):
-            # the required check is well-defined but its instrument cannot be
-            # obtained here and no equivalent method bound: honest partial
+        elif any(o == OUTCOME_UNOBTAINABLE for o in outcomes) and all(
+                o in (OUTCOME_HOLDS, OUTCOME_UNOBTAINABLE)
+                for o in outcomes):
+            # Partial has one narrow, terminal meaning: every check that did
+            # run held, but at least one necessary check is structurally
+            # unavailable inside this fixed evidence boundary. A retryable
+            # failed check is not partial progress and takes the branch below.
             self.store.set_partial(claim_id)
             new_status = "partial"
         else:
+            self.store.set_unverified(claim_id)
             new_status = STATUS_UNVERIFIED
         self.log.append("status_change", {"claim": claim_id, "status": new_status})
 

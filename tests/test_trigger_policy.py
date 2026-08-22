@@ -43,6 +43,18 @@ class StubDischarger:
                                artifact="", instrument="stub")
 
 
+class PartialDischarger:
+    def discharge(self, row, obligation, method=None, tag=""):
+        if "historical output" in obligation.text:
+            return DischargeResult(
+                outcome="unobtainable",
+                witness="effect excerpt was truncated before the required field",
+                artifact="", instrument="stub", basis="record",
+            )
+        return DischargeResult(outcome="holds", witness=None,
+                               artifact="", instrument="stub", basis="world")
+
+
 def build(tmp_path, trigger, outcome="holds", witness=None):
     log = EventLog(os.path.join(tmp_path, "events.jsonl"))
     store = ClaimStore(trigger=trigger)
@@ -204,3 +216,43 @@ def test_commit_on_a_refuted_premise_says_why_it_could_not_be_checked(tmp_path):
     assert out["status"] == "unverified"
     assert out["error"] == "depends on refuted claim"
     assert out["refuted_deps"]
+
+
+def test_partial_residue_names_only_the_unavailable_obligation(tmp_path):
+    from verifier.mcp_server import Service
+
+    compile_two = lambda v: {"obligations": [                    # noqa: E731
+        {"text": "the final value independently equals 42",
+         "required_basis": "world"},
+        {"text": "the ledger retains the complete historical output",
+         "required_basis": "record"},
+    ]}
+
+    def factory(sc):
+        return Kernel(
+            sc.store, sc.log,
+            FixtureBackend({"obligations": compile_two}), sc.artifacts,
+            critic_role=None, discharger=PartialDischarger(),
+        )
+
+    sc = Service(str(tmp_path / "gv"), kernel_factory=factory)
+    out = sc.commit("A1", "assertion", "past report and final value", [])
+
+    assert out["status"] == "partial"
+    assert out["obligations"] == [{
+        "text": "the ledger retains the complete historical output",
+        "status": "partial",
+        "reason": "effect excerpt was truncated before the required field",
+    }]
+
+
+def test_all_record_final_exposes_claim_level_abstention_reason(tmp_path):
+    sc, _ = service(tmp_path)
+
+    out = sc.commit("F", "final", "the task is done", [])
+
+    assert out["status"] == "unverified"
+    assert out["error"] == "no world-basis evidence for a completion claim"
+    final = next(e for e in sc.certificate("F")["slice"]
+                 if e["text"] == "the task is done")
+    assert final["error"] == "no world-basis evidence for a completion claim"

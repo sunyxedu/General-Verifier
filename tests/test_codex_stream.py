@@ -81,6 +81,29 @@ def test_result_carries_the_tool_name_like_the_hooks_do(tmp_path):
     assert result["payload"]["tool"] == "exec_command"
     assert call["payload"]["session"] == "s1"
     assert result["payload"]["session"] == "s1"
+    assert result["payload"]["response_chars"] == len(
+        result["payload"]["excerpt"])
+    assert result["payload"]["excerpt_truncated"] is False
+
+
+def test_result_marks_a_truncated_effect(tmp_path):
+    events = [
+        {"type": "response_item", "payload": {
+            "type": "function_call", "name": "exec_command",
+            "call_id": "call_1", "arguments": "{}"}},
+        {"type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "call_1",
+            "output": "x" * (codex.EXCERPT_CHARS + 1)}},
+    ]
+    state = str(tmp_path / "gv")
+    codex.convert(rollout_file(tmp_path, events), state)
+
+    with open(os.path.join(state, "hook_feed.jsonl")) as f:
+        _, result = (json.loads(line) for line in f)
+    payload = result["payload"]
+    assert payload["excerpt_truncated"] is True
+    assert payload["response_chars"] > len(payload["excerpt"])
+    assert len(payload["excerpt"]) == codex.EXCERPT_CHARS
 
 
 def test_task_instruction_skips_harness_noise(tmp_path):

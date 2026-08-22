@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """PostToolUse hook: append a raw tool_result line to the MCP server's hook feed.
 
-The response is digested (sha256 over its canonical JSON) plus a bounded excerpt. 
+The response is digested (sha256 over its canonical JSON) plus a bounded excerpt.
+Length/truncation metadata makes the frozen evidence boundary explicit: a
+digest authenticates omitted content but cannot reveal it during offline replay.
 The excerpt is generous: the ledger is first-class verification evidence. 
 Claims about past events/states are discharged against what the hooks recorded here, so the recorded output must carry the substance, not just the identity.
 
@@ -24,6 +26,7 @@ def main() -> None:
     response = data.get("tool_response")
     canonical = json.dumps(response, sort_keys=True, ensure_ascii=False,
                            separators=(",", ":"), default=str)
+    excerpt_chars = 30000
     line = json.dumps(
         {
             "type": "tool_result",
@@ -31,7 +34,9 @@ def main() -> None:
                 "tool": data.get("tool_name"),
                 "tool_use_id": data.get("tool_use_id"),
                 "response_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
-                "excerpt": canonical[:30000],
+                "response_chars": len(canonical),
+                "excerpt_truncated": len(canonical) > excerpt_chars,
+                "excerpt": canonical[:excerpt_chars],
                 "session": data.get("session_id"),
                 "agent": data.get("agent_id"),
             },

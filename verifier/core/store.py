@@ -136,7 +136,7 @@ class ClaimStore:
 
     def set_verified(self, claim_id: str, basis: Optional[str] = None) -> None:
         self._transition(claim_id, STATUS_VERIFIED,
-                         allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL},
+                         allowed={STATUS_UNVERIFIED, STATUS_STALE},
                          basis=basis)
 
     def set_refuted(self, claim_id: str, reason: str,
@@ -146,11 +146,19 @@ class ClaimStore:
         # counterexample cannot settle a world demand) and is disclosed
         # on the certificate
         self._transition(claim_id, STATUS_REFUTED,
-                         allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL},
+                         allowed={STATUS_UNVERIFIED, STATUS_STALE},
                          reason=reason, basis=basis)
 
     def set_partial(self, claim_id: str) -> None:
-        self._transition(claim_id, STATUS_PARTIAL, allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL})
+        self._transition(claim_id, STATUS_PARTIAL,
+                         allowed={STATUS_UNVERIFIED, STATUS_STALE})
+
+    def set_unverified(self, claim_id: str,
+                       reason: Optional[str] = None) -> None:
+        """Finish a stale/failed recheck without claiming new evidence."""
+        self._transition(claim_id, STATUS_UNVERIFIED,
+                         allowed={STATUS_UNVERIFIED, STATUS_STALE},
+                         reason=reason)
 
     def _transition(self, claim_id, new, allowed, reason=None, basis=None):
         current = self.status(claim_id)
@@ -304,4 +312,3 @@ class ClaimStore:
                 out.append({"note": f"...truncated at {cap} entries"})
                 break
         return out
-

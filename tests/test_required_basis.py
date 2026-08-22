@@ -37,7 +37,11 @@ class BasisDischarger:
         self.seen.append(obligation.text)
         basis = (self.basis(obligation.text) if callable(self.basis)
                  else self.basis)
-        return DischargeResult(outcome=self.outcome, witness=None,
+        outcome = (self.outcome(obligation.text)
+                   if callable(self.outcome) else self.outcome)
+        witness = ("historical output was truncated"
+                   if outcome == "unobtainable" else None)
+        return DischargeResult(outcome=outcome, witness=witness,
                                artifact="", instrument="stub", basis=basis)
 
 
@@ -119,6 +123,91 @@ def test_final_with_world_evidence_verifies(tmp_path):
     cid = store.add_claim(Claim(CLAIM_FINAL, "the task is done"))
 
     assert store.status(cid) == "verified"
+
+
+def test_unavailable_obligation_makes_otherwise_proven_claim_partial(tmp_path):
+    per_text_basis = lambda text: (                              # noqa: E731
+        BASIS_RECORD if "ledger" in text else BASIS_WORLD)
+    per_text_outcome = lambda text: (                            # noqa: E731
+        "unobtainable" if "ledger" in text else "holds")
+    store, discharger = build(
+        tmp_path,
+        [{"text": "independent final recomputation gives 42",
+          "required_basis": "world"},
+         {"text": "the ledger retains the complete historical output",
+          "required_basis": "record"}],
+        basis=per_text_basis,
+    )
+    discharger.outcome = per_text_outcome
+
+    cid = store.add_claim(Claim(CLAIM_FINAL, "the task is done"))
+
+    assert store.status(cid) == "partial"
+    statuses = {o["text"]: o["status"]
+                for o in store.obligation_children(cid)}
+    assert statuses == {
+        "independent final recomputation gives 42": "verified",
+        "the ledger retains the complete historical output": "partial",
+    }
+
+
+def test_retryable_failure_is_not_partial_progress(tmp_path):
+    per_text_outcome = lambda text: (                            # noqa: E731
+        "failed" if "second" in text else "holds")
+    store, discharger = build(
+        tmp_path,
+        [{"text": "first condition", "required_basis": "world"},
+         {"text": "second condition", "required_basis": "world"}],
+    )
+    discharger.outcome = per_text_outcome
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "both conditions hold"))
+
+    assert store.status(cid) == "unverified"
+
+
+def test_unavailable_plus_retryable_failure_stays_unverified(tmp_path):
+    def outcome(text):
+        if "missing" in text:
+            return "unobtainable"
+        if "crashed" in text:
+            return "failed"
+        return "holds"
+
+    store, discharger = build(
+        tmp_path,
+        [{"text": "proven condition", "required_basis": "world"},
+         {"text": "missing historical evidence",
+          "required_basis": "world"},
+         {"text": "crashed checker", "required_basis": "world"}],
+    )
+    discharger.outcome = outcome
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "all conditions hold"))
+
+    assert store.status(cid) == "unverified"
+
+
+def test_partial_is_terminal_within_a_frozen_evidence_boundary(tmp_path):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": compile_fixture(
+        [{"text": "missing historical evidence",
+          "required_basis": "world"}])})
+    discharger = BasisDischarger(BASIS_WORLD, outcome="unobtainable")
+    kernel = Kernel(
+        store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
+        critic_role=None, discharger=discharger,
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "past state was X"))
+    assert store.status(cid) == "partial"
+    calls = list(discharger.seen)
+
+    # Rechecking the same immutable bundle cannot recover absent history.
+    # A revised claim/config first becomes stale and may then be checked.
+    assert kernel.verify(cid) == "partial"
+    assert discharger.seen == calls
 
 
 def test_invalid_required_basis_raises():

@@ -163,6 +163,9 @@ def test_prompts_preserve_temporal_targets_across_every_semantic_seat():
     assert "TEMPORAL TARGET IS PART OF SUFFICIENCY" \
         in prompts.ORACLES_SYSTEM
     assert "Do NOT re-run the historical action" in prompts.DISCHARGE_SYSTEM
+    assert "HISTORICAL EVIDENCE AVAILABILITY" in prompts.DISCHARGE_SYSTEM
+    assert "permanently lacks" in prompts.DISCHARGE_SYSTEM
+    assert "retryable execution failure" in prompts.DISCHARGE_TEMPLATE
     assert "Never re-execute the historical tool" in prompts.JUDGER_SYSTEM
 
 

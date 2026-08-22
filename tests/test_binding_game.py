@@ -34,6 +34,16 @@ class StubDischarger:
                                artifact="d1", instrument="stub")
 
 
+class SequenceDischarger:
+    def __init__(self, outcomes):
+        self.outcomes = iter(outcomes)
+
+    def discharge(self, row, obligation, method=None, tag=""):
+        outcome, witness = next(self.outcomes)
+        return DischargeResult(outcome=outcome, witness=witness,
+                               artifact="d1", instrument="stub")
+
+
 def game(tmp_path, roles, live_world=True):
     backend = FixtureBackend(roles)
     return BindingGame(
@@ -116,3 +126,51 @@ def test_missing_declaration_fails_closed_to_record(tmp_path):
 
     assert result.basis == "record"
     assert backend.calls[-1]["variables"]["basis"] == "record"
+
+
+def test_all_unavailable_methods_preserve_the_concrete_gap(tmp_path):
+    methods = {"methods": [
+        {"procedure": "read the retained output", "artifact": "output",
+         "level": "direct", "basis": "world"},
+        {"procedure": "read the contemporaneous snapshot",
+         "artifact": "snapshot", "level": "direct", "basis": "world"},
+    ]}
+    backend = FixtureBackend({"oracles": methods})
+    game = BindingGame(
+        backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        EventLog(os.path.join(tmp_path, "events.jsonl")),
+        SequenceDischarger([
+            ("unobtainable", "result excerpt was truncated"),
+            ("unobtainable", "no contemporaneous snapshot was retained"),
+        ]),
+    )
+
+    result = game.run(ROW, Obligation("c1", "past state was X", "world"))
+
+    assert result.outcome == "unobtainable"
+    assert "result excerpt was truncated" in result.witness
+    assert "no contemporaneous snapshot was retained" in result.witness
+
+
+def test_retryable_failure_is_not_hidden_by_an_unavailable_method(tmp_path):
+    methods = {"methods": [
+        {"procedure": "read the retained output", "artifact": "output",
+         "level": "direct", "basis": "world"},
+        {"procedure": "run a valid independent checker",
+         "artifact": "checker output", "level": "direct", "basis": "world"},
+    ]}
+    backend = FixtureBackend({"oracles": methods})
+    game = BindingGame(
+        backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        EventLog(os.path.join(tmp_path, "events.jsonl")),
+        SequenceDischarger([
+            ("unobtainable", "result excerpt was truncated"),
+            ("failed", "checker timed out"),
+        ]),
+    )
+
+    result = game.run(ROW, Obligation("c1", "past state was X", "world"))
+
+    assert result.outcome == "failed"

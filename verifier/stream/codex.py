@@ -103,6 +103,8 @@ def feed_lines(rollout_path: str) -> Iterator[Dict[str, Any]]:
                         "tool_use_id": p.get("call_id"),
                         "response_sha256": hashlib.sha256(
                             blob.encode("utf-8")).hexdigest(),
+                        "response_chars": len(blob),
+                        "excerpt_truncated": len(blob) > EXCERPT_CHARS,
                         "excerpt": blob[:EXCERPT_CHARS],
                         "session": session,
                         "agent": None,

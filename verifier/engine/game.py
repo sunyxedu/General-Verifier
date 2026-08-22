@@ -104,8 +104,8 @@ class BindingGame:
                               "no candidate methods at the required basis"
                               if below else "no candidate methods")
 
-        unobtainable_seen = False   # a missing, uninstallable instrument
-                                    # blocked a candidate -> settles partial
+        unavailable_reasons: List[str] = []
+        failed_seen = False
         for method in methods:
             attempt = Attempt(method=method)
             attempts.append(attempt)
@@ -117,13 +117,16 @@ class BindingGame:
             attempt.discharge_outcome = result.outcome
 
             if result.outcome == OUTCOME_UNOBTAINABLE:
-                unobtainable_seen = True
-                reason = "instrument unobtainable"
+                detail = str(result.witness or
+                             "required instrument or evidence unavailable")
+                unavailable_reasons.append(detail)
+                reason = f"unobtainable: {detail}"
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
                 continue
 
             if result.outcome == OUTCOME_FAILED:
+                failed_seen = True
                 reason = "execution failure at retry limit"
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
@@ -139,6 +142,7 @@ class BindingGame:
             if verdict["faithful"] == "yes":
                 return self._settle(row, obligation, attempts,
                                     method, result, audit=verdict)
+            failed_seen = True
 
             # judger-discharger loop: an unfaithful delivery hands the
             # judger's reason back to the executor for a redo, and the
@@ -153,10 +157,13 @@ class BindingGame:
                 result = self._redo(row, obligation, method, verdict,
                                     attempt, rounds)
                 if result.outcome == OUTCOME_UNOBTAINABLE:
-                    unobtainable_seen = True
-                    reason = f"instrument unobtainable (redo {rounds})"
+                    detail = str(result.witness or
+                                 "required instrument or evidence unavailable")
+                    unavailable_reasons.append(detail)
+                    reason = f"unobtainable (redo {rounds}): {detail}"
                     break
                 if result.outcome == OUTCOME_FAILED:
+                    failed_seen = True
                     reason = f"execution failure at retry limit (redo {rounds})"
                     break
                 verdict = self._judge(obligation, method, result, attempt,
@@ -171,9 +178,14 @@ class BindingGame:
             self._reject(row, obligation, method, reason)
             attempt.rejected = reason
 
-        return self._fail(row, obligation, attempts,
-                          "all candidate methods rejected",
-                          unobtainable=unobtainable_seen)
+        unavailable_only = bool(unavailable_reasons) and not failed_seen
+        reason = (
+            "all candidate methods structurally unavailable: "
+            + "; ".join(dict.fromkeys(unavailable_reasons))
+            if unavailable_only else "all candidate methods rejected"
+        )
+        return self._fail(row, obligation, attempts, reason,
+                          unobtainable=unavailable_only)
 
     # enumeration and advisory review
     def _enumerate(self, row: Dict,
