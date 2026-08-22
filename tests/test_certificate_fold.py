@@ -21,7 +21,7 @@ from verifier.execution.instruments import ArtifactStore
 from verifier.llm.schema import FixtureBackend
 
 
-COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}"}]}  # noqa: E731
+COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}", "required_basis": "record"}]}  # noqa: E731
 
 
 class PerClaimDischarger:
@@ -33,7 +33,7 @@ class PerClaimDischarger:
     def discharge(self, row, obligation, method=None, tag=""):
         outcome = self.outcomes.get(row["text"], "holds")
         return DischargeResult(outcome=outcome, witness="w" if outcome == "refuted" else None,
-                               artifact="", instrument="stub")
+                               artifact="", instrument="stub", basis="world")
 
 
 def build(tmp_path, outcomes):

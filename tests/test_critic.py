@@ -20,7 +20,7 @@ from verifier.llm.agents import CRITIC_AGENT
 from verifier.llm.schema import FixtureBackend
 
 
-COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}"}]}  # noqa: E731
+COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}", "required_basis": "record"}]}  # noqa: E731
 
 PASS = {"verdict": "pass",
         "counterexample_world": "n/a", "missing_condition": "n/a"}

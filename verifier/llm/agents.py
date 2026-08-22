@@ -248,7 +248,11 @@ COMPILE_OBLIGATIONS_AGENT = AgentRole(
     name="obligations",
     system=prompts.OBLIGATIONS_SYSTEM,
     template=prompts.OBLIGATIONS_TEMPLATE,
-    schema={"obligations": [{"text": str}]},
+    # required_basis is the obligation's evidence floor (world | record),
+    # enforced mechanically: methods below it never bind, and evidence
+    # below it never settles the node
+    schema={"obligations": [{"text": str,
+                             "required_basis": ("world", "record")}]},
     tools=["Read", "Grep", "Glob"],
 )
 

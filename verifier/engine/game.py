@@ -37,7 +37,7 @@ from ..execution.discharge import DischargeResult
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
 from ..core.model import (
-    BASIS_RECORD, Obligation,
+    BASIS_RECORD, Obligation, basis_satisfies,
     OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
 from ..llm.schema import RoleError
@@ -85,9 +85,22 @@ class BindingGame:
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
         attempts: List[Attempt] = []
         methods = self._enumerate(row, obligation)
+        # the obligation's evidence floor is mechanical, not advisory: a
+        # method whose declared basis cannot satisfy it never executes —
+        # a record method faithfully run against a world-floor obligation
+        # would only prove the solver's reporting, which is exactly the
+        # evidence this floor exists to reject
+        below = [m for m in methods
+                 if not basis_satisfies(m.get("basis", BASIS_RECORD),
+                                        obligation.required_basis)]
+        for m in below:
+            self._reject(row, obligation, m,
+                         "declared basis below the obligation's floor")
+        methods = [m for m in methods if m not in below]
         if not methods:
             return self._fail(row, obligation, attempts,
-                              "no candidate methods")
+                              "no candidate methods at the required basis"
+                              if below else "no candidate methods")
 
         unobtainable_seen = False   # a missing, uninstallable instrument
                                     # blocked a candidate -> settles partial

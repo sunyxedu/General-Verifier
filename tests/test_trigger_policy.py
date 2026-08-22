@@ -24,7 +24,7 @@ import pytest
 # one obligation per claim, derived from its text: obligation nodes are
 # content-addressed, so a fixture that emits the same text for every claim
 # would make every claim share (and inherit) one verdict
-COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}"}]}  # noqa: E731
+COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}", "required_basis": "record"}]}  # noqa: E731
 
 
 class StubDischarger:

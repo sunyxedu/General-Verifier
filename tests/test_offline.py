@@ -19,7 +19,7 @@ from verifier.execution.discharge import DischargeResult
 from verifier.llm.schema import FixtureBackend
 from verifier.stream.builder import Builder
 
-COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}"}]}  # noqa: E731
+COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}", "required_basis": "record"}]}  # noqa: E731
 
 FEED = [
     {"type": "tool_call", "payload": {
@@ -47,7 +47,8 @@ class StubDischarger:
     def discharge(self, row, obligation, method=None, tag=""):
         self.seen.append(obligation.text)
         return DischargeResult(outcome=self.outcome, witness=None,
-                               artifact="", instrument="stub")
+                               artifact="", instrument="stub",
+                               basis="world")
 
 
 def state_dir(tmp_path, feed=FEED):

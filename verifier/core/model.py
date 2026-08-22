@@ -88,15 +88,29 @@ class Claim:
 class Obligation:
     claim_id: str  # context only — excluded from identity
     text: str
+    # the minimum evidence basis that can settle this obligation: world
+    # for conditions about what is TRUE (the solver's own reporting can
+    # never settle those), record for conditions about what the solver
+    # did or reported (the ledger settles those). Compiled by the
+    # obligation compiler; enforced mechanically at binding and settle.
+    required_basis: str = BASIS_RECORD
 
     @property
     def id(self) -> str:
         """
-        identity is the CONTENT of the check alone: 
-        the same world-condition compiled under different claims is one graph node,
-        so settled verification work transfers across claims for free
+        identity is the content of the check AND its floor: the same text
+        demanded at world level is a different check than at record level
+        — sharing one node would let a record-satisfied verdict slip into
+        a world slot through dedup. Same text + same floor still transfers
+        settled verdicts across claims for free.
         """
-        return content_hash({"text": self.text})
+        return content_hash({"text": self.text,
+                             "required": self.required_basis})
+
+
+def basis_satisfies(achieved: Optional[str], required: str) -> bool:
+    """world evidence satisfies any floor; record satisfies only record."""
+    return required != BASIS_WORLD or achieved == BASIS_WORLD
 
 
 @dataclass(frozen=True)

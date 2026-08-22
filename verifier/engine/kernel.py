@@ -16,11 +16,11 @@ import json
 import os
 from typing import Dict, List
 
-from ..execution.discharge import AgentDischarger
+from ..execution.discharge import AgentDischarger, DischargeResult
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore, LedgerInstrument
 from ..core.model import (
-    Claim, Evidence, Obligation,
+    Claim, Evidence, Obligation, basis_satisfies,
     BASIS_RECORD, BASIS_WORLD,
     CLAIM_EFFECT, CLAIM_FINAL,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
@@ -170,6 +170,13 @@ class Kernel:
                 continue
             src = self.store.settled_statement(obligation.text,
                                                exclude=row["id"])
+            if src is not None and src["status"] == STATUS_VERIFIED \
+                    and not basis_satisfies(
+                        self.store.get(src["id"])["basis"],
+                        obligation.required_basis):
+                # a record-established claim cannot settle a world-floor
+                # obligation by inheritance — fall through and discharge
+                src = None
             if src is not None:
                 # the graph already settled this exact statement as a CLAIM
                 # (different identity space, so node dedup cannot see it).
@@ -248,11 +255,16 @@ class Kernel:
         if payload is None:
             return None
         obligations = [
-            Obligation(row["id"], o["text"]) for o in payload["obligations"]
+            Obligation(row["id"], o["text"],
+                       o.get("required_basis", BASIS_RECORD))
+            for o in payload["obligations"]
         ]
         self.log.append(
             "obligations_compiled",
-            {"claim": row["id"], "obligations": [o.text for o in obligations]},
+            {"claim": row["id"],
+             "obligations": [{"text": o.text,
+                              "required_basis": o.required_basis}
+                             for o in obligations]},
         )
         return obligations
 
@@ -385,6 +397,21 @@ class Kernel:
             result = self.binder.run(row, obligation)
         else:
             result = self.discharger.discharge(row, obligation)
+        if result.outcome == OUTCOME_HOLDS \
+                and not basis_satisfies(result.basis,
+                                        obligation.required_basis):
+            # backstop behind the binding game's method filter (direct
+            # discharge has no filter; a mislabel can slip an audit):
+            # evidence below the obligation's floor never settles it —
+            # fails closed, never converted into a pass
+            result = DischargeResult(
+                outcome=OUTCOME_FAILED,
+                witness=(f"evidence basis {result.basis!r} below the "
+                         f"obligation's floor {obligation.required_basis!r}"),
+                artifact=result.artifact,
+                instrument=result.instrument,
+                basis=result.basis,
+            )
         evidence = Evidence(
             obligation_id=oid,
             instrument=result.instrument,
@@ -396,6 +423,7 @@ class Kernel:
             oid,
             {
                 "obligation": obligation.text,
+                "required_basis": obligation.required_basis,
                 "instrument": result.instrument,
                 "outcome": result.outcome,
                 "artifact": result.artifact,
@@ -423,6 +451,19 @@ class Kernel:
         if any(o == OUTCOME_REFUTED for o in outcomes):
             self.store.set_refuted(claim_id, reason="counterexample on record")
             new_status = "refuted"
+        elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes \
+                and self.store.get(claim_id)["kind"] == CLAIM_FINAL \
+                and BASIS_WORLD not in bases:
+            # a completion verdict must rest on at least one world-
+            # established obligation: an all-record final is the
+            # laundering signature (every check passed, none of them
+            # ever left the solver's own account of events)
+            self.store.record_evidence(
+                claim_id,
+                {"outcome": OUTCOME_FAILED,
+                 "error": "no world-basis evidence for a completion claim"},
+            )
+            new_status = STATUS_UNVERIFIED
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes:
             # provenance taint fold: world only when every obligation was
             # world-based AND every verified assertion premise it may have

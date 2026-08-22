@@ -23,7 +23,7 @@ from verifier.execution.instruments import ArtifactStore
 from verifier.llm.schema import FixtureBackend
 
 
-COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}"}]}  # noqa: E731
+COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}", "required_basis": "record"}]}  # noqa: E731
 
 
 class BasisDischarger:
@@ -66,8 +66,10 @@ def test_mixed_obligations_taint_to_record(tmp_path):
     """One record leg in the sufficiency set taints the whole claim — but
     the world-based obligation NODE keeps its own basis for reuse."""
     two = lambda v: {"obligations": [                              # noqa: E731
-        {"text": "independent recomputation gives 42"},
-        {"text": "the ledger records the solver printing 42"},
+        {"text": "independent recomputation gives 42",
+         "required_basis": "record"},
+        {"text": "the ledger records the solver printing 42",
+         "required_basis": "record"},
     ]}
     per_text = lambda text: (                                      # noqa: E731
         BASIS_RECORD if "ledger" in text else BASIS_WORLD)
@@ -143,9 +145,11 @@ def test_inheritance_transfers_basis(tmp_path):
     fixtures = {
         # first claim: restates itself; second claim: demands the first's text
         "the solver reported 42":
-            {"obligations": [{"text": "the solver reported 42"}]},
+            {"obligations": [{"text": "the solver reported 42",
+                              "required_basis": "record"}]},
         "the answer is 42":
-            {"obligations": [{"text": "the solver reported 42"}]},
+            {"obligations": [{"text": "the solver reported 42",
+                              "required_basis": "record"}]},
     }
     compile_fixture = lambda v: fixtures[v["claim_text"]]          # noqa: E731
     store, _ = build(tmp_path, compile_fixture=compile_fixture,
