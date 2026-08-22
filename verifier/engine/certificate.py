@@ -41,6 +41,9 @@ def request_certificate(
                 "text": row["text"],
                 "status": row["status"],
                 "reason": row["reason"],
+                # evidence basis of a verified node (world | record): what
+                # its verdict entitles reliance to; disclosed for audit
+                "basis": row["basis"],
                 "evidence": store.evidence_for(claim_id),
                 # obligations are first-class graph nodes: the certificate
                 # carries each one with its own status and evidence. The
@@ -48,6 +51,7 @@ def request_certificate(
                 "obligations": [
                     {"id": o["id"], "text": o["text"],
                      "status": o["status"], "reason": o["reason"],
+                     "basis": o["basis"],
                      "evidence": store.evidence_for(o["id"])}
                     for o in store.obligation_children(claim_id)
                 ],

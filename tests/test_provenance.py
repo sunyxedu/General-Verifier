@@ -1,0 +1,185 @@
+"""Evidence-basis provenance: what a "verified" entitles others to rely on.
+
+world  — content established independently of the solver's reporting.
+record — the ledger attests the solver did/reported it; proves reporting.
+
+The claim-level basis is a taint fold (any record component -> record,
+verified assertion premises included, effect premises exempt because they
+reach the compiler opaque). The reusable atoms are the obligation NODES,
+each carrying the basis of the method that discharged it.
+"""
+from __future__ import annotations
+
+import os
+
+from verifier.core.events import EventLog
+from verifier.core.model import (
+    BASIS_RECORD, BASIS_WORLD, Claim, CLAIM_ASSERTION,
+)
+from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
+from verifier.engine.kernel import Kernel
+from verifier.execution.discharge import DischargeResult
+from verifier.execution.instruments import ArtifactStore
+from verifier.llm.schema import FixtureBackend
+
+
+COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}"}]}  # noqa: E731
+
+
+class BasisDischarger:
+    """Stub answering holds with a fixed or per-obligation basis."""
+
+    def __init__(self, basis=BASIS_WORLD):
+        self.basis = basis
+
+    def discharge(self, row, obligation, method=None, tag=""):
+        basis = (self.basis(obligation.text) if callable(self.basis)
+                 else self.basis)
+        return DischargeResult(outcome="holds", witness=None,
+                               artifact="", instrument="stub", basis=basis)
+
+
+def build(tmp_path, compile_fixture=COMPILE, basis=BASIS_WORLD):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": compile_fixture})
+    Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
+           critic_role=None, discharger=BasisDischarger(basis))
+    return store, backend
+
+
+def test_world_discharge_yields_world_claim(tmp_path):
+    store, _ = build(tmp_path, basis=BASIS_WORLD)
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "the answer is 42"))
+    assert store.status(cid) == "verified"
+    assert store.get(cid)["basis"] == BASIS_WORLD
+
+
+def test_record_discharge_yields_record_claim(tmp_path):
+    store, _ = build(tmp_path, basis=BASIS_RECORD)
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "as of effect:2, it ran"))
+    assert store.status(cid) == "verified"
+    assert store.get(cid)["basis"] == BASIS_RECORD
+
+
+def test_mixed_obligations_taint_to_record(tmp_path):
+    """One record leg in the sufficiency set taints the whole claim — but
+    the world-based obligation NODE keeps its own basis for reuse."""
+    two = lambda v: {"obligations": [                              # noqa: E731
+        {"text": "independent recomputation gives 42"},
+        {"text": "the ledger records the solver printing 42"},
+    ]}
+    per_text = lambda text: (                                      # noqa: E731
+        BASIS_RECORD if "ledger" in text else BASIS_WORLD)
+    store, _ = build(tmp_path, compile_fixture=two, basis=per_text)
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "the answer is 42"))
+    assert store.status(cid) == "verified"
+    assert store.get(cid)["basis"] == BASIS_RECORD
+
+    bases = {o["text"]: o["basis"] for o in store.obligation_children(cid)}
+    assert bases["independent recomputation gives 42"] == BASIS_WORLD
+    assert bases["the ledger records the solver printing 42"] == BASIS_RECORD
+
+
+def test_record_premise_taints_dependent_claim(tmp_path):
+    """A chain of reliance must bottom out in world checks: a claim whose
+    verified assertion premise is record-level cannot come out world."""
+    per_text = lambda text: (                                      # noqa: E731
+        BASIS_RECORD if "reported" in text else BASIS_WORLD)
+    store, _ = build(tmp_path, basis=per_text)
+
+    a = store.add_claim(Claim(CLAIM_ASSERTION, "the solver reported 42"))
+    assert store.get(a)["basis"] == BASIS_RECORD
+
+    b = store.add_claim(Claim(CLAIM_ASSERTION, "the answer is 42", deps=(a,)))
+    assert store.status(b) == "verified"
+    assert store.get(b)["basis"] == BASIS_RECORD
+
+
+def test_effect_premise_does_not_taint(tmp_path):
+    """Effect premises reach the compiler opaque, so they cannot have
+    contributed semantic content — a world-discharged claim citing one
+    stays world. The effect claim itself is record by construction."""
+    from verifier.stream.builder import Builder
+
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": COMPILE})
+    Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
+           critic_role=None, discharger=BasisDischarger(BASIS_WORLD))
+    builder = Builder(log, store)
+
+    builder.feed(log.append("tool_call", {"tool": "Bash"}))
+    builder.feed(log.append("tool_result", {"stdout": "42"}))
+    builder.feed(log.append("commit", {
+        "label": "A1", "kind": "assertion",
+        "text": "the answer is 42", "deps": ["effect:2"]}))
+
+    effect = builder.labels["effect:2"]
+    assert store.get(effect)["basis"] == BASIS_RECORD
+    assert store.get(builder.labels["A1"])["basis"] == BASIS_WORLD
+
+
+def test_premise_labels_carry_basis(tmp_path):
+    """The compiler sees [world-level]/[record-level] tags on verified
+    assertion premises."""
+    per_text = lambda text: (                                      # noqa: E731
+        BASIS_RECORD if "reported" in text else BASIS_WORLD)
+    store, backend = build(tmp_path, basis=per_text)
+
+    a = store.add_claim(Claim(CLAIM_ASSERTION, "the solver reported 42"))
+    b = store.add_claim(Claim(CLAIM_ASSERTION, "the count is 42"))
+    store.add_claim(Claim(CLAIM_ASSERTION, "the answer is 42", deps=(a, b)))
+
+    variables = backend.calls[-1]["variables"]
+    assert "[record-level] the solver reported 42" in variables["verified_deps"]
+    assert "[world-level] the count is 42" in variables["verified_deps"]
+
+
+def test_inheritance_transfers_basis(tmp_path):
+    """An obligation node inheriting a same-text claim's verdict inherits
+    its basis too — changing identity space does not launder provenance."""
+    fixtures = {
+        # first claim: restates itself; second claim: demands the first's text
+        "the solver reported 42":
+            {"obligations": [{"text": "the solver reported 42"}]},
+        "the answer is 42":
+            {"obligations": [{"text": "the solver reported 42"}]},
+    }
+    compile_fixture = lambda v: fixtures[v["claim_text"]]          # noqa: E731
+    store, _ = build(tmp_path, compile_fixture=compile_fixture,
+                     basis=BASIS_RECORD)
+
+    store.add_claim(Claim(CLAIM_ASSERTION, "the solver reported 42"))
+    b = store.add_claim(Claim(CLAIM_ASSERTION, "the answer is 42"))
+
+    assert store.status(b) == "verified"
+    # the shared obligation node carries the inherited record basis, and it
+    # (not a world check) is what settled claim b -> b is record too
+    assert store.get(b)["basis"] == BASIS_RECORD
+
+
+def test_store_migration_adds_basis_column(tmp_path):
+    """A store created before basis tracking opens cleanly and reports
+    basis=None for its rows."""
+    import sqlite3
+
+    path = os.path.join(tmp_path, "claims.sqlite")
+    db = sqlite3.connect(path)
+    db.executescript(
+        "CREATE TABLE claims (id TEXT PRIMARY KEY, kind TEXT NOT NULL, "
+        "text TEXT NOT NULL, revises TEXT, "
+        "status TEXT NOT NULL DEFAULT 'unverified', reason TEXT);"
+        "CREATE TABLE deps (child TEXT NOT NULL, parent TEXT NOT NULL, "
+        "PRIMARY KEY (child, parent));"
+        "CREATE TABLE obligation_edges (claim TEXT NOT NULL, "
+        "obligation TEXT NOT NULL, PRIMARY KEY (claim, obligation));"
+        "CREATE TABLE evidence (claim_id TEXT NOT NULL, payload TEXT NOT NULL);"
+    )
+    db.execute("INSERT INTO claims (id, kind, text) VALUES ('x', 'assertion', 'old row')")
+    db.commit()
+    db.close()
+
+    store = ClaimStore(path)
+    assert store.get("x")["basis"] is None

@@ -37,7 +37,7 @@ from ..execution.discharge import DischargeResult
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
 from ..core.model import (
-    Obligation,
+    BASIS_RECORD, Obligation,
     OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
 from ..llm.schema import RoleError
@@ -184,7 +184,8 @@ class BindingGame:
             "methods_enumerated",
             {"claim": row["id"], "obligation": obligation.id,
              "methods": [{"procedure": m["procedure"][:80],
-                          "level": m.get("level", "")}
+                          "level": m.get("level", ""),
+                          "basis": m.get("basis", "")}
                          for m in methods]},
         )
         return methods
@@ -291,6 +292,9 @@ class BindingGame:
             witness=result.witness,
             artifact=digest,
             instrument=method["procedure"][:80],
+            # the oracle's declared basis, already audited by the judger as
+            # part of fidelity; absent (legacy fixtures) fails closed to record
+            basis=method.get("basis", BASIS_RECORD),
         )
 
     def _fail(self, row, obligation, attempts, reason,

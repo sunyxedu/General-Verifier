@@ -33,7 +33,11 @@ CREATE TABLE IF NOT EXISTS claims (
     text    TEXT NOT NULL,
     revises TEXT,
     status  TEXT NOT NULL DEFAULT 'unverified',
-    reason  TEXT
+    reason  TEXT,
+    -- evidence basis of a verified node: 'world' (independently established;
+    -- downstream may rely on the content) or 'record' (the ledger attests the
+    -- solver reported/did it; proves reporting, not truth). NULL until verified.
+    basis   TEXT
 );
 CREATE TABLE IF NOT EXISTS deps (
     child  TEXT NOT NULL,
@@ -68,6 +72,12 @@ class ClaimStore:
             raise ValueError(f"unknown trigger policy: {trigger}")
         self.db = sqlite3.connect(path)
         self.db.executescript(_SCHEMA)
+        # migration: stores created before evidence-basis tracking lack the
+        # column (CREATE TABLE IF NOT EXISTS never alters an existing table)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(claims)")}
+        if "basis" not in cols:
+            self.db.execute("ALTER TABLE claims ADD COLUMN basis TEXT")
+            self.db.commit()
         self.trigger = trigger
         self._trigger_callbacks: List[TriggerCallback] = []
 
@@ -123,8 +133,10 @@ class ClaimStore:
         row = self._row(claim_id)
         return row["status"]
 
-    def set_verified(self, claim_id: str) -> None:
-        self._transition(claim_id, STATUS_VERIFIED, allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL})
+    def set_verified(self, claim_id: str, basis: Optional[str] = None) -> None:
+        self._transition(claim_id, STATUS_VERIFIED,
+                         allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL},
+                         basis=basis)
 
     def set_refuted(self, claim_id: str, reason: str) -> None:
         self._transition(claim_id, STATUS_REFUTED, allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL}, reason=reason)
@@ -132,13 +144,13 @@ class ClaimStore:
     def set_partial(self, claim_id: str) -> None:
         self._transition(claim_id, STATUS_PARTIAL, allowed={STATUS_UNVERIFIED, STATUS_STALE, STATUS_PARTIAL})
 
-    def _transition(self, claim_id, new, allowed, reason=None):
+    def _transition(self, claim_id, new, allowed, reason=None, basis=None):
         current = self.status(claim_id)
         if current not in allowed:
             raise IllegalTransition(f"{current} -> {new} not allowed")
         self.db.execute(
-            "UPDATE claims SET status=?, reason=? WHERE id=?",
-            (new, reason, claim_id),
+            "UPDATE claims SET status=?, reason=?, basis=? WHERE id=?",
+            (new, reason, basis, claim_id),
         )
         self.db.commit()
 
@@ -201,14 +213,14 @@ class ClaimStore:
 
     def _row(self, claim_id: str) -> Dict:
         cur = self.db.execute(
-            "SELECT id, kind, text, revises, status, reason "
+            "SELECT id, kind, text, revises, status, reason, basis "
             "FROM claims WHERE id=?",
             (claim_id,),
         )
         row = cur.fetchone()
         if row is None:
             raise UnknownDependency(f"{claim_id[:12]}… not in store")
-        keys = ("id", "kind", "text", "revises", "status", "reason")
+        keys = ("id", "kind", "text", "revises", "status", "reason", "basis")
         return dict(zip(keys, row))
 
     def parents(self, claim_id: str) -> List[str]:
@@ -269,13 +281,17 @@ class ClaimStore:
         proven statements can be found and relied on instead of re-demanded.
         Effects are omitted (their text is a ledger hash, useless to read)."""
         cur = self.db.execute(
-            "SELECT id, kind, status, text FROM claims WHERE kind != 'effect'"
+            "SELECT id, kind, status, text, basis FROM claims "
+            "WHERE kind != 'effect'"
         )
         out: List[Dict] = []
-        for cid, kind, status, text in cur.fetchall():
+        for cid, kind, status, text, basis in cur.fetchall():
             if cid == exclude:
                 continue
-            out.append({"kind": kind, "status": status, "text": text[:300]})
+            entry = {"kind": kind, "status": status, "text": text[:300]}
+            if basis:
+                entry["basis"] = basis
+            out.append(entry)
             if len(out) >= cap:
                 out.append({"note": f"...truncated at {cap} entries"})
                 break

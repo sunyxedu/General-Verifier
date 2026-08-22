@@ -43,6 +43,18 @@ OUTCOME_FAILED = "failed"
 OUTCOME_UNOBTAINABLE = "unobtainable"
 OUTCOME_KINDS = Literal["holds", "refuted", "failed", "unobtainable"]
 
+# evidence basis of a verified node: what its "verified" entitles others to.
+# world  — the statement's content was established independently of the
+#          solver's own reporting (recomputation from task inputs, checks of
+#          the delivered world); downstream compilation may rely on it as fact.
+# record — the ledger attests the solver did/reported this; the event is real
+#          but the content's truth was never independently established, so it
+#          proves reporting, not truth. Effects are record by construction.
+# The claim-level basis is a taint fold (any record component -> record); the
+# reusable atoms are the obligation NODES, each carrying its own basis.
+BASIS_WORLD = "world"
+BASIS_RECORD = "record"
+
 # internal graph node kind for obligations; deliberately NOT in KINDS so a
 # solver can never commit one — only the kernel materializes them
 OBLIGATION_KINDS = "obligation"

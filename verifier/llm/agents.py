@@ -274,6 +274,9 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
                 "procedure": str,
                 "artifact": str,
                 "level": str,
+                # evidence basis: what a successful run of this method
+                # entitles downstream reliance to (see prompts.ORACLES_SYSTEM)
+                "basis": ("world", "record"),
             }
         ]
     },

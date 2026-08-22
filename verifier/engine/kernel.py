@@ -21,6 +21,7 @@ from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore, LedgerInstrument
 from ..core.model import (
     Claim, Evidence, Obligation,
+    BASIS_RECORD, BASIS_WORLD,
     CLAIM_EFFECT,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
@@ -102,7 +103,8 @@ class Kernel:
             "discharge",
             {"claim": row["id"], "instrument": self.ledger.name, "outcome": result.outcome},
         )
-        self._settle(row["id"], [result.outcome])
+        # an effect's evidence IS the ledger: record basis by construction
+        self._settle(row["id"], [result.outcome], [BASIS_RECORD])
 
     # assertion / final
     def _verify_assertion(self, row: Dict) -> None:
@@ -140,7 +142,8 @@ class Kernel:
             return
 
         outcomes: List[str] = []
-        refuting_witness = None
+        bases: List[str] = []     # per-obligation evidence basis, for the
+        refuting_witness = None   # claim-level provenance fold at settle
         for obligation in obligations:
             oid = self.store.add_obligation(row["id"], obligation)
             known = self.store.status(oid)
@@ -155,6 +158,7 @@ class Kernel:
                                 {"claim": row["id"], "obligation": oid,
                                  "status": known})
                 outcomes.append(outcome)
+                bases.append(self.store.get(oid)["basis"] or BASIS_RECORD)
                 if outcome == OUTCOME_REFUTED:
                     ev = self.store.evidence_for(oid)
                     refuting_witness = ev[-1].get("witness") if ev else None
@@ -168,16 +172,18 @@ class Kernel:
                 # the verdict and its evidence transfer, no instrument spent
                 outcome, witness = self._inherit(row, obligation, src)
                 outcomes.append(outcome)
+                bases.append(self.store.get(oid)["basis"] or BASIS_RECORD)
                 if outcome == OUTCOME_REFUTED:
                     refuting_witness = witness
                     break
                 continue
             outcome, witness = self._discharge(row, obligation)
             outcomes.append(outcome)
+            bases.append(self.store.get(oid)["basis"] or BASIS_RECORD)
             if outcome == OUTCOME_REFUTED:
                 refuting_witness = witness
                 break
-        self._settle(row["id"], outcomes)
+        self._settle(row["id"], outcomes, bases)
 
         if self.memory is not None:
             status = self.store.status(row["id"])
@@ -194,18 +200,27 @@ class Kernel:
             self.memory.hits_for_obligations(row["text"])
             if self.memory is not None else self.memory_hits
         )
-        # graph context: verified premises are system-established facts the
-        # compiler may build residual obligations on; everything else is
-        # context only. The solver's argument stays invisible either way.
+        # graph context: verified premises reach the compiler tagged with
+        # their evidence basis — world-level premises are facts residual
+        # obligations may build on; record-level ones only prove the solver
+        # reported/did as recorded. The solver's argument stays invisible
+        # either way.
         verified_deps, pending_deps = [], []
         for pid in self.store.parents(row["id"]):
             prow = self.store.get(pid)
-            label = ("[a verified tool-execution record]"
-                     if prow["kind"] == CLAIM_EFFECT else prow["text"])
+            if prow["kind"] == CLAIM_EFFECT:
+                label = "[a verified tool-execution record]"
+                if prow["status"] == STATUS_VERIFIED:
+                    verified_deps.append(label)
+                else:
+                    pending_deps.append(f"{label} (status: {prow['status']})")
+                continue
             if prow["status"] == STATUS_VERIFIED:
-                verified_deps.append(label)
+                basis = prow["basis"] or BASIS_RECORD
+                verified_deps.append(f"[{basis}-level] {prow['text']}")
             else:
-                pending_deps.append(f"{label} (status: {prow['status']})")
+                pending_deps.append(
+                    f"{prow['text']} (status: {prow['status']})")
         # a run scored after the fact (offline ORM) has no live world; the
         # harness may instead have captured the delivered tree next to the
         # ledger. Absolute, like ledger_path: the checker runs elsewhere.
@@ -323,15 +338,19 @@ class Kernel:
         self.store.record_evidence(
             oid,
             {
-                "obligation": obligation.text, 
+                "obligation": obligation.text,
                 "instrument": "graph",
-                "outcome": outcome, 
-                "source": src["id"], 
+                "outcome": outcome,
+                "source": src["id"],
                 "witness": witness,
             },
         )
         if outcome == OUTCOME_HOLDS:
-            self.store.set_verified(oid)
+            # inheritance transfers the verdict WITH its basis: a verdict
+            # settled on the solver's record does not become independent
+            # by changing identity space
+            src_basis = self.store.get(src["id"])["basis"] or BASIS_RECORD
+            self.store.set_verified(oid, basis=src_basis)
         else:
             self.store.set_refuted(oid, reason=str(witness)[:200])
         self.log.append(
@@ -372,7 +391,7 @@ class Kernel:
             },
         )
         if result.outcome == OUTCOME_HOLDS:
-            self.store.set_verified(oid)
+            self.store.set_verified(oid, basis=result.basis)
         elif result.outcome == OUTCOME_REFUTED:
             self.store.set_refuted(oid, reason=str(result.witness)[:200])
         elif result.outcome == OUTCOME_UNOBTAINABLE:
@@ -386,12 +405,23 @@ class Kernel:
         return result.outcome, result.witness
 
     # settlement
-    def _settle(self, claim_id: str, outcomes: List[str]) -> None:
+    def _settle(self, claim_id: str, outcomes: List[str],
+                bases: List[str] = ()) -> None:
         if any(o == OUTCOME_REFUTED for o in outcomes):
             self.store.set_refuted(claim_id, reason="counterexample on record")
             new_status = "refuted"
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes:
-            self.store.set_verified(claim_id)
+            # provenance taint fold: world only when every obligation was
+            # world-based AND every verified assertion premise it may have
+            # relied on is world-level. Effect premises are exempt — they
+            # reach the compiler as opaque labels, so they cannot have
+            # contributed semantic content. Any record component -> record:
+            # a chain of reliance must bottom out in world checks or say so.
+            basis = (BASIS_WORLD
+                     if bases and all(b == BASIS_WORLD for b in bases)
+                     and self._premises_world(claim_id)
+                     else BASIS_RECORD)
+            self.store.set_verified(claim_id, basis=basis)
             new_status = "verified"
         elif any(o == OUTCOME_HOLDS for o in outcomes):
             self.store.set_partial(claim_id)
@@ -404,3 +434,16 @@ class Kernel:
         else:
             new_status = STATUS_UNVERIFIED
         self.log.append("status_change", {"claim": claim_id, "status": new_status})
+
+    def _premises_world(self, claim_id: str) -> bool:
+        """True when no verified assertion premise is record-level. The
+        compiler may have built residual obligations on any verified
+        premise it was shown, so a record-level one taints the claim."""
+        for pid in self.store.parents(claim_id):
+            prow = self.store.get(pid)
+            if prow["kind"] == CLAIM_EFFECT:
+                continue
+            if prow["status"] == STATUS_VERIFIED \
+                    and (prow["basis"] or BASIS_RECORD) != BASIS_WORLD:
+                return False
+        return True

@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
 from .instruments import ArtifactStore
-from ..core.model import Obligation, OUTCOME_FAILED
+from ..core.model import BASIS_RECORD, Obligation, OUTCOME_FAILED
 from ..llm.schema import RoleError
 
 
@@ -26,6 +26,11 @@ class DischargeResult:
     witness: Optional[Any]
     artifact: str                # digest in the artifact store
     instrument: str
+    # evidence basis (world | record): what a 'holds' entitles downstream
+    # reliance to. Declared by the bound method and audited by the judger;
+    # defaults to record — the fail-closed direction — for paths with no
+    # declaration (direct discharge, ledger checks).
+    basis: str = BASIS_RECORD
 
 
 class AgentDischarger:
