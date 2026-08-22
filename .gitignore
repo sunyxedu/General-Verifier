@@ -9,6 +9,7 @@ artifacts/
 *.db
 .DS_Store
 experiments/*/results/
+experiments/*/scoring/
 experiments/*/vendor/
 experiments/vendor/
 experiments/frontiermath/_raw/

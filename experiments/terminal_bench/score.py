@@ -7,25 +7,33 @@ Two trace sources, one pipeline:
     to trial_dir/agent/sessions/. verifier.stream.codex rewrites that into
     the same feed format, so both arms score identically.
 
+ISOLATION: scoring runs in a sanitized state dir OUTSIDE the trial tree
+(scoring/<job>/<config>/<trial>/gv), holding only the verifier's
+legitimate inputs — task.md, the raw ledger feed, the final output, the
+pre-task baseline, and the delivered world (APFS clonefile when
+available). Harbor's gold (result.json, verifier/reward.txt, the official
+test output) stays outside the boundary and no path handed to any seat
+points back at it. The seats are unsandboxed processes, so this is
+isolation by construction of the inputs, not a jail — a container is the
+hard guarantee if one is ever needed. The dir is per CONFIG: two models
+never share extraction or settled state.
+
 Each trial is scored independently: its own extraction, its own claim
 graph, its own certificate. Scores append to results/rec_scores.jsonl
-(resume by (job, trial)). Progress goes one task at a time; as each
-task finishes, its trials are ranked by rank_key (best-of-N selection
-is per-task) and emitted as TSV rows on stdout — diagnostics go to
-stderr, so stdout pipes through `tee` clean. A rerun re-emits cached
-rows too, so the TSV is always the complete table.
-
-Caveat: the task container is gone by scoring time, so the final world is
-NOT reachable — obligations about the live state discharge as failed or
-unobtainable (fail-closed → partial), and the signal rests on ledger
-obligations. That is inherent to scoring containerized runs post-hoc.
+(resume by (job, trial, config)). Progress goes one task at a time; as
+each task finishes, its trials are ranked by rank_key (best-of-N
+selection is per-task) and emitted as TSV rows on stdout — diagnostics
+go to stderr, so stdout pipes through `tee` clean. A rerun re-emits
+cached rows too, so the TSV is always the complete table.
 
 Usage:
   uv run python experiments/terminal_bench/score.py [--job rec] [--model m]
+      [--seats codex] [--effort medium] [--task t ...] [--trial name ...]
 """
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,59 +47,81 @@ from verifier import offline                             # noqa: E402
 from verifier.stream import codex as codex_stream        # noqa: E402
 
 
+SANITIZE_MARKER = ".sanitized"
+# the verifier's legitimate inputs — everything else in a trial dir
+# (result.json, verifier/reward.txt, official test output) is gold and
+# stays outside the scoring boundary
+SANITIZE_FILES = ("hook_feed.jsonl", "task.md", "final.txt")
+
+
 def find_state(trial_dir):
-    """The pulled /gv-state artifact inside a trial dir."""
+    """The pulled /gv-state artifact inside a trial dir (source only —
+    scoring itself runs in the sanitized copy)."""
     for root, _dirs, files in os.walk(trial_dir):
         if os.path.basename(root) == "gv-state" or "hook_feed.jsonl" in files:
             return root
     return None
 
 
-def link_world(trial_dir, state):
-    """Build <state>/world as a mirror of the run's filesystem ROOT: the
-    pulled /app artifact lands at <state>/world/app, so the run's own
-    absolute paths resolve inside the tree exactly as the obligation
-    compiler is told they do (/app/x lives at <world>/app/x). Without it
-    the container is gone by scoring time and every delivered-state
-    obligation can only fail — the ledger would be the sole evidence,
-    which proves reporting accuracy, not task success.
-
-    The artifact is COPIED, not symlinked: find/os.walk/glob do not
-    follow directory symlinks, so a symlinked mount silently hides the
-    whole tree from search-based checks — an executor that 'searched
-    the tree' and found nothing would refute honest deliverables."""
-    world = os.path.join(state, "world")
-    if os.path.islink(world):
-        os.remove(world)   # oldest layout: world -> artifacts/app directly
-    mount = os.path.join(world, "app")
-    if os.path.islink(mount):
-        os.remove(mount)   # old layout: world/app symlink — upgrade to copy
-    app = os.path.join(trial_dir, "artifacts", "app")
-    if os.path.isdir(app) and not os.path.exists(mount):
-        os.makedirs(world, exist_ok=True)
-        shutil.copytree(app, mount, symlinks=True)
+def _cow_copytree(src, dst):
+    """Copy a tree with APFS clonefile when available (instant, shares
+    blocks); plain copy elsewhere. Copied, never symlinked: find/os.walk
+    do not follow directory symlinks, so a symlinked mount would hide the
+    tree from search-based checks."""
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if sys.platform == "darwin":
+        subprocess.run(["cp", "-c", "-R", src, dst], check=True)
+    else:
+        shutil.copytree(src, dst, symlinks=True)
 
 
-def codex_state(trial):
-    """Build a state dir from a codex trial's own rollout log. The ledger
-    is converted from the rollout; task.md comes from the trial config
-    when the harbor version records it there, else from the rollout's
-    first user message (the instruction the run was actually given —
-    harbor 0.20 configs carry only a task ref, no instruction text).
-    There is no baseline — a vanilla codex container carries no GV
-    payload to snapshot with."""
-    sessions = os.path.join(trial["trial_dir"], "agent", "sessions")
-    rollout = codex_stream.newest_rollout(sessions) \
-        if os.path.isdir(sessions) else None
-    if rollout is None:
-        return None
-    state = os.path.join(trial["trial_dir"], "gv-offline")
-    codex_stream.convert(rollout, state)
-    instruction = harborjobs.instruction_of(trial["trial_dir"]) \
-        or codex_stream.task_instruction(rollout)
-    if instruction:
-        with open(os.path.join(state, "task.md"), "w") as f:
-            f.write(instruction)
+def sanitized_state(trial, root, job, config):
+    """Build (or reuse) the isolated per-config scoring state dir for a
+    trial: <root>/<job>/<config>/<trial>/gv. Only SANITIZE_FILES, the
+    baseline/ snapshot, and the delivered world (trial artifacts/app
+    mounted at world/app, mirroring the run's filesystem root) are copied
+    in. rec trials source from the pulled gv-state; codex trials convert
+    their rollout log into the same feed format. Returns None when the
+    trial has neither source."""
+    state = os.path.join(root, job, config, trial["trial"], "gv")
+    marker = os.path.join(state, SANITIZE_MARKER)
+    if os.path.exists(marker):
+        return state
+    if os.path.isdir(state):
+        shutil.rmtree(state)   # interrupted build: start over
+
+    source = find_state(trial["trial_dir"])
+    if source is not None:
+        os.makedirs(state, exist_ok=True)
+        for name in SANITIZE_FILES:
+            src = os.path.join(source, name)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(state, name))
+        baseline = os.path.join(source, "baseline")
+        if os.path.isdir(baseline):
+            _cow_copytree(baseline, os.path.join(state, "baseline"))
+    else:
+        # codex trial: rollout -> feed; task.md from the trial config when
+        # harbor records it there, else from the rollout's first user
+        # message. No baseline — a vanilla codex container carries no GV
+        # payload to snapshot with.
+        sessions = os.path.join(trial["trial_dir"], "agent", "sessions")
+        rollout = codex_stream.newest_rollout(sessions) \
+            if os.path.isdir(sessions) else None
+        if rollout is None:
+            return None
+        codex_stream.convert(rollout, state)
+        instruction = harborjobs.instruction_of(trial["trial_dir"]) \
+            or codex_stream.task_instruction(rollout)
+        if instruction:
+            with open(os.path.join(state, "task.md"), "w") as f:
+                f.write(instruction)
+
+    app = os.path.join(trial["trial_dir"], "artifacts", "app")
+    if os.path.isdir(app):
+        _cow_copytree(app, os.path.join(state, "world", "app"))
+    with open(marker, "w") as f:
+        f.write("")
     return state
 
 
@@ -107,6 +137,9 @@ def main():
     ap.add_argument("--task", default=None, nargs="+",
                     help="score only these tasks (verification is the "
                     "expensive stage; spend it where selection differs)")
+    ap.add_argument("--trial", default=None, nargs="+",
+                    help="score only these trials (exact trial names; "
+                    "combines with --task)")
     ap.add_argument("--seats", default=None, choices=["codex"],
                     help="codex: run every verifier seat through the Codex "
                     "CLI on the ChatGPT subscription (default model "
@@ -118,6 +151,7 @@ def main():
 
     job_dir = os.path.join(HERE, "results", "jobs", args.job)
     scores_path = os.path.join(HERE, "results", "rec_scores.jsonl")
+    scoring_root = os.path.join(HERE, "scoring")
     # resume is keyed on the full CONFIG identity — verifier code+prompts
     # fingerprint plus model/seats/effort/max_rounds. A record produced by
     # a different config is a different verifier's judgment and must not
@@ -134,8 +168,11 @@ def main():
 
     by_task = {}
     for t in harborjobs.trials(job_dir):
-        if not args.task or t["task"] in args.task:
-            by_task.setdefault(t["task"], []).append(t)
+        if args.task and t["task"] not in args.task:
+            continue
+        if args.trial and t["trial"] not in args.trial:
+            continue
+        by_task.setdefault(t["task"], []).append(t)
     total = sum(len(ts) for ts in by_task.values())
     todo = sum(1 for ts in by_task.values()
                for t in ts if (args.job, t["trial"], cfg["config"]) not in done)
@@ -162,13 +199,12 @@ def main():
         for t in trials:
             if (args.job, t["trial"], cfg["config"]) in done:
                 continue
-            state = find_state(t["trial_dir"]) or codex_state(t)
+            state = sanitized_state(t, scoring_root, args.job, cfg["config"])
             if state is None:
                 print(f"[tb:score] {t['trial']} no ledger (neither gv-state "
                       "nor a codex rollout) — skipped",
                       file=sys.stderr, flush=True)
                 continue
-            link_world(t["trial_dir"], state)
             final_path = os.path.join(state, "final.txt")
             if not os.path.exists(final_path) \
                     or not open(final_path).read().strip():
