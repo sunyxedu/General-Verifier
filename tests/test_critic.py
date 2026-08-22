@@ -148,6 +148,11 @@ def test_prompts_gate_task_definitions_and_attack_scope_projection():
     assert "MANDATORY SCOPE-PRESERVATION ATTACK" in prompts.CRITIC_SYSTEM
     assert "proper subset" in prompts.CRITIC_SYSTEM
     assert "proper-subset/component/proxy world" in prompts.CRITIC_TEMPLATE
+    assert "EVIDENCE METHOD IS NOT OBLIGATION CONTENT" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "fresh recomputation, captured" in prompts.OBLIGATIONS_SYSTEM
+    assert "State the condition, not a preferred verification procedure" \
+        in prompts.OBLIGATIONS_HARNESS_ADDENDUM
 
 
 def test_extractor_preserves_component_and_aggregate_labels():
