@@ -19,7 +19,8 @@ _write_lock = threading.Lock()
 
 
 def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
-               seats=None, label=lambda rec: str(rec), tag="score"):
+               seats=None, effort=None, label=lambda rec: str(rec),
+               tag="score"):
     """jobs: list of (record, state_dir). Scores every state dir, merges
     the features into its record, appends to out_path. Returns the
     records that were scored."""
@@ -30,7 +31,7 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
     def one(job):
         record, state = job
         features = offline.score(state, model=model, max_rounds=max_rounds,
-                                 seats=seats)
+                                 seats=seats, effort=effort)
         record = dict(record, features=features)
         with _write_lock:
             res.append(out_path, record)

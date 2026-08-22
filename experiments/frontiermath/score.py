@@ -33,18 +33,19 @@ def main():
     results_path = os.path.join(HERE, "results", "rec", "results.jsonl")
     scores_path = os.path.join(HERE, "results", "rec", "scores.jsonl")
     rows = res.load(results_path)
-    # resume keyed on the pipeline fingerprint: a record from different
-    # prompts/schemas is a different verifier's judgment
-    fingerprint = offline.pipeline_fingerprint()
-    done = res.recorded(scores_path, "pid", "sample", "fingerprint")
-    todo = [r for r in rows if (r["pid"], r["sample"], fingerprint) not in done]
+    # resume keyed on the full config identity (verifier code+prompts
+    # fingerprint plus model/max_rounds): a record from a different config
+    # is a different verifier's judgment
+    cfg = offline.config_fields(model=args.model, max_rounds=args.max_rounds)
+    done = res.recorded(scores_path, "pid", "sample", "config")
+    todo = [r for r in rows
+            if (r["pid"], r["sample"], cfg["config"]) not in done]
     if args.pid:
         todo = [r for r in todo if r["pid"] == args.pid]
     print(f"[fm:score] {len(todo)} traces ({len(done)} scored) "
-          f"fingerprint={fingerprint}", flush=True)
+          f"config={cfg['config']}", flush=True)
 
-    jobs = [({"pid": r["pid"], "sample": r["sample"],
-              "fingerprint": fingerprint},
+    jobs = [({"pid": r["pid"], "sample": r["sample"], **cfg},
              os.path.join(r["workdir"], ".gv")) for r in todo]
     scoring.score_many(jobs, scores_path, workers=args.workers,
                        model=args.model, max_rounds=args.max_rounds,

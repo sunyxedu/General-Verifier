@@ -45,21 +45,49 @@ INDEX_MAX_EVENTS = 500
 
 
 def pipeline_fingerprint() -> str:
-    """Version key over everything LLM-shaped that decides extraction and
-    verdicts: the prompt module's source and every role's output schema.
-    A cached extraction, a settled claim store, or a score record stamped
-    with a different fingerprint was produced by a DIFFERENT verifier —
-    reusing it silently would attribute the old pipeline's judgments to
-    the new one, poisoning every A/B comparison."""
-    import inspect
+    """Version key over the whole verifier implementation: every .py source
+    in the package (prompts, schemas, kernel, certificate, game, discharge,
+    this module — all of it). A cached extraction, a settled claim store,
+    or a score record stamped with a different fingerprint was produced by
+    a DIFFERENT verifier — reusing it silently would attribute the old
+    pipeline's judgments to the new one, poisoning every A/B comparison."""
+    root = os.path.dirname(os.path.abspath(__file__))
+    sources: Dict[str, str] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+        for name in sorted(filenames):
+            if name.endswith(".py"):
+                path = os.path.join(dirpath, name)
+                sources[os.path.relpath(path, root)] = _read(path)
+    return content_hash(sources)[:16]
 
-    from .llm import agents, prompts as prompt_module
-    schemas = {name: agents.to_json_schema(role.schema)
-               for name, role in sorted(agents.ALL_AGENT_ROLES.items())}
-    return content_hash({
-        "prompts": inspect.getsource(prompt_module),
-        "schemas": schemas,
-    })[:16]
+
+def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
+                  effort: Optional[str] = None,
+                  max_rounds: int = 3) -> Dict[str, Any]:
+    """The full identity of a scoring run's judgment: the pipeline
+    fingerprint plus the resolved run configuration, as plaintext fields
+    with a content hash (`config`). Two configs must never share derived
+    state or score records — two models scoring the same trace are two
+    different verifiers. Experiment drivers key their resume on `config`
+    and store the plaintext fields alongside for analysis."""
+    if not model and seats == "codex":
+        from .llm.codex_backend import DEFAULT_MODEL
+        model = DEFAULT_MODEL
+    fields: Dict[str, Any] = {
+        "model": model or "provider-default",
+        "seats": seats or "sdk",
+        "effort": effort or ("medium" if seats == "codex" else "n/a"),
+        "max_rounds": max_rounds,
+    }
+    fields["config"] = content_hash(
+        {"pipeline": pipeline_fingerprint(), **fields})[:16]
+    return fields
+
+
+def config_id(model: Optional[str] = None, seats: Optional[str] = None,
+              effort: Optional[str] = None, max_rounds: int = 3) -> str:
+    return config_fields(model, seats, effort, max_rounds)["config"]
 
 
 class ExtractionError(RuntimeError):
@@ -147,12 +175,14 @@ def _apply_commits(log: EventLog, commits: List[Dict[str, Any]]) -> Optional[str
 
 
 def extract(state_dir: str, backend=None, model: Optional[str] = None,
-            max_rounds: int = 3) -> Dict[str, Any]:
+            max_rounds: int = 3,
+            stamp: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Reconstruct commit events for the trace in `state_dir` and write
     the full events.jsonl. Retries feed back structural errors only.
     Never verification results. Raises ExtractionError when every round
-    fails. On success returns (and persists to extract.json) the meta.
+    fails. On success returns (and persists to extract.json) the meta;
+    `stamp` (e.g. the caller's config id) is merged into it.
     """
     if backend is None:
         from .llm.agents import AgentBackend
@@ -188,7 +218,7 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
         if error is None:
             os.replace(candidate, os.path.join(state_dir, "events.jsonl"))
             meta = {"rounds": round_no, "commits": len(payload["commits"]),
-                    "fingerprint": pipeline_fingerprint()}
+                    "fingerprint": pipeline_fingerprint(), **(stamp or {})}
             with open(os.path.join(state_dir, "extract.json"), "w",
                       encoding="utf-8") as f:
                 json.dump(meta, f)
@@ -249,36 +279,46 @@ def _features(cert: Dict[str, Any], extract_rounds: int,
 
 def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           backend=None, max_rounds: int = 3,
-          seats: Optional[str] = None) -> Dict[str, Any]:
+          seats: Optional[str] = None,
+          effort: Optional[str] = None) -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
-    and persists it to score.json.
+    and persists it to score.json, stamped with the run's config fields.
 
     seats="codex" runs every seat (extractor included) through the Codex
     CLI on a ChatGPT-subscription model instead of the Claude Agent SDK;
-    `model` then names the codex model (default gpt-5.6-luna).
+    `model` then names the codex model (default gpt-5.6-luna) and
+    `effort` its reasoning effort (default medium).
     """
+    cfg = config_fields(model=model, seats=seats, effort=effort,
+                        max_rounds=max_rounds)
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
         if backend is None:
-            backend = CodexBackend(cwd=state_dir, model=model)
+            backend = CodexBackend(cwd=state_dir, model=model,
+                                   effort=cfg["effort"])
         if kernel_factory is None:
             def kernel_factory(sc):
                 from .mcp_server import _default_kernel
                 return _default_kernel(
                     sc, model,
-                    backend=CodexBackend(cwd=sc.state_dir, model=model))
+                    backend=CodexBackend(cwd=sc.state_dir, model=model,
+                                         effort=cfg["effort"]))
     events_path = os.path.join(state_dir, "events.jsonl")
     fingerprint = pipeline_fingerprint()
     meta = json.loads(_read(os.path.join(state_dir, "extract.json")) or "{}")
-    if meta and meta.get("fingerprint") != fingerprint:
+    if meta and (meta.get("fingerprint") != fingerprint
+                 or meta.get("config", cfg["config"]) != cfg["config"]):
         # stale OFFLINE state: the cached extraction and every verdict
-        # settled on top of it came from a different pipeline version.
-        # Wipe the derived files (never the trace inputs — hook feed,
-        # task.md, final.txt, world/ stay) and redo from the feed. A live
-        # trace (commits made by the solver itself, no extract.json) is
-        # never invalidated: its commits are the run's own protocol.
+        # settled on top of it came from a different pipeline version or
+        # a different run config (model/seats/effort) — a different
+        # verifier's judgment. Wipe the derived files (never the trace
+        # inputs — hook feed, task.md, final.txt, world/ stay) and redo
+        # from the feed. A live trace (commits made by the solver itself,
+        # no extract.json) is never invalidated: its commits are the
+        # run's own protocol. Configs should get separate state dirs;
+        # this guard is the backstop when they don't.
         for name in ("events.jsonl", "extract.json", "claims.sqlite",
                      "score.json"):
             path = os.path.join(state_dir, name)
@@ -289,11 +329,13 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     if not _has_commits(events_path):
         try:
             meta = extract(state_dir, backend=backend, model=model,
-                           max_rounds=max_rounds)
+                           max_rounds=max_rounds,
+                           stamp={"config": cfg["config"]})
             extract_rounds = meta["rounds"]
         except ExtractionError as err:
             return _write_score(
-                state_dir, _unscoreable(str(err), max_rounds, fingerprint))
+                state_dir,
+                dict(_unscoreable(str(err), max_rounds, fingerprint), **cfg))
     else:
         extract_rounds = meta.get("rounds", 0)
 
@@ -302,12 +344,14 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                  trigger=TRIGGER_ON_FIRST_DEPENDENT)
     if not sc.builder.finals:
         return _write_score(
-            state_dir, _unscoreable("no final claim in trace", extract_rounds,
-                                    fingerprint))
+            state_dir,
+            dict(_unscoreable("no final claim in trace", extract_rounds,
+                              fingerprint), **cfg))
     cert = request_certificate(sc.store, sc.kernel, sc.log, sc.artifacts,
                                sc.builder.finals[-1])
     return _write_score(state_dir,
-                        _features(cert, extract_rounds, fingerprint))
+                        dict(_features(cert, extract_rounds, fingerprint),
+                             **cfg))
 
 
 def _write_score(state_dir: str, features: Dict[str, Any]) -> Dict[str, Any]:

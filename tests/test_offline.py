@@ -180,6 +180,50 @@ def test_pipeline_fingerprint_is_deterministic():
     assert offline.pipeline_fingerprint() == offline.pipeline_fingerprint()
 
 
+def test_config_identity_separates_models_and_seats():
+    luna = offline.config_fields(model="gpt-5.6-luna", seats="codex")
+    terra = offline.config_fields(model="gpt-5.6-terra", seats="codex")
+    assert luna["config"] != terra["config"]
+    # codex default model resolves so implicit and explicit Luna coincide
+    assert offline.config_fields(seats="codex")["config"] == luna["config"]
+    assert offline.config_fields()["config"] != luna["config"]
+    assert offline.config_fields(effort="high", seats="codex")["config"] \
+        != luna["config"]
+
+
+def test_score_stamps_the_config_fields(tmp_path):
+    state = state_dir(tmp_path)
+    backend = FixtureBackend({"extract": lambda v: GOOD_COMMITS})
+
+    features = offline.score(state, backend=backend,
+                             kernel_factory=kernel_factory)
+
+    cfg = offline.config_fields()
+    assert features["config"] == cfg["config"]
+    assert features["model"] == "provider-default"
+    assert features["seats"] == "sdk"
+
+
+def test_stale_config_invalidates_the_derived_state(tmp_path):
+    """Same pipeline, different run config (another model's judgment):
+    the derived state is wiped and the trace re-extracted."""
+    state = state_dir(tmp_path)
+    backend = FixtureBackend({"extract": lambda v: GOOD_COMMITS})
+    offline.score(state, backend=backend, kernel_factory=kernel_factory)
+    meta = json.load(open(os.path.join(state, "extract.json")))
+    meta["config"] = "another-models-config"
+    json.dump(meta, open(os.path.join(state, "extract.json"), "w"))
+
+    backend = FixtureBackend({"extract": lambda v: GOOD_COMMITS})
+    features = offline.score(state, backend=backend,
+                             kernel_factory=kernel_factory)
+
+    assert any(c["role"] == "extract" for c in backend.calls)
+    assert features["verdict"] == "verified"
+    on_disk = json.load(open(os.path.join(state, "extract.json")))
+    assert on_disk["config"] == offline.config_fields()["config"]
+
+
 def test_stale_fingerprint_invalidates_the_cached_extraction(tmp_path):
     """An extraction cached under different prompts/schemas is a different
     verifier's work: score() wipes the derived state and re-extracts."""

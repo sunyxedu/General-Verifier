@@ -111,20 +111,26 @@ def main():
                     help="codex: run every verifier seat through the Codex "
                     "CLI on the ChatGPT subscription (default model "
                     "gpt-5.6-luna) instead of the SDK/provider path")
+    ap.add_argument("--effort", default=None,
+                    choices=["low", "medium", "high", "xhigh", "max"],
+                    help="codex seats' reasoning effort (default: medium)")
     args = ap.parse_args()
 
     job_dir = os.path.join(HERE, "results", "jobs", args.job)
     scores_path = os.path.join(HERE, "results", "rec_scores.jsonl")
-    # resume is keyed on the pipeline fingerprint too: a record produced
-    # by different prompts/schemas is a different verifier's judgment and
-    # must not shadow a rescore (offline.score also wipes the stale
-    # per-trace derived state itself)
-    fingerprint = offline.pipeline_fingerprint()
-    done = res.recorded(scores_path, "job", "trial", "fingerprint")
+    # resume is keyed on the full CONFIG identity — verifier code+prompts
+    # fingerprint plus model/seats/effort/max_rounds. A record produced by
+    # a different config is a different verifier's judgment and must not
+    # shadow a rescore (offline.score also wipes stale per-trace derived
+    # state itself); the plaintext fields ride along for analysis
+    cfg = offline.config_fields(model=args.model, seats=args.seats,
+                                effort=args.effort,
+                                max_rounds=args.max_rounds)
+    done = res.recorded(scores_path, "job", "trial", "config")
     # cached feature records, so already-scored trials still rank in the TSV
     scored = {r["trial"]: r for r in res.load(scores_path)
               if r.get("job") == args.job
-              and r.get("fingerprint") == fingerprint}
+              and r.get("config") == cfg["config"]}
 
     by_task = {}
     for t in harborjobs.trials(job_dir):
@@ -132,12 +138,12 @@ def main():
             by_task.setdefault(t["task"], []).append(t)
     total = sum(len(ts) for ts in by_task.values())
     todo = sum(1 for ts in by_task.values()
-               for t in ts if (args.job, t["trial"], fingerprint) not in done)
-    print(f"[tb:score] backend={args.seats or 'sdk'} "
-          f"model={args.model or 'provider-default'} "
+               for t in ts if (args.job, t["trial"], cfg["config"]) not in done)
+    print(f"[tb:score] backend={cfg['seats']} model={cfg['model']} "
+          f"effort={cfg['effort']} "
           f"scoring=claim-graph-certificate max_rounds={args.max_rounds} "
           f"workers={args.workers} job={args.job} "
-          f"fingerprint={fingerprint}",
+          f"config={cfg['config']}",
           file=sys.stderr, flush=True)
     print(f"[tb:score] loaded {total} trials in {len(by_task)} tasks; "
           f"{todo} to score ({len(scored)} cached in "
@@ -154,7 +160,7 @@ def main():
         trials = sorted(by_task[task], key=lambda t: t["trial"])
         jobs = []
         for t in trials:
-            if (args.job, t["trial"], fingerprint) in done:
+            if (args.job, t["trial"], cfg["config"]) in done:
                 continue
             state = find_state(t["trial_dir"]) or codex_state(t)
             if state is None:
@@ -169,15 +175,14 @@ def main():
                 with open(final_path, "w") as f:
                     f.write(harborjobs.log_tail(t["agent_log"]))
             jobs.append(({"job": args.job, "task": task, "trial": t["trial"],
-                          "reward": t["reward"],
-                          "fingerprint": fingerprint}, state))
+                          "reward": t["reward"], **cfg}, state))
         if jobs:
             print(f"[tb:score] scoring {task} ({len(jobs)}/{len(trials)} "
                   "traces)", file=sys.stderr, flush=True)
             for rec in scoring.score_many(
                     jobs, scores_path, workers=args.workers,
                     model=args.model, max_rounds=args.max_rounds,
-                    seats=args.seats,
+                    seats=args.seats, effort=args.effort,
                     label=lambda r: f"{r['trial']} reward={r['reward']}",
                     tag="tb:score"):
                 scored[rec["trial"]] = rec
