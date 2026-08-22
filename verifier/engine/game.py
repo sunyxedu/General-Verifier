@@ -215,6 +215,12 @@ class BindingGame:
                 self.artifacts.root, result.artifact + ".json"
             ),
         }
+        # same state-dir derivation as the kernel: the judger audits
+        # refutations against the delivered world and its capture
+        # manifest, so it needs the same paths the executor had
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        world = os.path.join(state, "world")
+        manifest = os.path.join(state, "world_manifest.json")
         try:
             verdict = self.judger_role.call(
                 self.backend,
@@ -226,6 +232,9 @@ class BindingGame:
                     # audits it as part of fidelity, and it is what the
                     # settled verdict will carry downstream
                     "basis": method.get("basis", ""),
+                    "world_path": world if os.path.isdir(world) else "",
+                    "world_manifest": (manifest if os.path.exists(manifest)
+                                       else ""),
                     "evidence": json.dumps(evidence, ensure_ascii=False),
                 },
             )

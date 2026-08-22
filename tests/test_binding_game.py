@@ -57,6 +57,37 @@ def test_judger_sees_the_declared_basis(tmp_path):
     assert result.basis == BASIS_WORLD
 
 
+def test_judger_sees_world_and_manifest_when_present(tmp_path):
+    """The judger audits refutations against the delivered world and its
+    capture manifest — both paths must reach its variables (derived from
+    the ledger's directory, same as the kernel and the executor)."""
+    import json
+
+    os.makedirs(os.path.join(tmp_path, "world", "app"))
+    manifest = os.path.join(tmp_path, "world_manifest.json")
+    with open(manifest, "w") as f:
+        json.dump({"captured_roots": ["/app"]}, f)
+    g, backend = game(tmp_path, {"oracles": ORACLE, "judger": JUDGE_YES})
+
+    g.run(ROW, Obligation("c1", "answer equals 42"))
+
+    judger_vars = [c for c in backend.calls if c["role"] == "judger"][-1][
+        "variables"]
+    assert judger_vars["world_path"] == os.path.join(str(tmp_path), "world")
+    assert judger_vars["world_manifest"] == manifest
+
+
+def test_judger_world_vars_empty_when_absent(tmp_path):
+    g, backend = game(tmp_path, {"oracles": ORACLE, "judger": JUDGE_YES})
+
+    g.run(ROW, Obligation("c1", "answer equals 42"))
+
+    judger_vars = [c for c in backend.calls if c["role"] == "judger"][-1][
+        "variables"]
+    assert judger_vars["world_path"] == ""
+    assert judger_vars["world_manifest"] == ""
+
+
 def test_missing_declaration_fails_closed_to_record(tmp_path):
     legacy = {"methods": [{"procedure": "p", "artifact": "a", "level": "l",
                            "basis": "record"}]}
