@@ -22,7 +22,7 @@ from ..execution.instruments import ArtifactStore, LedgerInstrument
 from ..core.model import (
     Claim, Evidence, Obligation,
     BASIS_RECORD, BASIS_WORLD,
-    CLAIM_EFFECT,
+    CLAIM_EFFECT, CLAIM_FINAL,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
 )
@@ -108,7 +108,11 @@ class Kernel:
 
     # assertion / final
     def _verify_assertion(self, row: Dict) -> None:
-        refuted_deps = [
+        # a FINAL is never spared adjudication by a collapsed premise: its
+        # obligations are the task contract, compiled and established
+        # independently of the argument's health — a refuted intermediate
+        # eliminates that line of support, not the deliverable's verdict
+        refuted_deps = [] if row["kind"] == CLAIM_FINAL else [
             p for p in self.store.parents(row["id"])
             if self.store.status(p) == STATUS_REFUTED
         ]

@@ -16,9 +16,9 @@ Per obligation:
      target, and the promised evidence genuinely delivered? It opens
      the artifact itself and reruns when reproducibility is in doubt.
      A refutation gets no shortcut: it is the single most consequential
-     outcome in the system (one refuted node poisons the whole
-     certificate), so a counterexample settles only after the judger
-     confirms it was faithfully obtained. Unfaithful -> the judger's
+     outcome in the system (a refuted node refutes its claim — for the
+     final, the whole certificate), so a counterexample settles only
+     after the judger confirms it was faithfully obtained. Unfaithful -> the judger's
      reason goes back to the executor for a redo and the redone result
      is re-judged BLIND. A loop of at most three rounds.
 3. All candidates exhausted -> failed (or unobtainable when a missing
@@ -116,9 +116,10 @@ class BindingGame:
 
             # every substantive outcome — holds AND refuted — faces the
             # judger before it settles. A refutation is the most
-            # consequential verdict in the system (one refuted node
-            # poisons the whole certificate), so an unaudited one is
-            # exactly the evidence we cannot afford to accept.
+            # consequential verdict in the system (a refuted node refutes
+            # its claim — for the final, the whole certificate), so an
+            # unaudited one is exactly the evidence we cannot afford to
+            # accept.
             verdict = self._judge(obligation, method, result, attempt)
             if verdict["faithful"] == "yes":
                 return self._settle(row, obligation, attempts,

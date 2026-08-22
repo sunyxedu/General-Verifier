@@ -3,10 +3,20 @@ Certificate.
 
 A certificate request is the backstop, not the schedule: the slicer walks the
 dependency closure, the kernel settles whatever is still unverified, and the
-freezer exports the slice with its evidence chain. 
-Under the on-commit rule that residue is normally empty (every claim was checked as it was made). 
+freezer exports the slice with its evidence chain.
+Under the on-commit rule that residue is normally empty (every claim was checked as it was made).
 Under the lazy policy the request is what settles the slice.
-Verdicts never collapse dishonestly: any refuted -> refuted; any unresolved -> unverified; else verified.
+
+The VERDICT is the final claim's own adjudication. The final's obligations
+are the task contract (compiled against the authoritative task statement,
+independently established), so its status answers the question the
+certificate exists to answer: is the deliverable right? The rest of the
+slice is the audited argument — exported in full, scored as features
+(verified fraction, obligation counts) — but a support claim failing
+eliminates that line of support, it does not decide the deliverable: the
+solver's narration is evidence about the solver, not about the world.
+Fail-closed is preserved where it matters: an unverified/failed task
+obligation still leaves the verdict unverified, and a refuted one refutes.
 """
 from __future__ import annotations
 
@@ -15,7 +25,10 @@ from typing import Dict
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
 from .kernel import Kernel
-from ..core.model import STATUS_UNVERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL
+from ..core.model import (
+    STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED,
+    STATUS_PARTIAL,
+)
 from ..core.store import ClaimStore
 
 
@@ -30,10 +43,9 @@ def request_certificate(
         if store.status(claim_id) in (STATUS_UNVERIFIED, STATUS_STALE):
             kernel.verify(claim_id)
 
-    entries, statuses = [], []
+    entries = []
     for claim_id in slice_ids:
         row = store.get(claim_id)
-        statuses.append(row["status"])
         entries.append(
             {
                 "id": row["id"],
@@ -58,14 +70,15 @@ def request_certificate(
             }
         )
 
-    if any(s == STATUS_REFUTED for s in statuses):
-        verdict = "refuted"
-    elif any(s in (STATUS_UNVERIFIED, STATUS_STALE) for s in statuses):
-        verdict = "unverified"
-    elif any(s == STATUS_PARTIAL for s in statuses):
-        verdict = "partial"
-    else:
-        verdict = "verified"
+    # the final's own status IS the verdict (statuses collected above are
+    # exported per-entry; the fold over them was retired — one refuted
+    # history claim must not cap an independently verified deliverable,
+    # nor one unverifiable narration drag it to unverified)
+    verdict = {
+        STATUS_VERIFIED: "verified",
+        STATUS_REFUTED: "refuted",
+        STATUS_PARTIAL: "partial",
+    }.get(store.status(final_id), "unverified")
 
     certificate = {
         "final": final_id,
