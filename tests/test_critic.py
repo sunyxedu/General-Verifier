@@ -11,11 +11,12 @@ import json
 import os
 
 from verifier.core.events import EventLog
-from verifier.core.model import Claim, CLAIM_ASSERTION
+from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
+from verifier.llm import prompts
 from verifier.llm.agents import CRITIC_AGENT
 from verifier.llm.schema import FixtureBackend
 
@@ -36,7 +37,7 @@ class StubDischarger:
     def discharge(self, row, obligation, method=None, tag=""):
         self.seen.append(obligation.text)
         return DischargeResult(outcome="holds", witness=None,
-                               artifact="", instrument="stub")
+                               artifact="", instrument="stub", basis="world")
 
 
 def build(tmp_path, roles):
@@ -63,7 +64,8 @@ def test_pass_on_the_first_round_admits_the_decomposition(tmp_path):
     assert store.status(cid) == "verified"
     assert [c["role"] for c in backend.calls] == ["obligations", "critic"]
     assert discharger.seen == ["O of: the tree is clean"]
-    # the critic saw the claim, its kind, the task pointer, the obligations,
+    assert backend.calls[0]["variables"]["task_context"] == "(none supplied)"
+    # the critic saw the claim, its kind, the task context, the obligations,
     # and the premises — never the solver's argument
     critic_vars = backend.calls[1]["variables"]
     assert set(critic_vars) == {"claim_text", "claim_kind", "task_context",
@@ -112,17 +114,85 @@ def test_a_counterexample_standing_after_the_last_round_fails_closed(tmp_path):
 
 
 def test_critic_gets_the_task_statement_when_the_harness_wrote_one(tmp_path):
-    """Same toggle as the compiler's harness addendum: a task.md next to
-    the ledger routes the critic to the authoritative task statement, so
-    completion claims are attacked against it, not their own paraphrase."""
-    (tmp_path / "task.md").write_text("Print ALL winning moves, one per line.")
+    """Compiler and critic get task truth inline, not as a skippable path."""
+    task_text = "Print ALL winning moves, one per line."
+    (tmp_path / "task.md").write_text(task_text)
     store, log, backend, _ = build(
         tmp_path, {"obligations": COMPILE, "critic": PASS})
 
     store.add_claim(Claim(CLAIM_ASSERTION, "the best move is g2g4"))
 
-    task_context = backend.calls[1]["variables"]["task_context"]
-    assert str(tmp_path / "task.md") in task_context
+    compiler_context = json.loads(backend.calls[0]["variables"]["task_context"])
+    critic_context = json.loads(backend.calls[1]["variables"]["task_context"])
+    assert compiler_context == critic_context
+    assert compiler_context == {
+        "path": str(tmp_path / "task.md"),
+        "text": task_text,
+    }
+
+
+def test_prompts_gate_task_definitions_and_attack_scope_projection():
+    """Pin the general contract behind the VVE regression without naming it."""
+    assert "DEFINITION GATE" in prompts.OBLIGATIONS_SYSTEM
+    assert (
+        "NEVER define the controlling task or claim's terminology"
+        in prompts.OBLIGATIONS_SYSTEM
+    )
+    assert (
+        "preserve the controlling statement's source-relative term"
+        in prompts.OBLIGATIONS_SYSTEM
+    )
+    assert "MANDATORY DEFINITION CHECK" in prompts.OBLIGATIONS_TEMPLATE
+    assert "MANDATORY SCOPE-PRESERVATION ATTACK" in prompts.CRITIC_SYSTEM
+    assert "proper subset" in prompts.CRITIC_SYSTEM
+    assert "proper-subset/component/proxy world" in prompts.CRITIC_TEMPLATE
+
+
+def test_task_defined_aggregate_projection_is_repaired(tmp_path):
+    """An abstract A+B task exercises the general repair path, not one task."""
+    task_text = "Under the named specification, TOTAL is component A plus B."
+    (tmp_path / "task.md").write_text(task_text)
+
+    def compile_aggregate(variables):
+        if not variables["critic_feedback"]:
+            return {"obligations": [{
+                "text": "Component A alone equals N.",
+                "required_basis": "world",
+            }]}
+        context = json.loads(variables["task_context"])
+        assert context["text"] == task_text
+        return {"obligations": [{
+            "text": "The independently established sum of A and B equals N.",
+            "required_basis": "world",
+        }]}
+
+    def attack_component(variables):
+        (obligation,) = json.loads(variables["obligations_json"])
+        if "A alone" in obligation["text"]:
+            return {
+                "verdict": "insufficient",
+                "counterexample_world": (
+                    "A equals N and B is nonzero, so the obligation holds "
+                    "while the task-defined TOTAL does not equal N."
+                ),
+                "missing_condition": "The obligation must cover A plus B.",
+            }
+        return PASS
+
+    store, _, backend, discharger = build(
+        tmp_path,
+        {"obligations": compile_aggregate, "critic": attack_component},
+    )
+
+    cid = store.add_claim(Claim(CLAIM_FINAL, "The task-defined TOTAL is N."))
+
+    assert store.status(cid) == "verified"
+    assert discharger.seen == [
+        "The independently established sum of A and B equals N."
+    ]
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "obligations", "critic"
+    ]
 
 
 def test_disabled_critic_restores_the_old_behavior(tmp_path):

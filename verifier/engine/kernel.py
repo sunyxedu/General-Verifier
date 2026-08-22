@@ -37,6 +37,18 @@ from ..core.store import ClaimStore
 MAX_CRITIC_ROUNDS = 2
 
 
+def _authoritative_task_context(log_path: str) -> str:
+    """Inline harness task truth so semantic seats cannot skip a Read."""
+    task = os.path.join(os.path.dirname(os.path.abspath(log_path)),
+                        "task.md")
+    if not os.path.isfile(task):
+        return "(none supplied)"
+    with open(task, encoding="utf-8") as handle:
+        text = handle.read()
+    return json.dumps({"path": os.path.abspath(task), "text": text},
+                      ensure_ascii=False)
+
+
 class Kernel:
     """
     Role seats (obligations compiler, discharger, binder) are injectable:
@@ -242,6 +254,7 @@ class Kernel:
         variables = {
             "claim_text": row["text"],
             "claim_kind": row["kind"],
+            "task_context": _authoritative_task_context(self.log.path),
             "ledger_path": os.path.abspath(self.log.path),
             "world_path": world if os.path.isdir(world) else "",
             "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
@@ -282,13 +295,10 @@ class Kernel:
         """
         if self.critic_role is None:
             return payload
-        # the critic judges completion claims against the harness's
-        # authoritative task statement, not the claim's own paraphrase —
-        # same toggle as the compiler's addendum: the file's presence
-        task = os.path.join(os.path.dirname(os.path.abspath(self.log.path)),
-                            "task.md")
-        task_context = (f"Read the file at {os.path.abspath(task)}"
-                        if os.path.exists(task) else "(none supplied)")
+        # The compiler and critic receive the same inlined harness truth.
+        # A path-only pointer let a model skip the Read and then infer task
+        # semantics from a solver-authored graph node instead.
+        task_context = variables["task_context"]
         verdict = None
         for round_no in range(MAX_CRITIC_ROUNDS):
             verdict = self.critic_role.call(
