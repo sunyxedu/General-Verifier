@@ -201,10 +201,21 @@ def test_semantic_roles_share_proof_carrying_effect_boundary():
     ):
         assert prompts.PROOF_CARRYING_EFFECTS in role
         assert "ledger is a transport, not automatically" in role
-        assert "complete, correlated tool call/result" in role
+        assert "individually complete, correlated tool call/result pairs" \
+            in role
+        assert "whole ledger for earlier definition/provenance links" in role
         assert "absence of a revision reduces later replayability" in role
+        assert "Do not demand a revision, raw source snapshot" in role
         assert "benchmark gold, tests, or expected-output files" in role
         assert "does not upgrade the effect claim itself" in role
+    for role in (
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    ):
+        assert "proof-carrying effect" in role
+        assert "not a bare transcription" in role \
+            or "not a transcription" in role
 
 
 def test_oracle_cannot_hide_missing_evidence_behind_an_empty_list():
