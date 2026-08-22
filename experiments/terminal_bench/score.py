@@ -140,6 +140,11 @@ def main():
     ap.add_argument("--trial", default=None, nargs="+",
                     help="score only these trials (exact trial names; "
                     "combines with --task)")
+    ap.add_argument("--rep", default="r1",
+                    help="repetition label (default r1). Same config, "
+                    "fresh sampling: each rep gets its own state dirs and "
+                    "its own resume slot, so verdict variance is real "
+                    "variance, not cache reuse")
     ap.add_argument("--seats", default=None, choices=["codex"],
                     help="codex: run every verifier seat through the Codex "
                     "CLI on the ChatGPT subscription (default model "
@@ -160,11 +165,12 @@ def main():
     cfg = offline.config_fields(model=args.model, seats=args.seats,
                                 effort=args.effort,
                                 max_rounds=args.max_rounds)
-    done = res.recorded(scores_path, "job", "trial", "config")
+    done = res.recorded(scores_path, "job", "trial", "config", "rep")
     # cached feature records, so already-scored trials still rank in the TSV
     scored = {r["trial"]: r for r in res.load(scores_path)
               if r.get("job") == args.job
-              and r.get("config") == cfg["config"]}
+              and r.get("config") == cfg["config"]
+              and r.get("rep") == args.rep}
 
     by_task = {}
     for t in harborjobs.trials(job_dir):
@@ -174,13 +180,13 @@ def main():
             continue
         by_task.setdefault(t["task"], []).append(t)
     total = sum(len(ts) for ts in by_task.values())
-    todo = sum(1 for ts in by_task.values()
-               for t in ts if (args.job, t["trial"], cfg["config"]) not in done)
+    todo = sum(1 for ts in by_task.values() for t in ts
+               if (args.job, t["trial"], cfg["config"], args.rep) not in done)
     print(f"[tb:score] backend={cfg['seats']} model={cfg['model']} "
           f"effort={cfg['effort']} "
           f"scoring=claim-graph-certificate max_rounds={args.max_rounds} "
           f"workers={args.workers} job={args.job} "
-          f"config={cfg['config']}",
+          f"config={cfg['config']} rep={args.rep}",
           file=sys.stderr, flush=True)
     print(f"[tb:score] loaded {total} trials in {len(by_task)} tasks; "
           f"{todo} to score ({len(scored)} cached in "
@@ -197,9 +203,11 @@ def main():
         trials = sorted(by_task[task], key=lambda t: t["trial"])
         jobs = []
         for t in trials:
-            if (args.job, t["trial"], cfg["config"]) in done:
+            if (args.job, t["trial"], cfg["config"], args.rep) in done:
                 continue
-            state = sanitized_state(t, scoring_root, args.job, cfg["config"])
+            state = sanitized_state(
+                t, scoring_root, args.job,
+                os.path.join(cfg["config"], args.rep))
             if state is None:
                 print(f"[tb:score] {t['trial']} no ledger (neither gv-state "
                       "nor a codex rollout) — skipped",
@@ -211,7 +219,8 @@ def main():
                 with open(final_path, "w") as f:
                     f.write(harborjobs.log_tail(t["agent_log"]))
             jobs.append(({"job": args.job, "task": task, "trial": t["trial"],
-                          "reward": t["reward"], **cfg}, state))
+                          "reward": t["reward"], "rep": args.rep,
+                          **cfg}, state))
         if jobs:
             print(f"[tb:score] scoring {task} ({len(jobs)}/{len(trials)} "
                   "traces)", file=sys.stderr, flush=True)
