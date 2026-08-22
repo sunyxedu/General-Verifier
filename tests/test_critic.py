@@ -169,6 +169,23 @@ def test_prompts_preserve_temporal_targets_across_every_semantic_seat():
     assert "Never re-execute the historical tool" in prompts.JUDGER_SYSTEM
 
 
+def test_judger_distinguishes_specification_targets_from_input_provenance():
+    """Pin the general contract exposed by faithful checks rejected as circular."""
+    assert "CHECK SPECIFICATION IS NOT EVIDENCE" in prompts.JUDGER_SYSTEM
+    assert "literal copied from the obligation is the target being tested" \
+        in prompts.JUDGER_SYSTEM
+    assert "the method or executor INTRODUCED as an input or premise" \
+        in prompts.JUDGER_SYSTEM
+    assert "trusted check specification, not evidence" \
+        in prompts.JUDGER_TEMPLATE
+
+
+def test_judger_uses_artifact_store_content_address_semantics():
+    assert "ARTIFACT CONTENT ADDRESSING" in prompts.JUDGER_SYSTEM
+    assert "content address of the PARSED JSON value" in prompts.JUDGER_SYSTEM
+    assert "pretty-printed file's raw-byte" in prompts.JUDGER_SYSTEM
+
+
 def test_compiler_and_critic_receive_explicit_world_evidence_mode(tmp_path):
     store, _, backend, _ = build(
         tmp_path, {"obligations": COMPILE, "critic": PASS})
