@@ -264,12 +264,21 @@ class Kernel:
         """
         if self.critic_role is None:
             return payload
+        # the critic judges completion claims against the harness's
+        # authoritative task statement, not the claim's own paraphrase —
+        # same toggle as the compiler's addendum: the file's presence
+        task = os.path.join(os.path.dirname(os.path.abspath(self.log.path)),
+                            "task.md")
+        task_context = (f"Read the file at {os.path.abspath(task)}"
+                        if os.path.exists(task) else "(none supplied)")
         verdict = None
         for round_no in range(MAX_CRITIC_ROUNDS):
             verdict = self.critic_role.call(
                 self.backend,
                 {
                     "claim_text": row["text"],
+                    "claim_kind": row["kind"],
+                    "task_context": task_context,
                     "obligations_json": json.dumps(
                         [o["text"] for o in payload["obligations"]],
                         ensure_ascii=False

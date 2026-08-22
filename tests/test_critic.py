@@ -63,10 +63,13 @@ def test_pass_on_the_first_round_admits_the_decomposition(tmp_path):
     assert store.status(cid) == "verified"
     assert [c["role"] for c in backend.calls] == ["obligations", "critic"]
     assert discharger.seen == ["O of: the tree is clean"]
-    # the critic saw the claim, the obligations, and the premises — nothing else
+    # the critic saw the claim, its kind, the task pointer, the obligations,
+    # and the premises — never the solver's argument
     critic_vars = backend.calls[1]["variables"]
-    assert set(critic_vars) == {"claim_text", "obligations_json",
-                               "verified_deps"}
+    assert set(critic_vars) == {"claim_text", "claim_kind", "task_context",
+                                "obligations_json", "verified_deps"}
+    assert critic_vars["claim_kind"] == "assertion"
+    assert critic_vars["task_context"] == "(none supplied)"
     assert json.loads(critic_vars["obligations_json"]) == [
         "O of: the tree is clean"]
 
@@ -105,6 +108,20 @@ def test_a_counterexample_standing_after_the_last_round_fails_closed(tmp_path):
     # exactly one repair was attempted; the post-deadline repair never ran
     assert [c["role"] for c in backend.calls] == [
         "obligations", "critic", "obligations", "critic"]
+
+
+def test_critic_gets_the_task_statement_when_the_harness_wrote_one(tmp_path):
+    """Same toggle as the compiler's harness addendum: a task.md next to
+    the ledger routes the critic to the authoritative task statement, so
+    completion claims are attacked against it, not their own paraphrase."""
+    (tmp_path / "task.md").write_text("Print ALL winning moves, one per line.")
+    store, log, backend, _ = build(
+        tmp_path, {"obligations": COMPILE, "critic": PASS})
+
+    store.add_claim(Claim(CLAIM_ASSERTION, "the best move is g2g4"))
+
+    task_context = backend.calls[1]["variables"]["task_context"]
+    assert str(tmp_path / "task.md") in task_context
 
 
 def test_disabled_critic_restores_the_old_behavior(tmp_path):
