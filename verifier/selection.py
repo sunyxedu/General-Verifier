@@ -5,10 +5,12 @@ where features is a score.json dict from verifier.offline. Selection
 strategies return the CHOSEN ROW (so callers can read whatever ground
 truth rides along); metrics helpers return floats.
 
-argmax uses offline.rank_key directly. The voting strategies need a
-scalar weight per trace; verdict rank is the provisional stand-in — to
-be replaced by weights fitted (logistic regression on a dev split with
-benchmark ground truth) rather than hand-tuned.
+argmax uses offline.rank_key directly. The voting strategies weight by
+scalar() — the banded flattening of rank_key — with refuted and
+unscoreable voting 0 (a trace whose answer the verifier believes WRONG
+must not push that answer's group up). Still a stand-in: to be replaced
+by weights fitted (logistic regression on a dev split with benchmark
+ground truth) rather than hand-tuned.
 """
 from __future__ import annotations
 
@@ -17,6 +19,22 @@ from typing import Any, Dict, List, Optional
 from .offline import VERDICT_RANK, rank_key
 
 Row = Dict[str, Any]
+
+
+def scalar(features) -> float:
+    """Flatten rank_key's lexicographic tuple into ONE absolute score in
+    [0, 1]: six equal verdict bands that can never cross —
+    verified [5/6, 1) · supported [4/6, 5/6) · partial [3/6, 4/6) ·
+    unverified [2/6, 3/6) · refuted [1/6, 2/6) · unscoreable exactly
+    0.0 — with the fraction inside a band packing verified-fraction then
+    verified-obligation count at weights that reproduce rank_key's exact
+    order for certificate slices up to ~44 claims (two fractions with
+    denominators <= S differ by at least 1/S^2, and 0.0005 sits below
+    that until S ~ 44). Selection keeps comparing the exact tuple; this
+    is a view, not the decision variable."""
+    rank, frac, obligations = rank_key(features)
+    return (rank + 1 + 0.999 * frac
+            + 0.0005 * (obligations / (obligations + 1))) / 6
 
 
 def argmax(rows: List[Row]) -> Optional[Row]:
@@ -57,13 +75,17 @@ def majority_vote(rows: List[Row]) -> Optional[Row]:
 
 
 def weighted_vote(rows: List[Row]) -> Optional[Row]:
-    """Verifier-weighted voting; weight = verdict rank for now (see
-    module docstring — fitted weights replace this on a dev split)."""
+    """Verifier-weighted voting; weight = the banded scalar, with refuted
+    and unscoreable zeroed (see module docstring — fitted weights replace
+    this on a dev split). supported traces vote between verified and
+    partial, exactly the ladder's read-out."""
     def weight(row):
         features = row.get("features")
         if not features or features.get("unscoreable"):
-            return 0
-        return VERDICT_RANK.get(features.get("verdict"), 0)
+            return 0.0
+        if VERDICT_RANK.get(features.get("verdict"), 0) == 0:
+            return 0.0    # a refuted trace must not push its answer up
+        return scalar(features)
     return _vote(rows, weight)
 
 

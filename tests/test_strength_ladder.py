@@ -561,3 +561,66 @@ def test_decisive_refutation_still_refutes(tmp_path):
     cid = store.add_claim(Claim(CLAIM_ASSERTION, "there is a bug xxx"))
 
     assert store.status(cid) == "refuted"
+
+
+# ---- ranking and selection ------------------------------------------------
+
+from verifier.offline import VERDICT_RANK, rank_key
+from verifier.selection import scalar, weighted_vote
+
+
+def _features(verdict, frac=0.5, total=2, obligations=1):
+    verified = round(frac * total)
+    return {"unscoreable": False, "verdict": verdict,
+            "slice_size": total, "claims": {"verified": verified},
+            "obligations": {"verified": obligations},
+            "obligations_total": obligations}
+
+
+def test_supported_ranks_between_verified_and_partial():
+    assert (VERDICT_RANK["verified"] > VERDICT_RANK["supported"]
+            > VERDICT_RANK["partial"] > VERDICT_RANK["unverified"]
+            > VERDICT_RANK["refuted"])
+    assert rank_key(_features("supported"))[0] == 3
+
+
+def test_scalar_bands_never_cross():
+    """Six bands: the best trace of a lower band stays under the worst
+    trace of the band above, at the extremes of frac and obligations."""
+    best_supported = scalar(_features("supported", frac=1.0, total=44,
+                                      obligations=10_000))
+    worst_verified = scalar(_features("verified", frac=0.0,
+                                      obligations=0))
+    assert best_supported < worst_verified
+    order = [scalar(_features(v, frac=1.0)) for v in
+             ("refuted", "unverified", "partial", "supported", "verified")]
+    assert order == sorted(order)
+    assert scalar(None) == 0.0                       # unscoreable
+    assert scalar(_features("refuted", frac=0.0)) > 0.0
+
+
+def test_weighted_vote_zeroes_refuted_traces():
+    """Three refuted traces agreeing on an answer must not outvote one
+    unverified trace: a verdict of WRONG is not a vote for the answer."""
+    rows = [
+        {"answer": "A", "features": _features("refuted")},
+        {"answer": "A", "features": _features("refuted")},
+        {"answer": "A", "features": _features("refuted")},
+        {"answer": "B", "features": _features("unverified")},
+    ]
+    assert weighted_vote(rows)["answer"] == "B"
+
+
+def test_weighted_vote_supported_sits_between_the_bands():
+    """One supported trace outvotes one partial trace and loses to one
+    verified trace."""
+    rows = [
+        {"answer": "A", "features": _features("supported")},
+        {"answer": "B", "features": _features("partial")},
+    ]
+    assert weighted_vote(rows)["answer"] == "A"
+    rows = [
+        {"answer": "A", "features": _features("supported")},
+        {"answer": "B", "features": _features("verified")},
+    ]
+    assert weighted_vote(rows)["answer"] == "B"

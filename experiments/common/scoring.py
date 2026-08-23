@@ -20,23 +20,11 @@ from verifier import offline
 _write_lock = threading.Lock()
 
 
-def scalar(features) -> float:
-    """Flatten offline.rank_key's lexicographic tuple into ONE absolute
-    score in [0, 1]: five equal verdict bands that can never cross —
-    verified [0.8, 1) · partial [0.6, 0.8) · unverified [0.4, 0.6) ·
-    refuted [0.2, 0.4) · unscoreable exactly 0.0 — with the fraction
-    inside a band packing verified-fraction then verified-obligation
-    count at weights that reproduce rank_key's exact order for
-    certificate slices up to ~44 claims (two fractions with denominators
-    <= S differ by at least 1/S^2, and 0.0005 sits below that until
-    S ~ 44). Selection keeps comparing the exact tuple; this is a view,
-    not the decision variable.
-
-    Lives in the experiment layer on purpose: verifier/ is fingerprinted,
-    and a derived display value must not invalidate scored caches."""
-    rank, frac, obligations = offline.rank_key(features)
-    return (rank + 1 + 0.999 * frac
-            + 0.0005 * (obligations / (obligations + 1))) / 5
+# scalar moved into verifier/selection.py with the strength ladder: the
+# supported tier made it part of the decision surface (weighted_vote), so
+# it belongs under the fingerprint now. Re-exported for the experiment
+# drivers' existing imports.
+from verifier.selection import scalar  # noqa: F401  (re-export)
 
 
 def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,

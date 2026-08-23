@@ -253,6 +253,7 @@ def _unscoreable(error: str, extract_rounds: int,
         "unscoreable": True,
         "error": error,
         "verdict": None,
+        "verdict_strength": None,
         "slice_size": 0,
         "claims": {},
         "obligations": {},
@@ -276,6 +277,10 @@ def _features(cert: Dict[str, Any], extract_rounds: int,
     return {
         "unscoreable": False,
         "verdict": cert["verdict"],
+        # min strength over the final's evidence when verified/supported
+        # (None otherwise): supported@bounded vs supported@analytic get
+        # separate precision measurements downstream
+        "verdict_strength": cert.get("verdict_strength"),
         "certificate_id": cert["certificate_id"],
         "slice_size": len(cert["slice"]),
         "claims": claims,
@@ -373,8 +378,13 @@ def _write_score(state_dir: str, features: Dict[str, Any]) -> Dict[str, Any]:
     return features
 
 
-# ranking  
-VERDICT_RANK = {"verified": 3, "partial": 2, "unverified": 1, "refuted": 0}
+# ranking
+# supported = the strength ladder's read-out (everything established, some
+# of it on declared-and-audited bounded/analytic evidence): strictly under
+# verified, strictly above partial (where a necessary check never got
+# established at all).
+VERDICT_RANK = {"verified": 4, "supported": 3, "partial": 2,
+                "unverified": 1, "refuted": 0}
 
 
 def rank_key(features: Optional[Dict[str, Any]]) -> tuple:
