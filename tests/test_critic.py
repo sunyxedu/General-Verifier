@@ -320,6 +320,11 @@ def test_oracle_methods_are_decisions_bound_to_task_semantics():
 
 
 def test_offline_oracle_prefers_complete_retained_evidence():
+    assert "MANDATORY METHOD-ORDER PREFLIGHT" in prompts.ORACLES_TEMPLATE
+    assert "the FIRST method MUST be that immutable-effect audit" \
+        in prompts.ORACLES_TEMPLATE
+    assert "initial and repair pass" in prompts.ORACLES_TEMPLATE
+    assert "missing revision pins" in prompts.ORACLES_TEMPLATE
     assert "TARGET-BLIND SEMANTIC COVERAGE" in prompts.ORACLES_TEMPLATE
     assert "Every procedure string MUST contain" in prompts.ORACLES_TEMPLATE
     assert "SEMANTIC COVERAGE: term=" in prompts.ORACLES_TEMPLATE
