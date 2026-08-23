@@ -93,6 +93,10 @@ class AgentDischarger:
             "claim_text": row["text"],
             "obligation_text": obligation.text,
             "procedure": method["procedure"],
+            # A redo diagnostic is not part of the bound contract. Keeping it
+            # separate prevents feedback from silently becoming a new method
+            # or an authority for the proposition under test.
+            "redo_feedback": method.get("redo_feedback", "(none)"),
             # The executor must see the whole contract the oracle bound,
             # not just its procedure.  Otherwise it cannot know what
             # artifact it promised to produce or which provenance floor its

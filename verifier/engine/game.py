@@ -431,9 +431,9 @@ class BindingGame:
 
     def _redo(self, row, obligation, method, verdict, attempt, round_no: int):
         """
-        One arm of the judger-discharger loop: re-execute with every
-        judger reason so far attached (latest last); the result goes back
-        for a blind re-judge.
+        Re-execute the unchanged bound method with every judger reason supplied
+        separately as untrusted diagnostic feedback (latest last); the result
+        goes back for a blind re-judge.
         """
         
         self.log.append(
@@ -445,12 +445,12 @@ class BindingGame:
         attempt.redos.append({"reason": verdict["reason"],
                               "outcome": None, "artifact": None,
                               "audit": None})
-        notes = "".join(
-            f"\n\n[Redo round {i + 1} — the judger rejected the previous "
-            f"attempt; fix it and redo. Judger reason: {r['reason']}]"
+        notes = "\n\n".join(
+            f"Redo round {i + 1} diagnostic — the judger rejected the "
+            f"previous attempt: {r['reason']}"
             for i, r in enumerate(attempt.redos)
         )
-        method_fb = {**method, "procedure": method["procedure"] + notes}
+        method_fb = {**method, "redo_feedback": notes}
         result = self.discharger.discharge(
             row, obligation, method=method_fb, tag="bound-redo")
         attempt.redos[-1]["outcome"] = result.outcome

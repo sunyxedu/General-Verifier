@@ -59,8 +59,10 @@ class StubDischarger:
 class SequenceDischarger:
     def __init__(self, outcomes):
         self.outcomes = iter(outcomes)
+        self.methods = []
 
     def discharge(self, row, obligation, method=None, tag=""):
+        self.methods.append(method)
         outcome, witness = next(self.outcomes)
         return DischargeResult(outcome=outcome, witness=witness,
                                artifact="d1", instrument="stub")
@@ -154,17 +156,21 @@ def test_sufficient_method_with_bad_execution_is_redone(tmp_path):
         "judger": lambda _variables: next(verdicts),
     })
     log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    discharger = SequenceDischarger([("holds", None), ("holds", None)])
     g = BindingGame(
         backend,
         ArtifactStore(os.path.join(tmp_path, "art")),
         log,
-        SequenceDischarger([("holds", None), ("holds", None)]),
+        discharger,
     )
 
     result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
 
     assert result.outcome == "holds"
     assert len([e for e in log.replay() if e["type"] == "method_redo"]) == 1
+    assert discharger.methods[0]["procedure"] == discharger.methods[1]["procedure"]
+    assert "redo_feedback" not in discharger.methods[0]
+    assert "artifact omitted part" in discharger.methods[1]["redo_feedback"]
 
 
 def test_method_becoming_insufficient_on_redo_moves_to_next_method(tmp_path):

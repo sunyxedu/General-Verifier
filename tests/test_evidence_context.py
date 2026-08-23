@@ -67,6 +67,7 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
         "snapshot path, digest, and parsed value")
     assert variables["declared_basis"] == "world"
     assert variables["required_basis"] == "world"
+    assert variables["redo_feedback"] == "(none)"
     assert json.loads(variables["task_context"]) == {
         "path": str(task),
         "text": "Count every item, not one component.",

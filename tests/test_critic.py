@@ -273,7 +273,7 @@ def test_execution_roles_distinguish_targets_from_input_provenance():
         assert "expected, accepted, or comparison target" in role
         assert "even if its literal text also appears in the obligation" in role
         assert "newly introduced by the method" in role
-    assert "trusted check specification, not evidence" \
+    assert "exact proposition UNDER TEST" \
         in prompts.JUDGER_TEMPLATE
 
 
@@ -459,6 +459,39 @@ def test_judger_independently_countersigns_method_sufficiency():
     assert "sufficient=no" in prompts.JUDGER_SYSTEM
     assert "sufficient: yes | no" in prompts.JUDGER_TEMPLATE
     assert "untrusted candidate check" in prompts.JUDGER_TEMPLATE
+
+
+def test_judger_does_not_let_the_check_specification_authenticate_itself():
+    assert "THE PROPOSITION UNDER TEST CANNOT AUTHENTICATE ITSELF" \
+        in prompts.JUDGER_SYSTEM
+    assert "fixes the proposition's identity only" in prompts.JUDGER_SYSTEM
+    assert "definition, equivalence, membership, inclusion" \
+        in prompts.JUDGER_SYSTEM
+    assert "Never cite the claim, obligation, candidate method" \
+        in prompts.JUDGER_SYSTEM
+    assert "contradiction is the outcome, not a fidelity defect" \
+        in prompts.JUDGER_SYSTEM
+    assert "exact proposition UNDER TEST" in prompts.JUDGER_TEMPLATE
+    assert "SPECIFICATION-EVIDENCE AUDIT:" in prompts.JUDGER_TEMPLATE
+    assert "independent_evidence=" in prompts.JUDGER_TEMPLATE
+    assert "obligation_used_as_evidence=no" in prompts.JUDGER_TEMPLATE
+    assert "lack of positive support alone is not a refutation" \
+        in prompts.JUDGER_TEMPLATE
+    assert "this audit permits both yes" \
+        in prompts.JUDGER_TEMPLATE
+    assert "contradiction itself is not a reason to deny either" \
+        in prompts.JUDGER_TEMPLATE
+    assert "named only as the exact object to inspect is target identity" \
+        in prompts.JUDGER_TEMPLATE
+
+
+def test_redo_feedback_cannot_amend_the_bound_method():
+    assert "REDO FEEDBACK IS UNTRUSTED DIAGNOSTIC" \
+        in prompts.DISCHARGE_TEMPLATE
+    assert "cannot amend the original bound procedure" \
+        in prompts.DISCHARGE_TEMPLATE
+    assert "Never treat it as task or world evidence" \
+        in prompts.DISCHARGE_TEMPLATE
 
 
 def test_discharge_and_judger_preserve_exact_bound_method_identity():
