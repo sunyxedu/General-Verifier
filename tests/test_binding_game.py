@@ -15,7 +15,7 @@ from verifier.core.model import BASIS_WORLD, Obligation, content_hash
 from verifier.engine.game import BindingGame
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm.schema import FixtureBackend
+from verifier.llm.schema import FixtureBackend, RoleError
 
 
 ROW = {"id": "c1", "kind": "assertion", "text": "the answer is 42"}
@@ -32,6 +32,22 @@ JUDGE_YES = {
     "faithful": "yes",
     "reason": "artifact checks out",
 }
+JUDGE_INSUFFICIENT = {
+    "sufficient": "no",
+    "faithful": "yes",
+    "reason": "a component does not decide the total",
+}
+
+
+def oracle_method(procedure, basis="world"):
+    return {**ORACLE["methods"][0], "procedure": procedure, "basis": basis}
+
+
+def oracle_with_repair(repaired, initial=ORACLE):
+    def enumerate_methods(variables):
+        return initial if variables["method_feedback"] == "(none)" \
+            else repaired
+    return enumerate_methods
 
 
 class StubDischarger:
@@ -50,13 +66,13 @@ class SequenceDischarger:
                                artifact="d1", instrument="stub")
 
 
-def game(tmp_path, roles, live_world=True):
+def game(tmp_path, roles, live_world=True, discharger=None):
     backend = FixtureBackend(roles)
     return BindingGame(
         backend,
         ArtifactStore(os.path.join(tmp_path, "art")),
         EventLog(os.path.join(tmp_path, "events.jsonl")),
-        StubDischarger(),
+        discharger or StubDischarger(),
         live_world=live_world,
     ), backend
 
@@ -209,6 +225,177 @@ def test_missing_sufficiency_signature_fails_closed(tmp_path):
     events = list(g.log.replay())
     assert not any(event["type"] == "method_bound" for event in events)
     assert not any(event["type"] == "method_redo" for event in events)
+
+
+def test_structural_rejection_gets_one_oracle_repair_batch(tmp_path):
+    original = oracle_method("measure one component")
+    repaired = oracle_method("measure every component and their aggregate")
+
+    def enumerate_methods(variables):
+        if variables["method_feedback"] == "(none)":
+            return {"methods": [original]}
+        assert "a component does not decide the total" \
+            in variables["method_feedback"]
+        return {"methods": [repaired]}
+
+    def judge(variables):
+        if variables["procedure"] == original["procedure"]:
+            return JUDGE_INSUFFICIENT
+        return JUDGE_YES
+
+    g, backend = game(
+        tmp_path,
+        {"oracles": enumerate_methods, "judger": judge},
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "holds"
+    oracle_calls = [c for c in backend.calls if c["role"] == "oracles"]
+    assert len(oracle_calls) == 2
+    assert len([c for c in backend.calls if c["role"] == "judger"]) == 2
+    events = list(g.log.replay())
+    batches = [e for e in events if e["type"] == "methods_enumerated"]
+    assert [e["payload"]["repair"] for e in batches] == [False, True]
+    assert not any(event["type"] == "method_redo" for event in events)
+
+
+def test_oracle_repair_is_bounded_and_runs_duplicate_new_method_once(tmp_path):
+    original = oracle_method("original insufficient method")
+    repaired = oracle_method("new but still insufficient method")
+    enumerate_methods = oracle_with_repair(
+        {"methods": [repaired, repaired]},
+        {"methods": [original]},
+    )
+
+    g, backend = game(
+        tmp_path,
+        {"oracles": enumerate_methods, "judger": JUDGE_INSUFFICIENT},
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "failed"
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
+    assert len([c for c in backend.calls if c["role"] == "judger"]) == 2
+
+
+def test_empty_oracle_repair_is_unobtainable_offline(tmp_path):
+    g, _ = game(
+        tmp_path,
+        {
+            "oracles": oracle_with_repair({"methods": []}),
+            "judger": JUDGE_INSUFFICIENT,
+        },
+        live_world=False,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "unobtainable"
+    assert "fixed evidence boundary" in result.witness
+
+
+def test_empty_oracle_repair_stays_failed_live(tmp_path):
+    g, _ = game(
+        tmp_path,
+        {
+            "oracles": oracle_with_repair({"methods": []}),
+            "judger": JUDGE_INSUFFICIENT,
+        },
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "failed"
+
+
+def test_unavailable_repaired_method_is_unobtainable_offline(tmp_path):
+    repaired = oracle_method("inspect a missing retained snapshot")
+    g, _ = game(
+        tmp_path,
+        {
+            "oracles": oracle_with_repair({"methods": [repaired]}),
+            "judger": JUDGE_INSUFFICIENT,
+        },
+        live_world=False,
+        discharger=SequenceDischarger([
+            ("holds", None), ("unobtainable", "snapshot absent"),
+        ]),
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "unobtainable"
+    assert "snapshot absent" in result.witness
+
+
+def test_real_failure_is_not_hidden_by_unavailable_repair(tmp_path):
+    initial = {
+        "methods": [
+            oracle_method("structurally insufficient method"),
+            oracle_method("method with an execution failure"),
+        ]
+    }
+    repaired = oracle_method("inspect a missing retained snapshot")
+    g, _ = game(
+        tmp_path,
+        {
+            "oracles": oracle_with_repair(
+                {"methods": [repaired]}, initial,
+            ),
+            "judger": JUDGE_INSUFFICIENT,
+        },
+        live_world=False,
+        discharger=SequenceDischarger([
+            ("holds", None), ("failed", "tool crashed"),
+            ("unobtainable", "snapshot absent"),
+        ]),
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "failed"
+
+
+def test_oracle_repair_role_error_stays_failed(tmp_path):
+    def enumerate_methods(variables):
+        if variables["method_feedback"] == "(none)":
+            return ORACLE
+        raise RoleError("repair crashed")
+
+    g, backend = game(
+        tmp_path,
+        {
+            "oracles": enumerate_methods,
+            "judger": JUDGE_INSUFFICIENT,
+        },
+        live_world=False,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "failed"
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 3
+
+
+def test_only_below_floor_repair_methods_stay_failed(tmp_path):
+    below_floor = oracle_method("read only the solver record", basis="record")
+
+    g, _ = game(
+        tmp_path,
+        {
+            "oracles": oracle_with_repair({"methods": [below_floor]}),
+            "judger": JUDGE_INSUFFICIENT,
+        },
+        live_world=False,
+    )
+
+    result = g.run(
+        ROW, Obligation("c1", "the complete total equals 42", "world")
+    )
+
+    assert result.outcome == "failed"
 
 
 def test_judger_sees_world_and_manifest_when_present(tmp_path):

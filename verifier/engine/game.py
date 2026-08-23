@@ -23,7 +23,10 @@ Per obligation:
      An insufficient method is rejected immediately. Unfaithful -> the
      judger's reason goes back to the executor for a redo and the redone
      result is re-judged BLIND. A loop of at most three rounds.
-3. All candidates exhausted -> failed (or unobtainable when a missing
+3. If the batch contained an insufficient method, its structural rejection
+   goes back to the oracle for at most one repair batch; duplicate procedures
+   never run again.
+4. All candidates exhausted -> failed (or unobtainable when a missing
    instrument blocked the way), with every attempt on record.
 """
 
@@ -140,8 +143,87 @@ class BindingGame:
             )
 
         unavailable_reasons: List[str] = []
+        structural_feedback: List[Dict[str, str]] = []
+        seen_procedures = set()
         failed_seen = False
-        for method in methods:
+        repair_used = False
+        method_index = 0
+        while (method_index < len(methods)
+               or (structural_feedback and not repair_used)):
+            if method_index >= len(methods):
+                # A structural rejection is information about the Oracle's
+                # method contract, not something the executor can repair.
+                # Feed all reasons back once and append only new procedures.
+                repair_used = True
+                feedback = json.dumps(
+                    {
+                        "structural_rejections": structural_feedback,
+                        "unavailable_boundaries": list(dict.fromkeys(
+                            unavailable_reasons
+                        )),
+                    },
+                    ensure_ascii=False,
+                )
+                try:
+                    repaired = self._enumerate(
+                        row, obligation, method_feedback=feedback
+                    )
+                except RoleError as err:
+                    failed_seen = True
+                    self.log.append(
+                        "methods_enumerated",
+                        {"claim": row["id"],
+                         "obligation": obligation.id,
+                         "repair": True,
+                         "error": str(err)},
+                    )
+                    break
+
+                if not repaired:
+                    if self.live_world:
+                        failed_seen = True
+                    else:
+                        unavailable_reasons.append(
+                            "oracle repair found no materially new sufficient "
+                            "method at the fixed evidence boundary"
+                        )
+                    continue
+
+                added = 0
+                for candidate in repaired:
+                    if not basis_satisfies(
+                        candidate.get("basis", BASIS_RECORD),
+                        obligation.required_basis,
+                    ):
+                        self._reject(
+                            row, obligation, candidate,
+                            "declared basis below the obligation's floor",
+                        )
+                    elif candidate["procedure"] in seen_procedures:
+                        self._reject(
+                            row, obligation, candidate,
+                            "duplicate procedure returned on method repair",
+                        )
+                    else:
+                        methods.append(candidate)
+                        added += 1
+                if not added:
+                    # A non-empty repair batch made entirely of low-floor or
+                    # already-tried procedures is a protocol failure, not an
+                    # evidence-availability finding.
+                    failed_seen = True
+                continue
+
+            method = methods[method_index]
+            method_index += 1
+            procedure = method["procedure"]
+            if procedure in seen_procedures:
+                self._reject(
+                    row, obligation, method,
+                    "duplicate procedure returned by oracle",
+                )
+                continue
+            seen_procedures.add(procedure)
             attempt = Attempt(method=method)
             attempts.append(attempt)
 
@@ -176,7 +258,15 @@ class BindingGame:
             # accept.
             verdict = self._judge(obligation, method, result, attempt)
             if verdict.get("sufficient") == "no":
-                failed_seen = True
+                # First-batch insufficiency is exactly what the bounded
+                # Oracle repair can correct. A repaired method that is still
+                # insufficient is the terminal protocol failure.
+                if repair_used:
+                    failed_seen = True
+                structural_feedback.append({
+                    "procedure": procedure,
+                    "reason": verdict["reason"],
+                })
                 reason = f"judger method insufficient: {verdict['reason']}"
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
@@ -213,6 +303,10 @@ class BindingGame:
                 verdict = self._judge(obligation, method, result, attempt,
                                       redo=rounds)
                 if verdict.get("sufficient") == "no":
+                    structural_feedback.append({
+                        "procedure": procedure,
+                        "reason": verdict["reason"],
+                    })
                     reason = (f"judger method insufficient (redo {rounds}): "
                               f"{verdict['reason']}")
                     break
@@ -237,8 +331,12 @@ class BindingGame:
                           unobtainable=unavailable_only)
 
     # enumeration and advisory review
-    def _enumerate(self, row: Dict,
-                   obligation: Obligation) -> List[Dict[str, str]]:
+    def _enumerate(
+        self,
+        row: Dict,
+        obligation: Obligation,
+        method_feedback: str = "(none)",
+    ) -> List[Dict[str, str]]:
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
         state = os.path.dirname(os.path.abspath(self.log.path))
@@ -253,6 +351,7 @@ class BindingGame:
                 "task_context": authoritative_task_context(state),
                 "features": _features(row),
                 "registry": registry,
+                "method_feedback": method_feedback,
                 "ledger_path": os.path.abspath(self.log.path),
                 "world_mode": world_mode,
                 "world_path": world,
@@ -263,6 +362,7 @@ class BindingGame:
         self.log.append(
             "methods_enumerated",
             {"claim": row["id"], "obligation": obligation.id,
+             "repair": method_feedback != "(none)",
              "methods": [{"procedure": m["procedure"][:80],
                           "level": m.get("level", ""),
                           "basis": m.get("basis", "")}

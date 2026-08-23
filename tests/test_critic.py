@@ -264,6 +264,13 @@ def test_oracle_cannot_hide_missing_evidence_behind_an_empty_list():
     assert "report the exact unobtainable gap" in prompts.ORACLES_TEMPLATE
 
 
+def test_oracle_gets_one_bounded_structural_repair_prompt():
+    assert "Prior method feedback" in prompts.ORACLES_TEMPLATE
+    assert "one bounded repair pass" in prompts.ORACLES_TEMPLATE
+    assert "return only materially new methods" in prompts.ORACLES_TEMPLATE
+    assert "Do not repeat a rejected procedure" in prompts.ORACLES_TEMPLATE
+
+
 def test_oracle_methods_are_decisions_bound_to_task_semantics():
     """A target literal cannot turn Oracle enumeration into confirmation."""
     assert "DECISION PROCEDURE, not a confirmation recipe" \
