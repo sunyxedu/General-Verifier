@@ -188,6 +188,26 @@ def test_prompts_gate_task_definitions_and_attack_scope_projection():
         in prompts.OBLIGATIONS_HARNESS_ADDENDUM
 
 
+def test_critic_second_signs_both_directions_of_equivalence():
+    assert "attack BOTH DIRECTIONS" in prompts.CRITIC_SYSTEM
+    assert "NECESSITY ATTACK" in prompts.CRITIC_SYSTEM
+    assert "SUFFICIENCY ATTACK" in prompts.CRITIC_SYSTEM
+    assert "claim is true but that obligation is false" \
+        in prompts.CRITIC_SYSTEM
+    assert "modifier dropped" in prompts.CRITIC_SYSTEM
+    assert "actual entailment witness" in prompts.CRITIC_SYSTEM
+    assert "report ALL independently visible defects" in prompts.CRITIC_SYSTEM
+    assert "can violate BOTH" in prompts.CRITIC_SYSTEM
+    assert "NECESSITY VIOLATION:" in prompts.CRITIC_TEMPLATE
+    assert "REMOVE OR WEAKEN:" in prompts.CRITIC_TEMPLATE
+    assert "SUFFICIENCY GAP:" in prompts.CRITIC_TEMPLATE
+    assert "BOTH DIRECTIONS:" in prompts.CRITIC_TEMPLATE
+    assert "REWRITE BOTH:" in prompts.CRITIC_TEMPLATE
+    assert "perform all removals" in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "do not repair one by breaking the other" \
+        in prompts.CRITIC_FEEDBACK_TEMPLATE
+
+
 def test_extractor_preserves_component_and_aggregate_labels():
     assert "Preserve the SEMANTIC LABEL" in prompts.EXTRACT_SYSTEM
     assert "component versus aggregate" in prompts.EXTRACT_SYSTEM
@@ -514,6 +534,50 @@ def test_task_defined_aggregate_projection_is_repaired(tmp_path):
     assert discharger.seen == [
         "The independently established sum of A and B equals N."
     ]
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "obligations", "critic"
+    ]
+
+
+def test_dual_direction_scope_error_is_repaired_in_one_round(tmp_path):
+    """One repair receives both witnesses when a component replaces a total."""
+    task_text = "Under the named specification, TOTAL is component A plus B."
+    (tmp_path / "task.md").write_text(task_text)
+    dual_attack = {
+        "verdict": "insufficient",
+        "counterexample_world": (
+            "BOTH DIRECTIONS: NECESSITY VIOLATION: A+B=N while A!=N. "
+            "SUFFICIENCY GAP: A=N while B!=0, so A+B!=N."
+        ),
+        "missing_condition": (
+            "REWRITE BOTH: remove the A-only equality and require A+B=N."
+        ),
+    }
+
+    def compile_total(variables):
+        feedback = variables["critic_feedback"]
+        if not feedback:
+            return {"obligations": [{
+                "text": "Component A alone equals N.",
+                "required_basis": "world",
+            }]}
+        assert dual_attack["counterexample_world"] in feedback
+        assert dual_attack["missing_condition"] in feedback
+        return {"obligations": [{
+            "text": "The task-defined sum of A and B equals N.",
+            "required_basis": "world",
+        }]}
+
+    verdicts = iter([dual_attack, PASS])
+    store, _, backend, discharger = build(
+        tmp_path,
+        {"obligations": compile_total, "critic": lambda v: next(verdicts)},
+    )
+
+    cid = store.add_claim(Claim(CLAIM_FINAL, "The task-defined TOTAL is N."))
+
+    assert store.status(cid) == "verified"
+    assert discharger.seen == ["The task-defined sum of A and B equals N."]
     assert [call["role"] for call in backend.calls] == [
         "obligations", "critic", "obligations", "critic"
     ]
