@@ -300,7 +300,11 @@ JUDGER_AGENT = AgentRole(
     name="judger",
     system=prompts.JUDGER_SYSTEM,
     template=prompts.JUDGER_TEMPLATE,
-    schema={"faithful": ("yes", "no"), "reason": str},
+    schema={
+        "sufficient": ("yes", "no"),
+        "faithful": ("yes", "no"),
+        "reason": str,
+    },
     tools=["Read", "Bash", "Grep"],
 )
 

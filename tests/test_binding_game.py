@@ -27,7 +27,11 @@ ORACLE = {"methods": [{
     "basis": "world",
 }]}
 
-JUDGE_YES = {"faithful": "yes", "reason": "artifact checks out"}
+JUDGE_YES = {
+    "sufficient": "yes",
+    "faithful": "yes",
+    "reason": "artifact checks out",
+}
 
 
 class StubDischarger:
@@ -79,6 +83,132 @@ def test_judger_sees_the_declared_basis(tmp_path):
     # and the audited declaration is what the settled result carries
     assert result.outcome == "holds"
     assert result.basis == BASIS_WORLD
+
+
+def test_insufficient_method_is_rejected_without_executor_redo(tmp_path):
+    methods = {"methods": [
+        {
+            "procedure": "measure one component",
+            "artifact": "component subtotal",
+            "level": "component check",
+            "basis": "world",
+        },
+        {
+            "procedure": "measure the complete quantity",
+            "artifact": "complete total",
+            "level": "complete check",
+            "basis": "world",
+        },
+    ]}
+
+    def judge(variables):
+        if variables["procedure"] == "measure one component":
+            return {
+                "sufficient": "no",
+                "faithful": "yes",
+                "reason": "a component does not decide the total",
+            }
+        return JUDGE_YES
+
+    g, backend = game(tmp_path, {"oracles": methods, "judger": judge})
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "holds"
+    assert len([c for c in backend.calls if c["role"] == "judger"]) == 2
+    events = list(g.log.replay())
+    assert not any(event["type"] == "method_redo" for event in events)
+    rejected = [event for event in events
+                if event["type"] == "method_rejected"]
+    assert len(rejected) == 1
+    assert "method insufficient" in rejected[0]["payload"]["reason"]
+
+
+def test_sufficient_method_with_bad_execution_is_redone(tmp_path):
+    verdicts = iter([
+        {
+            "sufficient": "yes",
+            "faithful": "no",
+            "reason": "the artifact omitted part of the calculation",
+        },
+        JUDGE_YES,
+    ])
+    backend = FixtureBackend({
+        "oracles": ORACLE,
+        "judger": lambda _variables: next(verdicts),
+    })
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    g = BindingGame(
+        backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        log,
+        SequenceDischarger([("holds", None), ("holds", None)]),
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "holds"
+    assert len([e for e in log.replay() if e["type"] == "method_redo"]) == 1
+
+
+def test_method_becoming_insufficient_on_redo_moves_to_next_method(tmp_path):
+    methods = {"methods": [
+        {**ORACLE["methods"][0], "procedure": "first method"},
+        {**ORACLE["methods"][0], "procedure": "second method"},
+    ]}
+    verdicts = iter([
+        {
+            "sufficient": "yes",
+            "faithful": "no",
+            "reason": "execution exposed an unresolved scope gap",
+        },
+        {
+            "sufficient": "no",
+            "faithful": "yes",
+            "reason": "the scope gap belongs to the method contract",
+        },
+        JUDGE_YES,
+    ])
+    backend = FixtureBackend({
+        "oracles": methods,
+        "judger": lambda _variables: next(verdicts),
+    })
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    g = BindingGame(
+        backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        log,
+        SequenceDischarger([
+            ("holds", None), ("holds", None), ("holds", None),
+        ]),
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "holds"
+    events = list(log.replay())
+    assert len([e for e in events if e["type"] == "method_redo"]) == 1
+    rejected = [e for e in events if e["type"] == "method_rejected"]
+    assert len(rejected) == 1
+    assert "method insufficient (redo 1)" in rejected[0]["payload"]["reason"]
+
+
+def test_missing_sufficiency_signature_fails_closed(tmp_path):
+    g, backend = game(
+        tmp_path,
+        {
+            "oracles": ORACLE,
+            "judger": {"faithful": "yes", "reason": "legacy verdict"},
+        },
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "failed"
+    assert len([c for c in backend.calls if c["role"] == "judger"]) == 2
+    events = list(g.log.replay())
+    assert not any(event["type"] == "method_bound" for event in events)
+    assert not any(event["type"] == "method_redo" for event in events)
 
 
 def test_judger_sees_world_and_manifest_when_present(tmp_path):

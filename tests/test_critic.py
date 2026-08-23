@@ -289,6 +289,22 @@ def test_offline_oracle_prefers_complete_retained_evidence():
         in prompts.ORACLES_SYSTEM
 
 
+def test_judger_independently_countersigns_method_sufficiency():
+    assert "independent second signer for METHOD SUFFICIENCY" \
+        in prompts.JUDGER_SYSTEM
+    assert "untrusted candidate method" in prompts.JUDGER_SYSTEM
+    assert "component, subtotal, sample" in prompts.JUDGER_SYSTEM
+    assert "authoritative equivalence or exclusion" in prompts.JUDGER_SYSTEM
+    assert "a bad run does not make an otherwise sufficient" \
+        in prompts.JUDGER_SYSTEM
+    assert "If they do not, faithful=no" in prompts.JUDGER_SYSTEM
+    assert "writing 'thus' or 'means' does not supply" \
+        in prompts.JUDGER_SYSTEM
+    assert "sufficient=no" in prompts.JUDGER_SYSTEM
+    assert "sufficient: yes | no" in prompts.JUDGER_TEMPLATE
+    assert "untrusted candidate check" in prompts.JUDGER_TEMPLATE
+
+
 def test_judger_uses_artifact_store_content_address_semantics():
     assert "ARTIFACT CONTENT ADDRESSING" in prompts.JUDGER_SYSTEM
     assert "content address of the PARSED JSON value" in prompts.JUDGER_SYSTEM

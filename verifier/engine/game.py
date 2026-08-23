@@ -12,15 +12,17 @@ Per obligation:
    faithfully (a missing instrument is installed at discharge time; a
    truly unobtainable one settles the claim at partial).
    - The judger examines EVERY substantive result — holds and refuted
-     alike: was the bound method faithfully executed against the right
-     target, and the promised evidence genuinely delivered? It opens
-     the artifact itself and reruns when reproducibility is in doubt.
+     alike: is the candidate method sufficient for the full obligation,
+     was it faithfully executed against the right target, and was the
+     promised evidence genuinely delivered? It opens the artifact itself
+     and reruns when reproducibility is in doubt.
      A refutation gets no shortcut: it is the single most consequential
      outcome in the system (a refuted node refutes its claim — for the
      final, the whole certificate), so a counterexample settles only
-     after the judger confirms it was faithfully obtained. Unfaithful -> the judger's
-     reason goes back to the executor for a redo and the redone result
-     is re-judged BLIND. A loop of at most three rounds.
+     after the judger confirms it was sufficiently and faithfully obtained.
+     An insufficient method is rejected immediately. Unfaithful -> the
+     judger's reason goes back to the executor for a redo and the redone
+     result is re-judged BLIND. A loop of at most three rounds.
 3. All candidates exhausted -> failed (or unobtainable when a missing
    instrument blocked the way), with every attempt on record.
 """
@@ -166,13 +168,21 @@ class BindingGame:
                 continue
 
             # every substantive outcome — holds AND refuted — faces the
-            # judger before it settles. A refutation is the most
+            # judger before it settles, for both method sufficiency and
+            # execution fidelity. A refutation is the most
             # consequential verdict in the system (a refuted node refutes
             # its claim — for the final, the whole certificate), so an
             # unaudited one is exactly the evidence we cannot afford to
             # accept.
             verdict = self._judge(obligation, method, result, attempt)
-            if verdict["faithful"] == "yes":
+            if verdict.get("sufficient") == "no":
+                failed_seen = True
+                reason = f"judger method insufficient: {verdict['reason']}"
+                self._reject(row, obligation, method, reason)
+                attempt.rejected = reason
+                continue
+            if (verdict.get("sufficient") == "yes"
+                    and verdict["faithful"] == "yes"):
                 return self._settle(row, obligation, attempts,
                                     method, result, audit=verdict)
             failed_seen = True
@@ -183,7 +193,8 @@ class BindingGame:
             # (a judger infrastructure failure never awards a redo)
             reason = None
             rounds = 0
-            while (verdict["faithful"] == "no"
+            while (verdict.get("sufficient") == "yes"
+                   and verdict["faithful"] == "no"
                    and not verdict.get("_infra")
                    and rounds < self.redo_rounds):
                 rounds += 1
@@ -201,7 +212,12 @@ class BindingGame:
                     break
                 verdict = self._judge(obligation, method, result, attempt,
                                       redo=rounds)
-                if verdict["faithful"] == "yes":
+                if verdict.get("sufficient") == "no":
+                    reason = (f"judger method insufficient (redo {rounds}): "
+                              f"{verdict['reason']}")
+                    break
+                if (verdict.get("sufficient") == "yes"
+                        and verdict["faithful"] == "yes"):
                     return self._settle(row, obligation, attempts,
                                         method, result, audit=verdict)
             if reason is None:
@@ -293,8 +309,14 @@ class BindingGame:
         except RoleError as err:
             # fail-closed; the _infra marker keeps a judger infrastructure
             # failure from awarding itself a redo
-            verdict = {"faithful": "no", "reason": f"judger failed: {err}",
-                       "_infra": True}
+            verdict = {
+                # Internal fail-closed sentinel; public role output permits
+                # only yes/no, so neither signature can accidentally pass.
+                "sufficient": "unknown",
+                "faithful": "no",
+                "reason": f"judger failed: {err}",
+                "_infra": True,
+            }
         if redo:
             attempt.redos[-1]["audit"] = verdict
         else:
