@@ -746,19 +746,17 @@ class Kernel:
             artifacts={"artifact": result.artifact},
             witness=result.witness,
         )
-        self.store.record_evidence(
-            oid,
-            {
-                "obligation": obligation.text,
-                "required_basis": obligation.required_basis,
-                "instrument": result.instrument,
-                "outcome": result.outcome,
-                "basis": result.basis,
-                "artifact": result.artifact,
-                "witness": result.witness,
-                "evidence_id": evidence.id,
-            },
-        )
+        evidence_payload = {
+            "obligation": obligation.text,
+            "required_basis": obligation.required_basis,
+            "instrument": result.instrument,
+            "outcome": result.outcome,
+            "basis": result.basis,
+            "artifact": result.artifact,
+            "witness": result.witness,
+            "evidence_id": evidence.id,
+        }
+        self.store.record_evidence(oid, evidence_payload)
         if result.outcome == OUTCOME_HOLDS:
             self.store.set_verified(oid, basis=result.basis)
         elif result.outcome == OUTCOME_REFUTED:
@@ -770,7 +768,10 @@ class Kernel:
         self.log.append(
             "discharge",
             {"claim": row["id"], "obligation": oid,
-             "instrument": result.instrument, "outcome": result.outcome},
+             "instrument": result.instrument, "outcome": result.outcome,
+             "required_basis": obligation.required_basis,
+             "basis": result.basis, "artifact": result.artifact,
+             "evidence_id": evidence.id},
         )
         return result.outcome, result.witness
 

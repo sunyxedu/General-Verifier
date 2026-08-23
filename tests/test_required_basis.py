@@ -28,9 +28,10 @@ def compile_fixture(obligations):
 
 
 class BasisDischarger:
-    def __init__(self, basis=BASIS_WORLD, outcome="holds"):
+    def __init__(self, basis=BASIS_WORLD, outcome="holds", artifact=""):
         self.basis = basis
         self.outcome = outcome
+        self.artifact = artifact
         self.seen = []
 
     def discharge(self, row, obligation, method=None, tag=""):
@@ -42,7 +43,8 @@ class BasisDischarger:
         witness = ("historical output was truncated"
                    if outcome == "unobtainable" else None)
         return DischargeResult(outcome=outcome, witness=witness,
-                               artifact="", instrument="stub", basis=basis)
+                               artifact=self.artifact, instrument="stub",
+                               basis=basis)
 
 
 def build(tmp_path, obligations, basis=BASIS_WORLD):
@@ -280,6 +282,35 @@ def test_refuted_claim_stores_the_refuting_basis(tmp_path):
     assert store.get(cid)["basis"] == BASIS_WORLD
     (node,) = store.obligation_children(cid)
     assert node["basis"] == BASIS_WORLD
+
+
+def test_discharge_event_indexes_the_same_signed_evidence_as_the_store(tmp_path):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": compile_fixture(
+        [{"text": "the count is 42", "required_basis": "world"}])})
+    Kernel(
+        store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
+        critic_role=None,
+        discharger=BasisDischarger(
+            BASIS_WORLD, outcome="refuted", artifact="artifact-digest"),
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "the count is 42"))
+
+    (node,) = store.obligation_children(cid)
+    evidence = store.evidence_for(node["id"])[-1]
+    event = [e for e in log.replay() if e["type"] == "discharge"][-1]
+    assert event["payload"] == {
+        "claim": cid,
+        "obligation": node["id"],
+        "instrument": evidence["instrument"],
+        "outcome": evidence["outcome"],
+        "required_basis": evidence["required_basis"],
+        "basis": evidence["basis"],
+        "artifact": evidence["artifact"],
+        "evidence_id": evidence["evidence_id"],
+    }
 
 
 def test_refuted_inheritance_below_the_floor_is_refused(tmp_path):

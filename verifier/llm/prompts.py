@@ -40,6 +40,33 @@ PROOF_CARRYING_EFFECTS = (
     "must audit the proof-carrying record for the obligation at hand.\n"
 )
 
+SIGNED_WORLD_EVIDENCE_REUSE = (
+    "RETAINED VERIFIER-EVIDENCE REUSE: this is available only offline in "
+    "captured or unavailable world mode; never perform semantic cross-obligation "
+    "reuse in a live mutable world. A prior verifier `discharge` event is only "
+    "an index candidate when it records outcome holds/refuted, basis=world, a "
+    "canonical artifact digest, and an evidence_id. Open that digest under the "
+    "verifier artifact store and require a binding-game wrapper with a non-null "
+    "bound method, an original audit of sufficient=yes and faithful=yes, and an "
+    "intact nested discharge artifact. Failed, unobtainable, record-basis, graph-"
+    "inherited, unsigned, or incomplete entries are never reusable.\n"
+    "Reuse RAW EVIDENCE, never the prior claim status, outcome label, old Judger "
+    "conclusion, or solver narration. Treat reuse as a new world-basis method: "
+    "open the immutable event, wrapper, nested artifact, and embedded files; "
+    "report the source obligation/evidence_id, original evidence boundary, "
+    "semantic time, target, representation/configuration, invocation "
+    "preconditions, raw observations, current obligation, and the exact logical "
+    "implication in the needed holds/refuted direction. The new Judger must "
+    "independently countersign that transfer. Both signatures require the same "
+    "frozen boundary and compatible time, target, representation/configuration, "
+    "and preconditions. In unavailable mode the source also needs an immutable "
+    "binding to the relevant historical time. A counterexample must satisfy the "
+    "current proposition's antecedent and task-prescribed invocation; an extra-"
+    "argument or otherwise out-of-domain run cannot refute an ordinary in-domain "
+    "capability. One in-scope raw counterexample may refute a universal, but the "
+    "old verdict alone proves no new implication.\n"
+)
+
 TASK_COMPLETE_OCCURRENCE_COMPOSITION = (
     "AUTHORITY-BOUND REPRESENTATION / MATERIALIZED-OCCURRENCE DEFAULT: this "
     "refines GUARDED COMPOSITION; it never replaces its guards. First require "
@@ -1115,6 +1142,7 @@ ORACLES_SYSTEM = (
     + TASK_COMPLETE_OCCURRENCE_COMPOSITION
     + REFERENT_METHOD_BOUNDARY
     + PROOF_CARRYING_EFFECTS
+    + SIGNED_WORLD_EVIDENCE_REUSE
 )
 
 ORACLES_TEMPLATE = (
@@ -1129,6 +1157,8 @@ ORACLES_TEMPLATE = (
     "Prior method feedback (`(none)` on the first pass): "
     "{method_feedback}\n"
     "Verifier ledger: {ledger_path}\n"
+    "Verifier artifact store containing content-addressed JSON evidence: "
+    "{artifact_root}\n"
     "World evidence mode: {world_mode}; captured tree path when present: "
     "{world_path}; capture manifest when present: {world_manifest}\n"
     "MANDATORY METHOD-ORDER PREFLIGHT: before writing any method that retrieves, "
@@ -1277,6 +1307,7 @@ DISCHARGE_SYSTEM = (
     "unseen response, not its contents. Never replay the old action in a "
     "later world to fill the gap.\n"
     + PROOF_CARRYING_EFFECTS
+    + SIGNED_WORLD_EVIDENCE_REUSE
     + "TARGETS ARE NOT INPUTS: the obligation and bound method are "
     "verifier-supplied check specifications. A literal used solely as the "
     "obligation's expected, accepted, or comparison target may be quoted or "
@@ -1384,6 +1415,8 @@ DISCHARGE_TEMPLATE = (
     "checks; the working directory holds only this check's scripts and "
     "outputs)\n"
     "The verifier's ledger (empty if none): {ledger_path}\n"
+    "The verifier artifact store containing prior content-addressed evidence "
+    "and the artifact this execution will later enter: {artifact_root}\n"
     "World evidence mode: {world_mode} — live | captured | unavailable.\n"
     "The delivered world tree (empty if none captured): {world_path}\n"
     "The world capture manifest — a JSON file listing captured_roots, "
@@ -1557,6 +1590,7 @@ JUDGER_SYSTEM = (
     + TASK_COMPLETE_OCCURRENCE_COMPOSITION
     + REFERENT_METHOD_BOUNDARY
     + PROOF_CARRYING_EFFECTS
+    + SIGNED_WORLD_EVIDENCE_REUSE
     + "You are the one who LOOKS AT THE RESULT: open the artifact and "
     "examine the actual outputs yourself, not the narration; there is "
     "no separate re-run stage, so rerun the check yourself whenever "
@@ -1602,6 +1636,8 @@ JUDGER_TEMPLATE = (
     "verifier's ledger — audit that the execution matches the "
     "declaration): {basis}\n"
     "Trusted ledger for historical action/report checks: {ledger_path}\n"
+    "Verifier artifact store containing content-addressed evidence: "
+    "{artifact_root}\n"
     "World evidence mode: {world_mode} — live | captured | unavailable.\n"
     "The delivered world tree the executor checked against (empty if "
     "none captured): {world_path}\n"

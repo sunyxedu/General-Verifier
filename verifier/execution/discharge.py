@@ -109,6 +109,7 @@ class AgentDischarger:
             "workdir": workdir,
             "toolchain_dir": self.toolchain_dir,
             "ledger_path": ledger,
+            "artifact_root": os.path.abspath(self.artifacts.root),
             "world_mode": world_mode,
             "world_path": world,
             "world_manifest": manifest,

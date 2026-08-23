@@ -687,6 +687,25 @@ def test_compiler_and_critic_share_transformation_event_binding():
     assert "sibling may not supply" in rule
 
 
+def test_prior_world_evidence_is_reused_only_through_a_fresh_audit():
+    rule = prompts.SIGNED_WORLD_EVIDENCE_REUSE
+    assert rule in prompts.ORACLES_SYSTEM
+    assert rule in prompts.DISCHARGE_SYSTEM
+    assert rule in prompts.JUDGER_SYSTEM
+    assert "only offline in captured or unavailable world mode" in rule
+    assert "outcome holds/refuted, basis=world" in rule
+    assert "sufficient=yes and faithful=yes" in rule
+    assert "Failed, unobtainable, record-basis, graph-inherited" in rule
+    assert "Reuse RAW EVIDENCE, never the prior claim status" in rule
+    assert "same frozen boundary" in rule
+    assert "semantic time, target, representation/configuration" in rule
+    assert "current proposition's antecedent" in rule
+    assert "new Judger must independently countersign" in rule
+    assert "{artifact_root}" in prompts.ORACLES_TEMPLATE
+    assert "{artifact_root}" in prompts.DISCHARGE_TEMPLATE
+    assert "{artifact_root}" in prompts.JUDGER_TEMPLATE
+
+
 def test_critic_second_signs_both_directions_of_equivalence():
     assert "attack BOTH DIRECTIONS" in prompts.CRITIC_SYSTEM
     assert "NECESSITY ATTACK" in prompts.CRITIC_SYSTEM

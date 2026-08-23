@@ -60,6 +60,7 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
 
     variables = backend.calls[-1]["variables"]
     assert variables["ledger_path"] == str(ledger)
+    assert variables["artifact_root"] == os.path.join(tmp_path, "artifacts")
     assert variables["world_mode"] == "unavailable"
     assert variables["world_path"] == ""
     assert variables["world_manifest"] == ""

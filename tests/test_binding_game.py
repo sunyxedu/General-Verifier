@@ -425,6 +425,7 @@ def test_judger_sees_world_and_manifest_when_present(tmp_path):
     assert judger_vars["world_mode"] == "captured"
     assert judger_vars["ledger_path"] == os.path.join(str(tmp_path),
                                                        "events.jsonl")
+    assert judger_vars["artifact_root"] == os.path.join(str(tmp_path), "art")
     assert json.loads(judger_vars["task_context"]) == {
         "path": str(task), "text": "Count every item."}
 
@@ -474,6 +475,7 @@ def test_oracle_sees_floor_ledger_and_fixed_world_context(tmp_path):
     assert variables["required_basis"] == "world"
     assert variables["ledger_path"] == os.path.join(str(tmp_path),
                                                        "events.jsonl")
+    assert variables["artifact_root"] == os.path.join(str(tmp_path), "art")
     assert variables["world_mode"] == "captured"
     assert variables["world_path"] == os.path.join(str(tmp_path), "world")
     assert variables["world_manifest"] == manifest
