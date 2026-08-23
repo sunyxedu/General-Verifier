@@ -560,15 +560,14 @@ def test_prompts_gate_task_definitions_and_attack_scope_projection():
 
 
 def test_semantic_authority_is_not_invented_process_compliance():
-    assert "AUTHORITY DEFINES SEMANTICS, NOT PROCESS" \
-        in prompts.OBLIGATIONS_SYSTEM
+    assert "TASK-INSTANCE CONTRACT" in prompts.OBLIGATIONS_SYSTEM
     assert "not by itself an acceptance condition" \
         in prompts.OBLIGATIONS_SYSTEM
-    assert "fixes that quantity's measurement semantics" \
+    assert "fixes what a result means or how it is measured" \
         in prompts.OBLIGATIONS_SYSTEM
-    assert "requires or prohibits an action" \
+    assert "Explicit required or prohibited actions" \
         in prompts.OBLIGATIONS_SYSTEM
-    assert "historical action has a record floor" \
+    assert "process requirements with record floors" \
         in prompts.OBLIGATIONS_SYSTEM
     assert "optional, helpful, or background references create neither" \
         in prompts.OBLIGATIONS_SYSTEM
@@ -593,6 +592,48 @@ def test_semantic_authority_is_not_invented_process_compliance():
     assert "REQUIREMENT-VERSUS-GUIDANCE GATE" in prompts.CRITIC_TEMPLATE
     assert "correct-result-and-deliverables counterfactual" \
         in prompts.CRITIC_TEMPLATE
+
+
+def test_compiler_and_critic_share_task_instance_candidate_contract():
+    rule = prompts.TASK_INSTANCE_CONTRACT
+    assert rule in prompts.OBLIGATIONS_SYSTEM
+    assert rule in prompts.CRITIC_SYSTEM
+    assert "INSTANCE GIVENS" in rule
+    assert "not standalone obligations" in rule
+    assert "ACCEPTANCE REQUIREMENTS" in rule
+    assert "SEMANTIC AUTHORITY" in rule
+    assert "CANDIDATE BINDINGS" in rule
+    assert "actual delivered artifact" in rule
+    assert "response itself is the task-designated answer" in rule
+    assert "same fixed instance givens and the same candidate binding" in rule
+    assert "may not replace it with a different input instance or different " \
+        "submission" in rule
+    assert "authoritative task contract instantiated on the fixed task givens " \
+        "and actual candidate" in prompts.CRITIC_SYSTEM
+    assert "claim's own description of task scope" \
+        in prompts.OBLIGATIONS_HARNESS_ADDENDUM
+    assert "task also selects the candidate carrier" \
+        in prompts.OBLIGATIONS_HARNESS_ADDENDUM
+    assert "TASK-INSTANCE ROLE GATE" in prompts.OBLIGATIONS_TEMPLATE
+    assert "predicate needs no standalone obligation" in prompts.CRITIC_TEMPLATE
+    assert "without changing the instance or candidate" \
+        in prompts.CRITIC_TEMPLATE
+    assert "authoritative task statement is the controlling claim in BOTH" \
+        not in prompts.CRITIC_SYSTEM
+
+
+def test_compiler_and_critic_share_transformation_event_binding():
+    rule = prompts.TRANSFORMATION_EVENT_BINDING
+    assert rule in prompts.OBLIGATIONS_SYSTEM
+    assert rule in prompts.CRITIC_SYSTEM
+    assert "an invocation E" in rule
+    assert "preserve the task's own quantifier" in rule
+    assert "must not turn one invocation" in rule
+    assert "input object or path P supplied to E" in rule
+    assert "P immediately before E" in rule
+    assert "the same P immediately after E" in rule
+    assert "Repeat the complete binder" in rule
+    assert "sibling may not supply" in rule
 
 
 def test_critic_second_signs_both_directions_of_equivalence():
@@ -650,8 +691,8 @@ def test_source_term_roles_cannot_be_rebound_by_latent_name_associations():
         "establishment" in rule
     assert "fails closed only if the available evidence cannot decide it" \
         in rule
-    assert "source phrase -> source role -> obligation phrase -> " \
-        "co-denotation" in prompts.CRITIC_TEMPLATE
+    assert "source phrase -> source role -> obligation phrase or predicate " \
+        "incorporation -> co-denotation" in prompts.CRITIC_TEMPLATE
     assert "critic's repair instruction is not semantic authority" \
         in prompts.CRITIC_FEEDBACK_TEMPLATE
     assert "retain that span verbatim in its original role" \
