@@ -791,7 +791,10 @@ CRITIC_SYSTEM = (
     "independently visible defects in the same response, not merely the first. "
     "For necessity only, start counterexample_world with `NECESSITY VIOLATION:` "
     "and missing_condition with `REMOVE OR WEAKEN:`. For sufficiency only, use "
-    "`SUFFICIENCY GAP:` and `ADD:`. If both fail, start them with `BOTH "
+    "`SUFFICIENCY GAP:` and either `ADD:` for a smallest-span patch inside a "
+    "challenged obligation, or `APPEND OBLIGATION:` only when every existing "
+    "obligation is individually sound and a missing independent requirement "
+    "must be added. If both fail, start them with `BOTH "
     "DIRECTIONS:` and `REWRITE BOTH:` and include separately labeled necessity "
     "and sufficiency witnesses plus every corresponding repair. The fixed "
     "verdict label `insufficient` rejects either or both directions.\n"
@@ -1006,8 +1009,10 @@ CRITIC_TEMPLATE = (
     "equivalence support, then "
     "`REFERENT AUDIT:` and the isolation result for every obligation; a bare "
     "`n/a` is forbidden\n"
-    "  missing_condition: start with `REMOVE OR WEAKEN:`, `ADD:`, or `REWRITE "
-    "BOTH:` and give all corresponding repairs; for pass, \"n/a\""
+    "  missing_condition: start with `REMOVE OR WEAKEN:`, `ADD:`, `APPEND "
+    "OBLIGATION:`, or `REWRITE BOTH:` and give all corresponding repairs; use "
+    "`APPEND OBLIGATION:` only for a new independent obligation while all old "
+    "ones remain sound; for pass, \"n/a\""
 )
 
 # Rendered into OBLIGATIONS_TEMPLATE's {critic_feedback} slot when the
@@ -1030,8 +1035,11 @@ CRITIC_FEEDBACK_TEMPLATE = (
     "span verbatim in its original role. Within a challenged obligation, patch "
     "only the smallest span implicated by the witness. Preserve every unaffected "
     "source role, candidate binding, event/referent binder, path, quantifier, and "
-    "time index. An `ADD:` instruction authorizes an addition only; it never "
+    "time index. An `ADD:` instruction authorizes a smallest-span addition only; "
+    "it never "
     "authorizes deleting, weakening, or rephrasing existing semantics. Likewise, "
+    "an `APPEND OBLIGATION:` instruction requires every previous text/floor pair "
+    "to remain byte-for-byte in order and authorizes only new tail obligations. "
     "a removal or weakening does not authorize unrelated rewrites. The original "
     "source still outranks the repair wording, and removing an overstrong verdict "
     "condition never authorizes deleting supporting provenance needed to interpret "
@@ -1049,8 +1057,8 @@ CRITIC_FEEDBACK_TEMPLATE = (
     "directions; do not repair one by breaking the other."
 )
 
-ADD_REPAIR_GUARD_FEEDBACK = (
-    "\nMECHANICAL ADD-ONLY CONTRACT: the preceding repair was rejected before "
+APPEND_REPAIR_GUARD_FEEDBACK = (
+    "\nMECHANICAL APPEND-ONLY CONTRACT: the preceding repair was rejected before "
     "critic review because it violated the append-only instruction: "
     "{violation}. Rejected candidate obligations: {rejected_obligations}. "
     "The exact previous obligation contract above remains the last legal "

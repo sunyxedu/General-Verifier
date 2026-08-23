@@ -392,8 +392,9 @@ class Kernel:
                     self.backend, repair_variables)
                 repair_calls += 1
                 violation = None
-                if verdict["missing_condition"].lstrip().startswith("ADD:"):
-                    violation = self._add_repair_violation(payload, candidate)
+                if verdict["missing_condition"].lstrip().startswith(
+                        "APPEND OBLIGATION:"):
+                    violation = self._append_repair_violation(payload, candidate)
                 if violation is None:
                     payload = candidate
                     variables = repair_variables
@@ -401,7 +402,7 @@ class Kernel:
                     break
 
                 failure_counterexample = (
-                    "MECHANICAL ADD-ONLY VIOLATION: " + violation)
+                    "MECHANICAL APPEND-ONLY VIOLATION: " + violation)
                 failure_missing_condition = verdict["missing_condition"]
                 self.log.append(
                     "decomposition_attacked",
@@ -411,11 +412,11 @@ class Kernel:
                         "verdict": "insufficient",
                         "counterexample_world": failure_counterexample,
                         "missing_condition": failure_missing_condition,
-                        "source": "mechanical_add_guard",
+                        "source": "mechanical_append_guard",
                         "repair_attempt": repair_calls,
                     },
                 )
-                guard_feedback = prompts.ADD_REPAIR_GUARD_FEEDBACK.format(
+                guard_feedback = prompts.APPEND_REPAIR_GUARD_FEEDBACK.format(
                     violation=violation,
                     rejected_obligations=json.dumps(
                         candidate["obligations"], ensure_ascii=False),
@@ -442,8 +443,8 @@ class Kernel:
         return None
 
     @staticmethod
-    def _add_repair_violation(previous: Dict, candidate: Dict):
-        """Return why an ``ADD:`` repair is not a strict tail append.
+    def _append_repair_violation(previous: Dict, candidate: Dict):
+        """Return why an ``APPEND OBLIGATION:`` repair is not a tail append.
 
         The critic's label is a mechanical contract: every existing
         obligation/floor pair remains byte-for-byte and in the same order,
@@ -460,7 +461,7 @@ class Kernel:
         ]
         if len(new) <= len(old):
             return (
-                f"expected more than {len(old)} obligations after ADD, "
+                f"expected more than {len(old)} obligations after append, "
                 f"got {len(new)}")
         for index, expected in enumerate(old):
             actual = new[index]

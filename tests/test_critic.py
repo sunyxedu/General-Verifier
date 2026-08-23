@@ -145,7 +145,10 @@ def test_repair_prompt_preserves_unattacked_obligation_contract(tmp_path):
     assert "never weaken, drop, merge, or paraphrase" in feedback
     assert "only the smallest span implicated by the witness" in feedback
     assert "candidate binding, event/referent binder" in feedback
-    assert "An `ADD:` instruction authorizes an addition only" in feedback
+    assert "An `ADD:` instruction authorizes a smallest-span addition only" \
+        in feedback
+    assert "an `APPEND OBLIGATION:` instruction requires every previous" \
+        in feedback
     assert "original task, claim, and named authority outrank" in feedback
     assert backend.calls[3]["variables"]["obligations_json"] == json.dumps(
         repaired["obligations"], ensure_ascii=False
@@ -501,12 +504,12 @@ def test_second_repair_is_reviewed_and_can_pass(tmp_path):
     attack_one = {
         "verdict": "insufficient",
         "counterexample_world": "first witness",
-        "missing_condition": "ADD: first repair",
+        "missing_condition": "APPEND OBLIGATION: first repair",
     }
     attack_two = {
         "verdict": "insufficient",
         "counterexample_world": "second witness",
-        "missing_condition": "ADD: second repair",
+        "missing_condition": "APPEND OBLIGATION: second repair",
     }
     verdicts = iter([attack_one, attack_two, PASS])
     store, log, backend, discharger = build(
@@ -529,16 +532,16 @@ def test_second_repair_is_reviewed_and_can_pass(tmp_path):
     second_feedback = backend.calls[4]["variables"]["critic_feedback"]
     assert "O0" in first_feedback
     assert "first witness" in first_feedback
-    assert "ADD: first repair" in first_feedback
+    assert "APPEND OBLIGATION: first repair" in first_feedback
     assert "O1" in second_feedback
     assert "second witness" in second_feedback
-    assert "ADD: second repair" in second_feedback
+    assert "APPEND OBLIGATION: second repair" in second_feedback
     assert [e["payload"]["round"] for e in ledger_events(
         log, "decomposition_attacked"
     )] == [0, 1, 2]
 
 
-def test_invalid_add_repair_is_retried_from_last_legal_contract(tmp_path):
+def test_invalid_append_repair_is_retried_from_last_legal_contract(tmp_path):
     original = {
         "obligations": [
             {"text": "A", "required_basis": "world"},
@@ -559,7 +562,7 @@ def test_invalid_add_repair_is_retried_from_last_legal_contract(tmp_path):
     add_attack = {
         "verdict": "insufficient",
         "counterexample_world": "A and B hold while C is false",
-        "missing_condition": "ADD: require C independently",
+        "missing_condition": "APPEND OBLIGATION: require C independently",
     }
     verdicts = iter([add_attack, PASS])
     store, log, backend, discharger = build(
@@ -579,7 +582,7 @@ def test_invalid_add_repair_is_retried_from_last_legal_contract(tmp_path):
     ]
     guard_events = [
         event for event in ledger_events(log, "decomposition_attacked")
-        if event["payload"].get("source") == "mechanical_add_guard"
+        if event["payload"].get("source") == "mechanical_append_guard"
     ]
     assert len(guard_events) == 1
     assert "expected more than 2 obligations" in \
@@ -589,11 +592,11 @@ def test_invalid_add_repair_is_retried_from_last_legal_contract(tmp_path):
         in retry_feedback
     assert json.dumps(merged["obligations"], ensure_ascii=False) \
         in retry_feedback
-    assert "MECHANICAL ADD-ONLY CONTRACT" in retry_feedback
+    assert "MECHANICAL APPEND-ONLY CONTRACT" in retry_feedback
     assert "same order" in retry_feedback
 
 
-def test_exhausted_invalid_add_repairs_fail_closed(tmp_path):
+def test_exhausted_invalid_append_repairs_fail_closed(tmp_path):
     original = {
         "obligations": [
             {"text": "A", "required_basis": "world"},
@@ -612,7 +615,7 @@ def test_exhausted_invalid_add_repairs_fail_closed(tmp_path):
     add_attack = {
         "verdict": "insufficient",
         "counterexample_world": "C is missing",
-        "missing_condition": "ADD: require C",
+        "missing_condition": "APPEND OBLIGATION: require C",
     }
     store, log, backend, discharger = build(
         tmp_path,
@@ -631,17 +634,17 @@ def test_exhausted_invalid_add_repairs_fail_closed(tmp_path):
     ]
     guard_events = [
         event for event in ledger_events(log, "decomposition_attacked")
-        if event["payload"].get("source") == "mechanical_add_guard"
+        if event["payload"].get("source") == "mechanical_append_guard"
     ]
     assert len(guard_events) == 2
     assert all(event["payload"]["round"] == 0 for event in guard_events)
     evidence = store.evidence_for(cid)[-1]
     assert evidence["error"] == "decomposition failed critic"
     assert evidence["counterexample_world"].startswith(
-        "MECHANICAL ADD-ONLY VIOLATION:")
+        "MECHANICAL APPEND-ONLY VIOLATION:")
 
 
-def test_add_guard_requires_a_strict_tail_append():
+def test_append_guard_requires_a_strict_tail_append():
     previous = {
         "obligations": [
             {"text": "A", "required_basis": "world"},
@@ -670,9 +673,46 @@ def test_add_guard_requires_a_strict_tail_append():
         ]},
     ]
 
-    assert Kernel._add_repair_violation(previous, valid) is None
-    assert all(Kernel._add_repair_violation(previous, candidate)
+    assert Kernel._append_repair_violation(previous, valid) is None
+    assert all(Kernel._append_repair_violation(previous, candidate)
                for candidate in invalid)
+
+
+def test_add_can_patch_a_challenged_obligation_in_place(tmp_path):
+    payloads = iter([
+        {"obligations": [
+            {"text": "The event reports X.", "required_basis": "record"},
+        ]},
+        {"obligations": [
+            {"text": "The output paired to event E reports X.",
+             "required_basis": "record"},
+        ]},
+    ])
+    add_attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "The event/output binder is unresolved.",
+        "missing_condition": "ADD: close the binder inside this obligation",
+    }
+    verdicts = iter([add_attack, PASS])
+    store, log, backend, discharger = build(
+        tmp_path,
+        {
+            "obligations": lambda _v: next(payloads),
+            "critic": lambda _v: next(verdicts),
+        },
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "Event E reports X."))
+
+    assert store.status(cid) == "verified"
+    assert discharger.seen == ["The output paired to event E reports X."]
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "obligations", "critic",
+    ]
+    assert not any(
+        event["payload"].get("source") == "mechanical_append_guard"
+        for event in ledger_events(log, "decomposition_attacked")
+    )
 
 
 def test_critic_gets_the_task_statement_when_the_harness_wrote_one(tmp_path):
@@ -928,8 +968,12 @@ def test_critic_second_signs_both_directions_of_equivalence():
     assert "byte-for-byte" in prompts.CRITIC_FEEDBACK_TEMPLATE
     assert "only the smallest span implicated by the witness" \
         in prompts.CRITIC_FEEDBACK_TEMPLATE
-    assert "An `ADD:` instruction authorizes an addition only" \
+    assert "An `ADD:` instruction authorizes a smallest-span addition only" \
         in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "an `APPEND OBLIGATION:` instruction requires every previous" \
+        in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "`APPEND OBLIGATION:` only when every existing" \
+        in prompts.CRITIC_SYSTEM
     assert "the next repair can address them together" \
         in prompts.CRITIC_TEMPLATE
 
