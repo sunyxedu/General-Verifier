@@ -422,6 +422,40 @@ def test_offline_oracle_prefers_complete_retained_evidence():
     assert "one in-scope counterexample" in prompts.ORACLES_SYSTEM
 
 
+def test_offline_oracle_prioritizes_only_guarded_retained_strict_bounds():
+    template = prompts.ORACLES_TEMPLATE
+    assert "RETAINED STRICT-BOUND PREFLIGHT" in template
+    assert "before calling the retained chain incomplete" in template
+    assert "`Q >= L > T`" in template
+    assert "MUST be the first method" in template
+    assert "cannot reconstruct exact Q" in template
+    assert "`S = T` plus `R > 0`" in template
+    assert "mandatory in-scope contributions" in template
+    assert "same representation, population, time target/source state, unit" \
+        in template
+    assert "distinct non-overlapping measured occurrences" in template
+    assert "aggregation independently entails `Q >= S + R`" in template
+    assert "mere monotonicity is not" in template
+    assert "target-driven selection" in template
+    assert "schema identifier may establish family membership" in template
+    assert "schema membership alone never establishes mandatory inclusion" \
+        in template
+    assert "raw terms and guard evidence for the bound used" in template
+    assert "for the `S = T`, `R > 0` construction" in template
+    assert "`Q >= S + R > T`" in template
+    assert "may claim only this strict lower bound, never exact Q" in template
+    for invalid_case in (
+        "optional/out-of-scope",
+        "alias, subset, overlap, cache/view, derived aggregate",
+        "signed or negative contributions",
+        "average, distinct count, deduplicated union, net value",
+        "compressed size, or joint/concatenated measurement",
+    ):
+        assert invalid_case in template
+    assert "fresh method for the same temporal target" in template
+    assert "place it after the retained audit as fallback" in template
+
+
 def test_family_total_composition_is_guarded_and_directional():
     assert "GUARDED COMPOSITION DEFAULT" in prompts.ORACLES_SYSTEM
     assert "ordinary total semantics includes each primary payload slot" \
