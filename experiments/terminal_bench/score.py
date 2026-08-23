@@ -25,11 +25,13 @@ share extraction or settled state.
 
 Each trial is scored independently: its own extraction, its own claim
 graph, its own certificate. Scores append to results/rec_scores.jsonl
-(resume by (job, trial, config)). Progress goes one task at a time; as
-each task finishes, its trials are ranked by rank_key (best-of-N
-selection is per-task) and emitted as TSV rows on stdout — diagnostics
-go to stderr, so stdout pipes through `tee` clean. A rerun re-emits
-cached rows too, so the TSV is always the complete table.
+(resume by (job, trial, config)). All pending trials share ONE worker
+pool across tasks (serializing tasks would idle workers on every task's
+straggler); a task's trials are ranked by rank_key (best-of-N selection
+is per-task) and emitted as TSV rows on stdout the moment its last
+pending trial lands — diagnostics go to stderr, so stdout pipes through
+`tee` clean. A rerun re-emits cached rows too, so the TSV is always the
+complete table.
 
 Usage:
   uv run python experiments/terminal_bench/score.py [--job rec] [--model m]
@@ -146,7 +148,11 @@ def main():
                     help="job name under results/jobs (default: rec)")
     ap.add_argument("--model", default=None,
                     help="verifier seats' model (default: provider default)")
-    ap.add_argument("--max-rounds", type=int, default=3)
+    ap.add_argument("--max-rounds", type=int, default=3,
+                    help="extraction retry rounds (default 3)")
+    ap.add_argument("--critic-rounds", type=int, default=None,
+                    help="decomposition-game rounds before a claim fails "
+                    "closed (default: the kernel's MAX_CRITIC_ROUNDS)")
     ap.add_argument("--workers", type=int, default=4,
                     help="traces scored concurrently (they share nothing)")
     ap.add_argument("--task", default=None, nargs="+",
@@ -180,7 +186,8 @@ def main():
     # state itself); the plaintext fields ride along for analysis
     cfg = offline.config_fields(model=args.model, seats=args.seats,
                                 effort=args.effort,
-                                max_rounds=args.max_rounds)
+                                max_rounds=args.max_rounds,
+                                critic_rounds=args.critic_rounds)
     done = res.recorded(scores_path, "job", "trial", "config", "rep")
     # cached feature records, so already-scored trials still rank in the TSV
     scored = {r["trial"]: r for r in res.load(scores_path)
@@ -201,6 +208,7 @@ def main():
     print(f"[tb:score] backend={cfg['seats']} model={cfg['model']} "
           f"effort={cfg['effort']} "
           f"scoring=claim-graph-certificate max_rounds={args.max_rounds} "
+          f"critic_rounds={cfg['critic_rounds']} "
           f"workers={args.workers} job={args.job} "
           f"config={cfg['config']} rep={args.rep}",
           file=sys.stderr, flush=True)
@@ -209,12 +217,44 @@ def main():
           f"{os.path.relpath(scores_path, HERE)})",
           file=sys.stderr, flush=True)
 
-    # TSV to stdout (tee-able), diagnostics to stderr — one task at a
-    # time, its rows emitted as soon as the task finishes. Traces are
-    # still scored independently; the grouping is for selection, which
-    # is per-task best-of-N.
-    print("task\ttrial\ttb_reward\tgv_verdict\t"
-          "gv_verified_frac\tgv_verified_obligations\trank", flush=True)
+    # TSV to stdout (tee-able), diagnostics to stderr. Trials from ALL
+    # tasks share one global pool — traces are independent, and the
+    # per-task grouping exists only for ranking/emission, so serializing
+    # tasks would idle workers on every task's straggler.
+    # piped stdout gets TSV rows live, task by task; on a bare terminal
+    # the rich board owns the screen, so the table prints once at the end
+    # (harbor-style) — any mid-run stdout write would displace the live
+    # region's in-place redraw into stacked stale frames
+    live_tsv = not sys.stdout.isatty()
+    header = ("task\ttrial\ttb_reward\tgv_verdict\tgv_score\t"
+              "gv_verified_frac\tgv_verified_obligations\trank")
+    if live_tsv:
+        print(header, flush=True)
+    finished = []
+
+    def emit(task):
+        finished.append(task)
+        if live_tsv:
+            render(task)
+
+    def render(task):
+        trials = sorted(by_task[task], key=lambda t: t["trial"])
+        rows = [(t, scored[t["trial"]]) for t in trials
+                if t["trial"] in scored]
+        ranked = sorted(rows, key=lambda tr: (
+            tuple(-c for c in offline.rank_key(tr[1].get("features"))),
+            tr[0]["trial"]))
+        rank = {t["trial"]: i + 1 for i, (t, _r) in enumerate(ranked)}
+        for t, r in rows:
+            features = r.get("features") or {}
+            key = offline.rank_key(features)
+            reward = "?" if t["reward"] is None else f"{t['reward']:.0f}"
+            print(f"{task}\t{t['trial']}\t{reward}\t"
+                  f"{features.get('verdict') or 'unscoreable'}\t"
+                  f"{scoring.scalar(features):.6f}\t"
+                  f"{key[1]:.6f}\t{key[2]}\t{rank[t['trial']]}", flush=True)
+
+    all_jobs, remaining, emitted = [], {}, set()
     for task in sorted(by_task):
         trials = sorted(by_task[task], key=lambda t: t["trial"])
         jobs = []
@@ -238,29 +278,40 @@ def main():
                           "reward": t["reward"], "rep": args.rep,
                           **cfg}, state))
         if jobs:
-            print(f"[tb:score] scoring {task} ({len(jobs)}/{len(trials)} "
-                  "traces)", file=sys.stderr, flush=True)
-            for rec in scoring.score_many(
-                    jobs, scores_path, workers=args.workers,
-                    model=args.model, max_rounds=args.max_rounds,
-                    seats=args.seats, effort=args.effort,
-                    label=lambda r: f"{r['trial']} reward={r['reward']}",
-                    tag="tb:score"):
-                scored[rec["trial"]] = rec
+            all_jobs.extend(jobs)
+            remaining[task] = len(jobs)
+        else:
+            emitted.add(task)
+            emit(task)   # fully cached: rows re-emit immediately
 
-        rows = [(t, scored[t["trial"]]) for t in trials
-                if t["trial"] in scored]
-        ranked = sorted(rows, key=lambda tr: (
-            tuple(-c for c in offline.rank_key(tr[1].get("features"))),
-            tr[0]["trial"]))
-        rank = {t["trial"]: i + 1 for i, (t, _r) in enumerate(ranked)}
-        for t, r in rows:
-            features = r.get("features") or {}
-            key = offline.rank_key(features)
-            reward = "?" if t["reward"] is None else f"{t['reward']:.0f}"
-            print(f"{task}\t{t['trial']}\t{reward}\t"
-                  f"{features.get('verdict') or 'unscoreable'}\t"
-                  f"{key[1]:.6f}\t{key[2]}\t{rank[t['trial']]}", flush=True)
+    def on_record(rec):
+        # runs under score_many's write lock, so emission is serialized
+        scored[rec["trial"]] = rec
+        remaining[rec["task"]] -= 1
+        if remaining[rec["task"]] == 0 and rec["task"] not in emitted:
+            emitted.add(rec["task"])
+            emit(rec["task"])
+
+    if all_jobs:
+        print(f"[tb:score] scoring {len(all_jobs)} traces across "
+              f"{len(remaining)} tasks (workers={args.workers})",
+              file=sys.stderr, flush=True)
+        scoring.score_many(
+            all_jobs, scores_path, workers=args.workers,
+            model=args.model, max_rounds=args.max_rounds,
+            seats=args.seats, effort=args.effort,
+            critic_rounds=args.critic_rounds,
+            label=lambda r: f"{r['task']}/{r['trial']} reward={r['reward']}",
+            tag="tb:score", on_record=on_record)
+        # a trial that errored never reaches scored: emit its task's
+        # surviving rows so the TSV stays the complete table
+        for task in sorted(remaining):
+            if task not in emitted:
+                emit(task)
+    if not live_tsv:
+        print(header, flush=True)
+        for task in finished:
+            render(task)
     print("[tb:score] done", file=sys.stderr, flush=True)
 
 
