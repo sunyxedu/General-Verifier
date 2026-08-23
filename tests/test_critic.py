@@ -133,6 +133,39 @@ def test_critic_gets_the_task_statement_when_the_harness_wrote_one(tmp_path):
     }
 
 
+def test_harness_final_contract_is_isolated_from_solver_graph(tmp_path):
+    """A verified solver definition cannot erase a task requirement."""
+    (tmp_path / "task.md").write_text("Return the complete total.")
+    store, _, backend, _ = build(
+        tmp_path, {"obligations": COMPILE, "critic": PASS})
+
+    premise = store.add_claim(Claim(
+        CLAIM_ASSERTION, "the complete total means component A only"))
+    store.add_claim(Claim(
+        CLAIM_FINAL, "the complete total is 42", deps=(premise,)))
+
+    compiler = [
+        c["variables"] for c in backend.calls
+        if c["role"] == "obligations"
+        and c["variables"]["claim_kind"] == CLAIM_FINAL
+    ][-1]
+    critic = [
+        c["variables"] for c in backend.calls
+        if c["role"] == "critic"
+        and c["variables"]["claim_kind"] == CLAIM_FINAL
+    ][-1]
+
+    assert json.loads(compiler["verified_deps"]) == []
+    assert json.loads(compiler["pending_deps"]) == []
+    assert json.loads(compiler["graph"]) == [{
+        "note": "withheld: harness final contract is compiled "
+                "independently from authoritative task context"
+    }]
+    assert json.loads(compiler["task_context"])["text"] \
+        == "Return the complete total."
+    assert json.loads(critic["verified_deps"]) == []
+
+
 def test_prompts_gate_task_definitions_and_attack_scope_projection():
     """Pin the general contract behind the VVE regression without naming it."""
     assert "DEFINITION GATE" in prompts.OBLIGATIONS_SYSTEM

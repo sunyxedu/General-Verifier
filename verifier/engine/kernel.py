@@ -219,45 +219,62 @@ class Kernel:
             self.memory.hits_for_obligations(row["text"])
             if self.memory is not None else self.memory_hits
         )
+        # A harness final is the independent root of the task contract.
+        # Solver-derived graph nodes may later supply evidence for the
+        # obligations it emits, but they must not become axioms that let the
+        # compiler residualize an authoritative task requirement out of the
+        # contract.  Exact obligation dedup/inheritance still happens after
+        # compilation, so sound reuse remains available.
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        task_context = authoritative_task_context(state)
+        independent_final = (
+            row["kind"] == CLAIM_FINAL
+            and task_context != "(none supplied)"
+        )
         # graph context: verified premises reach the compiler tagged with
         # their evidence basis — world-level premises are facts residual
         # obligations may build on; record-level ones only prove the solver
         # reported/did as recorded. The solver's argument stays invisible
         # either way.
         verified_deps, pending_deps = [], []
-        for pid in self.store.parents(row["id"]):
-            prow = self.store.get(pid)
-            if prow["kind"] == CLAIM_EFFECT:
-                label = "[a verified tool-execution record]"
+        if not independent_final:
+            for pid in self.store.parents(row["id"]):
+                prow = self.store.get(pid)
+                if prow["kind"] == CLAIM_EFFECT:
+                    label = "[a verified tool-execution record]"
+                    if prow["status"] == STATUS_VERIFIED:
+                        verified_deps.append(label)
+                    else:
+                        pending_deps.append(
+                            f"{label} (status: {prow['status']})")
+                    continue
                 if prow["status"] == STATUS_VERIFIED:
-                    verified_deps.append(label)
+                    basis = prow["basis"] or BASIS_RECORD
+                    verified_deps.append(f"[{basis}-level] {prow['text']}")
                 else:
-                    pending_deps.append(f"{label} (status: {prow['status']})")
-                continue
-            if prow["status"] == STATUS_VERIFIED:
-                basis = prow["basis"] or BASIS_RECORD
-                verified_deps.append(f"[{basis}-level] {prow['text']}")
-            else:
-                pending_deps.append(
-                    f"{prow['text']} (status: {prow['status']})")
+                    pending_deps.append(
+                        f"{prow['text']} (status: {prow['status']})")
         # a run scored after the fact (offline ORM) has no live world; the
         # harness may instead have captured the delivered tree next to the
         # ledger. Absolute, like ledger_path: the checker runs elsewhere.
-        state = os.path.dirname(os.path.abspath(self.log.path))
         world_mode, world, _ = world_evidence_context(
             state, live_world=self.live_world)
+        graph = (
+            [{"note": "withheld: harness final contract is compiled "
+                      "independently from authoritative task context"}]
+            if independent_final
+            else self.store.graph_snapshot(exclude=row["id"])
+        )
         variables = {
             "claim_text": row["text"],
             "claim_kind": row["kind"],
-            "task_context": authoritative_task_context(state),
+            "task_context": task_context,
             "ledger_path": os.path.abspath(self.log.path),
             "world_mode": world_mode,
             "world_path": world,
             "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
             "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
-            "graph": json.dumps(
-                self.store.graph_snapshot(exclude=row["id"]),
-                ensure_ascii=False),
+            "graph": json.dumps(graph, ensure_ascii=False),
             "memory_hits": memory_hits,
             "critic_feedback": "",
         }
