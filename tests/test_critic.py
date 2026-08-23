@@ -635,6 +635,29 @@ def test_compiler_and_critic_enforce_lossless_term_anchors():
     assert "a bare `n/a` is forbidden" in prompts.CRITIC_TEMPLATE
 
 
+def test_source_term_roles_cannot_be_rebound_by_latent_name_associations():
+    rule = prompts.SOURCE_TERM_ROLE_BINDING
+    assert rule in prompts.OBLIGATIONS_SYSTEM
+    assert rule in prompts.CRITIC_SYSTEM
+    assert "what is measured" in rule
+    assert "how the measurement is made" in rule
+    assert "rival instrument" in rule
+    assert "must co-denote" in rule
+    assert "Only the controlling source or its named authority" in rule
+    assert "retain the exact source-relative phrase and every explicit " \
+        "instrument in their source-assigned roles" in rule
+    assert "An exact same-role proposition may proceed to later " \
+        "establishment" in rule
+    assert "fails closed only if the available evidence cannot decide it" \
+        in rule
+    assert "source phrase -> source role -> obligation phrase -> " \
+        "co-denotation" in prompts.CRITIC_TEMPLATE
+    assert "critic's repair instruction is not semantic authority" \
+        in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "retain that span verbatim in its original role" \
+        in prompts.CRITIC_FEEDBACK_TEMPLATE
+
+
 def test_compiler_makes_each_obligation_referentially_self_contained():
     assert "SELF-CONTAINED REFERENTS" in prompts.OBLIGATIONS_SYSTEM
     assert "later hashed, shared, and checked as an independent proposition" \
