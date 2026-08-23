@@ -364,15 +364,19 @@ def test_family_total_composition_is_guarded_and_directional():
 
 
 def test_authoritative_schema_names_can_support_family_membership():
-    assert "unambiguous compositional name in the task-authoritative schema" \
+    assert "AUTHORITATIVE SCHEMA IDENTIFIERS ARE SEMANTIC" \
         in prompts.ORACLES_SYSTEM
-    assert "establishes membership only" in prompts.ORACLES_SYSTEM
+    assert "family_role" in prompts.ORACLES_SYSTEM
+    assert "absence of the user's exact umbrella phrase" \
+        in prompts.ORACLES_SYSTEM
     assert "positive family support or discovery-only" \
         in prompts.ORACLES_TEMPLATE
-    assert "do not demand extra prose solely to repeat that schema fact" \
+    assert "MANDATORY SCHEMA-IDENTIFIER CHECK" \
         in prompts.ORACLES_TEMPLATE
-    assert "homonym or untrusted string match remains discovery-only" \
+    assert "`not positively designated`" in prompts.ORACLES_TEMPLATE
+    assert "Enforce the authoritative schema-identifier rule mechanically" \
         in prompts.JUDGER_SYSTEM
+    assert "Do not call it `merely named`" in prompts.JUDGER_SYSTEM
     assert "positive family support" in prompts.JUDGER_TEMPLATE
 
 
