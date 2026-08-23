@@ -188,6 +188,42 @@ def test_prompts_gate_task_definitions_and_attack_scope_projection():
         in prompts.OBLIGATIONS_HARNESS_ADDENDUM
 
 
+def test_semantic_authority_is_not_invented_process_compliance():
+    assert "AUTHORITY DEFINES SEMANTICS, NOT PROCESS" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "not by itself an acceptance condition" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "fixes that quantity's measurement semantics" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "requires or prohibits an action" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "historical action has a record floor" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "optional, helpful, or background references create neither" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "submit a log, citation, report, or proof creates a world-floor" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "non-semantic implementation/tool" in prompts.OBLIGATIONS_SYSTEM
+    assert "artifact's own assertion that an action occurred" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "declarative pointers to named documentation" \
+        in prompts.OBLIGATIONS_HARNESS_ADDENDUM
+    assert "REQUIREMENT-VERSUS-GUIDANCE ATTACK" in prompts.CRITIC_SYSTEM
+    assert "quote the exact clause" in prompts.CRITIC_SYSTEM
+    assert "task-defined result and every deliverable are correct" \
+        in prompts.CRITIC_SYSTEM
+    assert "substitute prohibitions" in prompts.CRITIC_SYSTEM
+    assert "Optional, helpful, or background references control nothing" \
+        in prompts.CRITIC_SYSTEM
+    assert "logs, citations, reports, or proofs create world-floor deliverables" \
+        in prompts.CRITIC_SYSTEM
+    assert "artifact's self-report cannot settle the action condition" \
+        in prompts.CRITIC_SYSTEM
+    assert "REQUIREMENT-VERSUS-GUIDANCE GATE" in prompts.CRITIC_TEMPLATE
+    assert "correct-result-and-deliverables counterfactual" \
+        in prompts.CRITIC_TEMPLATE
+
+
 def test_critic_second_signs_both_directions_of_equivalence():
     assert "attack BOTH DIRECTIONS" in prompts.CRITIC_SYSTEM
     assert "NECESSITY ATTACK" in prompts.CRITIC_SYSTEM
