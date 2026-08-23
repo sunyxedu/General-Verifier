@@ -281,6 +281,15 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
                 # evidence basis: what a successful run of this method
                 # entitles downstream reliance to (see prompts.ORACLES_SYSTEM)
                 "basis": ("world", "record"),
+                # evidence strength: decisive = a decision procedure for
+                # the obligation as written (the only tier that may
+                # refute); bounded/analytic = weaker fallbacks that need
+                # bridges and an audited degradation to bind
+                "strength": ("decisive", "bounded", "analytic"),
+                # the bridging assumptions that transport a non-decisive
+                # method's positive verdict to the obligation; [] for
+                # decisive (the mini-DSL has no optional keys)
+                "bridges": [str],
             }
         ]
     },
@@ -303,6 +312,10 @@ JUDGER_AGENT = AgentRole(
     schema={
         "sufficient": ("yes", "no"),
         "faithful": ("yes", "no"),
+        # the third signature: for a non-decisive method, whether every
+        # stronger tier was genuinely structurally unavailable (audited
+        # against the degradation record); n/a for decisive methods
+        "degradation": ("justified", "unjustified", "n/a"),
         "reason": str,
     },
     tools=["Read", "Bash", "Grep"],

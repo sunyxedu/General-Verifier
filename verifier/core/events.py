@@ -33,6 +33,7 @@ EVENT_TYPES = (
     "methods_enumerated",
     "judger_verdict",
     "method_rejected",
+    "method_deferred",
     "method_redo",
     "method_bound",
     "discharge",

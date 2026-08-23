@@ -66,7 +66,8 @@ def test_floor_joins_obligation_identity():
 def test_game_filters_methods_below_the_floor(tmp_path):
     """A record method never executes against a world-floor obligation."""
     oracle = {"methods": [{"procedure": "grep the ledger", "artifact": "log",
-                           "level": "basic", "basis": "record"}]}
+                           "level": "basic", "basis": "record",
+                           "strength": "decisive", "bridges": []}]}
     game = BindingGame(
         FixtureBackend({"oracles": oracle}),
         ArtifactStore(os.path.join(tmp_path, "art")),

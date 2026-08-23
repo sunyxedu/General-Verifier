@@ -158,7 +158,8 @@ def test_world_image_bytes_are_shared_by_discharge_and_judger(
     calls = []
     payloads = [
         {"outcome": "holds", "witness": "", "artifact": "report.json"},
-        {"sufficient": "yes", "faithful": "yes", "reason": "audited"},
+        {"sufficient": "yes", "faithful": "yes", "degradation": "n/a",
+         "reason": "audited"},
     ]
 
     def fake_run(cmd, **_kwargs):

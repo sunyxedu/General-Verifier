@@ -25,16 +25,20 @@ ORACLE = {"methods": [{
     "artifact": "check script and output",
     "level": "independent recomputation",
     "basis": "world",
+    "strength": "decisive",
+    "bridges": [],
 }]}
 
 JUDGE_YES = {
     "sufficient": "yes",
     "faithful": "yes",
+    "degradation": "n/a",
     "reason": "artifact checks out",
 }
 JUDGE_INSUFFICIENT = {
     "sufficient": "no",
     "faithful": "yes",
+    "degradation": "n/a",
     "reason": "a component does not decide the total",
 }
 
@@ -110,12 +114,16 @@ def test_insufficient_method_is_rejected_without_executor_redo(tmp_path):
             "artifact": "component subtotal",
             "level": "component check",
             "basis": "world",
+            "strength": "decisive",
+            "bridges": [],
         },
         {
             "procedure": "measure the complete quantity",
             "artifact": "complete total",
             "level": "complete check",
             "basis": "world",
+            "strength": "decisive",
+            "bridges": [],
         },
     ]}
 
@@ -124,6 +132,7 @@ def test_insufficient_method_is_rejected_without_executor_redo(tmp_path):
             return {
                 "sufficient": "no",
                 "faithful": "yes",
+                "degradation": "n/a",
                 "reason": "a component does not decide the total",
             }
         return JUDGE_YES
@@ -147,6 +156,7 @@ def test_sufficient_method_with_bad_execution_is_redone(tmp_path):
         {
             "sufficient": "yes",
             "faithful": "no",
+            "degradation": "n/a",
             "reason": "the artifact omitted part of the calculation",
         },
         JUDGE_YES,
@@ -182,11 +192,13 @@ def test_method_becoming_insufficient_on_redo_moves_to_next_method(tmp_path):
         {
             "sufficient": "yes",
             "faithful": "no",
+            "degradation": "n/a",
             "reason": "execution exposed an unresolved scope gap",
         },
         {
             "sufficient": "no",
             "faithful": "yes",
+            "degradation": "n/a",
             "reason": "the scope gap belongs to the method contract",
         },
         JUDGE_YES,
@@ -329,6 +341,7 @@ def test_unfaithful_redo_exhaustion_can_repair_to_a_new_method(tmp_path):
     bad = {
         "sufficient": "yes",
         "faithful": "no",
+        "degradation": "n/a",
         "reason": "the promised parser was not actually used",
     }
 
@@ -435,7 +448,13 @@ def test_unavailable_repaired_method_is_unobtainable_offline(tmp_path):
     assert "snapshot absent" in result.witness
 
 
-def test_real_failure_is_not_hidden_by_unavailable_repair(tmp_path):
+def test_construction_failure_beside_an_audited_gap_is_unobtainable(tmp_path):
+    """One rule shared with the tier-unlock gate: at least one
+    EXECUTOR-AUDITED structural gap plus zero settled verdicts settles
+    unobtainable — a construction failure beside an audited gap is noise
+    around an established blocker, not counter-evidence to it. (The
+    failed attempt stays on record; the judger's degradation audit is
+    the counterweight when weaker evidence later leans on this gap.)"""
     initial = {
         "methods": [
             oracle_method("structurally insufficient method"),
@@ -460,7 +479,8 @@ def test_real_failure_is_not_hidden_by_unavailable_repair(tmp_path):
 
     result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
 
-    assert result.outcome == "failed"
+    assert result.outcome == "unobtainable"
+    assert "snapshot absent" in result.witness
 
 
 def test_oracle_repair_role_error_stays_failed(tmp_path):
@@ -609,6 +629,7 @@ def test_offline_initial_empty_gets_one_bounded_oracle_repair(tmp_path):
             "structural_rejections": [],
             "unavailable_boundaries": [],
             "exhausted_attempts": [],
+            "deferred_methods": [],
         }
         return {"methods": [repaired]}
 
@@ -669,6 +690,8 @@ def test_only_below_floor_methods_are_protocol_failure_offline(tmp_path):
         "artifact": "ledger excerpt",
         "level": "record inspection",
         "basis": "record",
+        "strength": "decisive",
+        "bridges": [],
     }]}
     g, _ = game(tmp_path, {"oracles": methods}, live_world=False)
 
@@ -681,7 +704,8 @@ def test_only_below_floor_methods_are_protocol_failure_offline(tmp_path):
 
 def test_missing_declaration_fails_closed_to_record(tmp_path):
     legacy = {"methods": [{"procedure": "p", "artifact": "a", "level": "l",
-                           "basis": "record"}]}
+                           "basis": "record", "strength": "decisive",
+                           "bridges": []}]}
     g, backend = game(tmp_path, {"oracles": legacy, "judger": JUDGE_YES})
 
     result = g.run(ROW, Obligation("c1", "answer equals 42"))
@@ -693,9 +717,11 @@ def test_missing_declaration_fails_closed_to_record(tmp_path):
 def test_all_unavailable_methods_preserve_the_concrete_gap(tmp_path):
     methods = {"methods": [
         {"procedure": "read the retained output", "artifact": "output",
-         "level": "direct", "basis": "world"},
+         "level": "direct", "basis": "world", "strength": "decisive",
+         "bridges": []},
         {"procedure": "read the contemporaneous snapshot",
-         "artifact": "snapshot", "level": "direct", "basis": "world"},
+         "artifact": "snapshot", "level": "direct", "basis": "world",
+         "strength": "decisive", "bridges": []},
     ]}
     backend = FixtureBackend({
         "oracles": oracle_with_repair({"methods": []}, methods),
@@ -718,12 +744,18 @@ def test_all_unavailable_methods_preserve_the_concrete_gap(tmp_path):
     assert "no contemporaneous snapshot was retained" in result.witness
 
 
-def test_retryable_failure_is_not_hidden_by_an_unavailable_method(tmp_path):
+def test_audited_gap_beside_a_retryable_failure_is_unobtainable(tmp_path):
+    """The mirror case at the first batch: an executor-audited gap plus a
+    retryable failure settles unobtainable under the shared aggregation
+    rule (the chess trace's shape: honest unobtainables must not be
+    masked by a sibling attempt's botched construction)."""
     methods = {"methods": [
         {"procedure": "read the retained output", "artifact": "output",
-         "level": "direct", "basis": "world"},
+         "level": "direct", "basis": "world", "strength": "decisive",
+         "bridges": []},
         {"procedure": "run a valid independent checker",
-         "artifact": "checker output", "level": "direct", "basis": "world"},
+         "artifact": "checker output", "level": "direct", "basis": "world",
+         "strength": "decisive", "bridges": []},
     ]}
     backend = FixtureBackend({"oracles": methods})
     game = BindingGame(
@@ -737,5 +769,34 @@ def test_retryable_failure_is_not_hidden_by_an_unavailable_method(tmp_path):
     )
 
     result = game.run(ROW, Obligation("c1", "past state was X", "world"))
+
+    assert result.outcome == "unobtainable"
+    assert "result excerpt was truncated" in result.witness
+
+
+def test_pure_failures_with_no_audited_gap_stay_failed(tmp_path):
+    """Failure alone never promotes: a false statement's honest
+    construction attempts also all fail, and an oracle's empty-repair
+    boundary declaration must not launder a pile of retryable failures
+    into a structural gap."""
+    methods = {"methods": [
+        {"procedure": "run checker A", "artifact": "output",
+         "level": "direct", "basis": "world", "strength": "decisive",
+         "bridges": []},
+        {"procedure": "run checker B", "artifact": "output",
+         "level": "direct", "basis": "world", "strength": "decisive",
+         "bridges": []},
+    ]}
+    g, _ = game(
+        tmp_path,
+        {"oracles": oracle_with_repair({"methods": []}, methods)},
+        live_world=False,
+        discharger=SequenceDischarger([
+            ("failed", "checker A timed out"),
+            ("failed", "checker B crashed"),
+        ]),
+    )
+
+    result = g.run(ROW, Obligation("c1", "past state was X", "world"))
 
     assert result.outcome == "failed"

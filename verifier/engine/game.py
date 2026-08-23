@@ -5,12 +5,21 @@ Per obligation:
 
 1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
    oracle's own guarantee, researched first when the domain is
-   unfamiliar) and grades each with an assurance level of its own
-   devising, listing them ascending. Simplest sufficient first, most
-   assured last. Execution follows the oracle's order exactly.
-2. For each method in order the discharge executor carries it out
-   faithfully (a missing instrument is installed at discharge time; a
-   truly unobtainable one settles the claim at partial).
+   unfamiliar), each with a signed strength declaration — decisive
+   (a decision procedure for the obligation as written), bounded (a
+   narrower instrument plus declared bridging assumptions), analytic
+   (a disciplined reading with a witness trace) — and grades each with
+   an assurance level of its own devising, ascending within a tier.
+2. Execution is strictness-descending, enforced mechanically: decisive
+   methods first; a weaker tier runs only after every stronger listed
+   tier has been audited structurally unavailable (>=1 unobtainable
+   attempt — degradation is an audited event, never a choice), or was
+   never listed (an omission the judger audits). The discharge executor
+   carries each method out faithfully (a missing instrument is
+   installed at discharge time; a truly unobtainable one settles the
+   claim at partial). Nothing below decisive may refute: a negative
+   result from a bounded/analytic instrument converts to failed with
+   the finding kept as a diagnostic.
    - The judger examines EVERY substantive result — holds and refuted
      alike: is the candidate method sufficient for the full obligation,
      was it faithfully executed against the right target, and was the
@@ -47,8 +56,24 @@ from ..execution.instruments import (
 from ..core.model import (
     BASIS_RECORD, Obligation, basis_satisfies,
     OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
+    STRENGTH_ANALYTIC, STRENGTH_DECISIVE, STRENGTHS, strength_rank,
 )
 from ..llm.schema import RoleError
+
+
+def _method_strength(method: Dict[str, str]) -> str:
+    """The method's declared strength, failing closed to analytic when the
+    declaration is absent or unrecognized (mirrors basis -> record: an
+    undeclared method must not execute as if it were a decision
+    procedure)."""
+    strength = method.get("strength", STRENGTH_ANALYTIC)
+    return strength if strength in STRENGTHS else STRENGTH_ANALYTIC
+
+
+def _tier_order(method: Dict[str, str]) -> int:
+    """Sort key for strictness-descending execution; sorted() is stable,
+    so the oracle's cost-ascending order survives within a tier."""
+    return -strength_rank(_method_strength(method))
 
 
 @dataclass
@@ -143,15 +168,44 @@ class BindingGame:
                     f"{obligation.required_basis!r}",
                 )
 
+        # strictness-descending execution: decisive first, then bounded,
+        # then analytic — a weaker tier runs only once every stronger
+        # LISTED method has been audited structurally unavailable (the
+        # deferral below); an unlisted stronger tier does not block, the
+        # omission instead goes into the degradation record the judger
+        # audits.
+        methods.sort(key=_tier_order)
+
         unavailable_reasons: List[str] = []
+        audited_gap = False   # an EXECUTOR-audited unobtainable is on record
+        # (the empty-repair boundary declaration also lands in
+        # unavailable_reasons but is weaker: it only settles unobtainable
+        # when nothing failed — an oracle saying "no further method" must
+        # not promote a pile of retryable failures)
         structural_feedback: List[Dict[str, str]] = []
         seen_procedures = set()
+        deferred: List[Dict[str, str]] = []
+        tier_listed = {_method_strength(m) for m in methods}
+        tier_unobtainable: set = set()
+        degradation_disputed = False
         failed_seen = False
         repair_used = False
         method_index = 0
-        while (method_index < len(methods)
+        while (method_index < len(methods) or deferred
                or ((attempts or initial_empty) and not repair_used)):
             if method_index >= len(methods):
+                ready = [m for m in deferred
+                         if not self._blocking(m, tier_listed,
+                                               tier_unobtainable)]
+                if ready:
+                    # a stronger tier resolved to structurally unavailable
+                    # after these were parked: they are executable now
+                    deferred = [m for m in deferred if m not in ready]
+                    ready.sort(key=_tier_order)
+                    methods.extend(ready)
+                    continue
+                if not ((attempts or initial_empty) and not repair_used):
+                    break
                 # Hand an exhausted batch — including an offline initial empty
                 # batch — back to the Oracle exactly once.  A different method
                 # may notice a frozen-input experiment, retained effect, or
@@ -167,6 +221,16 @@ class BindingGame:
                         )),
                         "exhausted_attempts": [
                             _attempt_diagnostic(a) for a in attempts
+                        ],
+                        # parked, not rejected: these wait on a stronger
+                        # tier's structural unavailability, so the repair
+                        # must not re-list them
+                        "deferred_methods": [
+                            {"procedure": m.get("procedure", "")[:80],
+                             "strength": _method_strength(m),
+                             "waiting_on": self._blocking(
+                                 m, tier_listed, tier_unobtainable)}
+                            for m in deferred
                         ],
                     },
                     ensure_ascii=False,
@@ -213,7 +277,13 @@ class BindingGame:
                         )
                     else:
                         methods.append(candidate)
+                        tier_listed.add(_method_strength(candidate))
                         added += 1
+                if added:
+                    # the unexecuted tail keeps the strictness-descending
+                    # invariant the initial sort established
+                    methods[method_index:] = sorted(
+                        methods[method_index:], key=_tier_order)
                 if not added:
                     # A non-empty repair batch made entirely of low-floor or
                     # already-tried procedures is a protocol failure, not an
@@ -223,6 +293,20 @@ class BindingGame:
 
             method = methods[method_index]
             method_index += 1
+            strength = _method_strength(method)
+            blocking = self._blocking(method, tier_listed, tier_unobtainable)
+            if blocking:
+                # degradation is an audited event, never a choice: this
+                # method parks until every stronger listed tier has been
+                # audited structurally unavailable
+                deferred.append(method)
+                self.log.append(
+                    "method_deferred",
+                    {"claim": row["id"], "obligation": obligation.id,
+                     "procedure": method.get("procedure", "")[:80],
+                     "strength": strength, "waiting_on": blocking},
+                )
+                continue
             procedure = method["procedure"]
             if procedure in seen_procedures:
                 self._reject(
@@ -244,6 +328,8 @@ class BindingGame:
                 detail = str(result.witness or
                              "required instrument or evidence unavailable")
                 unavailable_reasons.append(detail)
+                audited_gap = True
+                tier_unobtainable.add(strength)
                 reason = f"unobtainable: {detail}"
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
@@ -259,6 +345,26 @@ class BindingGame:
                 attempt.rejected = reason
                 continue
 
+            if result.outcome == OUTCOME_REFUTED \
+                    and strength != STRENGTH_DECISIVE:
+                # nothing below decisive may refute: the instrument's own
+                # scope gap is exactly what a negative verdict cannot carry
+                # across (a failing unit test does not prove the system-
+                # level bug, and a passing one does not disprove it). The
+                # negative finding stays on record as a diagnostic for the
+                # repair pass — a decisive method may yet refute honestly.
+                failed_seen = True
+                reason = (f"refutation below decisive strength is "
+                          f"inadmissible ({strength} instrument reported: "
+                          f"{result.witness})")
+                structural_feedback.append({
+                    "procedure": procedure,
+                    "reason": reason,
+                })
+                self._reject(row, obligation, method, reason)
+                attempt.rejected = reason
+                continue
+
             # every substantive outcome — holds AND refuted — faces the
             # judger before it settles, for both method sufficiency and
             # execution fidelity. A refutation is the most
@@ -266,7 +372,29 @@ class BindingGame:
             # its claim — for the final, the whole certificate), so an
             # unaudited one is exactly the evidence we cannot afford to
             # accept.
-            verdict = self._judge(obligation, method, result, attempt)
+            degradation = self._degradation_record(
+                strength, attempts, tier_listed)
+            verdict = self._judge(obligation, method, result, attempt,
+                                  degradation=degradation)
+            if strength != STRENGTH_DECISIVE \
+                    and verdict.get("degradation") == "unjustified":
+                # the third signature failed: the judger disputes that the
+                # stronger tiers were genuinely unavailable, so this weaker
+                # evidence may not settle — and the obligation's own
+                # unobtainable story is disputed with it (fail-closed to
+                # failed at aggregation)
+                degradation_disputed = True
+                if repair_used:
+                    failed_seen = True
+                reason = ("judger degradation unjustified: "
+                          f"{verdict['reason']}")
+                structural_feedback.append({
+                    "procedure": procedure,
+                    "reason": reason,
+                })
+                self._reject(row, obligation, method, reason)
+                attempt.rejected = reason
+                continue
             if verdict.get("sufficient") == "no":
                 # First-batch insufficiency is exactly what the bounded
                 # Oracle repair can correct. A repaired method that is still
@@ -304,6 +432,8 @@ class BindingGame:
                     detail = str(result.witness or
                                  "required instrument or evidence unavailable")
                     unavailable_reasons.append(detail)
+                    audited_gap = True
+                    tier_unobtainable.add(strength)
                     reason = f"unobtainable (redo {rounds}): {detail}"
                     break
                 if result.outcome == OUTCOME_FAILED:
@@ -313,8 +443,29 @@ class BindingGame:
                     if detail:
                         reason += f": {detail}"
                     break
+                if result.outcome == OUTCOME_REFUTED \
+                        and strength != STRENGTH_DECISIVE:
+                    failed_seen = True
+                    reason = (f"refutation below decisive strength is "
+                              f"inadmissible (redo {rounds}; {strength} "
+                              f"instrument reported: {result.witness})")
+                    structural_feedback.append({
+                        "procedure": procedure,
+                        "reason": reason,
+                    })
+                    break
                 verdict = self._judge(obligation, method, result, attempt,
-                                      redo=rounds)
+                                      redo=rounds, degradation=degradation)
+                if strength != STRENGTH_DECISIVE \
+                        and verdict.get("degradation") == "unjustified":
+                    degradation_disputed = True
+                    reason = (f"judger degradation unjustified "
+                              f"(redo {rounds}): {verdict['reason']}")
+                    structural_feedback.append({
+                        "procedure": procedure,
+                        "reason": reason,
+                    })
+                    break
                 if verdict.get("sufficient") == "no":
                     structural_feedback.append({
                         "procedure": procedure,
@@ -334,14 +485,73 @@ class BindingGame:
             self._reject(row, obligation, method, reason)
             attempt.rejected = reason
 
-        unavailable_only = bool(unavailable_reasons) and not failed_seen
+        # terminal aggregation, one rule shared with the tier-unlock gate:
+        # at least one audited structural gap and zero settled verdicts
+        # settles unobtainable — a construction failure BESIDE an audited
+        # gap is noise around an established blocker, not counter-evidence
+        # to it (pure failures, with no unobtainable in sight, still fail:
+        # a false statement's honest construction attempts also all fail).
+        # A judger-disputed degradation withdraws that trust: the
+        # structural story itself is contested, so fail closed to failed.
+        unavailable_only = (
+            (audited_gap
+             or (bool(unavailable_reasons) and not failed_seen))
+            and not degradation_disputed)
         reason = (
             "all candidate methods structurally unavailable: "
             + "; ".join(dict.fromkeys(unavailable_reasons))
             if unavailable_only else "all candidate methods rejected"
         )
+        if deferred:
+            reason += (f"; {len(deferred)} weaker-tier method(s) stayed "
+                       "deferred behind a stronger tier never audited "
+                       "structurally unavailable")
         return self._fail(row, obligation, attempts, reason,
                           unobtainable=unavailable_only)
+
+    @staticmethod
+    def _blocking(method: Dict[str, str], tier_listed: set,
+                  tier_unobtainable: set) -> List[str]:
+        """The stronger tiers this method is parked behind: every LISTED
+        stronger tier not yet audited structurally unavailable (>=1
+        unobtainable attempt; failed attempts do not clear a tier — nor
+        do they hold it closed once an audited gap is on record). Empty
+        means executable. An unlisted stronger tier never blocks: the
+        omission itself goes into the degradation record for the judger
+        to audit."""
+        strength = _method_strength(method)
+        return [tier for tier in STRENGTHS
+                if strength_rank(tier) > strength_rank(strength)
+                and tier in tier_listed and tier not in tier_unobtainable]
+
+    def _degradation_record(self, strength: str, attempts: List[Attempt],
+                            tier_listed: set) -> str:
+        """What the judger audits before countersigning a non-decisive
+        binding: every stronger-tier attempt with its terminal state, plus
+        stronger tiers the oracle never listed (an omission is itself a
+        signed declaration that no such method exists in principle)."""
+        if strength == STRENGTH_DECISIVE:
+            return "(none — decisive method, no degradation to audit)"
+        stronger = [a for a in attempts
+                    if strength_rank(_method_strength(a.method))
+                    > strength_rank(strength)]
+        return json.dumps(
+            {
+                "stronger_attempts": [
+                    {"tier": _method_strength(a.method),
+                     "procedure": a.method.get("procedure", "")[:80],
+                     "outcome": a.discharge_outcome,
+                     "terminal_reason": a.rejected}
+                    for a in stronger
+                ],
+                "omitted_tiers": [
+                    tier for tier in STRENGTHS
+                    if strength_rank(tier) > strength_rank(strength)
+                    and tier not in tier_listed
+                ],
+            },
+            ensure_ascii=False,
+        )
 
     # enumeration and advisory review
     def _enumerate(
@@ -379,14 +589,17 @@ class BindingGame:
              "repair": method_feedback != "(none)",
              "methods": [{"procedure": m["procedure"][:80],
                           "level": m.get("level", ""),
-                          "basis": m.get("basis", "")}
+                          "basis": m.get("basis", ""),
+                          "strength": _method_strength(m)}
                          for m in methods]},
         )
         return methods
 
     # the judger
     def _judge(self, obligation, method, result, attempt,
-               redo: int = 0) -> Dict[str, str]:
+               redo: int = 0,
+               degradation: str = "(none — decisive method, no degradation "
+                                  "to audit)") -> Dict[str, str]:
         evidence = {
             "outcome": result.outcome,
             "witness": result.witness,
@@ -412,6 +625,14 @@ class BindingGame:
                     # audits it as part of fidelity, and it is what the
                     # settled verdict will carry downstream
                     "basis": method.get("basis", ""),
+                    # the strength ladder's three inputs: sufficiency is
+                    # judged AT the declared tier, bridges must close the
+                    # gap, and a non-decisive binding needs the third
+                    # signature over the degradation record
+                    "declared_strength": _method_strength(method),
+                    "bridges": json.dumps(method.get("bridges", []),
+                                          ensure_ascii=False),
+                    "degradation_record": degradation,
                     "task_context": authoritative_task_context(state),
                     "ledger_path": os.path.abspath(self.log.path),
                     "artifact_root": os.path.abspath(self.artifacts.root),
@@ -429,6 +650,7 @@ class BindingGame:
                 # only yes/no, so neither signature can accidentally pass.
                 "sufficient": "unknown",
                 "faithful": "no",
+                "degradation": "n/a",
                 "reason": f"judger failed: {err}",
                 "_infra": True,
             }
@@ -501,7 +723,8 @@ class BindingGame:
             "method_bound",
             {"claim": row["id"], "obligation": obligation.id,
              "procedure": method["procedure"][:80],
-             "level": method.get("level", "")},
+             "level": method.get("level", ""),
+             "strength": _method_strength(method)},
         )
         return DischargeResult(
             outcome=result.outcome,
@@ -511,6 +734,10 @@ class BindingGame:
             # the oracle's declared basis, already audited by the judger as
             # part of fidelity; absent (legacy fixtures) fails closed to record
             basis=method.get("basis", BASIS_RECORD),
+            # the declared strength the judger countersigned (sufficiency at
+            # tier, bridge completeness, degradation): what the settled
+            # verdict is worth downstream
+            strength=_method_strength(method),
         )
 
     def _fail(self, row, obligation, attempts, reason,
@@ -551,6 +778,8 @@ def _attempt_diagnostic(attempt: Attempt) -> Dict:
         "promised_artifact": attempt.method.get("artifact", ""),
         "level": attempt.method.get("level", ""),
         "basis": attempt.method.get("basis", BASIS_RECORD),
+        "strength": _method_strength(attempt.method),
+        "bridges": attempt.method.get("bridges", []),
     }
 
     def public(audit):

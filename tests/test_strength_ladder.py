@@ -107,3 +107,307 @@ def test_graph_snapshot_discloses_strength(tmp_path):
     store.set_verified(cid, basis="world", strength=STRENGTH_ANALYTIC)
     (entry,) = store.graph_snapshot()
     assert entry["strength"] == STRENGTH_ANALYTIC
+
+
+# ---- the binding game's ladder mechanics ----------------------------------
+
+import json as _json
+
+from verifier.core.events import EventLog
+from verifier.core.model import Obligation
+from verifier.engine.game import BindingGame
+from verifier.execution.discharge import DischargeResult
+from verifier.execution.instruments import ArtifactStore
+from verifier.llm.schema import FixtureBackend
+
+ROW = {"id": "c1", "kind": "assertion", "text": "there is a bug xxx"}
+
+
+def method(procedure, strength=STRENGTH_DECISIVE, bridges=(), basis="world"):
+    return {"procedure": procedure, "artifact": "check output",
+            "level": "direct", "basis": basis, "strength": strength,
+            "bridges": list(bridges)}
+
+
+SYSTEM_TEST = method("system test: run the full reproduction scenario")
+UNIT_TEST = method(
+    "unit test: drive f with input I against its local contract",
+    strength=STRENGTH_BOUNDED,
+    bridges=["call path P reaches f(I)", "no upstream sanitizer rejects I"])
+CODE_READING = method(
+    "read src/m.c:120-180 (sha256 pinned) and trace input I step by step",
+    strength=STRENGTH_ANALYTIC,
+    bridges=["the code as read is the code as built"])
+
+JUDGE_OK = {"sufficient": "yes", "faithful": "yes", "degradation": "n/a",
+            "reason": "checks out"}
+JUDGE_OK_DEGRADED = {"sufficient": "yes", "faithful": "yes",
+                     "degradation": "justified", "reason": "gap is real"}
+
+
+class ScriptedDischarger:
+    """outcome per procedure, recording execution order."""
+
+    def __init__(self, outcomes):
+        self.outcomes = dict(outcomes)
+        self.executed = []
+
+    def discharge(self, row, obligation, method=None, tag=""):
+        self.executed.append(method["procedure"])
+        outcome, witness = self.outcomes[method["procedure"]]
+        return DischargeResult(outcome=outcome, witness=witness,
+                               artifact="d1", instrument="stub")
+
+
+def ladder_game(tmp_path, roles, discharger, live_world=True):
+    backend = FixtureBackend(roles)
+    return BindingGame(
+        backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        EventLog(os.path.join(tmp_path, "events.jsonl")),
+        discharger,
+        live_world=live_world,
+    ), backend
+
+
+def test_execution_is_strictness_descending(tmp_path):
+    """The engine sorts tiers strongest-first regardless of the oracle's
+    listing order; within a tier the oracle's order survives."""
+    discharger = ScriptedDischarger({
+        SYSTEM_TEST["procedure"]: ("holds", None),
+    })
+    g, _ = ladder_game(
+        tmp_path,
+        {"oracles": {"methods": [CODE_READING, UNIT_TEST, SYSTEM_TEST]},
+         "judger": JUDGE_OK},
+        discharger,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the bug is present", "world"))
+
+    assert result.outcome == "holds"
+    assert result.strength == STRENGTH_DECISIVE
+    assert discharger.executed == [SYSTEM_TEST["procedure"]]
+
+
+def test_audited_gap_unlocks_the_next_tier(tmp_path):
+    """system test structurally unavailable -> unit test binds; the judger
+    receives the degradation record and the settled result carries the
+    bounded strength (-> supported at the certificate)."""
+    discharger = ScriptedDischarger({
+        SYSTEM_TEST["procedure"]: ("unobtainable", "no API key in the env"),
+        UNIT_TEST["procedure"]: ("holds", None),
+    })
+    g, backend = ladder_game(
+        tmp_path,
+        {"oracles": {"methods": [SYSTEM_TEST, UNIT_TEST]},
+         "judger": JUDGE_OK_DEGRADED},
+        discharger,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the bug is present", "world"))
+
+    assert result.outcome == "holds"
+    assert result.strength == STRENGTH_BOUNDED
+    assert discharger.executed == [SYSTEM_TEST["procedure"],
+                                   UNIT_TEST["procedure"]]
+    judger_vars = [c for c in backend.calls
+                   if c["role"] == "judger"][-1]["variables"]
+    assert judger_vars["declared_strength"] == STRENGTH_BOUNDED
+    assert "no upstream sanitizer rejects I" in judger_vars["bridges"]
+    record = _json.loads(judger_vars["degradation_record"])
+    assert record["stronger_attempts"][0]["tier"] == STRENGTH_DECISIVE
+    assert record["stronger_attempts"][0]["outcome"] == "unobtainable"
+    assert record["omitted_tiers"] == []
+
+
+def test_failed_decisive_does_not_unlock_weaker_tiers(tmp_path):
+    """A retryable failure is not a structural gap: the weaker method
+    stays deferred and the obligation fails (unverified upstream)."""
+    discharger = ScriptedDischarger({
+        SYSTEM_TEST["procedure"]: ("failed", "harness crashed"),
+    })
+
+    def enumerate_methods(variables):
+        if variables["method_feedback"] == "(none)":
+            return {"methods": [SYSTEM_TEST, UNIT_TEST]}
+        feedback = _json.loads(variables["method_feedback"])
+        assert feedback["deferred_methods"][0]["strength"] == STRENGTH_BOUNDED
+        assert feedback["deferred_methods"][0]["waiting_on"] == [
+            STRENGTH_DECISIVE]
+        return {"methods": []}
+
+    g, _ = ladder_game(
+        tmp_path,
+        {"oracles": enumerate_methods, "judger": JUDGE_OK},
+        discharger,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the bug is present", "world"))
+
+    assert result.outcome == "failed"
+    assert "deferred behind a stronger tier" in result.witness
+    assert discharger.executed == [SYSTEM_TEST["procedure"]]
+
+
+def test_omitted_decisive_tier_reaches_the_judger_for_audit(tmp_path):
+    """Listing no decisive method is a signed declaration, not a fast
+    path: the weaker method executes but its degradation record shows
+    the omission for the judger to audit."""
+    discharger = ScriptedDischarger({
+        UNIT_TEST["procedure"]: ("holds", None),
+    })
+    g, backend = ladder_game(
+        tmp_path,
+        {"oracles": {"methods": [UNIT_TEST]}, "judger": JUDGE_OK_DEGRADED},
+        discharger,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the bug is present", "world"))
+
+    assert result.outcome == "holds"
+    record = _json.loads(
+        [c for c in backend.calls if c["role"] == "judger"][-1]
+        ["variables"]["degradation_record"])
+    assert record["omitted_tiers"] == [STRENGTH_DECISIVE]
+
+
+def test_unjustified_degradation_rejects_and_disputes_the_gap(tmp_path):
+    """The third signature: when the judger disputes that the stronger
+    tier was genuinely unavailable, the weaker evidence may not settle
+    AND the obligation's unobtainable story falls with it (failed, not
+    unobtainable — fail-closed)."""
+    discharger = ScriptedDischarger({
+        SYSTEM_TEST["procedure"]: ("unobtainable", "claims no API key"),
+        UNIT_TEST["procedure"]: ("holds", None),
+    })
+    unjustified = {"sufficient": "yes", "faithful": "yes",
+                   "degradation": "unjustified",
+                   "reason": "the ledger shows a usable offline replayer"}
+    g, _ = ladder_game(
+        tmp_path,
+        {"oracles": oracle_once({"methods": [SYSTEM_TEST, UNIT_TEST]}),
+         "judger": unjustified},
+        discharger,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the bug is present", "world"))
+
+    assert result.outcome == "failed"
+    assert any("degradation unjustified" in (e["payload"].get("reason") or "")
+               for e in g.log.replay() if e["type"] == "method_rejected")
+
+
+def oracle_once(initial):
+    """Initial batch once, empty repair afterwards."""
+    def enumerate_methods(variables):
+        return initial if variables["method_feedback"] == "(none)" \
+            else {"methods": []}
+    return enumerate_methods
+
+
+def test_refutation_below_decisive_converts_to_failed(tmp_path):
+    """A failing unit test does not prove the system-level bug absent (or
+    present): nothing below decisive may refute. The negative finding
+    stays on record as a diagnostic; the judger is never consulted."""
+    discharger = ScriptedDischarger({
+        SYSTEM_TEST["procedure"]: ("unobtainable", "no API key"),
+        UNIT_TEST["procedure"]: ("refuted", "assertion failed at step 3"),
+    })
+    g, backend = ladder_game(
+        tmp_path,
+        {"oracles": oracle_once({"methods": [SYSTEM_TEST, UNIT_TEST]})},
+        discharger,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the bug is present", "world"))
+
+    assert result.outcome != "refuted"
+    assert not [c for c in backend.calls if c["role"] == "judger"]
+    rejected = [e for e in g.log.replay() if e["type"] == "method_rejected"]
+    assert any("refutation below decisive strength is inadmissible"
+               in e["payload"]["reason"] for e in rejected)
+    assert any("assertion failed at step 3" in e["payload"]["reason"]
+               for e in rejected)
+
+
+def test_repair_can_unlock_deferred_weaker_methods(tmp_path):
+    """A repaired decisive method that lands unobtainable clears the tier
+    after the fact: parked weaker methods re-queue and may bind."""
+    replacement = method("system test via the recorded fixture server")
+    discharger = ScriptedDischarger({
+        SYSTEM_TEST["procedure"]: ("failed", "harness crashed"),
+        replacement["procedure"]: ("unobtainable", "fixture server gone"),
+        UNIT_TEST["procedure"]: ("holds", None),
+    })
+
+    def enumerate_methods(variables):
+        if variables["method_feedback"] == "(none)":
+            return {"methods": [SYSTEM_TEST, UNIT_TEST]}
+        return {"methods": [replacement]}
+
+    g, _ = ladder_game(
+        tmp_path,
+        {"oracles": enumerate_methods, "judger": JUDGE_OK_DEGRADED},
+        discharger,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the bug is present", "world"))
+
+    assert result.outcome == "holds"
+    assert result.strength == STRENGTH_BOUNDED
+    assert discharger.executed == [SYSTEM_TEST["procedure"],
+                                   replacement["procedure"],
+                                   UNIT_TEST["procedure"]]
+
+
+def test_full_ladder_descends_to_analytic(tmp_path):
+    """system test and unit test both structurally unavailable -> the
+    disciplined code reading binds at analytic strength, with both
+    stronger attempts in its degradation record."""
+    discharger = ScriptedDischarger({
+        SYSTEM_TEST["procedure"]: ("unobtainable", "no API key"),
+        UNIT_TEST["procedure"]: ("unobtainable", "cannot isolate the unit"),
+        CODE_READING["procedure"]: ("holds", None),
+    })
+    g, backend = ladder_game(
+        tmp_path,
+        {"oracles": {"methods": [SYSTEM_TEST, UNIT_TEST, CODE_READING]},
+         "judger": JUDGE_OK_DEGRADED},
+        discharger,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the bug is present", "world"))
+
+    assert result.outcome == "holds"
+    assert result.strength == STRENGTH_ANALYTIC
+    record = _json.loads(
+        [c for c in backend.calls if c["role"] == "judger"][-1]
+        ["variables"]["degradation_record"])
+    assert [a["tier"] for a in record["stronger_attempts"]] == [
+        STRENGTH_DECISIVE, STRENGTH_BOUNDED]
+
+
+# ---- prompt and schema pins ----------------------------------------------
+
+def test_prompts_pin_the_ladder():
+    from verifier.llm import prompts
+    assert "STRENGTH LADDER" in prompts.ORACLES_SYSTEM
+    assert "strength=analytic" in prompts.ORACLES_SYSTEM
+    assert "FALLBACKS, not substitutes" in prompts.ORACLES_SYSTEM
+    assert "strength: decisive | bounded | analytic" in prompts.ORACLES_TEMPLATE
+    assert "STRENGTH IS PART OF SUFFICIENCY" in prompts.JUDGER_SYSTEM
+    assert "DEGRADATION AUDIT" in prompts.JUDGER_SYSTEM
+    assert "{declared_strength}" in prompts.JUDGER_TEMPLATE
+    assert "{bridges}" in prompts.JUDGER_TEMPLATE
+    assert "{degradation_record}" in prompts.JUDGER_TEMPLATE
+    assert "STRENGTH AUDIT" in prompts.JUDGER_TEMPLATE
+
+
+def test_role_schemas_pin_the_ladder_fields():
+    from verifier.llm.agents import ENUMERATE_ORACLES_AGENT, JUDGER_AGENT
+    method_schema = ENUMERATE_ORACLES_AGENT.schema["methods"][0]
+    assert method_schema["strength"] == ("decisive", "bounded", "analytic")
+    assert method_schema["bridges"] == [str]
+    assert JUDGER_AGENT.schema["degradation"] == (
+        "justified", "unjustified", "n/a")
