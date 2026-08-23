@@ -22,6 +22,12 @@ from ..core.model import BASIS_RECORD, Obligation, OUTCOME_FAILED
 from ..llm.schema import RoleError
 
 
+# Text evidence is embedded in ArtifactStore JSON, so this is a decoded
+# character budget rather than an on-disk byte budget.  Keep the executor's
+# contract mechanically tied to the value used by _snapshot().
+SNAPSHOT_PER_FILE_CAP = 65_536
+
+
 @dataclass(frozen=True)
 class DischargeResult:
     outcome: str                 # holds | refuted | failed | unobtainable
@@ -113,6 +119,7 @@ class AgentDischarger:
             "world_mode": world_mode,
             "world_path": world,
             "world_manifest": manifest,
+            "snapshot_per_file_cap": SNAPSHOT_PER_FILE_CAP,
         }
         try:
             payload = self.role.call(self.backend, variables)
@@ -154,11 +161,12 @@ SNAPSHOT_SKIP_DIRS = {
 }
 
 
-def _snapshot(workdir: str, per_file_cap: int = 65536,
+def _snapshot(workdir: str, per_file_cap: int = SNAPSHOT_PER_FILE_CAP,
               max_files: int = 200, max_total: int = 2_000_000) -> Dict[str, str]:
     """
     Bounded content snapshot of what the agent left on disk. 
-    Caps are mechanical: per file, file count, and total bytes; truncation is marked.
+    Caps are mechanical: decoded characters per file, file count, and total
+    decoded characters; truncation is marked.
     """
     files: Dict[str, str] = {}
     total = 0

@@ -5,7 +5,11 @@ import json
 import os
 
 from verifier.core.model import Obligation
-from verifier.execution.discharge import AgentDischarger
+from verifier.execution.discharge import (
+    SNAPSHOT_PER_FILE_CAP,
+    AgentDischarger,
+    _snapshot,
+)
 from verifier.execution.instruments import ArtifactStore, world_evidence_context
 from verifier.llm.schema import FixtureBackend
 
@@ -69,6 +73,7 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
     assert variables["declared_basis"] == "world"
     assert variables["required_basis"] == "world"
     assert variables["redo_feedback"] == "(none)"
+    assert variables["snapshot_per_file_cap"] == SNAPSHOT_PER_FILE_CAP
     assert json.loads(variables["task_context"]) == {
         "path": str(task),
         "text": "Count every item, not one component.",
@@ -102,3 +107,25 @@ def test_cleanup_removes_scratch_but_keeps_artifact_files_snapshot(tmp_path):
     assert artifacts.get(result.artifact)["files"] == {
         "check.txt": "complete verifier output",
     }
+
+
+def test_snapshot_per_file_character_boundary_is_explicit(tmp_path):
+    exact = "x" * SNAPSHOT_PER_FILE_CAP
+    (tmp_path / "exact.txt").write_text(exact)
+    (tmp_path / "over.txt").write_text(exact + "y")
+
+    files = _snapshot(str(tmp_path))
+
+    assert files["exact.txt"] == exact
+    assert files["over.txt"] == exact + "\n<truncated>"
+
+
+def test_compact_json_remains_parseable_in_snapshot(tmp_path):
+    report = {"squares": [{"square": f"s{i}", "piece": None}
+                           for i in range(64)]}
+    (tmp_path / "report.json").write_text(json.dumps(report))
+
+    captured = _snapshot(str(tmp_path))["report.json"]
+
+    assert "<truncated>" not in captured
+    assert json.loads(captured) == report

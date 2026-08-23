@@ -1562,6 +1562,15 @@ def test_redo_feedback_cannot_amend_the_bound_method():
         in prompts.DISCHARGE_TEMPLATE
 
 
+def test_discharge_contract_exposes_durable_snapshot_budget():
+    assert "{snapshot_per_file_cap} decoded characters" \
+        in prompts.DISCHARGE_TEMPLATE
+    assert "independently parseable after capture" \
+        in prompts.DISCHARGE_TEMPLATE
+    assert "indexed, hash-linked files" in prompts.DISCHARGE_TEMPLATE
+    assert "check file sizes" in prompts.DISCHARGE_TEMPLATE
+
+
 def test_discharge_and_judger_preserve_exact_bound_method_identity():
     assert "EXACT BOUND-METHOD IDENTITY" in prompts.DISCHARGE_TEMPLATE
     assert "not permission to decide the obligation by any available method" \
