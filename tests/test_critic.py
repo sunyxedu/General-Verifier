@@ -220,6 +220,9 @@ def test_compiler_does_not_strengthen_historical_reports_into_world_truth():
         in prompts.OBLIGATIONS_SYSTEM
     assert "reported Y for S" in prompts.OBLIGATIONS_TEMPLATE
     assert "additional world claims" in prompts.OBLIGATIONS_TEMPLATE
+    assert "Apply report claims intensionally" in prompts.CRITIC_SYSTEM
+    assert "task context does not strengthen the event" \
+        in prompts.CRITIC_SYSTEM
 
 
 def test_execution_roles_distinguish_targets_from_input_provenance():
