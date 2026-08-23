@@ -363,6 +363,19 @@ def test_family_total_composition_is_guarded_and_directional():
         in prompts.JUDGER_SYSTEM
 
 
+def test_authoritative_schema_names_can_support_family_membership():
+    assert "unambiguous compositional name in the task-authoritative schema" \
+        in prompts.ORACLES_SYSTEM
+    assert "establishes membership only" in prompts.ORACLES_SYSTEM
+    assert "positive family support or discovery-only" \
+        in prompts.ORACLES_TEMPLATE
+    assert "do not demand extra prose solely to repeat that schema fact" \
+        in prompts.ORACLES_TEMPLATE
+    assert "homonym or untrusted string match remains discovery-only" \
+        in prompts.JUDGER_SYSTEM
+    assert "positive family support" in prompts.JUDGER_TEMPLATE
+
+
 def test_judger_independently_countersigns_method_sufficiency():
     assert "independent second signer for METHOD SUFFICIENCY" \
         in prompts.JUDGER_SYSTEM
