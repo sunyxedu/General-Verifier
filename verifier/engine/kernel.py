@@ -330,7 +330,12 @@ class Kernel:
         # semantics from a solver-authored graph node instead.
         task_context = variables["task_context"]
         verdict = None
-        for round_no in range(MAX_CRITIC_ROUNDS):
+        failure_counterexample = ""
+        failure_missing_condition = ""
+        critic_calls = 0
+        repair_calls = 0
+        while critic_calls < MAX_CRITIC_ROUNDS:
+            round_no = critic_calls
             verdict = self.critic_role.call(
                 self.backend,
                 {
@@ -363,26 +368,67 @@ class Kernel:
                  "counterexample_world": verdict["counterexample_world"],
                  "missing_condition": verdict["missing_condition"]},
             )
+            critic_calls += 1
             if verdict["verdict"] == "pass":
                 return payload
-            if round_no + 1 == MAX_CRITIC_ROUNDS:
+            failure_counterexample = verdict["counterexample_world"]
+            failure_missing_condition = verdict["missing_condition"]
+            if critic_calls == MAX_CRITIC_ROUNDS:
                 break  # last attack stands; a repair would go unreviewed
-            variables = dict(
-                variables,
-                critic_feedback=prompts.CRITIC_FEEDBACK_TEMPLATE.format(
-                    previous_obligations=json.dumps(
-                        payload["obligations"], ensure_ascii=False),
-                    counterexample_world=verdict["counterexample_world"],
-                    missing_condition=verdict["missing_condition"]),
+            semantic_feedback = prompts.CRITIC_FEEDBACK_TEMPLATE.format(
+                previous_obligations=json.dumps(
+                    payload["obligations"], ensure_ascii=False),
+                counterexample_world=verdict["counterexample_world"],
+                missing_condition=verdict["missing_condition"],
             )
-            payload = self.obligations_role.call(self.backend, variables)
+            repair_accepted = False
+            guard_feedback = ""
+            while repair_calls < MAX_CRITIC_ROUNDS - 1:
+                repair_variables = dict(
+                    variables,
+                    critic_feedback=semantic_feedback + guard_feedback,
+                )
+                candidate = self.obligations_role.call(
+                    self.backend, repair_variables)
+                repair_calls += 1
+                violation = None
+                if verdict["missing_condition"].lstrip().startswith("ADD:"):
+                    violation = self._add_repair_violation(payload, candidate)
+                if violation is None:
+                    payload = candidate
+                    variables = repair_variables
+                    repair_accepted = True
+                    break
+
+                failure_counterexample = (
+                    "MECHANICAL ADD-ONLY VIOLATION: " + violation)
+                failure_missing_condition = verdict["missing_condition"]
+                self.log.append(
+                    "decomposition_attacked",
+                    {
+                        "claim": row["id"],
+                        "round": round_no,
+                        "verdict": "insufficient",
+                        "counterexample_world": failure_counterexample,
+                        "missing_condition": failure_missing_condition,
+                        "source": "mechanical_add_guard",
+                        "repair_attempt": repair_calls,
+                    },
+                )
+                guard_feedback = prompts.ADD_REPAIR_GUARD_FEEDBACK.format(
+                    violation=violation,
+                    rejected_obligations=json.dumps(
+                        candidate["obligations"], ensure_ascii=False),
+                )
+            if not repair_accepted:
+                break
         self.store.record_evidence(
             row["id"],
             {
                 "outcome": OUTCOME_FAILED,
                 "error": "decomposition failed critic",
-                "counterexample_world": verdict["counterexample_world"],
-                "missing_condition": verdict["missing_condition"],
+                "counterexample_world": failure_counterexample,
+                "missing_condition": failure_missing_condition,
             },
         )
         self.log.append(
@@ -393,6 +439,35 @@ class Kernel:
                 "reason": "decomposition failed critic",
             },
         )
+        return None
+
+    @staticmethod
+    def _add_repair_violation(previous: Dict, candidate: Dict):
+        """Return why an ``ADD:`` repair is not a strict tail append.
+
+        The critic's label is a mechanical contract: every existing
+        obligation/floor pair remains byte-for-byte and in the same order,
+        and at least one new pair is appended. Other repair labels retain the
+        compiler's ordinary freedom and never call this helper.
+        """
+        old = [
+            (item["text"], item.get("required_basis", BASIS_RECORD))
+            for item in previous["obligations"]
+        ]
+        new = [
+            (item["text"], item.get("required_basis", BASIS_RECORD))
+            for item in candidate["obligations"]
+        ]
+        if len(new) <= len(old):
+            return (
+                f"expected more than {len(old)} obligations after ADD, "
+                f"got {len(new)}")
+        for index, expected in enumerate(old):
+            actual = new[index]
+            if actual != expected:
+                return (
+                    f"obligation {index} changed: expected {expected!r}, "
+                    f"got {actual!r}")
         return None
 
     @staticmethod

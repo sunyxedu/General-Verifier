@@ -488,8 +488,15 @@ def test_a_counterexample_standing_after_the_last_round_fails_closed(tmp_path):
 def test_second_repair_is_reviewed_and_can_pass(tmp_path):
     payloads = iter([
         {"obligations": [{"text": "O0", "required_basis": "world"}]},
-        {"obligations": [{"text": "O1", "required_basis": "world"}]},
-        {"obligations": [{"text": "O2", "required_basis": "world"}]},
+        {"obligations": [
+            {"text": "O0", "required_basis": "world"},
+            {"text": "O1", "required_basis": "world"},
+        ]},
+        {"obligations": [
+            {"text": "O0", "required_basis": "world"},
+            {"text": "O1", "required_basis": "world"},
+            {"text": "O2", "required_basis": "world"},
+        ]},
     ])
     attack_one = {
         "verdict": "insufficient",
@@ -513,7 +520,7 @@ def test_second_repair_is_reviewed_and_can_pass(tmp_path):
     cid = store.add_claim(Claim(CLAIM_ASSERTION, "the final proposition"))
 
     assert store.status(cid) == "verified"
-    assert discharger.seen == ["O2"]
+    assert discharger.seen == ["O0", "O1", "O2"]
     assert [c["role"] for c in backend.calls] == [
         "obligations", "critic", "obligations", "critic",
         "obligations", "critic",
@@ -529,6 +536,143 @@ def test_second_repair_is_reviewed_and_can_pass(tmp_path):
     assert [e["payload"]["round"] for e in ledger_events(
         log, "decomposition_attacked"
     )] == [0, 1, 2]
+
+
+def test_invalid_add_repair_is_retried_from_last_legal_contract(tmp_path):
+    original = {
+        "obligations": [
+            {"text": "A", "required_basis": "world"},
+            {"text": "B", "required_basis": "record"},
+        ]
+    }
+    merged = {
+        "obligations": [
+            {"text": "A plus B plus C", "required_basis": "world"},
+        ]
+    }
+    appended = {
+        "obligations": original["obligations"] + [
+            {"text": "C", "required_basis": "world"},
+        ]
+    }
+    payloads = iter([original, merged, appended])
+    add_attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "A and B hold while C is false",
+        "missing_condition": "ADD: require C independently",
+    }
+    verdicts = iter([add_attack, PASS])
+    store, log, backend, discharger = build(
+        tmp_path,
+        {
+            "obligations": lambda _v: next(payloads),
+            "critic": lambda _v: next(verdicts),
+        },
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "A and B and C"))
+
+    assert store.status(cid) == "verified"
+    assert discharger.seen == ["A", "B", "C"]
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "obligations", "obligations", "critic",
+    ]
+    guard_events = [
+        event for event in ledger_events(log, "decomposition_attacked")
+        if event["payload"].get("source") == "mechanical_add_guard"
+    ]
+    assert len(guard_events) == 1
+    assert "expected more than 2 obligations" in \
+        guard_events[0]["payload"]["counterexample_world"]
+    retry_feedback = backend.calls[3]["variables"]["critic_feedback"]
+    assert json.dumps(original["obligations"], ensure_ascii=False) \
+        in retry_feedback
+    assert json.dumps(merged["obligations"], ensure_ascii=False) \
+        in retry_feedback
+    assert "MECHANICAL ADD-ONLY CONTRACT" in retry_feedback
+    assert "same order" in retry_feedback
+
+
+def test_exhausted_invalid_add_repairs_fail_closed(tmp_path):
+    original = {
+        "obligations": [
+            {"text": "A", "required_basis": "world"},
+            {"text": "B", "required_basis": "record"},
+        ]
+    }
+    dropped = {"obligations": [original["obligations"][0]]}
+    floor_changed = {
+        "obligations": [
+            {"text": "A", "required_basis": "record"},
+            original["obligations"][1],
+            {"text": "C", "required_basis": "world"},
+        ]
+    }
+    payloads = iter([original, dropped, floor_changed])
+    add_attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "C is missing",
+        "missing_condition": "ADD: require C",
+    }
+    store, log, backend, discharger = build(
+        tmp_path,
+        {
+            "obligations": lambda _v: next(payloads),
+            "critic": add_attack,
+        },
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "A and B and C"))
+
+    assert store.status(cid) == "unverified"
+    assert discharger.seen == []
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "obligations", "obligations",
+    ]
+    guard_events = [
+        event for event in ledger_events(log, "decomposition_attacked")
+        if event["payload"].get("source") == "mechanical_add_guard"
+    ]
+    assert len(guard_events) == 2
+    assert all(event["payload"]["round"] == 0 for event in guard_events)
+    evidence = store.evidence_for(cid)[-1]
+    assert evidence["error"] == "decomposition failed critic"
+    assert evidence["counterexample_world"].startswith(
+        "MECHANICAL ADD-ONLY VIOLATION:")
+
+
+def test_add_guard_requires_a_strict_tail_append():
+    previous = {
+        "obligations": [
+            {"text": "A", "required_basis": "world"},
+            {"text": "B", "required_basis": "record"},
+        ]
+    }
+    valid = {
+        "obligations": previous["obligations"] + [
+            {"text": "C", "required_basis": "world"},
+        ]
+    }
+    invalid = [
+        previous,
+        {"obligations": [previous["obligations"][0]]},
+        {"obligations": list(reversed(previous["obligations"])) + [
+            {"text": "C", "required_basis": "world"}]},
+        {"obligations": [
+            {"text": "A rewritten", "required_basis": "world"},
+            previous["obligations"][1],
+            {"text": "C", "required_basis": "world"},
+        ]},
+        {"obligations": [
+            {"text": "A", "required_basis": "record"},
+            previous["obligations"][1],
+            {"text": "C", "required_basis": "world"},
+        ]},
+    ]
+
+    assert Kernel._add_repair_violation(previous, valid) is None
+    assert all(Kernel._add_repair_violation(previous, candidate)
+               for candidate in invalid)
 
 
 def test_critic_gets_the_task_statement_when_the_harness_wrote_one(tmp_path):

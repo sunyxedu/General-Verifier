@@ -1049,6 +1049,16 @@ CRITIC_FEEDBACK_TEMPLATE = (
     "directions; do not repair one by breaking the other."
 )
 
+ADD_REPAIR_GUARD_FEEDBACK = (
+    "\nMECHANICAL ADD-ONLY CONTRACT: the preceding repair was rejected before "
+    "critic review because it violated the append-only instruction: "
+    "{violation}. Rejected candidate obligations: {rejected_obligations}. "
+    "The exact previous obligation contract above remains the last legal "
+    "contract. Copy every one of its text/required_basis pairs byte-for-byte "
+    "in the same order, then append at least one new obligation. Do not merge, "
+    "rewrite, reorder, delete, or change the floor of an existing obligation."
+)
+
 ORACLES_SYSTEM = (
     "You are the oracle enumerator, and SUFFICIENCY IS YOUR "
     "RESPONSIBILITY: list only methods whose successful, faithful "
