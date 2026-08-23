@@ -461,6 +461,24 @@ def test_judger_independently_countersigns_method_sufficiency():
     assert "untrusted candidate check" in prompts.JUDGER_TEMPLATE
 
 
+def test_discharge_and_judger_preserve_exact_bound_method_identity():
+    assert "EXACT BOUND-METHOD IDENTITY" in prompts.DISCHARGE_TEMPLATE
+    assert "not permission to decide the obligation by any available method" \
+        in prompts.DISCHARGE_TEMPLATE
+    assert "Fresh retrieval/recomputation" in prompts.DISCHARGE_TEMPLATE
+    assert "even at the same or a stronger basis" \
+        in prompts.DISCHARGE_TEMPLATE
+    assert "Method choice belongs to the Oracle" \
+        in prompts.DISCHARGE_TEMPLATE
+    assert "EXACT BOUND-METHOD IDENTITY AUDIT" in prompts.JUDGER_TEMPLATE
+    assert "METHOD IDENTITY AUDIT:" in prompts.JUDGER_TEMPLATE
+    assert "A different method forces faithful=no" in prompts.JUDGER_TEMPLATE
+    assert "Audit fidelity independently when sufficient=no" \
+        in prompts.JUDGER_TEMPLATE
+    assert "execution_complete=yes only when the exact bound contract" \
+        in prompts.JUDGER_TEMPLATE
+
+
 def test_compiler_and_critic_preserve_task_term_modifiers():
     assert "Preserve every noun modifier, namespace, producer qualifier" \
         in prompts.OBLIGATIONS_SYSTEM
