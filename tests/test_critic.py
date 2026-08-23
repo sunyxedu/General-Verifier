@@ -727,6 +727,40 @@ def test_offline_execution_uses_frozen_subjects_and_persistent_artifacts():
     assert "never task/world evidence" in prompts.ORACLES_TEMPLATE
 
 
+def test_supporting_provenance_is_not_promoted_to_a_claim_conjunct():
+    rule = prompts.SUPPORTING_PROVENANCE_BOUNDARY
+    for role in (
+        prompts.OBLIGATIONS_SYSTEM,
+        prompts.CRITIC_SYSTEM,
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    ):
+        assert rule in role
+
+    assert "complete invocation/result uniquely correlated" in rule
+    assert "relational binder and supporting provenance" in rule
+    assert "without becoming an independent requirement" in rule
+    assert "demote its supporting details" in rule
+    assert "rather than deleting the provenance" in rule
+    assert "evidence gap" in rule
+    assert "not a refutation" in rule
+    assert "directly contradicts the core predicate" in rule
+    assert "never upgrades it to external world truth" in rule
+    assert "SUPPORTING-PROVENANCE GATE" in prompts.OBLIGATIONS_TEMPLATE
+    assert "PROVENANCE-ROLE AUDIT" in prompts.CRITIC_TEMPLATE
+    assert "removing an overstrong verdict condition never authorizes deleting " \
+        "supporting provenance" in prompts.CRITIC_FEEDBACK_TEMPLATE
+
+
+def test_support_role_is_invariant_under_target_literal_substitution():
+    rule = prompts.SUPPORTING_PROVENANCE_BOUNDARY
+    assert "Structurally isomorphic claims" in rule
+    assert "differ only in the reported target literal" in rule
+    assert "identical event/source binders and provenance treatment" in rule
+    assert "target match, rank, salience, or convenience" in rule
+
+
 def test_critic_second_signs_both_directions_of_equivalence():
     assert "attack BOTH DIRECTIONS" in prompts.CRITIC_SYSTEM
     assert "NECESSITY ATTACK" in prompts.CRITIC_SYSTEM

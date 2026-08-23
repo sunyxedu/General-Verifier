@@ -163,6 +163,31 @@ REFERENT_METHOD_BOUNDARY = (
     "target, never supply the target identity that the obligation omitted.\n"
 )
 
+SUPPORTING_PROVENANCE_BOUNDARY = (
+    "SUPPORTING PROVENANCE IS NOT A PROPOSITION CONJUNCT: keep the core "
+    "predicate separate from evidence used to identify, interpret, or prove "
+    "it. A complete invocation/result uniquely correlated with a named event, "
+    "or a named authority, source representation, or exact observed field, may "
+    "serve as a relational binder and supporting provenance for producer, "
+    "input, configuration, time, or output representation without becoming an "
+    "independent requirement of the proposition. Preserve that relation chain, "
+    "but do not materialize incidental command, input, display, score, version, "
+    "or other literals as conditions whose non-match refutes the core predicate. "
+    "When a proposed condition is overstrong, demote its supporting details to "
+    "the relational binder rather than deleting the provenance needed to "
+    "interpret or prove the retained predicate. Oracle, executor, and Judger may "
+    "inspect those support facts to establish the current outcome. Missing or "
+    "ambiguous support is an evidence gap — insufficient, failed, or unobtainable "
+    "as appropriate — not a refutation. A stronger positive certificate may "
+    "establish holds, but its non-match cannot establish refuted unless complete, "
+    "independent raw evidence directly contradicts the core predicate. Record-"
+    "floor support establishes only the recorded meaning and never upgrades it "
+    "to external world truth. Structurally isomorphic claims that differ only in "
+    "the reported target literal require identical event/source binders and "
+    "provenance treatment; target match, rank, salience, or convenience cannot "
+    "change an input's role.\n"
+)
+
 SOURCE_TERM_ROLE_BINDING = (
     "SOURCE-TERM ROLE BINDING: classify each source span by the relation the "
     "controlling source or a task-named authority explicitly assigns it. A "
@@ -270,6 +295,7 @@ OBLIGATIONS_SYSTEM = (
     + SOURCE_TERM_ROLE_BINDING
     + TASK_INSTANCE_CONTRACT
     + TRANSFORMATION_EVENT_BINDING
+    + SUPPORTING_PROVENANCE_BOUNDARY
     + "Explicit required or prohibited actions, substitute prohibitions, "
     "mandatory non-semantic implementation/tool choices, and exclusive workflows "
     "remain process requirements with record floors. A requirement to submit a "
@@ -632,6 +658,10 @@ OBLIGATIONS_TEMPLATE = (
     "filter, or time — and no irrelevant or unpinned qualifier. Stop only after "
     "a local binder's defining expression/domain is closed, or at a complete "
     "literal identity or explicit controlling task/named-authority reference.\n\n"
+    "SUPPORTING-PROVENANCE GATE: preserve an effect-linked identity as a "
+    "relational binder. Do not copy its incidental observed details into the "
+    "predicate as extra conjuncts, and do not delete the invocation/result or "
+    "authority chain needed to interpret the retained predicate.\n\n"
     "Do not write `evidence establishes/shows/demonstrates X` for a world or "
     "semantic claim that only asserts X. State X itself and put the evidence demand only "
     "in required_basis; evidence availability is an extra conjunct.\n\n"
@@ -699,6 +729,7 @@ CRITIC_SYSTEM = (
     "not check feasibility: unavailable evidence is handled later.\n"
     + TASK_INSTANCE_CONTRACT
     + TRANSFORMATION_EVENT_BINDING
+    + SUPPORTING_PROVENANCE_BOUNDARY
     + "Rules of the attack:\n"
     "- The world must be self-consistent and must respect every verified "
     "premise AT ITS PROVENANCE TAG. A [world-level] premise's content is "
@@ -913,6 +944,12 @@ CRITIC_TEMPLATE = (
     "aliases introduced by an antecedent, and include `REFERENT CHAIN: <source> "
     "-> ... -> <terminal>; closed=yes|no` for each obligation. One-level expansion "
     "or a bare hidden program alias is `closed=no`.\n\n"
+    "PROVENANCE-ROLE AUDIT — PASS PRECONDITION: distinguish each proposition "
+    "conjunct from supporting provenance. Availability of support cannot form a "
+    "necessity witness; if an overstrong condition is removed, require repair "
+    "to retain the relational binder needed to interpret and prove the core "
+    "predicate. Apply the same classification to isomorphic claims under target-"
+    "literal substitution.\n\n"
     "Mandatory before `pass`: first perform the per-obligation necessity "
     "attack, then perform both the temporal and sufficiency attacks and, against "
     "the task contract instantiated on the fixed task givens and actual candidate "
@@ -963,7 +1000,12 @@ CRITIC_FEEDBACK_TEMPLATE = (
     "time index. An `ADD:` instruction authorizes an addition only; it never "
     "authorizes deleting, weakening, or rephrasing existing semantics. Likewise, "
     "a removal or weakening does not authorize unrelated rewrites. The original "
-    "task, claim, and named authority outrank any example wording proposed by the "
+    "source still outranks the repair wording, and removing an overstrong verdict "
+    "condition never authorizes deleting supporting provenance needed to interpret "
+    "or prove the retained predicate. The repair should demote such detail to a "
+    "relational binder. "
+    "The original task, claim, and named authority outrank any example wording "
+    "proposed by the "
     "critic; adjust local grammar only as needed to make the minimal patch read "
     "coherently. "
     "If this is a NECESSITY VIOLATION, remove, weaken, or restate the "
@@ -1165,6 +1207,7 @@ ORACLES_SYSTEM = (
     "evidence already forces the target false.\n"
     + TASK_COMPLETE_OCCURRENCE_COMPOSITION
     + REFERENT_METHOD_BOUNDARY
+    + SUPPORTING_PROVENANCE_BOUNDARY
     + PROOF_CARRYING_EFFECTS
     + SIGNED_WORLD_EVIDENCE_REUSE
     + OFFLINE_FROZEN_EXECUTION
@@ -1339,6 +1382,7 @@ DISCHARGE_SYSTEM = (
     "unseen response, not its contents. Never replay the old action in a "
     "later world to fill the gap.\n"
     + PROOF_CARRYING_EFFECTS
+    + SUPPORTING_PROVENANCE_BOUNDARY
     + SIGNED_WORLD_EVIDENCE_REUSE
     + OFFLINE_FROZEN_EXECUTION
     + "TARGETS ARE NOT INPUTS: the obligation and bound method are "
@@ -1622,6 +1666,7 @@ JUDGER_SYSTEM = (
     "verification may build on).\n"
     + TASK_COMPLETE_OCCURRENCE_COMPOSITION
     + REFERENT_METHOD_BOUNDARY
+    + SUPPORTING_PROVENANCE_BOUNDARY
     + PROOF_CARRYING_EFFECTS
     + SIGNED_WORLD_EVIDENCE_REUSE
     + OFFLINE_FROZEN_EXECUTION
