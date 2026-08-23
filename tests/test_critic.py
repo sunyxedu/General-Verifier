@@ -343,6 +343,23 @@ def test_offline_oracle_prefers_complete_retained_evidence():
     assert "one in-scope counterexample" in prompts.ORACLES_SYSTEM
 
 
+def test_family_total_composition_is_guarded_and_directional():
+    assert "GUARDED COMPOSITION DEFAULT" in prompts.ORACLES_SYSTEM
+    assert "ordinary total semantics includes each primary payload slot" \
+        in prompts.ORACLES_SYSTEM
+    assert "Metadata/identifiers, aliases, subsets" in prompts.ORACLES_SYSTEM
+    assert "two supported readings would change the verdict" \
+        in prompts.ORACLES_SYSTEM
+    assert "target-matching subtotal already gives a strict bound" \
+        in prompts.ORACLES_SYSTEM
+    assert "task/authority/observed-structure-backed" \
+        in prompts.ORACLES_TEMPLATE
+    assert "Apply the same guarded composition independently" \
+        in prompts.JUDGER_SYSTEM
+    assert "exact positive totals still need exhaustive reconciliation" \
+        in prompts.JUDGER_SYSTEM
+
+
 def test_judger_independently_countersigns_method_sufficiency():
     assert "independent second signer for METHOD SUFFICIENCY" \
         in prompts.JUDGER_SYSTEM
