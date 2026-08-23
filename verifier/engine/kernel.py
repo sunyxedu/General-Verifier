@@ -29,6 +29,7 @@ from ..core.model import (
     CLAIM_EFFECT, CLAIM_FINAL,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
+    STRENGTH_DECISIVE, strength_rank, weakest_strength,
 )
 from ..llm import prompts
 from ..llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
@@ -144,8 +145,11 @@ class Kernel:
             "discharge",
             {"claim": row["id"], "instrument": self.ledger.name, "outcome": result.outcome},
         )
-        # an effect's evidence IS the ledger: record basis by construction
-        self._settle(row["id"], [result.outcome], [BASIS_RECORD])
+        # an effect's evidence IS the ledger: record basis by construction;
+        # the digest check itself is a decision procedure for "the event
+        # is recorded as claimed", so its strength is decisive
+        self._settle(row["id"], [result.outcome], [BASIS_RECORD],
+                     [STRENGTH_DECISIVE])
 
     # assertion / final
     def _verify_assertion(self, row: Dict) -> None:
@@ -188,7 +192,8 @@ class Kernel:
 
         outcomes: List[str] = []
         bases: List[str] = []     # per-obligation evidence basis, for the
-        refuting_witness = None   # claim-level provenance fold at settle
+        strengths: List[Optional[str]] = []  # and strength: both fold at
+        refuting_witness = None              # claim-level settle
         for obligation in obligations:
             oid = self.store.add_obligation(row["id"], obligation)
             known = self.store.status(oid)
@@ -203,7 +208,9 @@ class Kernel:
                                 {"claim": row["id"], "obligation": oid,
                                  "status": known})
                 outcomes.append(outcome)
-                bases.append(self.store.get(oid)["basis"] or BASIS_RECORD)
+                node = self.store.get(oid)
+                bases.append(node["basis"] or BASIS_RECORD)
+                strengths.append(node["strength"])
                 if outcome == OUTCOME_REFUTED:
                     ev = self.store.evidence_for(oid)
                     refuting_witness = ev[-1].get("witness") if ev else None
@@ -226,18 +233,22 @@ class Kernel:
                 # the verdict and its evidence transfer, no instrument spent
                 outcome, witness = self._inherit(row, obligation, src)
                 outcomes.append(outcome)
-                bases.append(self.store.get(oid)["basis"] or BASIS_RECORD)
+                node = self.store.get(oid)
+                bases.append(node["basis"] or BASIS_RECORD)
+                strengths.append(node["strength"])
                 if outcome == OUTCOME_REFUTED:
                     refuting_witness = witness
                     break
                 continue
             outcome, witness = self._discharge(row, obligation)
             outcomes.append(outcome)
-            bases.append(self.store.get(oid)["basis"] or BASIS_RECORD)
+            node = self.store.get(oid)
+            bases.append(node["basis"] or BASIS_RECORD)
+            strengths.append(node["strength"])
             if outcome == OUTCOME_REFUTED:
                 refuting_witness = witness
                 break
-        self._settle(row["id"], outcomes, bases)
+        self._settle(row["id"], outcomes, bases, strengths)
 
         if self.memory is not None:
             status = self.store.status(row["id"])
@@ -797,7 +808,9 @@ class Kernel:
         # inheritance transfers the verdict WITH its basis: a verdict
         # settled on the solver's record does not become independent by
         # changing identity space
-        src_basis = self.store.get(src["id"])["basis"] or BASIS_RECORD
+        src_row = self.store.get(src["id"])
+        src_basis = src_row["basis"] or BASIS_RECORD
+        src_strength = src_row["strength"]
         ev = self.store.evidence_for(src["id"])
         witness = ev[-1].get("witness") if ev else None
         if witness is None and src["status"] == STATUS_REFUTED:
@@ -819,15 +832,17 @@ class Kernel:
                 "instrument": "graph",
                 "outcome": outcome,
                 "basis": src_basis,
+                "strength": src_strength,
                 "source": src["id"],
                 "witness": witness,
             },
         )
         if outcome == OUTCOME_HOLDS:
-            self.store.set_verified(oid, basis=src_basis)
+            self.store.set_verified(oid, basis=src_basis,
+                                    strength=src_strength)
         else:
             self.store.set_refuted(oid, reason=str(witness)[:200],
-                                   basis=src_basis)
+                                   basis=src_basis, strength=src_strength)
         self.log.append(
             "dedup_hit",
             {"claim": row["id"], "obligation": oid, "source": src["id"],
@@ -847,6 +862,24 @@ class Kernel:
             result = self.binder.run(row, obligation)
         else:
             result = self.discharger.discharge(row, obligation)
+        if result.outcome == OUTCOME_REFUTED \
+                and strength_rank(result.strength) \
+                < strength_rank(STRENGTH_DECISIVE):
+            # backstop behind the binding game's own conversion (a custom
+            # binder could mislabel): nothing below decisive may refute —
+            # the instrument's scope gap is exactly what a negative
+            # verdict cannot carry across. None reads as decisive (direct
+            # discharge has no ladder), so pre-ladder paths are untouched.
+            result = DischargeResult(
+                outcome=OUTCOME_FAILED,
+                witness=(f"refutation below decisive strength is "
+                         f"inadmissible ({result.strength} instrument "
+                         f"reported: {result.witness})"),
+                artifact=result.artifact,
+                instrument=result.instrument,
+                basis=result.basis,
+                strength=result.strength,
+            )
         if result.outcome in (OUTCOME_HOLDS, OUTCOME_REFUTED) \
                 and not basis_satisfies(result.basis,
                                         obligation.required_basis):
@@ -868,6 +901,7 @@ class Kernel:
                 artifact=result.artifact,
                 instrument=result.instrument,
                 basis=result.basis,
+                strength=result.strength,
             )
         evidence = Evidence(
             obligation_id=oid,
@@ -882,16 +916,19 @@ class Kernel:
             "instrument": result.instrument,
             "outcome": result.outcome,
             "basis": result.basis,
+            "strength": result.strength,
             "artifact": result.artifact,
             "witness": result.witness,
             "evidence_id": evidence.id,
         }
         self.store.record_evidence(oid, evidence_payload)
         if result.outcome == OUTCOME_HOLDS:
-            self.store.set_verified(oid, basis=result.basis)
+            self.store.set_verified(oid, basis=result.basis,
+                                    strength=result.strength)
         elif result.outcome == OUTCOME_REFUTED:
             self.store.set_refuted(oid, reason=str(result.witness)[:200],
-                                   basis=result.basis)
+                                   basis=result.basis,
+                                   strength=result.strength)
         elif result.outcome == OUTCOME_UNOBTAINABLE:
             self.store.set_partial(oid)   # well-defined check, env can't host
         # failed -> the node stays unverified; a later claim may retry it
@@ -900,20 +937,24 @@ class Kernel:
             {"claim": row["id"], "obligation": oid,
              "instrument": result.instrument, "outcome": result.outcome,
              "required_basis": obligation.required_basis,
-             "basis": result.basis, "artifact": result.artifact,
+             "basis": result.basis, "strength": result.strength,
+             "artifact": result.artifact,
              "evidence_id": evidence.id},
         )
         return result.outcome, result.witness
 
     # settlement
     def _settle(self, claim_id: str, outcomes: List[str],
-                bases: List[str] = ()) -> None:
+                bases: List[str] = (),
+                strengths: List[Optional[str]] = ()) -> None:
         if any(o == OUTCOME_REFUTED for o in outcomes):
             # the loop breaks at the first refutation, so the refuting
             # evidence's basis is the last one collected — stored so the
             # refutation transfers (or is refused) at the right floor
             self.store.set_refuted(claim_id, reason="counterexample on record",
-                                   basis=bases[-1] if bases else None)
+                                   basis=bases[-1] if bases else None,
+                                   strength=(strengths[-1] if strengths
+                                             else None))
             new_status = "refuted"
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes \
                 and self.store.get(claim_id)["kind"] == CLAIM_FINAL \
@@ -945,7 +986,11 @@ class Kernel:
                      if bases and all(b == BASIS_WORLD for b in bases)
                      and self._premises_world(claim_id)
                      else BASIS_RECORD)
-            self.store.set_verified(claim_id, basis=basis)
+            # strength is a weakest-link fold over the obligations that
+            # settled this claim; below decisive the certificate reads
+            # the verified status out as "supported"
+            self.store.set_verified(claim_id, basis=basis,
+                                    strength=weakest_strength(strengths))
             new_status = "verified"
         elif any(o == OUTCOME_UNOBTAINABLE for o in outcomes) and all(
                 o in (OUTCOME_HOLDS, OUTCOME_UNOBTAINABLE)

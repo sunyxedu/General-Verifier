@@ -27,7 +27,7 @@ from ..execution.instruments import ArtifactStore
 from .kernel import Kernel
 from ..core.model import (
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED,
-    STATUS_PARTIAL,
+    STATUS_PARTIAL, STRENGTH_DECISIVE, strength_rank,
 )
 from ..core.store import ClaimStore
 
@@ -56,6 +56,10 @@ def request_certificate(
                 # evidence basis of a verified node (world | record): what
                 # its verdict entitles reliance to; disclosed for audit
                 "basis": row["basis"],
+                # evidence strength (decisive | bounded | analytic; None =
+                # settled outside the ladder, reads decisive): how the
+                # verdict was won; disclosed for audit
+                "strength": row["strength"],
                 "evidence": store.evidence_for(claim_id),
                 # obligations are first-class graph nodes: the certificate
                 # carries each one with its own status and evidence. The
@@ -63,7 +67,7 @@ def request_certificate(
                 "obligations": [
                     {"id": o["id"], "text": o["text"],
                      "status": o["status"], "reason": o["reason"],
-                     "basis": o["basis"],
+                     "basis": o["basis"], "strength": o["strength"],
                      "evidence": store.evidence_for(o["id"])}
                     for o in store.obligation_children(claim_id)
                 ],
@@ -74,18 +78,36 @@ def request_certificate(
     # exported per-entry; the fold over them was retired — one refuted
     # history claim must not cap an independently verified deliverable,
     # nor one unverifiable narration drag it to unverified)
+    final_row = store.get(final_id)
     verdict = {
         STATUS_VERIFIED: "verified",
         STATUS_REFUTED: "refuted",
         STATUS_PARTIAL: "partial",
-    }.get(store.status(final_id), "unverified")
+    }.get(final_row["status"], "unverified")
+
+    # the strength ladder's read-out: a final established entirely at
+    # decisive strength is verified; established but resting on bounded/
+    # analytic evidence somewhere is SUPPORTED — everything holds, some
+    # of it on declared-and-audited weaker instruments, with the bridges
+    # disclosed in the evidence. Distinct from partial, where a necessary
+    # check never got established at all. None reads as decisive
+    # (pre-ladder rows, direct discharge).
+    verdict_strength = None
+    if verdict == "verified":
+        verdict_strength = final_row["strength"] or STRENGTH_DECISIVE
+        if strength_rank(verdict_strength) \
+                < strength_rank(STRENGTH_DECISIVE):
+            verdict = "supported"
 
     certificate = {
         "final": final_id,
         "verdict": verdict,
+        "verdict_strength": verdict_strength,
         "slice": entries,
     }
     digest = artifacts.put(certificate)
     certificate["certificate_id"] = digest
-    log.append("certificate", {"final": final_id, "verdict": verdict, "digest": digest})
+    log.append("certificate", {"final": final_id, "verdict": verdict,
+                               "verdict_strength": verdict_strength,
+                               "digest": digest})
     return certificate

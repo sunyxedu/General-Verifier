@@ -411,3 +411,153 @@ def test_role_schemas_pin_the_ladder_fields():
     assert method_schema["bridges"] == [str]
     assert JUDGER_AGENT.schema["degradation"] == (
         "justified", "unjustified", "n/a")
+
+
+# ---- settlement fold and the certificate read-out -------------------------
+
+from verifier.core.model import CLAIM_FINAL
+from verifier.core.store import ClaimStore as _Store, TRIGGER_ON_COMMIT
+from verifier.engine.certificate import request_certificate
+from verifier.engine.kernel import Kernel
+
+
+class StrengthDischarger:
+    """(outcome, strength) per obligation text; world basis throughout."""
+
+    def __init__(self, plan):
+        self.plan = plan
+
+    def discharge(self, row, obligation, method=None, tag=""):
+        outcome, strength = self.plan.get(
+            obligation.text, ("holds", STRENGTH_DECISIVE))
+        return DischargeResult(
+            outcome=outcome,
+            witness="w" if outcome != "holds" else None,
+            artifact="", instrument="stub", basis="world",
+            strength=strength)
+
+
+def kernel_fixture(tmp_path, obligations, plan):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = _Store(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend(
+        {"obligations": lambda v: {"obligations": obligations}})
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    kernel = Kernel(store, log, backend, artifacts, critic_role=None,
+                    discharger=StrengthDischarger(plan))
+    return store, kernel, log, artifacts
+
+
+def test_claim_strength_is_the_weakest_link(tmp_path):
+    store, _, _, _ = kernel_fixture(
+        tmp_path,
+        [{"text": "system-level check", "required_basis": "world"},
+         {"text": "unit-level check", "required_basis": "world"}],
+        {"system-level check": ("holds", STRENGTH_DECISIVE),
+         "unit-level check": ("holds", STRENGTH_BOUNDED)},
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "there is a bug xxx"))
+
+    assert store.status(cid) == "verified"
+    assert store.get(cid)["strength"] == STRENGTH_BOUNDED
+
+
+def test_supported_verdict_on_the_certificate(tmp_path):
+    """verified status + below-decisive strength reads out as supported;
+    the strength and per-node disclosures ride the certificate."""
+    store, kernel, log, artifacts = kernel_fixture(
+        tmp_path,
+        [{"text": "the bug reproduces", "required_basis": "world"}],
+        {"the bug reproduces": ("holds", STRENGTH_BOUNDED)},
+    )
+
+    f = store.add_claim(Claim(CLAIM_FINAL, "there is a bug xxx"))
+    cert = request_certificate(store, kernel, log, artifacts, f)
+
+    assert store.status(f) == "verified"     # status machine untouched
+    assert cert["verdict"] == "supported"    # the read-out is the ladder's
+    assert cert["verdict_strength"] == STRENGTH_BOUNDED
+    (entry,) = [e for e in cert["slice"] if e["id"] == f]
+    assert entry["strength"] == STRENGTH_BOUNDED
+    assert entry["obligations"][0]["strength"] == STRENGTH_BOUNDED
+
+
+def test_all_decisive_final_stays_verified(tmp_path):
+    store, kernel, log, artifacts = kernel_fixture(
+        tmp_path,
+        [{"text": "the bug reproduces", "required_basis": "world"}],
+        {"the bug reproduces": ("holds", STRENGTH_DECISIVE)},
+    )
+
+    f = store.add_claim(Claim(CLAIM_FINAL, "there is a bug xxx"))
+    cert = request_certificate(store, kernel, log, artifacts, f)
+
+    assert cert["verdict"] == "verified"
+    assert cert["verdict_strength"] == STRENGTH_DECISIVE
+
+
+def test_missing_evidence_still_beats_weak_evidence(tmp_path):
+    """holds@bounded + unobtainable folds to partial: everything
+    established on weak evidence (supported) outranks a claim where a
+    necessary check never got established at all."""
+    store, _, _, _ = kernel_fixture(
+        tmp_path,
+        [{"text": "unit-level check", "required_basis": "world"},
+         {"text": "irreproducible historical check",
+          "required_basis": "world"}],
+        {"unit-level check": ("holds", STRENGTH_BOUNDED),
+         "irreproducible historical check":
+             ("unobtainable", STRENGTH_DECISIVE)},
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "there is a bug xxx"))
+
+    assert store.status(cid) == "partial"
+
+
+def test_inherited_verdicts_carry_their_strength(tmp_path):
+    """Node dedup must not launder strength: a bounded-won verdict
+    transfers as bounded into every claim that shares the obligation."""
+    store, _, _, _ = kernel_fixture(
+        tmp_path,
+        [{"text": "shared check", "required_basis": "world"}],
+        {"shared check": ("holds", STRENGTH_ANALYTIC)},
+    )
+
+    first = store.add_claim(Claim(CLAIM_ASSERTION, "claim one"))
+    second = store.add_claim(Claim(CLAIM_ASSERTION, "claim two"))
+
+    assert store.get(first)["strength"] == STRENGTH_ANALYTIC
+    assert store.get(second)["strength"] == STRENGTH_ANALYTIC
+
+
+def test_kernel_backstop_blocks_non_decisive_refutations(tmp_path):
+    """Direct-path mirror of the game's conversion: a custom discharger
+    reporting refuted at bounded strength cannot refute."""
+    store, _, _, _ = kernel_fixture(
+        tmp_path,
+        [{"text": "unit-level check", "required_basis": "world"}],
+        {"unit-level check": ("refuted", STRENGTH_BOUNDED)},
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "there is a bug xxx"))
+
+    assert store.status(cid) == "unverified"
+    (node,) = store.obligation_children(cid)
+    ev = store.evidence_for(node["id"])[-1]
+    assert ev["outcome"] == "failed"
+    assert "refutation below decisive strength is inadmissible" \
+        in ev["witness"]
+
+
+def test_decisive_refutation_still_refutes(tmp_path):
+    store, _, _, _ = kernel_fixture(
+        tmp_path,
+        [{"text": "system-level check", "required_basis": "world"}],
+        {"system-level check": ("refuted", STRENGTH_DECISIVE)},
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "there is a bug xxx"))
+
+    assert store.status(cid) == "refuted"

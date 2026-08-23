@@ -309,6 +309,7 @@ def test_discharge_event_indexes_the_same_signed_evidence_as_the_store(tmp_path)
         "outcome": evidence["outcome"],
         "required_basis": evidence["required_basis"],
         "basis": evidence["basis"],
+        "strength": evidence["strength"],
         "artifact": evidence["artifact"],
         "evidence_id": evidence["evidence_id"],
     }
