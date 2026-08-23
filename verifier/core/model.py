@@ -55,6 +55,54 @@ OUTCOME_KINDS = Literal["holds", "refuted", "failed", "unobtainable"]
 BASIS_WORLD = "world"
 BASIS_RECORD = "record"
 
+# evidence strength of a settled verdict: HOW decisive the winning method
+# was, orthogonal to basis (whose account the evidence rests on).
+# decisive — a decision procedure for the obligation exactly as written;
+#            the only strength entitled to settle a refutation.
+# bounded  — a sound instrument for a strictly narrower proposition plus a
+#            declared, finite list of bridging assumptions that transport
+#            its positive verdict to the obligation (a unit test, a
+#            depth-bounded search). Establishes only; never refutes.
+# analytic — a disciplined reading of pinned world artifacts with a
+#            concrete witness trace. Weakest; establishes only.
+# The claim-level strength is a weakest-link fold; a verified claim whose
+# fold is below decisive surfaces on the certificate as "supported".
+STRENGTH_DECISIVE = "decisive"
+STRENGTH_BOUNDED = "bounded"
+STRENGTH_ANALYTIC = "analytic"
+STRENGTHS = (STRENGTH_DECISIVE, STRENGTH_BOUNDED, STRENGTH_ANALYTIC)
+
+_STRENGTH_RANK = {STRENGTH_ANALYTIC: 0, STRENGTH_BOUNDED: 1,
+                  STRENGTH_DECISIVE: 2}
+
+
+def strength_rank(strength: Optional[str]) -> int:
+    """Ordering rank, higher is stronger. None means the ladder was never
+    in play (direct discharge, ledger checks, pre-ladder rows) and reads
+    as decisive, preserving pre-ladder semantics verbatim. A DECLARED but
+    unrecognized value reads as the weakest tier — an unvalidated typo
+    must not grant strength (the LLM boundary is schema-gated; this
+    guards the code paths, mirroring basis_satisfies)."""
+    if strength is None:
+        return _STRENGTH_RANK[STRENGTH_DECISIVE]
+    return _STRENGTH_RANK.get(strength, _STRENGTH_RANK[STRENGTH_ANALYTIC])
+
+
+def weakest_strength(strengths) -> str:
+    """Fold a claim's strength over its obligations': the weakest link
+    wins. Empty folds to decisive (nothing present to demote); unknown
+    declared values normalize to analytic."""
+    worst = STRENGTH_DECISIVE
+    worst_rank = _STRENGTH_RANK[STRENGTH_DECISIVE]
+    for strength in strengths:
+        rank = strength_rank(strength)
+        if rank < worst_rank:
+            worst = (strength if strength in _STRENGTH_RANK
+                     else STRENGTH_ANALYTIC)
+            worst_rank = rank
+    return worst
+
+
 # internal graph node kind for obligations; deliberately NOT in KINDS so a
 # solver can never commit one — only the kernel materializes them
 OBLIGATION_KINDS = "obligation"

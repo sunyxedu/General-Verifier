@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS claims (
     -- downstream may rely on the content) or 'record' (the ledger attests the
     -- solver reported/did it; proves reporting, not truth). For refuted nodes
     -- it is the refuting evidence's basis. NULL until settled.
-    basis   TEXT
+    basis   TEXT,
+    -- evidence strength of a settled node (decisive | bounded | analytic);
+    -- NULL = settled outside the ladder (direct discharge, ledger checks,
+    -- pre-ladder rows), read as decisive downstream.
+    strength TEXT
 );
 CREATE TABLE IF NOT EXISTS deps (
     child  TEXT NOT NULL,
@@ -78,6 +82,9 @@ class ClaimStore:
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(claims)")}
         if "basis" not in cols:
             self.db.execute("ALTER TABLE claims ADD COLUMN basis TEXT")
+            self.db.commit()
+        if "strength" not in cols:
+            self.db.execute("ALTER TABLE claims ADD COLUMN strength TEXT")
             self.db.commit()
         self.trigger = trigger
         self._trigger_callbacks: List[TriggerCallback] = []
@@ -134,20 +141,23 @@ class ClaimStore:
         row = self._row(claim_id)
         return row["status"]
 
-    def set_verified(self, claim_id: str, basis: Optional[str] = None) -> None:
+    def set_verified(self, claim_id: str, basis: Optional[str] = None,
+                     strength: Optional[str] = None) -> None:
         self._transition(claim_id, STATUS_VERIFIED,
                          allowed={STATUS_UNVERIFIED, STATUS_STALE},
-                         basis=basis)
+                         basis=basis, strength=strength)
 
     def set_refuted(self, claim_id: str, reason: str,
-                    basis: Optional[str] = None) -> None:
+                    basis: Optional[str] = None,
+                    strength: Optional[str] = None) -> None:
         # basis = the refuting evidence's achieved basis: it decides
         # whether the refutation may transfer by inheritance (a record
         # counterexample cannot settle a world demand) and is disclosed
-        # on the certificate
+        # on the certificate. strength is disclosure only — mechanics
+        # upstream admit no refutation below decisive.
         self._transition(claim_id, STATUS_REFUTED,
                          allowed={STATUS_UNVERIFIED, STATUS_STALE},
-                         reason=reason, basis=basis)
+                         reason=reason, basis=basis, strength=strength)
 
     def set_partial(self, claim_id: str) -> None:
         self._transition(claim_id, STATUS_PARTIAL,
@@ -160,13 +170,15 @@ class ClaimStore:
                          allowed={STATUS_UNVERIFIED, STATUS_STALE},
                          reason=reason)
 
-    def _transition(self, claim_id, new, allowed, reason=None, basis=None):
+    def _transition(self, claim_id, new, allowed, reason=None, basis=None,
+                    strength=None):
         current = self.status(claim_id)
         if current not in allowed:
             raise IllegalTransition(f"{current} -> {new} not allowed")
         self.db.execute(
-            "UPDATE claims SET status=?, reason=?, basis=? WHERE id=?",
-            (new, reason, basis, claim_id),
+            "UPDATE claims SET status=?, reason=?, basis=?, strength=? "
+            "WHERE id=?",
+            (new, reason, basis, strength, claim_id),
         )
         self.db.commit()
 
@@ -229,14 +241,15 @@ class ClaimStore:
 
     def _row(self, claim_id: str) -> Dict:
         cur = self.db.execute(
-            "SELECT id, kind, text, revises, status, reason, basis "
+            "SELECT id, kind, text, revises, status, reason, basis, strength "
             "FROM claims WHERE id=?",
             (claim_id,),
         )
         row = cur.fetchone()
         if row is None:
             raise UnknownDependency(f"{claim_id[:12]}… not in store")
-        keys = ("id", "kind", "text", "revises", "status", "reason", "basis")
+        keys = ("id", "kind", "text", "revises", "status", "reason", "basis",
+                "strength")
         return dict(zip(keys, row))
 
     def parents(self, claim_id: str) -> List[str]:
@@ -297,16 +310,18 @@ class ClaimStore:
         proven statements can be found and relied on instead of re-demanded.
         Effects are omitted (their text is a ledger hash, useless to read)."""
         cur = self.db.execute(
-            "SELECT id, kind, status, text, basis FROM claims "
+            "SELECT id, kind, status, text, basis, strength FROM claims "
             "WHERE kind != 'effect'"
         )
         out: List[Dict] = []
-        for cid, kind, status, text, basis in cur.fetchall():
+        for cid, kind, status, text, basis, strength in cur.fetchall():
             if cid == exclude:
                 continue
             entry = {"kind": kind, "status": status, "text": text[:300]}
             if basis:
                 entry["basis"] = basis
+            if strength:
+                entry["strength"] = strength
             out.append(entry)
             if len(out) >= cap:
                 out.append({"note": f"...truncated at {cap} entries"})

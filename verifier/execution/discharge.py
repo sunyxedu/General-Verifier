@@ -39,6 +39,13 @@ class DischargeResult:
     # defaults to record — the fail-closed direction — for paths with no
     # declaration (direct discharge, ledger checks).
     basis: str = BASIS_RECORD
+    # evidence strength (decisive | bounded | analytic): how decisive the
+    # bound method was. None = the ladder was never in play (direct
+    # discharge, ledger checks) and reads as decisive downstream —
+    # pre-ladder semantics. Where a declaration EXISTS but is absent from
+    # a method dict, the binding game defaults it to analytic (fail-closed
+    # at the oracle boundary, mirroring basis -> record).
+    strength: Optional[str] = None
 
 
 class AgentDischarger:
