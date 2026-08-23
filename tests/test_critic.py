@@ -208,6 +208,23 @@ def test_critic_second_signs_both_directions_of_equivalence():
         in prompts.CRITIC_FEEDBACK_TEMPLATE
 
 
+def test_compiler_and_critic_enforce_lossless_term_anchors():
+    assert "LOSSLESS TERM GATE" in prompts.OBLIGATIONS_TEMPLATE
+    assert "Copy each complete source phrase verbatim" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "must not erase the source phrase" in prompts.OBLIGATIONS_TEMPLATE
+    assert "neither term preservation nor evidence of equivalence" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "LOSSLESS TERM GATE — PASS PRECONDITION" \
+        in prompts.CRITIC_TEMPLATE
+    assert "Surrounding task/claim context cannot fill an omitted word" \
+        in prompts.CRITIC_TEMPLATE
+    assert "does not account for a missing qualifier" \
+        in prompts.CRITIC_TEMPLATE
+    assert "TERM AUDIT:" in prompts.CRITIC_TEMPLATE
+    assert "a bare `n/a` is forbidden" in prompts.CRITIC_TEMPLATE
+
+
 def test_extractor_preserves_component_and_aggregate_labels():
     assert "Preserve the SEMANTIC LABEL" in prompts.EXTRACT_SYSTEM
     assert "component versus aggregate" in prompts.EXTRACT_SYSTEM
