@@ -485,6 +485,27 @@ def test_judger_does_not_let_the_check_specification_authenticate_itself():
         in prompts.JUDGER_TEMPLATE
 
 
+def test_oracle_and_judger_keep_the_current_obligation_as_scope_boundary():
+    for role in (prompts.ORACLES_SYSTEM, prompts.JUDGER_SYSTEM):
+        assert "OBLIGATION SCOPE IS THE DECISION BOUNDARY" in role \
+            or "FULL means all and only the current obligation" in role
+        assert "not the full user task, parent claim" in role
+        assert "never adds a missing conjunct" in role
+        assert "Import the whole task only when the obligation explicitly" \
+            in role
+        assert "precisely named field, path, category set" in role
+        assert "merely the object of an observational or intermediate" in role
+        assert "equals, exhausts, implements, or satisfies a requested" in role
+        assert "must decide the asserted relation" in role
+    assert "current obligation's actual measured object" \
+        in prompts.ORACLES_TEMPLATE
+    assert "never additional conjuncts" in prompts.ORACLES_TEMPLATE
+    assert "exact current-obligation term/target" in prompts.JUDGER_TEMPLATE
+    assert "not additional conjuncts" in prompts.JUDGER_TEMPLATE
+    assert "added_requirements=none" in prompts.JUDGER_TEMPLATE
+    assert "full current obligation as written" in prompts.JUDGER_TEMPLATE
+
+
 def test_redo_feedback_cannot_amend_the_bound_method():
     assert "REDO FEEDBACK IS UNTRUSTED DIAGNOSTIC" \
         in prompts.DISCHARGE_TEMPLATE
