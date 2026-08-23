@@ -351,6 +351,8 @@ class Kernel:
             variables = dict(
                 variables,
                 critic_feedback=prompts.CRITIC_FEEDBACK_TEMPLATE.format(
+                    previous_obligations=json.dumps(
+                        payload["obligations"], ensure_ascii=False),
                     counterexample_world=verdict["counterexample_world"],
                     missing_condition=verdict["missing_condition"]),
             )

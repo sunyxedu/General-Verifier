@@ -620,8 +620,16 @@ CRITIC_TEMPLATE = (
 # critic's equivalence attack stands and the decomposition goes back for repair.
 CRITIC_FEEDBACK_TEMPLATE = (
     "A critic rejected one or both directions of your previous equivalence "
-    "decomposition. Witness: {counterexample_world}\n"
+    "decomposition. Here is that exact previous obligation contract, including "
+    "each evidence floor: {previous_obligations}\n"
+    "Witness: {counterexample_world}\n"
     "Repair instruction: {missing_condition}\n"
+    "Return a complete replacement decomposition. Preserve every obligation "
+    "that the witness did not challenge and your full re-audit still finds "
+    "sound: copy its text and required_basis byte-for-byte. Change an unchallenged "
+    "obligation only to fix a concrete independently identified necessity, "
+    "sufficiency, or floor defect required to restore equivalence; never weaken, "
+    "drop, merge, or paraphrase it merely while repairing another condition. "
     "If this is a NECESSITY VIOLATION, remove, weaken, or restate the "
     "overstrong obligation so the controlling claim entails it. If this is a "
     "SUFFICIENCY GAP, add the missing concrete condition that excludes the "

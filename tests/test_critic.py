@@ -93,7 +93,48 @@ def test_a_standing_attack_forces_one_repair_with_the_attack_as_feedback(tmp_pat
     feedback = backend.calls[2]["variables"]["critic_feedback"]
     assert ATTACK["counterexample_world"] in feedback
     assert ATTACK["missing_condition"] in feedback
+    assert json.dumps([
+        {"text": "O of: P holds for every prime", "required_basis": "record"}
+    ], ensure_ascii=False) in feedback
     assert backend.calls[0]["variables"]["critic_feedback"] == ""
+
+
+def test_repair_prompt_preserves_unattacked_obligation_contract(tmp_path):
+    original = {
+        "obligations": [
+            {"text": "The computed result equals 7.",
+             "required_basis": "world"},
+            {"text": "The whole output file parses as integer 7.",
+             "required_basis": "world"},
+        ]
+    }
+    repaired = {
+        "obligations": [
+            {"text": "The complete computed result equals 7.",
+             "required_basis": "world"},
+            original["obligations"][1],
+        ]
+    }
+    compile_calls = iter([original, repaired])
+    verdicts = iter([ATTACK, PASS])
+    store, _, backend, _ = build(
+        tmp_path,
+        {
+            "obligations": lambda _v: next(compile_calls),
+            "critic": lambda _v: next(verdicts),
+        },
+    )
+
+    store.add_claim(Claim(CLAIM_ASSERTION, "The complete result is 7."))
+
+    feedback = backend.calls[2]["variables"]["critic_feedback"]
+    assert json.dumps(original["obligations"], ensure_ascii=False) in feedback
+    assert "copy its text and required_basis byte-for-byte" in feedback
+    assert "concrete independently identified necessity" in feedback
+    assert "never weaken, drop, merge, or paraphrase" in feedback
+    assert backend.calls[3]["variables"]["obligations_json"] == json.dumps(
+        repaired["obligations"], ensure_ascii=False
+    )
 
 
 def test_a_counterexample_standing_after_the_last_round_fails_closed(tmp_path):
@@ -242,6 +283,9 @@ def test_critic_second_signs_both_directions_of_equivalence():
     assert "perform all removals" in prompts.CRITIC_FEEDBACK_TEMPLATE
     assert "do not repair one by breaking the other" \
         in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "exact previous obligation contract" \
+        in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "byte-for-byte" in prompts.CRITIC_FEEDBACK_TEMPLATE
 
 
 def test_compiler_and_critic_enforce_lossless_term_anchors():
