@@ -269,6 +269,11 @@ def test_oracle_gets_one_bounded_structural_repair_prompt():
     assert "one bounded repair pass" in prompts.ORACLES_TEMPLATE
     assert "return only materially new methods" in prompts.ORACLES_TEMPLATE
     assert "Do not repeat a rejected procedure" in prompts.ORACLES_TEMPLATE
+    assert "diagnostic, NOT exhaustive" in prompts.ORACLES_TEMPLATE
+    assert "Do not merely patch the stated rejection reason" \
+        in prompts.ORACLES_TEMPLATE
+    assert "every object, axis, sibling component, filter, quantifier" \
+        in prompts.ORACLES_TEMPLATE
 
 
 def test_oracle_methods_are_decisions_bound_to_task_semantics():
@@ -285,11 +290,19 @@ def test_oracle_methods_are_decisions_bound_to_task_semantics():
     assert "every same-axis sibling component" in prompts.ORACLES_SYSTEM
     assert "source field is not a competing sibling" \
         in prompts.ORACLES_SYSTEM
+    assert "classification/category/domain condition does not also" \
+        in prompts.ORACLES_SYSTEM
+    assert "does not waive provenance for the classified data itself" \
+        in prompts.ORACLES_SYSTEM
     assert "Merely reading the ledger does not determine basis" \
         in prompts.ORACLES_SYSTEM
 
 
 def test_offline_oracle_prefers_complete_retained_evidence():
+    assert "MANDATORY SEMANTIC-COVERAGE CHECK" in prompts.ORACLES_TEMPLATE
+    assert "all same-axis sibling components" in prompts.ORACLES_TEMPLATE
+    assert "retained nonzero omitted sibling or contradictory aggregate" \
+        in prompts.ORACLES_TEMPLATE
     assert "MANDATORY RETAINED-EVIDENCE PREFLIGHT" in prompts.ORACLES_SYSTEM
     assert "establish or refute the obligation" in prompts.ORACLES_SYSTEM
     assert "before any method requiring fresh retrieval or replay" \
@@ -308,6 +321,16 @@ def test_judger_independently_countersigns_method_sufficiency():
     assert "independent second signer for METHOD SUFFICIENCY" \
         in prompts.JUDGER_SYSTEM
     assert "untrusted candidate method" in prompts.JUDGER_SYSTEM
+    assert "report ALL independently visible scope defects" \
+        in prompts.JUDGER_SYSTEM
+    assert "nonzero same-axis sibling or contradictory aggregate" \
+        in prompts.JUDGER_SYSTEM
+    assert "do not demand an additional row-level provenance/source join" \
+        in prompts.JUDGER_SYSTEM
+    assert "Mandatory sufficiency checklist" in prompts.JUDGER_TEMPLATE
+    assert "all independently visible defects" in prompts.JUDGER_TEMPLATE
+    assert "orthogonal provenance/source membership condition" \
+        in prompts.JUDGER_TEMPLATE
     assert "component, subtotal, sample" in prompts.JUDGER_SYSTEM
     assert "authoritative equivalence or exclusion" in prompts.JUDGER_SYSTEM
     assert "same-axis sibling component" in prompts.JUDGER_SYSTEM
