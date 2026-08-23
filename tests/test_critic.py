@@ -214,6 +214,14 @@ def test_prompts_preserve_temporal_targets_across_every_semantic_seat():
     assert "Never re-execute the historical tool" in prompts.JUDGER_SYSTEM
 
 
+def test_compiler_does_not_strengthen_historical_reports_into_world_truth():
+    assert "REPORT CONTENT IS INTENSIONAL" in prompts.OBLIGATIONS_SYSTEM
+    assert "correctly implements an external definition" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "reported Y for S" in prompts.OBLIGATIONS_TEMPLATE
+    assert "additional world claims" in prompts.OBLIGATIONS_TEMPLATE
+
+
 def test_execution_roles_distinguish_targets_from_input_provenance():
     """Every seat that handles a method preserves the same trust boundary."""
     for role in (
