@@ -192,6 +192,17 @@ def test_config_identity_separates_models_and_seats():
         != luna["config"]
 
 
+def test_config_identity_includes_the_critic_round_budget():
+    from verifier.engine.kernel import MAX_CRITIC_ROUNDS
+
+    default = offline.config_fields()
+    assert default["critic_rounds"] == MAX_CRITIC_ROUNDS
+    deeper = offline.config_fields(critic_rounds=MAX_CRITIC_ROUNDS + 1)
+    assert deeper["critic_rounds"] == MAX_CRITIC_ROUNDS + 1
+    # a different game budget is a different verifier's judgment
+    assert deeper["config"] != default["config"]
+
+
 def test_score_stamps_the_config_fields(tmp_path):
     state = state_dir(tmp_path)
     backend = FixtureBackend({"extract": lambda v: GOOD_COMMITS})

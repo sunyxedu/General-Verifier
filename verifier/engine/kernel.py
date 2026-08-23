@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from ..execution.discharge import AgentDischarger, DischargeResult
 from ..core.events import EventLog
@@ -37,8 +37,9 @@ from ..core.store import ClaimStore
 # attack rounds on a decomposition before the claim fails closed: each round
 # is one critic attempt; an `insufficient` verdict sends the decomposition
 # back for one repair, and a counterexample still standing after the last
-# round leaves the claim unverified
-MAX_CRITIC_ROUNDS = 3
+# round leaves the claim unverified. Default only — the kernel takes
+# critic_rounds per run (part of the scoring config identity).
+MAX_CRITIC_ROUNDS = 4
 
 # The compiler needs enough of the dependency chain to close references such
 # as "the selected rows", but copying a whole long trace into every seat would
@@ -47,6 +48,28 @@ REFERENT_CONTEXT_MAX_ANCESTORS = 32
 REFERENT_CONTEXT_TEXT_CHARS = 8_000
 REFERENT_CONTEXT_EVENT_CHARS = 12_000
 REFERENT_CONTEXT_TOTAL_CHARS = 48_000
+
+
+def _repair_oscillation(history: List[Dict]) -> bool:
+    """Best-effort cross-round contradiction heuristic over the critic's
+    mechanical repair labels: one round demanded removal while another
+    demanded (re)addition. Exact-state revisits cannot be relied on (a
+    repair usually also rewords surviving obligations), so this reads the
+    labels the protocol already mandates. Triage metadata only — it never
+    changes the fail-closed verdict."""
+    seen: set = set()
+    for entry in history:
+        mc = entry.get("missing_condition") or ""
+        kinds = set()
+        if "REMOVE OR WEAKEN:" in mc:
+            kinds.add("remove")
+        if "APPEND OBLIGATION:" in mc or "ADD:" in mc:
+            kinds.add("add")
+        if ("remove" in seen and "add" in kinds) \
+                or ("add" in seen and "remove" in kinds):
+            return True
+        seen |= kinds
+    return False
 
 
 class Kernel:
@@ -70,6 +93,7 @@ class Kernel:
         binder=None,
         memory=None,
         live_world: bool = True,
+        critic_rounds: Optional[int] = None,
     ):
         self.store = store
         self.log = log
@@ -78,6 +102,8 @@ class Kernel:
         self.ledger = LedgerInstrument(log)
         self.memory_hits = memory_hits
         self.live_world = live_world
+        self.critic_rounds = (MAX_CRITIC_ROUNDS if critic_rounds is None
+                              else critic_rounds)
         self.obligations_role = obligations_role or COMPILE_OBLIGATIONS_AGENT
         self.critic_role = critic_role   # None -> no adversarial review
         self.discharger = discharger or AgentDischarger(
@@ -283,6 +309,12 @@ class Kernel:
         variables = {
             "claim_text": row["text"],
             "claim_kind": row["kind"],
+            # division-of-labor fact, shared verbatim with the critic: for a
+            # non-final claim the task contract is owned by the final node,
+            # so neither seat treats this claim as the last line of defense
+            "contract_locus": (
+                prompts.CONTRACT_LOCUS_FINAL if row["kind"] == CLAIM_FINAL
+                else prompts.CONTRACT_LOCUS_NONFINAL),
             "task_context": task_context,
             "ledger_path": os.path.abspath(self.log.path),
             "world_mode": world_mode,
@@ -318,10 +350,11 @@ class Kernel:
         Adversarial second signature on the decomposition: the critic
         tries to construct a world where every obligation and every verified
         premise holds and the claim is still false. It never sees the
-        compiler's reasoning. Only the claim, the obligations, and the
-        verified premises. An attack that stands sends the decomposition
-        back for repair; one still standing after MAX_CRITIC_ROUNDS fails
-        closed (returns None, claim stays unverified).
+        compiler's reasoning. Only the claim, the obligations, the
+        verified premises, and the game record of its own prior rounds.
+        An attack that stands sends the decomposition back for repair;
+        one still standing after critic_rounds fails closed (returns
+        None, claim stays unverified).
         """
         if self.critic_role is None:
             return payload
@@ -332,15 +365,17 @@ class Kernel:
         verdict = None
         failure_counterexample = ""
         failure_missing_condition = ""
-        critic_calls = 0
-        repair_calls = 0
-        while critic_calls < MAX_CRITIC_ROUNDS:
-            round_no = critic_calls
+        history: List[Dict] = []  # reviewed rounds, shown to BOTH seats: the
+        critic_calls = 0          # critic is bound by its own prior rulings
+        repair_calls = 0          # (memoryless rounds oscillated: a demand
+        while critic_calls < self.critic_rounds:  # overruled in round n was
+            round_no = critic_calls               # re-issued verbatim in n+2)
             verdict = self.critic_role.call(
                 self.backend,
                 {
                     "claim_text": row["text"],
                     "claim_kind": row["kind"],
+                    "contract_locus": variables["contract_locus"],
                     "task_context": task_context,
                     "ledger_path": variables["ledger_path"],
                     "world_mode": variables["world_mode"],
@@ -359,6 +394,7 @@ class Kernel:
                     "verified_deps": variables["verified_deps"],
                     "dependency_referent_context":
                         variables["dependency_referent_context"],
+                    "game_history": json.dumps(history, ensure_ascii=False),
                 },
             )
             self.log.append(
@@ -368,22 +404,33 @@ class Kernel:
                  "counterexample_world": verdict["counterexample_world"],
                  "missing_condition": verdict["missing_condition"]},
             )
+            history.append({
+                "round": round_no,
+                "reviewed_obligations": [
+                    {"text": o["text"],
+                     "required_basis": o.get("required_basis", BASIS_RECORD)}
+                    for o in payload["obligations"]],
+                "verdict": verdict["verdict"],
+                "counterexample_world": verdict["counterexample_world"],
+                "missing_condition": verdict["missing_condition"],
+            })
             critic_calls += 1
             if verdict["verdict"] == "pass":
                 return payload
             failure_counterexample = verdict["counterexample_world"]
             failure_missing_condition = verdict["missing_condition"]
-            if critic_calls == MAX_CRITIC_ROUNDS:
+            if critic_calls == self.critic_rounds:
                 break  # last attack stands; a repair would go unreviewed
             semantic_feedback = prompts.CRITIC_FEEDBACK_TEMPLATE.format(
                 previous_obligations=json.dumps(
                     payload["obligations"], ensure_ascii=False),
+                game_history=json.dumps(history, ensure_ascii=False),
                 counterexample_world=verdict["counterexample_world"],
                 missing_condition=verdict["missing_condition"],
             )
             repair_accepted = False
             guard_feedback = ""
-            while repair_calls < MAX_CRITIC_ROUNDS - 1:
+            while repair_calls < self.critic_rounds - 1:
                 repair_variables = dict(
                     variables,
                     critic_feedback=semantic_feedback + guard_feedback,
@@ -423,11 +470,18 @@ class Kernel:
                 )
             if not repair_accepted:
                 break
+        # triage metadata only — an oscillating critic still fails closed
+        # (auto-passing on critic incoherence would be an incentive to
+        # induce it), but the run's analysis can count verifier-internal
+        # deadlocks apart from genuinely unverifiable decompositions
+        reason = "decomposition failed critic"
+        if _repair_oscillation(history):
+            reason += " (oscillation)"
         self.store.record_evidence(
             row["id"],
             {
                 "outcome": OUTCOME_FAILED,
-                "error": "decomposition failed critic",
+                "error": reason,
                 "counterexample_world": failure_counterexample,
                 "missing_condition": failure_missing_condition,
             },
@@ -435,9 +489,9 @@ class Kernel:
         self.log.append(
             "status_change",
             {
-                "claim": row["id"], 
+                "claim": row["id"],
                 "status": STATUS_UNVERIFIED,
-                "reason": "decomposition failed critic",
+                "reason": reason,
             },
         )
         return None

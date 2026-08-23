@@ -103,7 +103,8 @@ class Service:
                  memory_dir: Optional[str] = None,
                  toolchain_dir: Optional[str] = None,
                  trigger: str = TRIGGER_ON_COMMIT,
-                 live_world: bool = True):
+                 live_world: bool = True,
+                 critic_rounds: Optional[int] = None):
         self.toolchain_dir = toolchain_dir
         self.live_world = live_world
         os.makedirs(state_dir, exist_ok=True)
@@ -119,7 +120,8 @@ class Service:
         self.builder = Builder(self.log, self.store)
 
         if kernel_factory is None:
-            kernel_factory = lambda sc: _default_kernel(sc, model=model)  # noqa: E731
+            kernel_factory = lambda sc: _default_kernel(  # noqa: E731
+                sc, model=model, critic_rounds=critic_rounds)
         self.kernel = kernel_factory(self)  # factory receives the service
 
         self._feed = Tail(os.path.join(state_dir, HOOK_FEED),
@@ -236,7 +238,8 @@ class Service:
             for label, cid in self.builder.labels.items()
         }
 
-def _default_kernel(sc: Service, model, backend=None) -> Kernel:
+def _default_kernel(sc: Service, model, backend=None,
+                    critic_rounds: Optional[int] = None) -> Kernel:
     from dataclasses import replace
 
     from .llm import prompts
@@ -276,7 +279,8 @@ def _default_kernel(sc: Service, model, backend=None) -> Kernel:
     return Kernel(sc.store, sc.log, backend, sc.artifacts,
                   obligations_role=obligations,
                   discharger=discharger, binder=binder,
-                  memory=sc.memory, live_world=sc.live_world)
+                  memory=sc.memory, live_world=sc.live_world,
+                  critic_rounds=critic_rounds)
 
 
 # MCP wiring

@@ -64,21 +64,28 @@ def pipeline_fingerprint() -> str:
 
 def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
                   effort: Optional[str] = None,
-                  max_rounds: int = 3) -> Dict[str, Any]:
+                  max_rounds: int = 3,
+                  critic_rounds: Optional[int] = None) -> Dict[str, Any]:
     """The full identity of a scoring run's judgment: the pipeline
     fingerprint plus the resolved run configuration, as plaintext fields
     with a content hash (`config`). Two configs must never share derived
     state or score records — two models scoring the same trace are two
     different verifiers. Experiment drivers key their resume on `config`
-    and store the plaintext fields alongside for analysis."""
+    and store the plaintext fields alongside for analysis.
+    max_rounds bounds extraction retries; critic_rounds bounds the
+    decomposition game (default: the kernel's MAX_CRITIC_ROUNDS)."""
     if not model and seats == "codex":
         from .llm.codex_backend import DEFAULT_MODEL
         model = DEFAULT_MODEL
+    if critic_rounds is None:
+        from .engine.kernel import MAX_CRITIC_ROUNDS
+        critic_rounds = MAX_CRITIC_ROUNDS
     fields: Dict[str, Any] = {
         "model": model or "provider-default",
         "seats": seats or "sdk",
         "effort": effort or ("medium" if seats == "codex" else "n/a"),
         "max_rounds": max_rounds,
+        "critic_rounds": critic_rounds,
     }
     fields["config"] = content_hash(
         {"pipeline": pipeline_fingerprint(), **fields})[:16]
@@ -86,8 +93,10 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
 
 
 def config_id(model: Optional[str] = None, seats: Optional[str] = None,
-              effort: Optional[str] = None, max_rounds: int = 3) -> str:
-    return config_fields(model, seats, effort, max_rounds)["config"]
+              effort: Optional[str] = None, max_rounds: int = 3,
+              critic_rounds: Optional[int] = None) -> str:
+    return config_fields(model, seats, effort, max_rounds,
+                         critic_rounds)["config"]
 
 
 class ExtractionError(RuntimeError):
@@ -280,7 +289,8 @@ def _features(cert: Dict[str, Any], extract_rounds: int,
 def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           backend=None, max_rounds: int = 3,
           seats: Optional[str] = None,
-          effort: Optional[str] = None) -> Dict[str, Any]:
+          effort: Optional[str] = None,
+          critic_rounds: Optional[int] = None) -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -292,7 +302,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     `effort` its reasoning effort (default medium).
     """
     cfg = config_fields(model=model, seats=seats, effort=effort,
-                        max_rounds=max_rounds)
+                        max_rounds=max_rounds, critic_rounds=critic_rounds)
+    critic_rounds = cfg["critic_rounds"]
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
         if backend is None:
@@ -304,7 +315,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                 return _default_kernel(
                     sc, model,
                     backend=CodexBackend(cwd=sc.state_dir, model=model,
-                                         effort=cfg["effort"]))
+                                         effort=cfg["effort"]),
+                    critic_rounds=critic_rounds)
     events_path = os.path.join(state_dir, "events.jsonl")
     fingerprint = pipeline_fingerprint()
     meta = json.loads(_read(os.path.join(state_dir, "extract.json")) or "{}")
@@ -341,7 +353,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
 
     from .mcp_server import Service
     sc = Service(state_dir, kernel_factory=kernel_factory, model=model,
-                 trigger=TRIGGER_ON_FIRST_DEPENDENT, live_world=False)
+                 trigger=TRIGGER_ON_FIRST_DEPENDENT, live_world=False,
+                 critic_rounds=critic_rounds)
     if not sc.builder.finals:
         return _write_score(
             state_dir,

@@ -79,12 +79,16 @@ def test_pass_on_the_first_round_admits_the_decomposition(tmp_path):
     # and the premises — never the solver's argument
     critic_vars = backend.calls[1]["variables"]
     assert set(critic_vars) == {
-        "claim_text", "claim_kind", "task_context", "ledger_path",
-        "world_mode", "world_path", "obligations_json", "verified_deps",
-        "dependency_referent_context",
+        "claim_text", "claim_kind", "contract_locus", "task_context",
+        "ledger_path", "world_mode", "world_path", "obligations_json",
+        "verified_deps", "dependency_referent_context", "game_history",
     }
     assert critic_vars["claim_kind"] == "assertion"
     assert critic_vars["task_context"] == "(none supplied)"
+    # a first round has no game record, and a non-final claim carries the
+    # division-of-labor fact (the task contract lives at the final node)
+    assert critic_vars["game_history"] == "[]"
+    assert critic_vars["contract_locus"] == prompts.CONTRACT_LOCUS_NONFINAL
     # floors ride along so the critic attacks the decomposition AS FLOORED
     assert json.loads(critic_vars["obligations_json"]) == [
         {"text": "O of: the tree is clean", "required_basis": "record"}]
@@ -480,12 +484,143 @@ def test_a_counterexample_standing_after_the_last_round_fails_closed(tmp_path):
     assert ev["error"] == "decomposition failed critic"
     assert ev["counterexample_world"] == ATTACK["counterexample_world"]
     attacks = ledger_events(log, "decomposition_attacked")
-    assert [a["payload"]["round"] for a in attacks] == [0, 1, 2]
+    assert [a["payload"]["round"] for a in attacks] == [0, 1, 2, 3]
     assert all(a["payload"]["verdict"] == "insufficient" for a in attacks)
-    # exactly two repairs were attempted; the post-deadline repair never ran
+    # exactly three repairs were attempted; the post-deadline repair never ran
     assert [c["role"] for c in backend.calls] == [
         "obligations", "critic", "obligations", "critic",
-        "obligations", "critic"]
+        "obligations", "critic", "obligations", "critic"]
+
+
+def test_critic_rounds_is_a_per_kernel_knob(tmp_path):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": COMPILE, "critic": ATTACK})
+    Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
+           critic_role=CRITIC_AGENT, discharger=StubDischarger(),
+           critic_rounds=2)
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "P holds for every prime"))
+
+    assert store.status(cid) == "unverified"
+    assert [a["payload"]["round"] for a in ledger_events(
+        log, "decomposition_attacked")] == [0, 1]
+    assert [c["role"] for c in backend.calls] == [
+        "obligations", "critic", "obligations", "critic"]
+
+
+def test_game_history_binds_both_seats_across_rounds(tmp_path):
+    verdicts = iter([ATTACK, PASS])
+    store, log, backend, _ = build(
+        tmp_path, {"obligations": COMPILE, "critic": lambda v: next(verdicts)})
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "P holds for every prime"))
+
+    assert store.status(cid) == "verified"
+    # the repair-round compiler sees the full game record, not only the
+    # newest witness
+    feedback = backend.calls[2]["variables"]["critic_feedback"]
+    assert "Game record" in feedback
+    assert ATTACK["missing_condition"] in feedback
+    # the second critic round sees its own round-0 ruling verbatim
+    second = json.loads(backend.calls[3]["variables"]["game_history"])
+    assert [entry["round"] for entry in second] == [0]
+    assert second[0]["verdict"] == "insufficient"
+    assert second[0]["missing_condition"] == ATTACK["missing_condition"]
+    assert second[0]["counterexample_world"] == ATTACK["counterexample_world"]
+    assert second[0]["reviewed_obligations"] == [
+        {"text": "O of: P holds for every prime", "required_basis": "record"}]
+
+
+def test_oscillating_repair_labels_are_tagged_for_triage(tmp_path):
+    """A remove/add ping-pong still fails closed — never auto-passed — but
+    the failure is labeled so triage can count verifier-internal deadlocks
+    apart from genuinely unverifiable decompositions."""
+    one = {"obligations": [{"text": "A", "required_basis": "world"}]}
+    two = {"obligations": [{"text": "A", "required_basis": "world"},
+                           {"text": "B", "required_basis": "world"}]}
+    payloads = iter([one, two, one, two])
+    append_attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "SUFFICIENCY GAP: B can fail while A holds",
+        "missing_condition": "APPEND OBLIGATION: require B",
+    }
+    remove_attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "NECESSITY VIOLATION: claim true, B false",
+        "missing_condition": "REMOVE OR WEAKEN: drop B",
+    }
+    verdicts = iter([append_attack, remove_attack,
+                     append_attack, append_attack])
+    store, log, backend, discharger = build(
+        tmp_path,
+        {
+            "obligations": lambda _v: next(payloads),
+            "critic": lambda _v: next(verdicts),
+        },
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "A holds"))
+
+    assert store.status(cid) == "unverified"
+    assert discharger.seen == []
+    evidence = store.evidence_for(cid)[-1]
+    assert evidence["error"] == "decomposition failed critic (oscillation)"
+    status = [e for e in ledger_events(log, "status_change")
+              if e["payload"]["claim"] == cid][-1]
+    assert status["payload"]["reason"] == \
+        "decomposition failed critic (oscillation)"
+
+
+def test_contract_locus_names_the_owner_of_the_task_contract(tmp_path):
+    (tmp_path / "task.md").write_text("Count the tokens and write the file.")
+    store, _, backend, _ = build(
+        tmp_path, {"obligations": COMPILE, "critic": PASS})
+
+    premise = store.add_claim(Claim(
+        CLAIM_ASSERTION, "the delivered file contains 79586"))
+    store.add_claim(Claim(
+        CLAIM_FINAL, "the token count is 79586", deps=(premise,)))
+
+    by_kind = {}
+    for call in backend.calls:
+        by_kind[(call["role"], call["variables"]["claim_kind"])] = \
+            call["variables"]["contract_locus"]
+    assert by_kind[("obligations", CLAIM_ASSERTION)] \
+        == prompts.CONTRACT_LOCUS_NONFINAL
+    assert by_kind[("critic", CLAIM_ASSERTION)] \
+        == prompts.CONTRACT_LOCUS_NONFINAL
+    assert by_kind[("obligations", CLAIM_FINAL)] \
+        == prompts.CONTRACT_LOCUS_FINAL
+    assert by_kind[("critic", CLAIM_FINAL)] == prompts.CONTRACT_LOCUS_FINAL
+
+
+def test_decomposition_game_is_stateful_and_scope_bounded():
+    """Pin the anti-oscillation contract: the critic is bound by its own
+    prior rulings, both seats know where the task contract lives, and a
+    classified process requirement keeps its record floor."""
+    assert "{game_history}" in prompts.CRITIC_TEMPLATE
+    assert "GAME CONSISTENCY RULE" in prompts.CRITIC_TEMPLATE
+    assert "explicit retraction" in prompts.CRITIC_TEMPLATE
+    assert "Never silently re-issue an overruled demand" \
+        in prompts.CRITIC_TEMPLATE
+    assert "{game_history}" in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "bound by, the same record" in prompts.CRITIC_FEEDBACK_TEMPLATE
+
+    assert "{contract_locus}" in prompts.CRITIC_TEMPLATE
+    assert "{contract_locus}" in prompts.OBLIGATIONS_TEMPLATE
+    assert "Whole-task acceptance is adjudicated ONLY at a final claim" \
+        in prompts.CONTRACT_LOCUS_NONFINAL
+    assert "never adds requirements the claim does not assert" \
+        in prompts.CONTRACT_LOCUS_NONFINAL
+    assert "false sufficiency attack" in prompts.CONTRACT_LOCUS_NONFINAL
+    assert "genuine necessity violation" in prompts.CONTRACT_LOCUS_NONFINAL
+    assert "neither narrows nor expands" in prompts.CONTRACT_LOCUS_FINAL
+
+    assert "A record floor is not a deficiency there" in prompts.CRITIC_SYSTEM
+    assert "authoritative for whether a recorded solver action occurred" \
+        in prompts.CRITIC_SYSTEM
+    assert "covers the action's occurrence only" in prompts.CRITIC_SYSTEM
 
 
 def test_second_repair_is_reviewed_and_can_pass(tmp_path):
@@ -611,7 +746,12 @@ def test_exhausted_invalid_append_repairs_fail_closed(tmp_path):
             {"text": "C", "required_basis": "world"},
         ]
     }
-    payloads = iter([original, dropped, floor_changed])
+    reordered = {
+        "obligations": list(reversed(original["obligations"])) + [
+            {"text": "C", "required_basis": "world"},
+        ]
+    }
+    payloads = iter([original, dropped, floor_changed, reordered])
     add_attack = {
         "verdict": "insufficient",
         "counterexample_world": "C is missing",
@@ -630,13 +770,13 @@ def test_exhausted_invalid_append_repairs_fail_closed(tmp_path):
     assert store.status(cid) == "unverified"
     assert discharger.seen == []
     assert [call["role"] for call in backend.calls] == [
-        "obligations", "critic", "obligations", "obligations",
+        "obligations", "critic", "obligations", "obligations", "obligations",
     ]
     guard_events = [
         event for event in ledger_events(log, "decomposition_attacked")
         if event["payload"].get("source") == "mechanical_append_guard"
     ]
-    assert len(guard_events) == 2
+    assert len(guard_events) == 3
     assert all(event["payload"]["round"] == 0 for event in guard_events)
     evidence = store.evidence_for(cid)[-1]
     assert evidence["error"] == "decomposition failed critic"

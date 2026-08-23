@@ -82,10 +82,11 @@ def replay(events_path: str) -> int:
 
 
 def score(state_dir: str, model: Optional[str] = None,
-          max_rounds: int = 3) -> int:
+          max_rounds: int = 3, critic_rounds: Optional[int] = None) -> int:
     from . import offline
 
-    features = offline.score(state_dir, model=model, max_rounds=max_rounds)
+    features = offline.score(state_dir, model=model, max_rounds=max_rounds,
+                             critic_rounds=critic_rounds)
     print(json.dumps(features, ensure_ascii=False, indent=1))
     return 0 if features.get("verdict") == "verified" else 1
 
@@ -107,12 +108,14 @@ def main(argv=None) -> int:
     s.add_argument("--state-dir", required=True)
     s.add_argument("--model", default=None)
     s.add_argument("--max-rounds", type=int, default=3)
+    s.add_argument("--critic-rounds", type=int, default=None)
 
     args = ap.parse_args(argv)
     if args.cmd == "certify":
         return certify(args.events, args.state_dir, args.final, args.model)
     if args.cmd == "score":
-        return score(args.state_dir, args.model, args.max_rounds)
+        return score(args.state_dir, args.model, args.max_rounds,
+                     args.critic_rounds)
     return replay(args.events)
 
 
