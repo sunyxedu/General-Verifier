@@ -917,6 +917,7 @@ class Kernel:
             "outcome": result.outcome,
             "basis": result.basis,
             "strength": result.strength,
+            "bridges": list(result.bridges),
             "artifact": result.artifact,
             "witness": result.witness,
             "evidence_id": evidence.id,

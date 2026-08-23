@@ -188,6 +188,10 @@ class BindingGame:
         tier_listed = {_method_strength(m) for m in methods}
         tier_unobtainable: set = set()
         degradation_disputed = False
+        contrary_signal = False   # a non-decisive instrument reported a
+        # negative result: inadmissible as a refutation, but a live
+        # contrary indicator — the obligation must not read out as
+        # "everything that ran held" (partial) while it stands
         failed_seen = False
         repair_used = False
         method_index = 0
@@ -354,6 +358,7 @@ class BindingGame:
                 # negative finding stays on record as a diagnostic for the
                 # repair pass — a decisive method may yet refute honestly.
                 failed_seen = True
+                contrary_signal = True
                 reason = (f"refutation below decisive strength is "
                           f"inadmissible ({strength} instrument reported: "
                           f"{result.witness})")
@@ -446,6 +451,7 @@ class BindingGame:
                 if result.outcome == OUTCOME_REFUTED \
                         and strength != STRENGTH_DECISIVE:
                     failed_seen = True
+                    contrary_signal = True
                     reason = (f"refutation below decisive strength is "
                               f"inadmissible (redo {rounds}; {strength} "
                               f"instrument reported: {result.witness})")
@@ -491,12 +497,15 @@ class BindingGame:
         # gap is noise around an established blocker, not counter-evidence
         # to it (pure failures, with no unobtainable in sight, still fail:
         # a false statement's honest construction attempts also all fail).
-        # A judger-disputed degradation withdraws that trust: the
-        # structural story itself is contested, so fail closed to failed.
+        # A judger-disputed degradation withdraws that trust, and so does
+        # a live contrary signal (a non-decisive instrument's negative
+        # result): the structural story is contested or contradicted, so
+        # fail closed to failed.
         unavailable_only = (
             (audited_gap
              or (bool(unavailable_reasons) and not failed_seen))
-            and not degradation_disputed)
+            and not degradation_disputed
+            and not contrary_signal)
         reason = (
             "all candidate methods structurally unavailable: "
             + "; ".join(dict.fromkeys(unavailable_reasons))
@@ -736,8 +745,10 @@ class BindingGame:
             basis=method.get("basis", BASIS_RECORD),
             # the declared strength the judger countersigned (sufficiency at
             # tier, bridge completeness, degradation): what the settled
-            # verdict is worth downstream
+            # verdict is worth downstream — with the unverified bridges it
+            # rests on, for certificate disclosure
             strength=_method_strength(method),
+            bridges=tuple(method.get("bridges", ())),
         )
 
     def _fail(self, row, obligation, attempts, reason,

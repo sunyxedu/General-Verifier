@@ -46,6 +46,10 @@ class DischargeResult:
     # a method dict, the binding game defaults it to analytic (fail-closed
     # at the oracle boundary, mirroring basis -> record).
     strength: Optional[str] = None
+    # the bound method's declared bridging assumptions (empty for
+    # decisive): a supported verdict is only honest with its unverified
+    # bridges disclosed, so they ride the evidence onto the certificate
+    bridges: tuple = ()
 
 
 class AgentDischarger:

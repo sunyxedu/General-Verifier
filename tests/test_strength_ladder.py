@@ -624,3 +624,104 @@ def test_weighted_vote_supported_sits_between_the_bands():
         {"answer": "B", "features": _features("verified")},
     ]
     assert weighted_vote(rows)["answer"] == "B"
+
+
+# ---- acceptance: the bug-scenario walk (docs/evidence-strength-ladder.md §0)
+
+BUG_CLAIM = "there is a bug: f mis-handles input I in the delivered code"
+
+
+def acceptance_pipeline(tmp_path, outcomes, judger=None):
+    """The full pipeline with the binding game seated as the kernel's
+    binder: claim text == obligation text (the degenerate decomposition
+    is legal and stable), three methods on the ladder."""
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = _Store(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({
+        "obligations": lambda v: {"obligations": [
+            {"text": BUG_CLAIM, "required_basis": "world"}]},
+        "oracles": {"methods": [SYSTEM_TEST, UNIT_TEST, CODE_READING]},
+        "judger": judger or JUDGE_OK_DEGRADED,
+    })
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    discharger = ScriptedDischarger(outcomes)
+    binder = BindingGame(backend, artifacts, log, discharger,
+                         live_world=False)
+    kernel = Kernel(store, log, backend, artifacts, critic_role=None,
+                    discharger=discharger, binder=binder, live_world=False)
+    f = store.add_claim(Claim(CLAIM_FINAL, BUG_CLAIM))
+    cert = request_certificate(store, kernel, log, artifacts, f)
+    return store, f, cert, discharger
+
+
+def test_acceptance_system_test_verifies(tmp_path):
+    _, f, cert, d = acceptance_pipeline(tmp_path, {
+        SYSTEM_TEST["procedure"]: ("holds", None),
+    })
+    assert cert["verdict"] == "verified"
+    assert cert["verdict_strength"] == STRENGTH_DECISIVE
+    assert d.executed == [SYSTEM_TEST["procedure"]]
+
+
+def test_acceptance_degrades_to_supported_at_bounded(tmp_path):
+    """system test structurally unavailable -> unit test binds ->
+    supported@bounded, with the unverified bridges disclosed on the
+    certificate's evidence."""
+    _, f, cert, d = acceptance_pipeline(tmp_path, {
+        SYSTEM_TEST["procedure"]: ("unobtainable", "no API key in the env"),
+        UNIT_TEST["procedure"]: ("holds", None),
+    })
+    assert cert["verdict"] == "supported"
+    assert cert["verdict_strength"] == STRENGTH_BOUNDED
+    (entry,) = [e for e in cert["slice"] if e["id"] == f]
+    node = entry["obligations"][0]
+    assert node["status"] == "verified"
+    assert node["strength"] == STRENGTH_BOUNDED
+    assert node["evidence"][-1]["bridges"] == UNIT_TEST["bridges"]
+
+
+def test_acceptance_descends_to_supported_at_analytic(tmp_path):
+    _, f, cert, d = acceptance_pipeline(tmp_path, {
+        SYSTEM_TEST["procedure"]: ("unobtainable", "no API key"),
+        UNIT_TEST["procedure"]: ("unobtainable", "cannot isolate the unit"),
+        CODE_READING["procedure"]: ("holds", None),
+    })
+    assert cert["verdict"] == "supported"
+    assert cert["verdict_strength"] == STRENGTH_ANALYTIC
+    assert d.executed == [SYSTEM_TEST["procedure"], UNIT_TEST["procedure"],
+                          CODE_READING["procedure"]]
+
+
+def test_acceptance_system_test_refutes(tmp_path):
+    _, f, cert, _ = acceptance_pipeline(tmp_path, {
+        SYSTEM_TEST["procedure"]: ("refuted", "scenario runs correctly"),
+    })
+    assert cert["verdict"] == "refuted"
+    assert cert["verdict_strength"] is None
+
+
+def test_acceptance_negative_unit_signal_blocks_weaker_holds(tmp_path):
+    """A bounded instrument's negative result cannot refute — but it does
+    keep the analytic tier locked (the bounded tier ended failed, not
+    structurally unavailable), so a code reading cannot assert holds over
+    a live contrary signal. Fail-closed to unverified."""
+    store, f, cert, d = acceptance_pipeline(tmp_path, {
+        SYSTEM_TEST["procedure"]: ("unobtainable", "no API key"),
+        UNIT_TEST["procedure"]: ("refuted", "assertion failed at step 3"),
+        CODE_READING["procedure"]: ("holds", None),
+    })
+    assert cert["verdict"] == "unverified"
+    assert CODE_READING["procedure"] not in d.executed
+
+
+def test_acceptance_mixed_failure_and_gap_settles_partial(tmp_path):
+    """The chess shape end to end: an audited structural gap beside a
+    construction failure settles the obligation unobtainable -> the
+    claim partial, not unverified."""
+    _, f, cert, _ = acceptance_pipeline(tmp_path, {
+        SYSTEM_TEST["procedure"]: ("unobtainable", "no API key"),
+        UNIT_TEST["procedure"]: ("failed", "harness crashed"),
+        CODE_READING["procedure"]: ("unobtainable", "generated code, "
+                                    "no stable spans to pin"),
+    })
+    assert cert["verdict"] == "partial"
