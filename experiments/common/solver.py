@@ -97,7 +97,8 @@ def record_final(work: str, stdout: str) -> None:
 def run_claude(work: str, prompt: str, model: str = "sonnet",
                mcp: bool = False, record: bool = False,
                timeout: int | None = DEFAULT_TIMEOUT,
-               base_url: str | None = None, task: str | None = None):
+               base_url: str | None = None, task: str | None = None,
+               web: bool = True):
     """Headless Claude Code on the configured provider (see .env /
     provider.py). Returns (stdout, seconds).
 
@@ -108,9 +109,13 @@ def run_claude(work: str, prompt: str, model: str = "sonnet",
     GV suffix, which is not task content).
     `record` writes the verifier ground truth (task.md + pre-run baseline)
     without mounting the MCP server — the recorder arm for offline scoring.
+    `web=False` drops the WebSearch/WebFetch tools — for benchmarks whose
+    answers are published online (Bash-level curl is NOT blocked here).
     """
     cmd = ["claude", "-p", prompt, "--model", model,
            "--dangerously-skip-permissions"]
+    if not web:
+        cmd += ["--disallowed-tools", "WebSearch,WebFetch"]
     if mcp:
         cmd += ["--mcp-config", ".mcp.json", "--strict-mcp-config"]
     if mcp or record:
@@ -136,11 +141,87 @@ def run_claude(work: str, prompt: str, model: str = "sonnet",
     return out, round(time.time() - t0, 1)
 
 
+def rollout_for(workdir: str, since: float) -> str | None:
+    """The newest codex rollout under ~/.codex/sessions recorded in
+    `workdir` (session_meta cwd match, realpath'd both sides — /tmp is a
+    symlink on macOS) and modified after `since`. cwd-exact pairing keeps
+    concurrent solver runs — and any verifier seats sharing the same codex
+    install — from cross-capturing each other's sessions."""
+    sessions = os.path.expanduser("~/.codex/sessions")
+    if not os.path.isdir(sessions):
+        return None
+    target = os.path.realpath(workdir)
+    best, best_mtime = None, -1.0
+    for root, _dirs, files in os.walk(sessions):
+        for name in files:
+            if not (name.startswith("rollout-") and name.endswith(".jsonl")):
+                continue
+            path = os.path.join(root, name)
+            mtime = os.path.getmtime(path)
+            if mtime < since or mtime <= best_mtime:
+                continue
+            if _rollout_cwd(path) == target:
+                best, best_mtime = path, mtime
+    return best
+
+
+def _rollout_cwd(path: str) -> str | None:
+    """cwd from a rollout's leading session_meta lines (None if absent)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for _ in range(8):
+                line = f.readline()
+                if not line:
+                    return None
+                try:
+                    payload = json.loads(line).get("payload") or {}
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("cwd"):
+                    return os.path.realpath(payload["cwd"])
+    except OSError:
+        pass
+    return None
+
+
+# run_codex(web=False): every channel below verified closed on codex-cli
+# 0.147 (the flags are version-sensitive — re-verify after codex updates):
+#   shell network   — workspace-write sandbox + network_access=false
+#                     (curl: could not resolve host)
+#   web search tool — top-level `web_search="disabled"` is the key that
+#                     works; tools.web_search=false and web_search_mode
+#                     do NOT remove the tool. Provider-side execution, so
+#                     the local sandbox alone never blocks it.
+#   MCP / apps      — mcp_servers={} + --disable enable_mcp_apps, else
+#                     connector search tools (Notion, OpenAI docs) leak
+#                     through as an out-of-band lookup channel.
+#   plugins         — --ignore-user-config, else the openai-bundled browser
+#                     plugin ships a repl__js + browser runtime the model
+#                     WILL find and use to reopen a web channel (observed
+#                     live: "Look up five-conics monodromy" — each attempt
+#                     crash-looped Chrome against the seatbelt sandbox).
+NO_WEB_CODEX_FLAGS = [
+    "--ignore-user-config",
+    "--sandbox", "workspace-write",
+    "-c", "sandbox_workspace_write.network_access=false",
+    "-c", 'web_search="disabled"',
+    "-c", "approval_policy=never",
+    "-c", "mcp_servers={}",
+    "--disable", "enable_mcp_apps",
+]
+
+
 def run_codex(work: str, prompt: str, model: str | None = None,
-              timeout: int | None = DEFAULT_TIMEOUT):
-    """Headless Codex CLI. Returns (stdout, seconds)."""
-    cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
-           "--skip-git-repo-check", prompt]
+              timeout: int | None = DEFAULT_TIMEOUT, web: bool = True):
+    """Headless Codex CLI. Returns (stdout, seconds).
+
+    `web=False` cuts every network channel (see NO_WEB_CODEX_FLAGS) — for
+    benchmarks whose answers are published online: on an early FrontierMath
+    run the solver fetched the benchmark paper and the epoch-research
+    solution repo mid-task."""
+    access = (NO_WEB_CODEX_FLAGS if not web
+              else ["--dangerously-bypass-approvals-and-sandbox"])
+    cmd = ["codex", "exec", *access, "--skip-git-repo-check", prompt]
     if model:
         cmd[2:2] = ["-m", model]
     t0 = time.time()

@@ -56,22 +56,23 @@ def main():
     print(f"GV verified&correct {stats['gv_ver_ok']} · "
           f"verified&WRONG (false certificate) {stats['gv_ver_BAD']}")
 
-    selection_table(problems, by_arm.get("rec", {}))
+    for arm in ("rec", "codex"):
+        selection_table(problems, by_arm.get(arm, {}), arm)
 
 
-def selection_table(problems, rec_by_pid):
-    """Best-of-N over the rec arm's offline scores (the ORM story):
+def selection_table(problems, rec_by_pid, arm="rec"):
+    """Best-of-N over a recorder arm's offline scores (the ORM story):
     pass@1 / majority vote / verifier argmax / verifier-weighted vote /
     pass@N oracle, plus the verified-precision count."""
     scores = {(r["pid"], r["sample"]): r["features"] for r in
-              res.load(os.path.join(HERE, "results", "rec", "scores.jsonl"))}
+              res.load(os.path.join(HERE, "results", arm, "scores.jsonl"))}
     if not scores:
         return
     strategies = [("pass@1", None), ("majority", selection.majority_vote),
                   ("argmax", selection.argmax),
                   ("weighted", selection.weighted_vote), ("oracle", None)]
     totals = Counter()
-    print(f"\n{'best-of-N (rec)':<30}{'N':>4}" +
+    print(f"\n{f'best-of-N ({arm})':<30}{'N':>4}" +
           "".join(f"{name:>10}" for name, _ in strategies))
     for p in problems:
         rows = [dict(r, features=scores.get((p['id'], r['sample'])))
@@ -107,7 +108,7 @@ def selection_table(problems, rec_by_pid):
     rec_rows = {(r["pid"], r["sample"]): r
                 for rows in rec_by_pid.values() for r in rows}
     ok = sum(1 for k, _ in verified if rec_rows.get(k, {}).get("solved"))
-    print(f"rec verified&correct {ok} · "
+    print(f"{arm} verified&correct {ok} · "
           f"verified&WRONG (false certificate) {len(verified) - ok}")
 
 
