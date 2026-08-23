@@ -225,6 +225,40 @@ def test_compiler_and_critic_enforce_lossless_term_anchors():
     assert "a bare `n/a` is forbidden" in prompts.CRITIC_TEMPLATE
 
 
+def test_compiler_makes_each_obligation_referentially_self_contained():
+    assert "SELF-CONTAINED REFERENTS" in prompts.OBLIGATIONS_SYSTEM
+    assert "later hashed, shared, and checked as an independent proposition" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "SELF-CONTAINED REFERENT GATE" in prompts.OBLIGATIONS_TEMPLATE
+    assert "claim, graph, and sibling obligations hidden" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "dataset/configuration/split/filter/time qualifiers" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "verified premise only to resolve an explicitly linked identity" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "Do not expand locally bound references" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "explicit references to the task or a named authority" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "If no unique antecedent exists, do not guess" \
+        in prompts.OBLIGATIONS_TEMPLATE
+
+
+def test_critic_rejects_obligations_with_hidden_referents():
+    assert "MANDATORY REFERENT-ISOLATION ATTACK" in prompts.CRITIC_SYSTEM
+    assert "claim graph, verified premises, and sibling obligations" \
+        in prompts.CRITIC_SYSTEM
+    assert "Copying an anaphor verbatim is not term preservation" \
+        in prompts.CRITIC_SYSTEM
+    assert "must not become semantic authority" in prompts.CRITIC_SYSTEM
+    assert "launder record-level content" in prompts.CRITIC_SYSTEM
+    assert "Locally bound references and explicit task" \
+        in prompts.CRITIC_SYSTEM
+    assert "REFERENT AUDIT — PASS PRECONDITION" in prompts.CRITIC_TEMPLATE
+    assert "Evaluate the obligation in isolation" in prompts.CRITIC_TEMPLATE
+    assert "REFERENT AUDIT:" in prompts.CRITIC_TEMPLATE
+
+
 def test_extractor_preserves_component_and_aggregate_labels():
     assert "Preserve the SEMANTIC LABEL" in prompts.EXTRACT_SYSTEM
     assert "component versus aggregate" in prompts.EXTRACT_SYSTEM
