@@ -242,7 +242,38 @@ TASK_INSTANCE_CONTRACT = (
     "that candidate fail the task predicate, but may not replace it with a "
     "different input instance or different submission. Thus a candidate "
     "literal is not an answer required of every valid solution, yet it cannot "
-    "be swapped out while attacking the proposition about this submission.\n"
+    "be swapped out while attacking the proposition about this submission. "
+    "A concrete counterexample must preserve every fixed given and its "
+    "deterministic consequences; never invent a domain fact or set member for "
+    "the fixed instance. When the task authority or verified world facts do "
+    "not identify the members needed by an attack, use a symbolic witness over "
+    "the fixed task-defined set — for example, the same bound carrier contains "
+    "W union {x}, where x is not in W — and assert only the relation needed to "
+    "expose the decomposition gap.\n"
+)
+
+QUANTIFIER_ROLE_BINDING = (
+    "QUANTIFIER AND MULTIPLICITY BINDING: let L be the candidate carrier's "
+    "sequence of substantive parsed items, S the set of distinct values in L, "
+    "and W the task-defined answer set for the fixed instance. Preserve these "
+    "independent axes exactly. `all`, `every`, and bare `each` over W require "
+    "coverage W subset-of S; the same words over output items require only the "
+    "stated per-item property, never the reverse quantifier. A directive to "
+    "write, print, return, or list P-items constrains every substantive output "
+    "item to P, hence S subset-of W unless the source authorizes another item "
+    "class; that item-soundness, not `all`, excludes extra non-answer values. "
+    "`only`, `no other`, or an explicit exact-set clause also requires exclusion; "
+    "`all and only` or `exactly those` requires set equality. `once`, `exactly "
+    "once`, `unique`, `distinct`, or `no duplicates` controls multiplicity. "
+    "`one item per line`, record, row, cell, or slot controls representation "
+    "partitioning; it does not by itself prohibit the same valid semantic value "
+    "from appearing in multiple records. An `exactly N` phrase constrains only "
+    "the syntactic scope it modifies. Never derive one axis from another. When "
+    "uniqueness is not explicitly required by the controlling source or its "
+    "named authority, compare distinct semantic values for coverage/exclusion "
+    "and permit repeated valid representations. Preserve separately stated "
+    "path/delivery, representation, and semantic-set requirements as separate "
+    "obligations; repairing one must not merge it with another.\n"
 )
 
 TRANSFORMATION_EVENT_BINDING = (
@@ -294,6 +325,7 @@ OBLIGATIONS_SYSTEM = (
     "specialization.\n"
     + SOURCE_TERM_ROLE_BINDING
     + TASK_INSTANCE_CONTRACT
+    + QUANTIFIER_ROLE_BINDING
     + TRANSFORMATION_EVENT_BINDING
     + SUPPORTING_PROVENANCE_BOUNDARY
     + "Explicit required or prohibited actions, substitute prohibitions, "
@@ -728,6 +760,7 @@ CRITIC_SYSTEM = (
     "statement and any authority it explicitly names. Audit semantic entailment, "
     "not check feasibility: unavailable evidence is handled later.\n"
     + TASK_INSTANCE_CONTRACT
+    + QUANTIFIER_ROLE_BINDING
     + TRANSFORMATION_EVENT_BINDING
     + SUPPORTING_PROVENANCE_BOUNDARY
     + "Rules of the attack:\n"
@@ -1206,6 +1239,7 @@ ORACLES_SYSTEM = (
     "Do not demand exhaustive positive reconstruction after retained "
     "evidence already forces the target false.\n"
     + TASK_COMPLETE_OCCURRENCE_COMPOSITION
+    + QUANTIFIER_ROLE_BINDING
     + REFERENT_METHOD_BOUNDARY
     + SUPPORTING_PROVENANCE_BOUNDARY
     + PROOF_CARRYING_EFFECTS
@@ -1388,6 +1422,7 @@ DISCHARGE_SYSTEM = (
     "unseen response, not its contents. Never replay the old action in a "
     "later world to fill the gap.\n"
     + PROOF_CARRYING_EFFECTS
+    + QUANTIFIER_ROLE_BINDING
     + SUPPORTING_PROVENANCE_BOUNDARY
     + SIGNED_WORLD_EVIDENCE_REUSE
     + OFFLINE_FROZEN_EXECUTION
@@ -1671,6 +1706,7 @@ JUDGER_SYSTEM = (
     "is itself unfaithful (the declaration decides what downstream "
     "verification may build on).\n"
     + TASK_COMPLETE_OCCURRENCE_COMPOSITION
+    + QUANTIFIER_ROLE_BINDING
     + REFERENT_METHOD_BOUNDARY
     + SUPPORTING_PROVENANCE_BOUNDARY
     + PROOF_CARRYING_EFFECTS

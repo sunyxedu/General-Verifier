@@ -790,6 +790,38 @@ def test_critic_second_signs_both_directions_of_equivalence():
         in prompts.CRITIC_TEMPLATE
 
 
+def test_quantifier_axes_and_fixed_instance_witnesses_stay_distinct():
+    rule = prompts.QUANTIFIER_ROLE_BINDING
+    for role in (
+        prompts.OBLIGATIONS_SYSTEM,
+        prompts.CRITIC_SYSTEM,
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    ):
+        assert rule in role
+
+    assert "coverage W subset-of S" in rule
+    assert "S subset-of W" in rule
+    assert "item-soundness, not `all`, excludes extra non-answer values" in rule
+    assert "requires set equality" in rule
+    assert "controls multiplicity" in rule
+    assert "controls representation partitioning" in rule
+    assert "does not by itself prohibit" in rule
+    assert "Never derive one axis from another" in rule
+    assert "compare distinct semantic values" in rule
+    assert "path/delivery, representation, and semantic-set requirements" \
+        in rule
+    assert "separate obligations" in rule
+
+    contract = prompts.TASK_INSTANCE_CONTRACT
+    assert "preserve every fixed given and its deterministic consequences" \
+        in contract
+    assert "never invent a domain fact or set member" in contract
+    assert "use a symbolic witness over the fixed task-defined set" in contract
+    assert "W union {x}, where x is not in W" in contract
+
+
 def test_compiler_and_critic_enforce_lossless_term_anchors():
     assert "LOSSLESS TERM GATE" in prompts.OBLIGATIONS_TEMPLATE
     assert "Copy each complete source phrase verbatim" \
