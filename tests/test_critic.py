@@ -581,6 +581,52 @@ def test_family_total_composition_is_guarded_and_directional():
         in prompts.JUDGER_SYSTEM
 
 
+def test_occurrence_composition_selects_representation_and_coordinates_safely():
+    rule = prompts.TASK_COMPLETE_OCCURRENCE_COMPOSITION
+    for role in (prompts.ORACLES_SYSTEM, prompts.JUDGER_SYSTEM):
+        assert rule in role
+    assert "positive task/authority evidence binding one representation" in rule
+    assert "convenient co-location in an untrusted table is not enough" in rule
+    assert rule.endswith("\n")
+    assert "Never sum across alternative or duplicate representations" in rule
+    assert "shards/tables joined or unioned as parts of one logical representation" \
+        in rule
+    assert "reconcile overlap and deduplication" in rule
+    assert "authority supplies a mapping" in rule
+    assert "hypothetical unsupported join does not compete" in rule
+    assert "multiple eligible representations remain and change the verdict" \
+        in rule
+    assert "unqualified task quantity asks for the number or total" in rule
+    assert "interpret it by default as a per-slot occurrence-based additive total" \
+        in rule
+    assert "task, authority, or concrete structure specifies" in rule
+    assert "Under this defeasible default" in rule
+    assert "separately materialized at distinct record/field/index coordinates" \
+        in rule
+    assert "positive structural evidence" in rule
+    assert "no extra prose sentence saying `sum these fields`" in rule
+    assert "Topical or causal relation" in rule
+    assert "alone does not prove aliasing" in rule
+    for invalid_case in (
+        "copy/projection",
+        "subset or containment",
+        "raw-to-normalized",
+        "full-to-excerpt",
+        "same-coordinate alias",
+        "duplicate projection",
+        "alternate serialization/stage",
+        "nested/derived aggregate",
+        "unique/distinct/deduplicated",
+        "joint/concatenated-stream tokenization",
+        "signed/net quantity",
+    ):
+        assert invalid_case in rule
+    assert "AUTHORITY-BOUND REPRESENTATION / MATERIALIZED-OCCURRENCE DEFAULT" \
+        in prompts.JUDGER_TEMPLATE
+    assert "Do not demand an additional `sum these fields` sentence" \
+        in prompts.JUDGER_TEMPLATE
+
+
 def test_authoritative_schema_names_can_support_family_membership():
     assert "AUTHORITATIVE SCHEMA IDENTIFIERS ARE SEMANTIC" \
         in prompts.ORACLES_SYSTEM

@@ -40,6 +40,46 @@ PROOF_CARRYING_EFFECTS = (
     "must audit the proof-carrying record for the obligation at hand.\n"
 )
 
+TASK_COMPLETE_OCCURRENCE_COMPOSITION = (
+    "AUTHORITY-BOUND REPRESENTATION / MATERIALIZED-OCCURRENCE DEFAULT: this "
+    "refines GUARDED COMPOSITION; it never replaces its guards. First require "
+    "positive task/authority evidence binding one representation and population "
+    "to the measured family and every task-required selector/filter. Such binding "
+    "may come from an authority-presented schema that directly and exhaustively "
+    "carries both the requested family roles and selector over its declared task "
+    "population; convenient co-location in an untrusted table is not enough. "
+    "Never sum across alternative or duplicate representations. Authority-defined "
+    "shards/tables joined or unioned as parts of one logical representation and "
+    "population are not alternatives: follow the mapping and reconcile overlap and "
+    "deduplication. Another representation is a competing "
+    "reading only when authority supplies a mapping that makes it independently "
+    "eligible for the same task term, scope, and occurrence population. Mere "
+    "existence or a hypothetical unsupported join does not compete. If multiple "
+    "eligible representations remain and change the verdict, keep the relation "
+    "unresolved. When an unqualified task quantity asks for the number or total "
+    "of measured units present in the authority-bound stored representation, "
+    "interpret it by default as a per-slot occurrence-based additive total unless "
+    "the task, authority, or concrete structure specifies a role-qualified, "
+    "semantic-object, unique/distinct/deduplicated, joint/concatenated, signed/net, "
+    "compressed, or other non-additive measurement. Under this defeasible default, "
+    "family-supported primary payload values "
+    "separately materialized at distinct record/field/index coordinates in that "
+    "representation are distinct occurrence locations. Require positive structural "
+    "evidence for those coordinates/materializations and one common population, "
+    "time target, unit, and measurement configuration. In the absence of concrete "
+    "contrary evidence, independently measuring each coordinate makes the values "
+    "additive; no extra prose sentence saying `sum these fields` is required. "
+    "Topical or causal relation, or coincidentally equal/shared content, alone does "
+    "not prove aliasing; it does not collapse separately materialized occurrence "
+    "locations. Concrete copy/projection, subset or containment, raw-to-normalized "
+    "mapping, full-to-excerpt relation, same-coordinate alias, cache/view, duplicate "
+    "projection, alternate serialization/stage, nested/derived aggregate, or overlap "
+    "evidence does block this default. Never apply it to a role-qualified target, a "
+    "unique/distinct/deduplicated or semantic-object total, joint/concatenated-stream "
+    "tokenization, average, signed/net quantity, compressed size, or other non-"
+    "additive measurement.\n"
+)
+
 OBLIGATIONS_SYSTEM = (
     "You are the obligation compiler. You see the claim's statement and "
     "its position in the claim graph, but never the solver's argument "
@@ -868,6 +908,7 @@ ORACLES_SYSTEM = (
     "boundary lacks evidence needed to establish the positive direction. "
     "Do not demand exhaustive positive reconstruction after retained "
     "evidence already forces the target false.\n"
+    + TASK_COMPLETE_OCCURRENCE_COMPOSITION
     + PROOF_CARRYING_EFFECTS
 )
 
@@ -1308,6 +1349,7 @@ JUDGER_SYSTEM = (
     "record-basis evidence under a world declaration, and that mislabel "
     "is itself unfaithful (the declaration decides what downstream "
     "verification may build on).\n"
+    + TASK_COMPLETE_OCCURRENCE_COMPOSITION
     + PROOF_CARRYING_EFFECTS
     + "You are the one who LOOKS AT THE RESULT: open the artifact and "
     "examine the actual outputs yourself, not the narration; there is "
@@ -1416,7 +1458,13 @@ JUDGER_TEMPLATE = (
     "applicable=no; reason=<why>; contract_complete=yes|no; execution_complete="
     "yes|no.` Do not add an orthogonal provenance/source membership condition "
     "unless the task authority requires it. After the coverage prefix, report "
-    "every other independently visible defect.\n\n"
+    "every other independently visible defect. For a stored/per-slot occurrence "
+    "total, apply AUTHORITY-BOUND REPRESENTATION / MATERIALIZED-OCCURRENCE DEFAULT: "
+    "report the selected representation's authority binding and required axes, "
+    "whether any other representation is independently eligible, the distinct "
+    "coordinate/materialization evidence, and any concrete alias/projection/subset/"
+    "stage/aggregate counterevidence. Do not demand an additional `sum these fields` "
+    "sentence after every guard is established.\n\n"
     "Examine the result itself and judge:\n"
     "  sufficient: yes | no — faithful success of this method would decide "
     "the full current obligation as written, with referenced terms interpreted "
