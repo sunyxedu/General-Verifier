@@ -1353,6 +1353,17 @@ def test_offline_oracle_prefers_complete_retained_evidence():
     assert "exact equality negatively with a rigorous monotone bound" \
         in prompts.ORACLES_SYSTEM
     assert "one in-scope counterexample" in prompts.ORACLES_SYSTEM
+    assert "CONDITIONAL-COVERAGE REFUTATION PREFLIGHT" \
+        in prompts.ORACLES_SYSTEM
+    assert "`|W| <= 1 or W subset-of S`" in prompts.ORACLES_SYSTEM
+    assert "two distinct, independently derived members `w1,w2`" \
+        in prompts.ORACLES_SYSTEM
+    assert "it need not reconstruct all of W" in prompts.ORACLES_SYSTEM
+    assert "before declaring exhaustive W unobtainable" \
+        in prompts.ORACLES_SYSTEM
+    assert "every task-consistent completion" in prompts.ORACLES_SYSTEM
+    assert "unable to affect the witness is not missing evidence" \
+        in prompts.ORACLES_SYSTEM
 
 
 def test_offline_oracle_prioritizes_only_guarded_retained_strict_bounds():

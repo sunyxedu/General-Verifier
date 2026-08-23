@@ -1255,7 +1255,18 @@ ORACLES_SYSTEM = (
     "universal negatively with one in-scope counterexample, even when the "
     "boundary lacks evidence needed to establish the positive direction. "
     "Do not demand exhaustive positive reconstruction after retained "
-    "evidence already forces the target false.\n"
+    "evidence already forces the target false. CONDITIONAL-COVERAGE "
+    "REFUTATION PREFLIGHT: on both initial and repair passes, for the "
+    "fixed-instance predicate `|W| <= 1 or W subset-of S` (equivalently, "
+    "`if |W| > 1 then W subset-of S`), a negative method need establish "
+    "only two distinct, independently derived members `w1,w2` of W and one "
+    "witness `x` in `{w1,w2}` that is absent from S; it need not reconstruct "
+    "all of W. List this witness method before exhaustive reconstruction. "
+    "When some task-instance state is unresolved, try the witness method "
+    "before declaring exhaustive W unobtainable. The witness is decisive "
+    "only when membership, distinctness, and absence are established across "
+    "every task-consistent completion of that unresolved state; a state "
+    "dimension proved unable to affect the witness is not missing evidence.\n"
     + TASK_COMPLETE_OCCURRENCE_COMPOSITION
     + QUANTIFIER_ROLE_BINDING
     + REFERENT_METHOD_BOUNDARY
