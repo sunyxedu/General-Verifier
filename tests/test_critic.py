@@ -143,6 +143,10 @@ def test_repair_prompt_preserves_unattacked_obligation_contract(tmp_path):
     assert "copy its text and required_basis byte-for-byte" in feedback
     assert "concrete independently identified necessity" in feedback
     assert "never weaken, drop, merge, or paraphrase" in feedback
+    assert "only the smallest span implicated by the witness" in feedback
+    assert "candidate binding, event/referent binder" in feedback
+    assert "An `ADD:` instruction authorizes an addition only" in feedback
+    assert "original task, claim, and named authority outrank" in feedback
     assert backend.calls[3]["variables"]["obligations_json"] == json.dumps(
         repaired["obligations"], ensure_ascii=False
     )
@@ -473,11 +477,58 @@ def test_a_counterexample_standing_after_the_last_round_fails_closed(tmp_path):
     assert ev["error"] == "decomposition failed critic"
     assert ev["counterexample_world"] == ATTACK["counterexample_world"]
     attacks = ledger_events(log, "decomposition_attacked")
-    assert [a["payload"]["round"] for a in attacks] == [0, 1]
+    assert [a["payload"]["round"] for a in attacks] == [0, 1, 2]
     assert all(a["payload"]["verdict"] == "insufficient" for a in attacks)
-    # exactly one repair was attempted; the post-deadline repair never ran
+    # exactly two repairs were attempted; the post-deadline repair never ran
     assert [c["role"] for c in backend.calls] == [
-        "obligations", "critic", "obligations", "critic"]
+        "obligations", "critic", "obligations", "critic",
+        "obligations", "critic"]
+
+
+def test_second_repair_is_reviewed_and_can_pass(tmp_path):
+    payloads = iter([
+        {"obligations": [{"text": "O0", "required_basis": "world"}]},
+        {"obligations": [{"text": "O1", "required_basis": "world"}]},
+        {"obligations": [{"text": "O2", "required_basis": "world"}]},
+    ])
+    attack_one = {
+        "verdict": "insufficient",
+        "counterexample_world": "first witness",
+        "missing_condition": "ADD: first repair",
+    }
+    attack_two = {
+        "verdict": "insufficient",
+        "counterexample_world": "second witness",
+        "missing_condition": "ADD: second repair",
+    }
+    verdicts = iter([attack_one, attack_two, PASS])
+    store, log, backend, discharger = build(
+        tmp_path,
+        {
+            "obligations": lambda _v: next(payloads),
+            "critic": lambda _v: next(verdicts),
+        },
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "the final proposition"))
+
+    assert store.status(cid) == "verified"
+    assert discharger.seen == ["O2"]
+    assert [c["role"] for c in backend.calls] == [
+        "obligations", "critic", "obligations", "critic",
+        "obligations", "critic",
+    ]
+    first_feedback = backend.calls[2]["variables"]["critic_feedback"]
+    second_feedback = backend.calls[4]["variables"]["critic_feedback"]
+    assert "O0" in first_feedback
+    assert "first witness" in first_feedback
+    assert "ADD: first repair" in first_feedback
+    assert "O1" in second_feedback
+    assert "second witness" in second_feedback
+    assert "ADD: second repair" in second_feedback
+    assert [e["payload"]["round"] for e in ledger_events(
+        log, "decomposition_attacked"
+    )] == [0, 1, 2]
 
 
 def test_critic_gets_the_task_statement_when_the_harness_wrote_one(tmp_path):
@@ -657,6 +708,12 @@ def test_critic_second_signs_both_directions_of_equivalence():
     assert "exact previous obligation contract" \
         in prompts.CRITIC_FEEDBACK_TEMPLATE
     assert "byte-for-byte" in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "only the smallest span implicated by the witness" \
+        in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "An `ADD:` instruction authorizes an addition only" \
+        in prompts.CRITIC_FEEDBACK_TEMPLATE
+    assert "the next repair can address them together" \
+        in prompts.CRITIC_TEMPLATE
 
 
 def test_compiler_and_critic_enforce_lossless_term_anchors():

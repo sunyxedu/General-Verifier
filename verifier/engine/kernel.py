@@ -38,7 +38,7 @@ from ..core.store import ClaimStore
 # is one critic attempt; an `insufficient` verdict sends the decomposition
 # back for one repair, and a counterexample still standing after the last
 # round leaves the claim unverified
-MAX_CRITIC_ROUNDS = 2
+MAX_CRITIC_ROUNDS = 3
 
 # The compiler needs enough of the dependency chain to close references such
 # as "the selected rows", but copying a whole long trace into every seat would
