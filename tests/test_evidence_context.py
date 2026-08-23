@@ -73,3 +73,32 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
         "path": str(task),
         "text": "Count every item, not one component.",
     }
+
+
+def test_cleanup_removes_scratch_but_keeps_artifact_files_snapshot(tmp_path):
+    artifacts = ArtifactStore(os.path.join(tmp_path, "artifacts"))
+
+    def discharge(variables):
+        with open(os.path.join(variables["workdir"], "check.txt"),
+                  "w", encoding="utf-8") as handle:
+            handle.write("complete verifier output")
+        return {"outcome": "holds", "witness": "", "artifact": "check.txt"}
+
+    discharger = AgentDischarger(
+        FixtureBackend({"discharge": discharge}),
+        artifacts,
+        workdir_base=os.path.join(tmp_path, "work"),
+        cleanup=True,
+    )
+    obligation = Obligation("c1", "the frozen artifact behaves correctly")
+
+    result = discharger.discharge(
+        {"id": "c1", "kind": "assertion", "text": "behavior is correct"},
+        obligation,
+    )
+
+    scratch = os.path.join(tmp_path, "work", obligation.id[:12])
+    assert not os.path.exists(scratch)
+    assert artifacts.get(result.artifact)["files"] == {
+        "check.txt": "complete verifier output",
+    }

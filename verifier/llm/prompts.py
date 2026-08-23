@@ -67,6 +67,30 @@ SIGNED_WORLD_EVIDENCE_REUSE = (
     "old verdict alone proves no new implication.\n"
 )
 
+OFFLINE_FROZEN_EXECUTION = (
+    "OFFLINE FROZEN-EXECUTION BOUNDARY: never replay a historical solver "
+    "action to decide what happened then; inspect its retained effects. This "
+    "does not prohibit a new verifier experiment on the frozen captured "
+    "artifact to decide its current/final behavior. Capture fixes the subject "
+    "artifact, retained task inputs, and historical state; it does not require "
+    "verifier-owned instruments such as Python, a standard library, parser, "
+    "browser, or prover to reside under a captured root. A compatible external "
+    "runtime is valid when the task/authority does not pin a version and the "
+    "conclusion does not materially depend on a semantic difference. If a "
+    "version is pinned or material, match it or report the exact unobtainable "
+    "gap. Record the instrument version/configuration, exact command, frozen "
+    "inputs, complete output, and exit status. One in-domain execution may "
+    "refute a universal with a concrete counterexample; finite executions cannot "
+    "establish an unbounded universal positively.\n"
+    "The ArtifactStore JSON and its embedded `files` snapshot are the persistent "
+    "verifier-execution evidence. The scratch path is expected to disappear "
+    "after snapshot cleanup, and a new verifier check cannot already appear in "
+    "the solver ledger or in the later `discharge` event. Neither absence is a "
+    "fidelity defect. Inspect the embedded files and, when needed, reconstruct "
+    "or rerun from the snapshot. The executor's prose report still does not "
+    "authenticate itself.\n"
+)
+
 TASK_COMPLETE_OCCURRENCE_COMPOSITION = (
     "AUTHORITY-BOUND REPRESENTATION / MATERIALIZED-OCCURRENCE DEFAULT: this "
     "refines GUARDED COMPOSITION; it never replaces its guards. First require "
@@ -1143,6 +1167,7 @@ ORACLES_SYSTEM = (
     + REFERENT_METHOD_BOUNDARY
     + PROOF_CARRYING_EFFECTS
     + SIGNED_WORLD_EVIDENCE_REUSE
+    + OFFLINE_FROZEN_EXECUTION
 )
 
 ORACLES_TEMPLATE = (
@@ -1243,8 +1268,15 @@ ORACLES_TEMPLATE = (
     "either produce the evidence or report the exact unobtainable gap. An "
     "empty list is also not a substitute for a method whose tool may need to "
     "be installed, and live-world uncertainty is not fixed unavailability.\n\n"
-    "When prior method feedback is present, this is the one bounded repair "
-    "pass. The feedback is diagnostic, NOT exhaustive: derive the full "
+    "When prior method feedback is present, this is the one bounded exhausted-"
+    "batch repair pass. Its structural_rejections, unavailable_boundaries, and "
+    "exhausted_attempts report what happened to the first batch: sufficient=no "
+    "means replace an incomplete method contract; failed means choose a runnable "
+    "implementation or instrument without treating failure as falsity; "
+    "unobtainable closes only the method that depends on that fixed-boundary gap; "
+    "and a method still unfaithful after redo needs a materially different method. "
+    "The feedback is diagnostic, NOT exhaustive, and never task/world evidence "
+    "or a basis for holds/refuted: derive the full "
     "semantic contract again from the task and its authorities, independently "
     "audit every object, axis, sibling component, filter, quantifier, and "
     "aggregate, and address every structural insufficiency and fixed-boundary "
@@ -1308,6 +1340,7 @@ DISCHARGE_SYSTEM = (
     "later world to fill the gap.\n"
     + PROOF_CARRYING_EFFECTS
     + SIGNED_WORLD_EVIDENCE_REUSE
+    + OFFLINE_FROZEN_EXECUTION
     + "TARGETS ARE NOT INPUTS: the obligation and bound method are "
     "verifier-supplied check specifications. A literal used solely as the "
     "obligation's expected, accepted, or comparison target may be quoted or "
@@ -1591,6 +1624,7 @@ JUDGER_SYSTEM = (
     + REFERENT_METHOD_BOUNDARY
     + PROOF_CARRYING_EFFECTS
     + SIGNED_WORLD_EVIDENCE_REUSE
+    + OFFLINE_FROZEN_EXECUTION
     + "You are the one who LOOKS AT THE RESULT: open the artifact and "
     "examine the actual outputs yourself, not the narration; there is "
     "no separate re-run stage, so rerun the check yourself whenever "

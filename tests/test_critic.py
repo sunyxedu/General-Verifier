@@ -706,6 +706,27 @@ def test_prior_world_evidence_is_reused_only_through_a_fresh_audit():
     assert "{artifact_root}" in prompts.JUDGER_TEMPLATE
 
 
+def test_offline_execution_uses_frozen_subjects_and_persistent_artifacts():
+    rule = prompts.OFFLINE_FROZEN_EXECUTION
+    assert rule in prompts.ORACLES_SYSTEM
+    assert rule in prompts.DISCHARGE_SYSTEM
+    assert rule in prompts.JUDGER_SYSTEM
+    assert "never replay a historical solver action" in rule
+    assert "new verifier experiment on the frozen captured artifact" in rule
+    assert "does not require verifier-owned instruments" in rule
+    assert "compatible external runtime is valid" in rule
+    assert "version is pinned or material" in rule
+    assert "finite executions cannot establish an unbounded universal" in rule
+    assert "ArtifactStore JSON and its embedded `files` snapshot" in rule
+    assert "scratch path is expected to disappear" in rule
+    assert "cannot already appear in the solver ledger" in rule
+    assert "executor's prose report still does not authenticate itself" in rule
+    assert "one bounded exhausted-batch repair pass" \
+        in prompts.ORACLES_TEMPLATE
+    assert "exhausted_attempts" in prompts.ORACLES_TEMPLATE
+    assert "never task/world evidence" in prompts.ORACLES_TEMPLATE
+
+
 def test_critic_second_signs_both_directions_of_equivalence():
     assert "attack BOTH DIRECTIONS" in prompts.CRITIC_SYSTEM
     assert "NECESSITY ATTACK" in prompts.CRITIC_SYSTEM
@@ -995,9 +1016,12 @@ def test_oracle_cannot_hide_missing_evidence_behind_an_empty_list():
     assert "report the exact unobtainable gap" in prompts.ORACLES_TEMPLATE
 
 
-def test_oracle_gets_one_bounded_structural_repair_prompt():
+def test_oracle_gets_one_bounded_exhausted_batch_repair_prompt():
     assert "Prior method feedback" in prompts.ORACLES_TEMPLATE
-    assert "one bounded repair pass" in prompts.ORACLES_TEMPLATE
+    assert "one bounded exhausted-batch repair pass" \
+        in prompts.ORACLES_TEMPLATE
+    assert "structural_rejections, unavailable_boundaries" \
+        in prompts.ORACLES_TEMPLATE
     assert "return only materially new methods" in prompts.ORACLES_TEMPLATE
     assert "Do not repeat a rejected procedure" in prompts.ORACLES_TEMPLATE
     assert "diagnostic, NOT exhaustive" in prompts.ORACLES_TEMPLATE

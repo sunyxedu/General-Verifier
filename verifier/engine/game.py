@@ -149,11 +149,13 @@ class BindingGame:
         repair_used = False
         method_index = 0
         while (method_index < len(methods)
-               or (structural_feedback and not repair_used)):
+               or (attempts and not repair_used)):
             if method_index >= len(methods):
-                # A structural rejection is information about the Oracle's
-                # method contract, not something the executor can repair.
-                # Feed all reasons back once and append only new procedures.
+                # Once the first non-empty batch is exhausted, hand every
+                # diagnostic boundary back to the Oracle exactly once.  A
+                # different method may avoid a structural gap, unavailable
+                # instrument, failed implementation, or repeatedly unfaithful
+                # execution.  The replacement still executes and is re-judged.
                 repair_used = True
                 feedback = json.dumps(
                     {
@@ -161,6 +163,9 @@ class BindingGame:
                         "unavailable_boundaries": list(dict.fromkeys(
                             unavailable_reasons
                         )),
+                        "exhausted_attempts": [
+                            _attempt_diagnostic(a) for a in attempts
+                        ],
                     },
                     ensure_ascii=False,
                 )
@@ -244,7 +249,10 @@ class BindingGame:
 
             if result.outcome == OUTCOME_FAILED:
                 failed_seen = True
+                detail = str(result.witness or "")
                 reason = "execution failure at retry limit"
+                if detail:
+                    reason += f": {detail}"
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
                 continue
@@ -298,7 +306,10 @@ class BindingGame:
                     break
                 if result.outcome == OUTCOME_FAILED:
                     failed_seen = True
+                    detail = str(result.witness or "")
                     reason = f"execution failure at retry limit (redo {rounds})"
+                    if detail:
+                        reason += f": {detail}"
                     break
                 verdict = self._judge(obligation, method, result, attempt,
                                       redo=rounds)
@@ -525,3 +536,37 @@ def _features(row: Dict) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _attempt_diagnostic(attempt: Attempt) -> Dict:
+    """Bounded method diagnostics for the Oracle's single repair pass.
+
+    Artifact contents and digests are deliberately absent: this feedback says
+    why an implementation was rejected, never whether the obligation is true.
+    """
+    method = {
+        "procedure": attempt.method.get("procedure", ""),
+        "promised_artifact": attempt.method.get("artifact", ""),
+        "level": attempt.method.get("level", ""),
+        "basis": attempt.method.get("basis", BASIS_RECORD),
+    }
+
+    def public(audit):
+        if audit is None:
+            return None
+        return {k: v for k, v in audit.items() if not k.startswith("_")}
+
+    return {
+        "method": method,
+        "initial_outcome": attempt.discharge_outcome,
+        "initial_audit": public(attempt.audit),
+        "redos": [
+            {
+                "reason": redo.get("reason"),
+                "outcome": redo.get("outcome"),
+                "audit": public(redo.get("audit")),
+            }
+            for redo in attempt.redos
+        ],
+        "terminal_reason": attempt.rejected,
+    }

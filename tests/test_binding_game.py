@@ -266,6 +266,105 @@ def test_structural_rejection_gets_one_oracle_repair_batch(tmp_path):
     assert not any(event["type"] == "method_redo" for event in events)
 
 
+def test_failed_batch_gets_one_oracle_repair_with_concrete_reason(tmp_path):
+    original = oracle_method("run a checker that times out")
+    repaired = oracle_method("run a smaller deterministic checker")
+
+    def enumerate_methods(variables):
+        if variables["method_feedback"] == "(none)":
+            return {"methods": [original]}
+        feedback = json.loads(variables["method_feedback"])
+        attempt = feedback["exhausted_attempts"][0]
+        assert attempt["initial_outcome"] == "failed"
+        assert "checker timed out" in attempt["terminal_reason"]
+        assert "discharge_artifact" not in attempt
+        return {"methods": [repaired]}
+
+    g, backend = game(
+        tmp_path,
+        {"oracles": enumerate_methods, "judger": JUDGE_YES},
+        discharger=SequenceDischarger([
+            ("failed", "checker timed out"), ("holds", None),
+        ]),
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "holds"
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
+
+
+def test_unavailable_batch_can_repair_to_a_method_without_that_boundary(
+        tmp_path):
+    original = oracle_method("use a missing parser")
+    repaired = oracle_method("inspect a decisive raw byte counterexample")
+
+    def enumerate_methods(variables):
+        if variables["method_feedback"] == "(none)":
+            return {"methods": [original]}
+        feedback = json.loads(variables["method_feedback"])
+        assert feedback["unavailable_boundaries"] == ["parser unavailable"]
+        assert "parser unavailable" in feedback["exhausted_attempts"][0][
+            "terminal_reason"]
+        return {"methods": [repaired]}
+
+    g, backend = game(
+        tmp_path,
+        {"oracles": enumerate_methods, "judger": JUDGE_YES},
+        live_world=False,
+        discharger=SequenceDischarger([
+            ("unobtainable", "parser unavailable"), ("refuted", "bad byte"),
+        ]),
+    )
+
+    result = g.run(ROW, Obligation("c1", "all outputs are safe"))
+
+    assert result.outcome == "refuted"
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
+
+
+def test_unfaithful_redo_exhaustion_can_repair_to_a_new_method(tmp_path):
+    original = oracle_method("use a fragile parser")
+    repaired = oracle_method("use a materially different parser")
+    bad = {
+        "sufficient": "yes",
+        "faithful": "no",
+        "reason": "the promised parser was not actually used",
+    }
+
+    def enumerate_methods(variables):
+        if variables["method_feedback"] == "(none)":
+            return {"methods": [original]}
+        feedback = json.loads(variables["method_feedback"])
+        attempt = feedback["exhausted_attempts"][0]
+        assert attempt["initial_audit"] == bad
+        assert attempt["redos"][0]["audit"] == bad
+        assert "after 1 redo round" in attempt["terminal_reason"]
+        return {"methods": [repaired]}
+
+    verdicts = iter([bad, bad, JUDGE_YES])
+    backend = FixtureBackend({
+        "oracles": enumerate_methods,
+        "judger": lambda _variables: next(verdicts),
+    })
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    g = BindingGame(
+        backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        log,
+        SequenceDischarger([
+            ("holds", None), ("holds", None), ("holds", None),
+        ]),
+        redo_rounds=1,
+    )
+
+    result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
+
+    assert result.outcome == "holds"
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
+    assert len([e for e in log.replay() if e["type"] == "method_redo"]) == 1
+
+
 def test_oracle_repair_is_bounded_and_runs_duplicate_new_method_once(tmp_path):
     original = oracle_method("original insufficient method")
     repaired = oracle_method("new but still insufficient method")
@@ -557,7 +656,9 @@ def test_all_unavailable_methods_preserve_the_concrete_gap(tmp_path):
         {"procedure": "read the contemporaneous snapshot",
          "artifact": "snapshot", "level": "direct", "basis": "world"},
     ]}
-    backend = FixtureBackend({"oracles": methods})
+    backend = FixtureBackend({
+        "oracles": oracle_with_repair({"methods": []}, methods),
+    })
     game = BindingGame(
         backend,
         ArtifactStore(os.path.join(tmp_path, "art")),
@@ -566,6 +667,7 @@ def test_all_unavailable_methods_preserve_the_concrete_gap(tmp_path):
             ("unobtainable", "result excerpt was truncated"),
             ("unobtainable", "no contemporaneous snapshot was retained"),
         ]),
+        live_world=False,
     )
 
     result = game.run(ROW, Obligation("c1", "past state was X", "world"))
