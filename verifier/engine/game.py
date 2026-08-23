@@ -23,9 +23,10 @@ Per obligation:
      An insufficient method is rejected immediately. Unfaithful -> the
      judger's reason goes back to the executor for a redo and the redone
      result is re-judged BLIND. A loop of at most three rounds.
-3. If the batch contained an insufficient method, its structural rejection
-   goes back to the oracle for at most one repair batch; duplicate procedures
-   never run again.
+3. An exhausted batch goes back to the oracle for at most one repair batch;
+   offline, this also covers an initially empty batch so the oracle must recheck
+   frozen-input experiments and retained effects. Duplicate procedures never
+   run again.
 4. All candidates exhausted -> failed (or unobtainable when a missing
    instrument blocked the way), with every attempt on record.
 """
@@ -109,17 +110,16 @@ class BindingGame:
                 f"oracle enumeration failed: {err}",
             )
 
-        if not methods:
-            # In offline replay the evidence boundary is frozen: a valid empty
-            # list means the oracle found no executable sufficient method at
-            # the required basis, so the honest result is unavailable rather
-            # than a retryable execution failure.  A live world may change, so
-            # preserve its fail-closed/retryable behaviour.
+        initial_empty = not methods
+        if initial_empty and self.live_world:
+            # A live world may change, so preserve the existing fail-closed,
+            # retryable result.  Offline gets the same single bounded repair as
+            # an exhausted non-empty batch: a second look may notice a retained
+            # effect or a fresh experiment over the frozen captured subject.
             return self._fail(
                 row, obligation, attempts,
                 "oracle found no executable sufficient method at the "
                 f"required basis {obligation.required_basis!r}",
-                unobtainable=not self.live_world,
             )
 
         # the obligation's evidence floor is mechanical, not advisory: a
@@ -127,20 +127,21 @@ class BindingGame:
         # a record method faithfully run against a world-floor obligation
         # would only prove the solver's reporting, which is exactly the
         # evidence this floor exists to reject
-        below = [m for m in methods
-                 if not basis_satisfies(m.get("basis", BASIS_RECORD),
-                                        obligation.required_basis)]
-        for m in below:
-            self._reject(row, obligation, m,
-                         "declared basis below the obligation's floor")
-        methods = [m for m in methods if m not in below]
-        if not methods:
-            return self._fail(
-                row, obligation, attempts,
-                "oracle protocol error: every returned method declares a "
-                "basis below the obligation's required basis "
-                f"{obligation.required_basis!r}",
-            )
+        if not initial_empty:
+            below = [m for m in methods
+                     if not basis_satisfies(m.get("basis", BASIS_RECORD),
+                                            obligation.required_basis)]
+            for m in below:
+                self._reject(row, obligation, m,
+                             "declared basis below the obligation's floor")
+            methods = [m for m in methods if m not in below]
+            if not methods:
+                return self._fail(
+                    row, obligation, attempts,
+                    "oracle protocol error: every returned method declares a "
+                    "basis below the obligation's required basis "
+                    f"{obligation.required_basis!r}",
+                )
 
         unavailable_reasons: List[str] = []
         structural_feedback: List[Dict[str, str]] = []
@@ -149,16 +150,17 @@ class BindingGame:
         repair_used = False
         method_index = 0
         while (method_index < len(methods)
-               or (attempts and not repair_used)):
+               or ((attempts or initial_empty) and not repair_used)):
             if method_index >= len(methods):
-                # Once the first non-empty batch is exhausted, hand every
-                # diagnostic boundary back to the Oracle exactly once.  A
-                # different method may avoid a structural gap, unavailable
-                # instrument, failed implementation, or repeatedly unfaithful
-                # execution.  The replacement still executes and is re-judged.
+                # Hand an exhausted batch — including an offline initial empty
+                # batch — back to the Oracle exactly once.  A different method
+                # may notice a frozen-input experiment, retained effect, or
+                # avoid a structural/instrument/execution/fidelity gap.  The
+                # replacement still executes and is re-judged.
                 repair_used = True
                 feedback = json.dumps(
                     {
+                        "initial_empty": initial_empty,
                         "structural_rejections": structural_feedback,
                         "unavailable_boundaries": list(dict.fromkeys(
                             unavailable_reasons

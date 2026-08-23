@@ -1063,6 +1063,12 @@ def test_oracle_gets_one_bounded_exhausted_batch_repair_prompt():
         in prompts.ORACLES_TEMPLATE
     assert "every object, axis, sibling component, filter, quantifier" \
         in prompts.ORACLES_TEMPLATE
+    assert "`initial_empty=true`" in prompts.ORACLES_TEMPLATE
+    assert "retained proof-carrying effects" in prompts.ORACLES_TEMPLATE
+    assert "fresh verifier experiment on frozen captured task inputs" \
+        in prompts.ORACLES_TEMPLATE
+    assert "verifier-local instruments" in prompts.ORACLES_TEMPLATE
+    assert "never task/world evidence" in prompts.ORACLES_TEMPLATE
 
 
 def test_oracle_methods_are_decisions_bound_to_task_semantics():

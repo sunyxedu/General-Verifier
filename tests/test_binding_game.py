@@ -583,21 +583,62 @@ def test_oracle_sees_floor_ledger_and_fixed_world_context(tmp_path):
 
 
 def test_explicit_empty_oracle_is_unobtainable_offline(tmp_path):
-    g, _ = game(tmp_path, {"oracles": {"methods": []}}, live_world=False)
+    g, backend = game(
+        tmp_path, {"oracles": {"methods": []}}, live_world=False,
+    )
 
     result = g.run(ROW, Obligation("c1", "past state was X", "world"))
 
     assert result.outcome == "unobtainable"
-    assert "no executable sufficient method" in result.witness
+    assert "repair found no materially new sufficient method" in result.witness
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
+    assert not [c for c in backend.calls if c["role"] == "judger"]
+
+
+def test_offline_initial_empty_gets_one_bounded_oracle_repair(tmp_path):
+    repaired = oracle_method(
+        "run a fresh verifier experiment on the frozen captured subject"
+    )
+
+    def enumerate_methods(variables):
+        if variables["method_feedback"] == "(none)":
+            return {"methods": []}
+        feedback = json.loads(variables["method_feedback"])
+        assert feedback == {
+            "initial_empty": True,
+            "structural_rejections": [],
+            "unavailable_boundaries": [],
+            "exhausted_attempts": [],
+        }
+        return {"methods": [repaired]}
+
+    discharger = SequenceDischarger([("holds", None)])
+    g, backend = game(
+        tmp_path,
+        {"oracles": enumerate_methods, "judger": JUDGE_YES},
+        live_world=False,
+        discharger=discharger,
+    )
+
+    result = g.run(ROW, Obligation("c1", "final state is valid", "world"))
+
+    assert result.outcome == "holds"
+    assert discharger.methods == [repaired]
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
+    batches = [
+        e for e in g.log.replay() if e["type"] == "methods_enumerated"
+    ]
+    assert [e["payload"]["repair"] for e in batches] == [False, True]
 
 
 def test_explicit_empty_oracle_stays_failed_live(tmp_path):
-    g, _ = game(tmp_path, {"oracles": {"methods": []}})
+    g, backend = game(tmp_path, {"oracles": {"methods": []}})
 
     result = g.run(ROW, Obligation("c1", "answer equals 42", "world"))
 
     assert result.outcome == "failed"
     assert "no executable sufficient method" in result.witness
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 1
 
 
 def test_oracle_role_error_stays_failed_offline(tmp_path):
