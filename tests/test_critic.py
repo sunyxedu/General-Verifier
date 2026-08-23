@@ -294,15 +294,33 @@ def test_oracle_methods_are_decisions_bound_to_task_semantics():
         in prompts.ORACLES_SYSTEM
     assert "does not waive provenance for the classified data itself" \
         in prompts.ORACLES_SYSTEM
+    assert "FAMILY-COVERAGE GATE" in prompts.ORACLES_SYSTEM
+    assert "disjoint-additive" in prompts.ORACLES_SYSTEM
+    assert "overlapping/alias/cached/materialized" in prompts.ORACLES_SYSTEM
+    assert "derived aggregate" in prompts.ORACLES_SYSTEM
+    assert "orthogonal metadata" in prompts.ORACLES_SYSTEM
+    assert "relation remains unresolved" in prompts.ORACLES_SYSTEM
+    assert "task-authoritative representation and population" \
+        in prompts.ORACLES_SYSTEM
+    assert "caches, subsets, and materialized views" \
+        in prompts.ORACLES_SYSTEM
     assert "Merely reading the ledger does not determine basis" \
         in prompts.ORACLES_SYSTEM
 
 
 def test_offline_oracle_prefers_complete_retained_evidence():
-    assert "MANDATORY SEMANTIC-COVERAGE CHECK" in prompts.ORACLES_TEMPLATE
-    assert "all same-axis sibling components" in prompts.ORACLES_TEMPLATE
-    assert "retained nonzero omitted sibling or contradictory aggregate" \
+    assert "TARGET-BLIND SEMANTIC COVERAGE" in prompts.ORACLES_TEMPLATE
+    assert "Every procedure string MUST contain" in prompts.ORACLES_TEMPLATE
+    assert "SEMANTIC COVERAGE: term=" in prompts.ORACLES_TEMPLATE
+    assert "artifact string MUST" in prompts.ORACLES_TEMPLATE
+    assert "a target match is never exclusion evidence" \
         in prompts.ORACLES_TEMPLATE
+    assert "realized coverage report sufficient for the stated verdict" \
+        in prompts.ORACLES_TEMPLATE
+    assert "plausibly in-scope same-axis component type" \
+        in prompts.ORACLES_TEMPLATE
+    assert "monotonicity/disjointness" in prompts.ORACLES_TEMPLATE
+    assert "SEMANTIC COVERAGE: not-applicable" in prompts.ORACLES_TEMPLATE
     assert "MANDATORY RETAINED-EVIDENCE PREFLIGHT" in prompts.ORACLES_SYSTEM
     assert "establish or refute the obligation" in prompts.ORACLES_SYSTEM
     assert "before any method requiring fresh retrieval or replay" \
@@ -327,10 +345,18 @@ def test_judger_independently_countersigns_method_sufficiency():
         in prompts.JUDGER_SYSTEM
     assert "do not demand an additional row-level provenance/source join" \
         in prompts.JUDGER_SYSTEM
-    assert "Mandatory sufficiency checklist" in prompts.JUDGER_TEMPLATE
-    assert "all independently visible defects" in prompts.JUDGER_TEMPLATE
-    assert "orthogonal provenance/source membership condition" \
+    assert "SEMANTIC COVERAGE IS NOT SELF-AUTHENTICATING" \
+        in prompts.JUDGER_SYSTEM
+    assert "alternative aggregate found in raw evidence" \
+        in prompts.JUDGER_SYSTEM
+    assert "Never return both yes" in prompts.JUDGER_SYSTEM
+    assert "COVERAGE AUDIT: term=" in prompts.JUDGER_TEMPLATE
+    assert "contract_complete=yes|no" in prompts.JUDGER_TEMPLATE
+    assert "execution_complete=yes|no" in prompts.JUDGER_TEMPLATE
+    assert "all relevant fields" in prompts.JUDGER_TEMPLATE
+    assert "complete for the stated verdict direction" \
         in prompts.JUDGER_TEMPLATE
+    assert "COVERAGE AUDIT: applicable=no" in prompts.JUDGER_TEMPLATE
     assert "component, subtotal, sample" in prompts.JUDGER_SYSTEM
     assert "authoritative equivalence or exclusion" in prompts.JUDGER_SYSTEM
     assert "same-axis sibling component" in prompts.JUDGER_SYSTEM
@@ -346,6 +372,17 @@ def test_judger_independently_countersigns_method_sufficiency():
     assert "sufficient=no" in prompts.JUDGER_SYSTEM
     assert "sufficient: yes | no" in prompts.JUDGER_TEMPLATE
     assert "untrusted candidate check" in prompts.JUDGER_TEMPLATE
+
+
+def test_compiler_and_critic_preserve_task_term_modifiers():
+    assert "Preserve every noun modifier, namespace, producer qualifier" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "Do not broaden `X items` into `items`" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "noun modifier/namespace/producer qualifier" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "without an authority-backed equivalence or expansion" \
+        in prompts.CRITIC_SYSTEM
 
 
 def test_judger_uses_artifact_store_content_address_semantics():
