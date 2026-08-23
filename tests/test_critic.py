@@ -316,11 +316,29 @@ def test_compiler_makes_each_obligation_referentially_self_contained():
         in prompts.OBLIGATIONS_TEMPLATE
     assert "verified premise only to resolve an explicitly linked identity" \
         in prompts.OBLIGATIONS_TEMPLATE
-    assert "Do not expand locally bound references" \
+    assert "Do not expand locally bound uses" \
         in prompts.OBLIGATIONS_TEMPLATE
     assert "explicit references to the task or a named authority" \
         in prompts.OBLIGATIONS_TEMPLATE
     assert "If no unique antecedent exists, do not guess" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "REFERENTIAL CLOSURE IS TRANSITIVE" in prompts.OBLIGATIONS_SYSTEM
+    assert "bare code-local variable" in prompts.OBLIGATIONS_SYSTEM
+    assert "need no expansion only after" in prompts.OBLIGATIONS_SYSTEM
+    assert "binder's defining expression/domain is itself closed" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "hidden claim, dependency, or tool call" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "Apply this transitively to a fixed point" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "another hidden code-local alias" in prompts.OBLIGATIONS_TEMPLATE
+    assert "revision only when" in prompts.OBLIGATIONS_SYSTEM
+    assert "source actually pins one" in prompts.OBLIGATIONS_SYSTEM
+    assert "every applicable identity qualifier actually present" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "no irrelevant or unpinned qualifier" \
+        in prompts.OBLIGATIONS_TEMPLATE
+    assert "binder's defining expression/domain is itself closed" \
         in prompts.OBLIGATIONS_TEMPLATE
 
 
@@ -332,11 +350,21 @@ def test_critic_rejects_obligations_with_hidden_referents():
         in prompts.CRITIC_SYSTEM
     assert "must not become semantic authority" in prompts.CRITIC_SYSTEM
     assert "launder record-level content" in prompts.CRITIC_SYSTEM
-    assert "Locally bound references and explicit task" \
+    assert "Locally bound uses remain valid only after" in prompts.CRITIC_SYSTEM
+    assert "explicit task or named-authority references remain valid" \
         in prompts.CRITIC_SYSTEM
     assert "REFERENT AUDIT — PASS PRECONDITION" in prompts.CRITIC_TEMPLATE
     assert "Evaluate the obligation in isolation" in prompts.CRITIC_TEMPLATE
     assert "REFERENT AUDIT:" in prompts.CRITIC_TEMPLATE
+    assert "Apply this attack transitively to a fixed point" \
+        in prompts.CRITIC_SYSTEM
+    assert "replacing one hidden referent with another can never pass" \
+        in prompts.CRITIC_SYSTEM
+    assert "official task/schema name" in prompts.CRITIC_SYSTEM
+    assert "local binder cannot launder a hidden domain" \
+        in prompts.CRITIC_SYSTEM
+    assert "REFERENT CHAIN:" in prompts.CRITIC_TEMPLATE
+    assert "One-level expansion" in prompts.CRITIC_TEMPLATE
 
 
 def test_extractor_preserves_component_and_aggregate_labels():
