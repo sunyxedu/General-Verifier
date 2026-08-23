@@ -274,6 +274,10 @@ def test_oracle_methods_are_decisions_bound_to_task_semantics():
     assert "field/component/proxy may narrow" in prompts.ORACLES_SYSTEM
     assert "proper component or proxy is insufficient" \
         in prompts.ORACLES_SYSTEM
+    assert "SEMANTIC AXES MATTER" in prompts.ORACLES_SYSTEM
+    assert "every same-axis sibling component" in prompts.ORACLES_SYSTEM
+    assert "source field is not a competing sibling" \
+        in prompts.ORACLES_SYSTEM
     assert "Merely reading the ledger does not determine basis" \
         in prompts.ORACLES_SYSTEM
 
@@ -287,6 +291,10 @@ def test_offline_oracle_prefers_complete_retained_evidence():
         in prompts.ORACLES_SYSTEM
     assert "never cherry-pick a target-matching component or subtotal" \
         in prompts.ORACLES_SYSTEM
+    assert "VERDICT-DIRECTION SUFFICIENCY" in prompts.ORACLES_SYSTEM
+    assert "exact equality negatively with a rigorous monotone bound" \
+        in prompts.ORACLES_SYSTEM
+    assert "one in-scope counterexample" in prompts.ORACLES_SYSTEM
 
 
 def test_judger_independently_countersigns_method_sufficiency():
@@ -295,6 +303,11 @@ def test_judger_independently_countersigns_method_sufficiency():
     assert "untrusted candidate method" in prompts.JUDGER_SYSTEM
     assert "component, subtotal, sample" in prompts.JUDGER_SYSTEM
     assert "authoritative equivalence or exclusion" in prompts.JUDGER_SYSTEM
+    assert "same-axis sibling component" in prompts.JUDGER_SYSTEM
+    assert "provenance, identifier, or source fields do not compete" \
+        in prompts.JUDGER_SYSTEM
+    assert "monotone bound may be sufficient to refute" \
+        in prompts.JUDGER_SYSTEM
     assert "a bad run does not make an otherwise sufficient" \
         in prompts.JUDGER_SYSTEM
     assert "If they do not, faithful=no" in prompts.JUDGER_SYSTEM
