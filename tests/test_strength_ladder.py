@@ -725,3 +725,16 @@ def test_acceptance_mixed_failure_and_gap_settles_partial(tmp_path):
                                     "no stable spans to pin"),
     })
     assert cert["verdict"] == "partial"
+
+
+def test_prompts_pin_refutation_soundness_gates():
+    from verifier.llm import prompts
+    assert "REFUTATION SOUNDNESS GATES" in prompts.JUDGER_SYSTEM
+    assert "OPERATIONAL-DOMAIN WITNESS" in prompts.JUDGER_SYSTEM
+    assert "REJECTION EQUIVALENCE" in prompts.JUDGER_SYSTEM
+    assert "CANONICAL-RENDERING EQUALITY" in prompts.JUDGER_SYSTEM
+    assert "SELF-CONSISTENT READING" in prompts.JUDGER_SYSTEM
+    assert "NON-VACUOUS DOMAIN" in prompts.JUDGER_SYSTEM
+    assert "NEGATIVE-METHOD SOUNDNESS" in prompts.ORACLES_SYSTEM
+    assert "OPTIMALITY-REFUTATION PREFLIGHT" in prompts.ORACLES_SYSTEM
+    assert "VERDICT-DIRECTION AT EXECUTION" in prompts.DISCHARGE_SYSTEM
