@@ -9,6 +9,7 @@ artifact and may rerun the check), not a mechanical gate.
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from dataclasses import dataclass
@@ -50,6 +51,13 @@ class DischargeResult:
     # decisive): a supported verdict is only honest with its unverified
     # bridges disclosed, so they ride the evidence onto the certificate
     bridges: tuple = ()
+    # premise claim ids whose CONTENT this evidence assumed (e.g. a Lean
+    # lemma imported as an axiom instead of re-proved). Legitimate only
+    # inside the claim's own dependency closure — the conditional fold
+    # already charges those premises to every consumer; anything outside
+    # the closure fails closed at the kernel. Empty = the check stands
+    # on its own.
+    assumed_premises: tuple = ()
 
 
 class AgentDischarger:
@@ -67,10 +75,16 @@ class AgentDischarger:
                  cleanup: bool = False,
                  toolchain_dir: Optional[str] = None,
                  state_dir: Optional[str] = None,
-                 live_world: bool = True):
+                 live_world: bool = True,
+                 store=None):
         self.backend = backend
         self.artifacts = artifacts
         self.role = role
+        # ClaimStore (duck-typed, optional): lets each discharge see the
+        # claim's premises and the prior settled evidence in its dependency
+        # closure — the evidence-workspace index. Without it the executor
+        # runs contextless, exactly as before.
+        self.store = store
         # The verifier's state dir anchors the check's evidence sources:
         # events.jsonl is the ledger, and world/ (when the harness captured
         # one) mirrors the finished run's filesystem root. Obligations are
@@ -86,7 +100,81 @@ class AgentDischarger:
         # caller passes a stable path. Cache warming without a warming step.
         self.toolchain_dir = toolchain_dir or os.path.join(
             self.workdir_base, "_toolchains")
+        # The evidence WORKSPACE: durable building material, full bytes,
+        # per task/candidate. Where the Lean project grows, where parsed
+        # inputs stay parsed. It survives across discharges and claims and
+        # is never cleaned up — the immutable artifact snapshots remain
+        # the evidence of record; this layer only makes later checks
+        # cheaper, never sound.
+        self.workspace_dir = os.path.join(
+            self.state_dir if self.state_dir else self.workdir_base,
+            "workspace")
         self.cleanup = cleanup  # Remove workdir after snapshot (scratch, not evidence).
+
+    # caps for the evidence-workspace index injected per discharge: the
+    # index is a table of contents, not the evidence itself
+    INDEX_MAX_PREMISES = 32
+    INDEX_MAX_EVIDENCE = 40
+
+    def _workspace_index(self, claim_id: str) -> Dict[str, Any]:
+        """Premises assumable by this claim, and prior settled evidence in
+        its dependency closure (plus the claim's own already-settled
+        sibling obligations), with artifact digests for retrieval.
+
+        Verdicts do NOT transfer through this index — reuse of a verdict
+        goes through the kernel's inheritance gates. What transfers here
+        is raw material (the artifact files, now durably in the
+        workspace) and the RIGHT to assume a listed premise's content by
+        declaring its id in assumed_premises.
+        """
+        empty = {"premises": [], "prior_evidence": []}
+        if self.store is None:
+            return empty
+        try:
+            closure = self.store.backward_slice(claim_id)
+            final = self.store.get(claim_id)["kind"] == "final"
+        except Exception:
+            return empty
+        premises = []
+        if final:
+            # a completion claim's contract is adjudicated independently
+            # of the solver-derived graph and is exempt from the premise
+            # fold — nothing is assumable; prior evidence below remains
+            # usable as raw material under re-establishment
+            premises = [{"note": "completion claim: no premise is "
+                                 "assumable; declare nothing"}]
+        for pid in [] if final else closure[1:]:
+            if len(premises) >= self.INDEX_MAX_PREMISES:
+                premises.append({"note": "...truncated"})
+                break
+            prow = self.store.get(pid)
+            premises.append({
+                "id": pid,
+                "text": ("[a tool-execution record]"
+                         if prow["kind"] == "effect"
+                         else prow["text"][:300]),
+                "status": prow["status"],
+            })
+        prior = []
+        for cid in closure:  # closure[0] is the claim itself: its settled
+            for node in self.store.obligation_children(cid):  # siblings count
+                if node["status"] not in ("verified", "refuted"):
+                    continue
+                ev = self.store.evidence_for(node["id"])
+                last = ev[-1] if ev else {}
+                prior.append({
+                    "obligation": node["text"][:300],
+                    "status": node["status"],
+                    "basis": node["basis"],
+                    "strength": node["strength"],
+                    "artifact": last.get("artifact", ""),
+                })
+                if len(prior) >= self.INDEX_MAX_EVIDENCE:
+                    break
+            if len(prior) >= self.INDEX_MAX_EVIDENCE:
+                prior.append({"note": "...truncated"})
+                break
+        return {"premises": premises, "prior_evidence": prior}
 
     def discharge(self, row: Dict, obligation: Obligation,
                   method: Optional[Dict[str, str]] = None,
@@ -95,6 +183,7 @@ class AgentDischarger:
         workdir = os.path.join(self.workdir_base, subdir)
         os.makedirs(workdir, exist_ok=True)
         os.makedirs(self.toolchain_dir, exist_ok=True)
+        os.makedirs(self.workspace_dir, exist_ok=True)
         method = method or {
             "procedure": "no bound method (direct discharge, no binding game): "
                          "choose the strongest reachable check yourself, and "
@@ -125,6 +214,9 @@ class AgentDischarger:
             "task_context": authoritative_task_context(self.state_dir),
             "workdir": workdir,
             "toolchain_dir": self.toolchain_dir,
+            "workspace_dir": self.workspace_dir,
+            "workspace_index": json.dumps(
+                self._workspace_index(row["id"]), ensure_ascii=False),
             "ledger_path": ledger,
             "artifact_root": os.path.abspath(self.artifacts.root),
             "world_mode": world_mode,
@@ -156,6 +248,7 @@ class AgentDischarger:
             witness=payload["witness"] or None,
             artifact=digest,
             instrument=self.instrument,
+            assumed_premises=tuple(payload.get("assumed_premises") or ()),
         )
 
     def _maybe_cleanup(self, workdir: str) -> None:

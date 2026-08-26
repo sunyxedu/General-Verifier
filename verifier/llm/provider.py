@@ -94,6 +94,11 @@ DEEPSEEK_API_KEY = API_KEY if PROVIDER == "deepseek" else \
 
 CONFIG_DIR = os.path.expanduser(f"~/.claude-gv-{PROVIDER}")
 
+# Text-only provider: the model cannot accept image content blocks.
+# Set GV_TEXT_ONLY=1 (env or .env) for models like deepseek-v4-flash;
+# SDK seats then refuse to Read raster images into context (agents.py).
+TEXT_ONLY = (cfg("GV_TEXT_ONLY", "") == "1")
+
 CLAUDE_ENV = {
     "ANTHROPIC_BASE_URL": ANTHROPIC_BASE_URL,
     "ANTHROPIC_AUTH_TOKEN": API_KEY,

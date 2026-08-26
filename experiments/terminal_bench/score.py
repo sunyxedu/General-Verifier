@@ -38,6 +38,7 @@ Usage:
       [--seats codex] [--effort medium] [--task t ...] [--trial name ...]
 """
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -45,10 +46,14 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
-sys.path.insert(0, HERE)
+EXPERIMENTS = os.path.dirname(HERE)
+REPO_ROOT = os.path.dirname(EXPERIMENTS)
+for _path in (REPO_ROOT, EXPERIMENTS, HERE):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 import harborjobs                                        # noqa: E402
+from common import harbor_artifacts                      # noqa: E402
 from common import results as res                        # noqa: E402
 from common import scoring                                # noqa: E402
 from verifier import offline                             # noqa: E402
@@ -83,6 +88,33 @@ def _cow_copytree(src, dst):
         shutil.copytree(src, dst, symlinks=True)
 
 
+def _copy_captured_world(trial_dir, state):
+    """Copy every successfully collected Harbor artifact root into world/.
+
+    Harbor mirrors absolute artifact sources beneath ``artifacts/`` and
+    records the mapping and collection status in ``manifest.json``.  Reading
+    that manifest keeps the offline verifier honest about exactly which roots
+    were captured; a failed or absent artifact never becomes negative world
+    evidence.  Older /app-only jobs without a manifest retain their legacy
+    fallback.
+    """
+    captured = []
+    for capture in harbor_artifacts.successful_captures(trial_dir):
+        source = capture.source
+        host = os.fspath(capture.host_path)
+        target = os.path.join(state, "world", source.lstrip("/"))
+        if os.path.islink(host):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            os.symlink(os.readlink(host), target)
+        elif os.path.isdir(host):
+            _cow_copytree(host, target)
+        else:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(host, target)
+        captured.append(source)
+    return sorted(set(captured))
+
+
 def sanitized_state(trial, root, job, config):
     """Build (or reuse) the isolated per-config scoring state dir for a
     trial: <root>/<job>/<config>/<trial>/gv. Only SANITIZE_FILES, the
@@ -94,6 +126,10 @@ def sanitized_state(trial, root, job, config):
     state = os.path.join(root, job, config, trial["trial"], "gv")
     marker = os.path.join(state, SANITIZE_MARKER)
     if os.path.exists(marker):
+        # Never adopt an old/interrupted sanitized tree as the immutable
+        # source for a new verification.  The adapter seal must already have
+        # been published before the completion marker became visible.
+        offline.verify_immutable_input_anchor(state)
         return state
     if os.path.isdir(state):
         shutil.rmtree(state)   # interrupted build: start over
@@ -125,18 +161,26 @@ def sanitized_state(trial, root, job, config):
             with open(os.path.join(state, "task.md"), "w") as f:
                 f.write(instruction)
 
-    app = os.path.join(trial["trial_dir"], "artifacts", "app")
-    captured = []
-    if os.path.isdir(app):
-        _cow_copytree(app, os.path.join(state, "world", "app"))
-        captured.append("/app")
-    # the capture manifest keeps absence honest: harbor pulled only these
-    # roots, so a path outside them is uncaptured (its absence proves
-    # nothing), never a counterexample. Service-type deliverables
-    # (/etc/nginx, /var/www) are outside — they settle unobtainable
-    # post-hoc unless the harness captures more.
+    captured = _copy_captured_world(trial["trial_dir"], state)
+    # The capture manifest keeps absence honest: a path outside these roots is
+    # uncaptured (its absence proves nothing), never a counterexample.
     with open(os.path.join(state, "world_manifest.json"), "w") as f:
         json.dump({"captured_roots": captured}, f)
+
+    # Some recorder backends omit final.txt even though Harbor retained the
+    # final assistant message in agent.log.  Finalize that legitimate input
+    # before publishing the immutable adapter anchor; mutating it afterwards
+    # would correctly invalidate the state.
+    final_path = os.path.join(state, "final.txt")
+    final_missing = not os.path.exists(final_path)
+    if not final_missing:
+        with open(final_path, encoding="utf-8") as f:
+            final_missing = not f.read().strip()
+    if final_missing:
+        with open(final_path, "w", encoding="utf-8") as f:
+            f.write(harborjobs.log_tail(trial["agent_log"]))
+
+    offline.write_immutable_input_anchor(state)
     with open(marker, "w") as f:
         f.write("")
     return state
@@ -173,10 +217,24 @@ def main():
     ap.add_argument("--effort", default=None,
                     choices=["low", "medium", "high", "xhigh", "max"],
                     help="codex seats' reasoning effort (default: medium)")
+    ap.add_argument(
+        "--service-tier", default="standard", choices=["standard", "fast"],
+        help=("Codex service tier (default: standard; fast explicitly uses "
+              "Codex Fast mode and has different credit accounting)"),
+    )
+    ap.add_argument(
+        "--scores-path", default=None,
+        help=("JSONL result ledger (default: results/rec_scores.jsonl). "
+              "Use an isolated path for concurrently running A/B shards."),
+    )
     args = ap.parse_args()
+    if args.service_tier == "fast" and args.seats != "codex":
+        ap.error("--service-tier fast requires --seats codex")
 
     job_dir = os.path.join(HERE, "results", "jobs", args.job)
-    scores_path = os.path.join(HERE, "results", "rec_scores.jsonl")
+    scores_path = os.path.abspath(os.path.expanduser(
+        args.scores_path or os.path.join(HERE, "results", "rec_scores.jsonl")))
+    usage_path = f"{scores_path}.usage.jsonl"
     scoring_root = os.environ.get("GV_SCORING_ROOT") or os.path.expanduser(
         os.path.join("~", ".gv-scoring", "terminal_bench"))
     # resume is keyed on the full CONFIG identity — verifier code+prompts
@@ -187,7 +245,8 @@ def main():
     cfg = offline.config_fields(model=args.model, seats=args.seats,
                                 effort=args.effort,
                                 max_rounds=args.max_rounds,
-                                critic_rounds=args.critic_rounds)
+                                critic_rounds=args.critic_rounds,
+                                service_tier=args.service_tier)
     done = res.recorded(scores_path, "job", "trial", "config", "rep")
     # cached feature records, so already-scored trials still rank in the TSV
     scored = {r["trial"]: r for r in res.load(scores_path)
@@ -206,7 +265,7 @@ def main():
     todo = sum(1 for ts in by_task.values() for t in ts
                if (args.job, t["trial"], cfg["config"], args.rep) not in done)
     print(f"[tb:score] backend={cfg['seats']} model={cfg['model']} "
-          f"effort={cfg['effort']} "
+          f"effort={cfg['effort']} service_tier={cfg['service_tier']} "
           f"scoring=claim-graph-certificate max_rounds={args.max_rounds} "
           f"critic_rounds={cfg['critic_rounds']} "
           f"workers={args.workers} job={args.job} "
@@ -227,7 +286,7 @@ def main():
     # region's in-place redraw into stacked stale frames
     live_tsv = not sys.stdout.isatty()
     header = ("task\ttrial\ttb_reward\tgv_verdict\tgv_score\t"
-              "gv_verified_frac\tgv_verified_obligations\trank")
+              "gv_final_obligations_verified_frac\trank")
     if live_tsv:
         print(header, flush=True)
     finished = []
@@ -252,7 +311,7 @@ def main():
             print(f"{task}\t{t['trial']}\t{reward}\t"
                   f"{features.get('verdict') or 'unscoreable'}\t"
                   f"{scoring.scalar(features):.6f}\t"
-                  f"{key[1]:.6f}\t{key[2]}\t{rank[t['trial']]}", flush=True)
+                  f"{key[1]:.6f}\t{rank[t['trial']]}", flush=True)
 
     all_jobs, remaining, emitted = [], {}, set()
     for task in sorted(by_task):
@@ -269,11 +328,6 @@ def main():
                       "nor a codex rollout) — skipped",
                       file=sys.stderr, flush=True)
                 continue
-            final_path = os.path.join(state, "final.txt")
-            if not os.path.exists(final_path) \
-                    or not open(final_path).read().strip():
-                with open(final_path, "w") as f:
-                    f.write(harborjobs.log_tail(t["agent_log"]))
             jobs.append(({"job": args.job, "task": task, "trial": t["trial"],
                           "reward": t["reward"], "rep": args.rep,
                           **cfg}, state))
@@ -293,16 +347,35 @@ def main():
             emit(rec["task"])
 
     if all_jobs:
+        usage_capture = contextlib.nullcontext()
+        if args.seats == "codex":
+            from verifier.llm.codex_backend import codex_usage_ledger
+
+            usage_contexts = {
+                os.path.realpath(state): {
+                    key: record[key]
+                    for key in ("job", "task", "trial", "config", "rep")
+                }
+                for record, state in all_jobs
+            }
+            usage_capture = codex_usage_ledger(
+                usage_path, context_by_cwd=usage_contexts)
         print(f"[tb:score] scoring {len(all_jobs)} traces across "
-              f"{len(remaining)} tasks (workers={args.workers})",
+              f"{len(remaining)} tasks (workers={args.workers})"
+              + (f" usage={os.path.relpath(usage_path, HERE)}"
+                 if args.seats == "codex" else ""),
               file=sys.stderr, flush=True)
-        scoring.score_many(
-            all_jobs, scores_path, workers=args.workers,
-            model=args.model, max_rounds=args.max_rounds,
-            seats=args.seats, effort=args.effort,
-            critic_rounds=args.critic_rounds,
-            label=lambda r: f"{r['task']}/{r['trial']} reward={r['reward']}",
-            tag="tb:score", on_record=on_record)
+        with usage_capture:
+            scoring.score_many(
+                all_jobs, scores_path, workers=args.workers,
+                model=args.model, max_rounds=args.max_rounds,
+                seats=args.seats, effort=args.effort,
+                critic_rounds=args.critic_rounds,
+                service_tier=args.service_tier,
+                label=lambda r: (
+                    f"{r['task']}/{r['trial']} reward={r['reward']}"
+                ),
+                tag="tb:score", on_record=on_record)
         # a trial that errored never reaches scored: emit its task's
         # surviving rows so the TSV stays the complete table
         for task in sorted(remaining):

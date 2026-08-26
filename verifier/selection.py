@@ -26,15 +26,11 @@ def scalar(features) -> float:
     [0, 1]: six equal verdict bands that can never cross —
     verified [5/6, 1) · supported [4/6, 5/6) · partial [3/6, 4/6) ·
     unverified [2/6, 3/6) · refuted [1/6, 2/6) · unscoreable exactly
-    0.0 — with the fraction inside a band packing verified-fraction then
-    verified-obligation count at weights that reproduce rank_key's exact
-    order for certificate slices up to ~44 claims (two fractions with
-    denominators <= S differ by at least 1/S^2, and 0.0005 sits below
-    that until S ~ 44). Selection keeps comparing the exact tuple; this
-    is a view, not the decision variable."""
-    rank, frac, obligations = rank_key(features)
-    return (rank + 1 + 0.999 * frac
-            + 0.0005 * (obligations / (obligations + 1))) / 6
+    0.0. Within a band, only the verified fraction of the final claim's
+    task-contract obligations contributes. Selection keeps comparing the exact
+    tuple; this is a view, not the decision variable."""
+    rank, final_obligation_fraction = rank_key(features)
+    return (rank + 1 + 0.999 * final_obligation_fraction) / 6
 
 
 def argmax(rows: List[Row]) -> Optional[Row]:

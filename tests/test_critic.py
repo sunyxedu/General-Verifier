@@ -81,7 +81,8 @@ def test_pass_on_the_first_round_admits_the_decomposition(tmp_path):
     assert set(critic_vars) == {
         "claim_text", "claim_kind", "contract_locus", "task_context",
         "ledger_path", "world_mode", "world_path", "obligations_json",
-        "verified_deps", "dependency_referent_context", "game_history",
+        "verified_deps", "pending_deps", "dependency_referent_context",
+        "game_history",
     }
     assert critic_vars["claim_kind"] == "assertion"
     assert critic_vars["task_context"] == "(none supplied)"
@@ -1148,6 +1149,113 @@ def test_quantifier_axes_and_fixed_instance_witnesses_stay_distinct():
     assert "never invent a domain fact or set member" in contract
     assert "use a symbolic witness over the fixed task-defined set" in contract
     assert "W union {x}, where x is not in W" in contract
+
+
+def test_optimization_multiplicity_preserves_task_argopt_set():
+    rule = prompts.QUANTIFIER_ROLE_BINDING
+    for role in (
+        prompts.OBLIGATIONS_SYSTEM,
+        prompts.CRITIC_SYSTEM,
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    ):
+        assert rule in role
+
+    assert "inherits the SAME task-defined arg-opt/tie set W" in rule
+    assert "must not replace or broaden W" in rule
+    assert "unless the controlling authority explicitly asks" in rule
+    assert "jointly require S = W" in rule
+    assert "a later method may not redefine W" in rule
+    assert "ANAPHORIC MULTIPLICITY CLAUSE" in rule
+    assert "winning, profitable" in rule
+    assert "A = {w in W : P(w)}" in rule
+    assert "|A| <= 1 or A subset-of S" in rule
+    assert "whole universe of P-items" in rule
+    assert "irrespective of rank, score, objective, or optimality" in rule
+    assert "words `all P-items` alone are not" in rule
+    assert "membership in A" in rule
+    assert "not guess W's realized members" in rule
+    assert "OPTIMUM-SCOPE COMPILATION GATE" in prompts.OBLIGATIONS_TEMPLATE
+    assert "OPTIMUM-SCOPE AUDIT — PASS PRECONDITION" in prompts.CRITIC_TEMPLATE
+    assert "OPTIMUM-SCOPE CONTRACT" in prompts.ORACLES_TEMPLATE
+    assert "OPTIMUM-SCOPE EXECUTION" in prompts.DISCHARGE_TEMPLATE
+    assert "OPTIMUM-SCOPE AUDIT: whenever optimization" in prompts.JUDGER_TEMPLATE
+
+
+def test_directional_extremal_shortcut_is_shared_and_minimal():
+    rule = prompts.DIRECTIONAL_EXTREMAL_SUFFICIENCY
+    for role in (
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    ):
+        assert rule in role
+
+    assert "absolute upper or lower bound B" in rule
+    assert "candidate attains B" in rule
+    assert "exact values, strategies, or outcomes" in rule
+    assert "bound-attainer set" in rule
+    assert "verdict-direction decisive" in rule
+    assert "EXTREMAL-ATTAINMENT PREFLIGHT" in prompts.ORACLES_TEMPLATE
+    assert "first fresh or captured-world method MUST" \
+        in prompts.ORACLES_TEMPLATE
+    assert prompts.ORACLES_SYSTEM.index(
+        "DIRECTIONAL EXTREMAL SUFFICIENCY"
+    ) < prompts.ORACLES_SYSTEM.index("OPTIMALITY-REFUTATION PREFLIGHT")
+
+
+def test_partial_observation_and_derived_state_rules_are_shared():
+    completion = prompts.PARTIAL_OBSERVATION_COMPLETIONS
+    derivation = prompts.DERIVED_STATE_PROVENANCE
+    perceptual = prompts.PERCEPTUAL_SEMANTIC_ANCHOR
+    for role in (
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    ):
+        assert completion in role
+        assert derivation in role
+        assert perceptual in role
+
+    assert "task-consistent completion set C" in completion
+    assert "exhaustive partition over C" in completion
+    assert "per-dimension invariance" in completion
+    assert "conventional default" in completion
+    assert "do not require its exact value" in completion
+    assert "limited to a final expected/comparison literal" in derivation
+    assert "does not authenticate a manually supplied label" in derivation
+    assert "instance-independent semantic anchor" in derivation
+    assert "labelled template/calibration source" in derivation
+    assert "Thresholds, shape taxonomies, expected counts" in derivation
+    assert "LABEL-PERMUTATION TEST" in derivation
+    assert "renaming of the semantic labels" in derivation
+    assert "cannot support decisive world evidence" in derivation
+    assert "all consume the same mapping" in derivation
+    assert "applying the audited transition to the audited predecessor" \
+        in derivation
+    assert "raw -> derived -> outcome" in derivation
+    assert "terminal/no-successor signal alone" in derivation
+    assert "crop table" in perceptual
+    assert "would FAIL under a nontrivial permutation" in perceptual
+    assert "faithful=no" in perceptual
+    assert "fixed identified instrument" in perceptual
+    assert "trusted runtime explicitly supplies" in perceptual
+    assert "target-blind structured observations" in perceptual
+    assert "ordinary direct inspection as analytic evidence" in perceptual
+
+
+def test_sibling_partition_completeness_is_shared_across_roles():
+    rule = prompts.SIBLING_PARTITION_COMPLETENESS
+    assert "role suffixes partition or describe members" in rule
+    assert "exact controlling source quote" in rule
+    assert "model-invented gloss" in rule
+    for role in (
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    ):
+        assert rule in role
 
 
 def test_compiler_and_critic_enforce_lossless_term_anchors():

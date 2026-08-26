@@ -20,16 +20,20 @@ claim graph in three steps, each reusing the online machinery unchanged:
                 folded into a feature dict and a rank_key.
 
 rank_key is lexicographic, not a weighted sum: the certificate verdict
-dominates absolutely, slice verified-fraction breaks ties, discharged
-obligation count breaks those (obligation nodes are roughly invariant
-under extraction granularity, so they resist extractor noise; claim
-counts are not). A trace whose extraction fails outright ranks below
-everything — fail-closed, same as the rest of the system.
+dominates absolutely and the verified fraction of the FINAL claim's own
+task-contract obligations breaks ties. History claims and their obligations
+remain diagnostic features, but cannot improve a candidate's rank merely by
+making the extractor's decomposition or narration more verbose. A trace whose
+extraction fails outright, or whose feature record predates this ranking
+schema, ranks below everything — fail-closed, same as the rest of the system.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import stat
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from .core.events import EventLog
@@ -42,6 +46,235 @@ from .stream.builder import Builder, TraceError
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 SNIPPET_CHARS = 160
 INDEX_MAX_EVENTS = 500
+
+# Written by a trusted adapter only after every immutable verifier input has
+# been published.  It is deliberately not part of the seal it authenticates.
+IMMUTABLE_INPUT_SEAL_FILE = "immutable_input_seal.json"
+IMMUTABLE_INPUT_TAINT_FILE = "immutable_input_tainted.json"
+IMMUTABLE_INPUT_SEAL_SCHEMA = "gv-immutable-input-seal-v1"
+IMMUTABLE_INPUT_PATHS = (
+    "world",
+    "world_manifest.json",
+    "task.md",
+    "baseline",
+    "hook_feed.jsonl",
+    "final.txt",
+)
+
+
+class ImmutableInputError(OSError):
+    """The adapter-sealed offline evidence boundary is absent or unsafe."""
+
+
+def _regular_file_seal(path: str, st: os.stat_result) -> Dict[str, Any]:
+    """Hash one unlinked regular file and reject an in-place sealing race."""
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_CLOEXEC", 0))
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino)):
+            raise ImmutableInputError(
+                f"immutable input changed while sealing: {path}")
+        # A writable alias outside the sealed tree would let a supposedly
+        # read-only input change through a path the sandbox is allowed to
+        # write.  Captured inputs are copies, so fail closed on hard links.
+        if opened.st_nlink != 1:
+            raise ImmutableInputError(
+                f"hard-linked immutable input is forbidden: {path}")
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(fd, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+        closed = os.fstat(fd)
+        stable_fields = (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+            "st_mtime_ns", "st_ctime_ns",
+        )
+        if any(getattr(opened, field) != getattr(closed, field)
+               for field in stable_fields):
+            raise ImmutableInputError(
+                f"immutable input changed while hashing: {path}")
+    finally:
+        os.close(fd)
+    return {"type": "file", "mode": stat.S_IMODE(opened.st_mode),
+            "size": opened.st_size, "nlink": opened.st_nlink,
+            "sha256": digest.hexdigest()}
+
+
+def _sealed_tree(path: str) -> List[Dict[str, Any]]:
+    """Deterministic snapshot of one immutable tree, failing closed.
+
+    A symlink cannot be treated as frozen evidence merely by hashing its link
+    text: its target may live in writable ``work/`` or elsewhere on the host.
+    FIFOs, sockets and devices likewise have live semantics rather than fixed
+    bytes.  Adapters must materialize such inputs before publishing a seal.
+    """
+    if not os.path.lexists(path):
+        return [{"path": ".", "type": "absent"}]
+    records: List[Dict[str, Any]] = []
+    pending = [(".", path)]
+    while pending:
+        relative, current = pending.pop()
+        st = os.lstat(current)
+        base = {"path": relative, "mode": stat.S_IMODE(st.st_mode)}
+        if stat.S_ISDIR(st.st_mode):
+            records.append({**base, "type": "dir"})
+            children = sorted(os.listdir(current), reverse=True)
+            closed = os.lstat(current)
+            if (not stat.S_ISDIR(closed.st_mode)
+                    or (closed.st_dev, closed.st_ino)
+                    != (st.st_dev, st.st_ino)
+                    or closed.st_mtime_ns != st.st_mtime_ns
+                    or closed.st_ctime_ns != st.st_ctime_ns):
+                raise ImmutableInputError(
+                    f"immutable directory changed while sealing: {current}")
+            for name in children:
+                child_relative = name if relative == "." \
+                    else f"{relative}/{name}"
+                pending.append((child_relative, os.path.join(current, name)))
+        elif stat.S_ISREG(st.st_mode):
+            records.append({"path": relative,
+                            **_regular_file_seal(current, st)})
+        elif stat.S_ISLNK(st.st_mode):
+            raise ImmutableInputError(
+                f"symlink forbidden in immutable input: {current}")
+        else:
+            raise ImmutableInputError(
+                f"special file forbidden in immutable input: {current}")
+    records.sort(key=lambda row: row["path"])
+    return records
+
+
+def captured_world_seal(state_dir: str) -> str:
+    """Content identity for the captured world and its manifest only."""
+    state = os.path.abspath(state_dir)
+    return content_hash({
+        "world": _sealed_tree(os.path.join(state, "world")),
+        "manifest": _sealed_tree(os.path.join(state, "world_manifest.json")),
+    })
+
+
+def immutable_input_seal(state_dir: str) -> str:
+    """Content identity for every immutable input consumed by offline GV."""
+    state = os.path.abspath(state_dir)
+    return content_hash({
+        relative: _sealed_tree(os.path.join(state, relative))
+        for relative in IMMUTABLE_INPUT_PATHS
+    })
+
+
+def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".gv-seal-", dir=parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o400)
+        os.replace(temporary, path)
+        temporary = ""
+    finally:
+        if temporary:
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
+
+
+def write_immutable_input_anchor(state_dir: str) -> str:
+    """Publish the trusted adapter anchor after all source inputs exist."""
+    state = os.path.abspath(state_dir)
+    if os.path.lexists(os.path.join(state, IMMUTABLE_INPUT_TAINT_FILE)):
+        os.remove(os.path.join(state, IMMUTABLE_INPUT_TAINT_FILE))
+    seal = immutable_input_seal(state)
+    _write_json_atomic(
+        os.path.join(state, IMMUTABLE_INPUT_SEAL_FILE),
+        {
+            "schema": IMMUTABLE_INPUT_SEAL_SCHEMA,
+            "seal": seal,
+            "paths": list(IMMUTABLE_INPUT_PATHS),
+        },
+    )
+    return seal
+
+
+def _read_regular_json(path: str) -> Dict[str, Any]:
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+            raise ImmutableInputError(
+                f"immutable input seal is not a regular file: {path}")
+        if st.st_size > 65_536:
+            raise ImmutableInputError(
+                f"immutable input seal is too large: {path}")
+        flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_CLOEXEC", 0))
+        fd = os.open(path, flags)
+        try:
+            with os.fdopen(fd, encoding="utf-8") as handle:
+                value = json.load(handle)
+        except Exception:
+            # fdopen owns fd after construction.
+            raise
+    except (OSError, ValueError, json.JSONDecodeError) as err:
+        if isinstance(err, ImmutableInputError):
+            raise
+        raise ImmutableInputError(
+            f"cannot read immutable input seal {path}: {err}") from err
+    if not isinstance(value, dict):
+        raise ImmutableInputError(
+            f"immutable input seal is not a JSON object: {path}")
+    return value
+
+
+def verify_immutable_input_anchor(state_dir: str) -> str:
+    """Return the trusted seal only when the current source bytes match."""
+    state = os.path.abspath(state_dir)
+    taint = os.path.join(state, IMMUTABLE_INPUT_TAINT_FILE)
+    if os.path.lexists(taint):
+        raise ImmutableInputError(
+            f"offline state is quarantined after immutable-input mutation: {taint}")
+    anchor = _read_regular_json(
+        os.path.join(state, IMMUTABLE_INPUT_SEAL_FILE))
+    expected_paths = list(IMMUTABLE_INPUT_PATHS)
+    seal = anchor.get("seal")
+    if (anchor.get("schema") != IMMUTABLE_INPUT_SEAL_SCHEMA
+            or anchor.get("paths") != expected_paths
+            or not isinstance(seal, str) or len(seal) != 64):
+        raise ImmutableInputError("invalid immutable input seal payload")
+    actual = immutable_input_seal(state)
+    if actual != seal:
+        raise ImmutableInputError(
+            f"immutable input seal mismatch: expected {seal}, got {actual}")
+    return seal
+
+
+def _quarantine_immutable_inputs(
+    state_dir: str, *, expected: str, actual: str, reason: str,
+) -> None:
+    _write_json_atomic(
+        os.path.join(os.path.abspath(state_dir), IMMUTABLE_INPUT_TAINT_FILE),
+        {
+            "schema": "gv-immutable-input-taint-v1",
+            "expected": expected,
+            "actual": actual,
+            "reason": reason,
+        },
+    )
+
+# Version 1 feature records did not distinguish the final claim's own contract
+# obligations from obligations attached to narration/support claims. They
+# therefore cannot safely be used by the current BoN ranker. Keep this version
+# explicit so mixed/legacy result files fail closed instead of silently
+# reverting to the old whole-slice heuristic.
+FEATURE_SCHEMA_VERSION = 2
 
 
 def pipeline_fingerprint() -> str:
@@ -65,7 +298,8 @@ def pipeline_fingerprint() -> str:
 def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
                   effort: Optional[str] = None,
                   max_rounds: int = 3,
-                  critic_rounds: Optional[int] = None) -> Dict[str, Any]:
+                  critic_rounds: Optional[int] = None,
+                  service_tier: Optional[str] = None) -> Dict[str, Any]:
     """The full identity of a scoring run's judgment: the pipeline
     fingerprint plus the resolved run configuration, as plaintext fields
     with a content hash (`config`). Two configs must never share derived
@@ -77,6 +311,13 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
     if not model and seats == "codex":
         from .llm.codex_backend import DEFAULT_MODEL
         model = DEFAULT_MODEL
+    if seats == "codex":
+        from .llm.codex_service import normalize_service_tier
+        resolved_service_tier = normalize_service_tier(service_tier)
+    else:
+        if service_tier not in (None, "standard"):
+            raise ValueError("service_tier is only valid for Codex seats")
+        resolved_service_tier = "n/a"
     if critic_rounds is None:
         from .engine.kernel import MAX_CRITIC_ROUNDS
         critic_rounds = MAX_CRITIC_ROUNDS
@@ -84,6 +325,7 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         "model": model or "provider-default",
         "seats": seats or "sdk",
         "effort": effort or ("medium" if seats == "codex" else "n/a"),
+        "service_tier": resolved_service_tier,
         "max_rounds": max_rounds,
         "critic_rounds": critic_rounds,
     }
@@ -94,9 +336,12 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
 
 def config_id(model: Optional[str] = None, seats: Optional[str] = None,
               effort: Optional[str] = None, max_rounds: int = 3,
-              critic_rounds: Optional[int] = None) -> str:
-    return config_fields(model, seats, effort, max_rounds,
-                         critic_rounds)["config"]
+              critic_rounds: Optional[int] = None,
+              service_tier: Optional[str] = None) -> str:
+    return config_fields(
+        model, seats, effort, max_rounds, critic_rounds,
+        service_tier=service_tier,
+    )["config"]
 
 
 class ExtractionError(RuntimeError):
@@ -250,14 +495,19 @@ def _has_commits(events_path: str) -> bool:
 def _unscoreable(error: str, extract_rounds: int,
                  fingerprint: str = "") -> Dict[str, Any]:
     return {
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "unscoreable": True,
         "error": error,
         "verdict": None,
         "verdict_strength": None,
         "slice_size": 0,
         "claims": {},
+        "claims_effective": {},
+        "conditional_verified": 0,
         "obligations": {},
         "obligations_total": 0,
+        "final_obligations": {},
+        "final_obligations_total": 0,
         "extract_rounds": extract_rounds,
         "fingerprint": fingerprint,
     }
@@ -266,15 +516,38 @@ def _unscoreable(error: str, extract_rounds: int,
 def _features(cert: Dict[str, Any], extract_rounds: int,
               fingerprint: str = "") -> Dict[str, Any]:
     claims: Dict[str, int] = {}
+    claims_effective: Dict[str, int] = {}
+    conditional_verified = 0           # locally verified, chain still open —
     obligations: Dict[str, str] = {}   # obligation id -> status (dedup: shared
+    final_entry: Optional[Dict[str, Any]] = None
     for entry in cert["slice"]:        # nodes appear under several claims)
+        if entry["id"] == cert["final"]:
+            final_entry = entry
         claims[entry["status"]] = claims.get(entry["status"], 0) + 1
+        effective = entry.get("effective_status", entry["status"])
+        claims_effective[effective] = claims_effective.get(effective, 0) + 1
+        if entry["status"] == "verified" and effective != "verified":
+            conditional_verified += 1
         for o in entry.get("obligations", []):
             obligations[o["id"]] = o["status"]
+    if final_entry is None:
+        raise ValueError("certificate slice is missing its final claim")
     ob_counts: Dict[str, int] = {}
     for status in obligations.values():
         ob_counts[status] = ob_counts.get(status, 0) + 1
+
+    # These are deliberately counted only on the certificate's final entry.
+    # They are the independently compiled task contract; obligations on all
+    # other slice entries describe the solver's supporting narration and are
+    # retained above for diagnostics only.
+    final_obligations = {
+        o["id"]: o["status"] for o in final_entry.get("obligations", [])
+    }
+    final_ob_counts: Dict[str, int] = {}
+    for status in final_obligations.values():
+        final_ob_counts[status] = final_ob_counts.get(status, 0) + 1
     return {
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "unscoreable": False,
         "verdict": cert["verdict"],
         # min strength over the final's evidence when verified/supported
@@ -283,9 +556,19 @@ def _features(cert: Dict[str, Any], extract_rounds: int,
         "verdict_strength": cert.get("verdict_strength"),
         "certificate_id": cert["certificate_id"],
         "slice_size": len(cert["slice"]),
+        # claims counts LOCAL (conditional) statuses; claims_effective counts
+        # the read-time premise-chain fold; conditional_verified = locally
+        # verified claims whose chain is still open. Diagnostics only — the
+        # rank_key never reads them (fully-established mass outranking
+        # conditional mass is enforced by scoring only the final's own
+        # contract, which the inheritance gate keeps unconditional).
         "claims": claims,
+        "claims_effective": claims_effective,
+        "conditional_verified": conditional_verified,
         "obligations": ob_counts,
         "obligations_total": len(obligations),
+        "final_obligations": final_ob_counts,
+        "final_obligations_total": len(final_obligations),
         "extract_rounds": extract_rounds,
         "fingerprint": fingerprint,
     }
@@ -295,7 +578,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           backend=None, max_rounds: int = 3,
           seats: Optional[str] = None,
           effort: Optional[str] = None,
-          critic_rounds: Optional[int] = None) -> Dict[str, Any]:
+          critic_rounds: Optional[int] = None,
+          service_tier: Optional[str] = None) -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -304,72 +588,149 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     seats="codex" runs every seat (extractor included) through the Codex
     CLI on a ChatGPT-subscription model instead of the Claude Agent SDK;
     `model` then names the codex model (default gpt-5.6-luna) and
-    `effort` its reasoning effort (default medium).
+    `effort` its reasoning effort (default medium). ``service_tier`` is
+    ``standard`` by default; ``fast`` explicitly enables Codex Fast mode.
     """
     cfg = config_fields(model=model, seats=seats, effort=effort,
-                        max_rounds=max_rounds, critic_rounds=critic_rounds)
+                        max_rounds=max_rounds, critic_rounds=critic_rounds,
+                        service_tier=service_tier)
     critic_rounds = cfg["critic_rounds"]
+    fingerprint = pipeline_fingerprint()
+    extract_rounds = 0
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
         if backend is None:
             backend = CodexBackend(cwd=state_dir, model=model,
-                                   effort=cfg["effort"])
+                                   effort=cfg["effort"],
+                                   service_tier=cfg["service_tier"])
+        elif (isinstance(backend, CodexBackend)
+              and backend.service_tier != cfg["service_tier"]):
+            raise ValueError(
+                "provided CodexBackend service_tier does not match the "
+                "offline scoring config")
+
+    # A formal adapter publishes a durable anchor before exposing its
+    # ``.sanitized`` marker.  Legacy/direct callers do not have such an
+    # adapter, so they still receive a same-invocation seal (and the mutation
+    # check below) without pretending that it protects interrupted-run
+    # recovery.  A sanitized state without its adapter anchor is never
+    # silently blessed: that is precisely the resume-contamination case this
+    # boundary exists to prevent.
+    try:
+        anchor_path = os.path.join(
+            os.path.abspath(state_dir), IMMUTABLE_INPUT_SEAL_FILE)
+        taint_path = os.path.join(
+            os.path.abspath(state_dir), IMMUTABLE_INPUT_TAINT_FILE)
+        sanitized_marker = os.path.join(
+            os.path.abspath(state_dir), ".sanitized")
+        if os.path.lexists(taint_path):
+            raise ImmutableInputError(
+                "offline state is quarantined after immutable-input mutation: "
+                f"{taint_path}")
+        if os.path.lexists(anchor_path):
+            immutable_seal = verify_immutable_input_anchor(state_dir)
+            immutable_boundary = "adapter-sealed"
+        elif os.path.lexists(sanitized_marker):
+            raise ImmutableInputError(
+                "sanitized offline state is missing its trusted adapter seal")
+        else:
+            immutable_seal = immutable_input_seal(state_dir)
+            immutable_boundary = "invocation-sealed"
+    except ImmutableInputError as err:
+        invalid = dict(_unscoreable(
+            f"immutable offline input boundary is not trusted: {err}",
+            extract_rounds, fingerprint), **cfg)
+        invalid["immutable_input_seal_error"] = str(err)
+        return _write_score(state_dir, invalid)
+
+    if seats == "codex":
         if kernel_factory is None:
             def kernel_factory(sc):
                 from .mcp_server import _default_kernel
                 return _default_kernel(
                     sc, model,
                     backend=CodexBackend(cwd=sc.state_dir, model=model,
-                                         effort=cfg["effort"]),
+                                         effort=cfg["effort"],
+                                         service_tier=cfg["service_tier"]),
                     critic_rounds=critic_rounds)
-    events_path = os.path.join(state_dir, "events.jsonl")
-    fingerprint = pipeline_fingerprint()
-    meta = json.loads(_read(os.path.join(state_dir, "extract.json")) or "{}")
-    if meta and (meta.get("fingerprint") != fingerprint
-                 or meta.get("config", cfg["config"]) != cfg["config"]):
-        # stale OFFLINE state: the cached extraction and every verdict
-        # settled on top of it came from a different pipeline version or
-        # a different run config (model/seats/effort) — a different
-        # verifier's judgment. Wipe the derived files (never the trace
-        # inputs — hook feed, task.md, final.txt, world/ stay) and redo
-        # from the feed. A live trace (commits made by the solver itself,
-        # no extract.json) is never invalidated: its commits are the
-        # run's own protocol. Configs should get separate state dirs;
-        # this guard is the backstop when they don't.
-        for name in ("events.jsonl", "extract.json", "claims.sqlite",
-                     "score.json"):
-            path = os.path.join(state_dir, name)
-            if os.path.exists(path):
-                os.remove(path)
-        meta = {}
-    extract_rounds = 0
-    if not _has_commits(events_path):
-        try:
-            meta = extract(state_dir, backend=backend, model=model,
-                           max_rounds=max_rounds,
-                           stamp={"config": cfg["config"]})
-            extract_rounds = meta["rounds"]
-        except ExtractionError as err:
-            return _write_score(
-                state_dir,
-                dict(_unscoreable(str(err), max_rounds, fingerprint), **cfg))
-    else:
-        extract_rounds = meta.get("rounds", 0)
 
-    from .mcp_server import Service
-    sc = Service(state_dir, kernel_factory=kernel_factory, model=model,
-                 trigger=TRIGGER_ON_FIRST_DEPENDENT, live_world=False,
-                 critic_rounds=critic_rounds)
-    if not sc.builder.finals:
-        return _write_score(
-            state_dir,
-            dict(_unscoreable("no final claim in trace", extract_rounds,
-                              fingerprint), **cfg))
-    cert = request_certificate(sc.store, sc.kernel, sc.log, sc.artifacts,
-                               sc.builder.finals[-1])
-    return _write_score(state_dir,
-                        dict(_features(cert, extract_rounds, fingerprint),
-                             **cfg))
+    def run_verification() -> Dict[str, Any]:
+        nonlocal extract_rounds
+        events_path = os.path.join(state_dir, "events.jsonl")
+        meta = json.loads(
+            _read(os.path.join(state_dir, "extract.json")) or "{}")
+        if meta and (meta.get("fingerprint") != fingerprint
+                     or meta.get("config", cfg["config"]) != cfg["config"]):
+            # stale OFFLINE state: the cached extraction and every verdict
+            # settled on top of it came from a different pipeline version or
+            # a different run config (model/seats/effort) — a different
+            # verifier's judgment. Wipe derived files only; every immutable
+            # source remains protected by the adapter seal.
+            for name in ("events.jsonl", "extract.json", "claims.sqlite",
+                         "score.json"):
+                path = os.path.join(state_dir, name)
+                if os.path.exists(path):
+                    os.remove(path)
+            meta = {}
+        if not _has_commits(events_path):
+            try:
+                meta = extract(state_dir, backend=backend, model=model,
+                               max_rounds=max_rounds,
+                               stamp={"config": cfg["config"]})
+                extract_rounds = meta["rounds"]
+            except ExtractionError as err:
+                return dict(
+                    _unscoreable(str(err), max_rounds, fingerprint), **cfg)
+        else:
+            extract_rounds = meta.get("rounds", 0)
+
+        from .mcp_server import Service
+        sc = Service(state_dir, kernel_factory=kernel_factory, model=model,
+                     trigger=TRIGGER_ON_FIRST_DEPENDENT, live_world=False,
+                     critic_rounds=critic_rounds)
+        if not sc.builder.finals:
+            return dict(_unscoreable(
+                "no final claim in trace", extract_rounds, fingerprint),
+                **cfg)
+        cert = request_certificate(
+            sc.store, sc.kernel, sc.log, sc.artifacts,
+            sc.builder.finals[-1])
+        return dict(_features(cert, extract_rounds, fingerprint), **cfg)
+
+    features: Optional[Dict[str, Any]] = None
+    failure: Optional[BaseException] = None
+    try:
+        features = run_verification()
+    except BaseException as err:  # preserve cancellation after sealing below
+        failure = err
+
+    try:
+        immutable_seal_after = immutable_input_seal(state_dir)
+    except OSError as err:
+        immutable_seal_after = f"error:{err}"
+
+    if immutable_seal_after != immutable_seal:
+        reason = "immutable offline inputs mutated during verification"
+        _quarantine_immutable_inputs(
+            state_dir, expected=immutable_seal,
+            actual=immutable_seal_after, reason=reason)
+        invalid = dict(
+            _unscoreable(reason, extract_rounds, fingerprint), **cfg)
+        invalid["immutable_input_seal_expected"] = immutable_seal
+        invalid["immutable_input_seal_actual"] = immutable_seal_after
+        # Backward-compatible diagnostic aliases for the first seal revision.
+        invalid["world_seal_before"] = immutable_seal
+        invalid["world_seal_after"] = immutable_seal_after
+        _write_score(state_dir, invalid)
+        features = invalid
+
+    if failure is not None:
+        raise failure
+    assert features is not None
+    if not features.get("unscoreable"):
+        features["immutable_input_seal"] = immutable_seal
+        features["immutable_input_boundary"] = immutable_boundary
+    return _write_score(state_dir, features)
 
 
 def _write_score(state_dir: str, features: Dict[str, Any]) -> Dict[str, Any]:
@@ -389,14 +750,32 @@ VERDICT_RANK = {"verified": 4, "supported": 3, "partial": 2,
 
 def rank_key(features: Optional[Dict[str, Any]]) -> tuple:
     """Lexicographic trace score, higher-is-better: certificate verdict
-    dominates absolutely; slice verified-fraction breaks ties; verified
-    obligation count breaks those. No weights to tune — selection only
-    needs a total order."""
+    dominates absolutely; the verified fraction of the final claim's own
+    task-contract obligations breaks ties. Whole-slice claim and obligation
+    counts are diagnostics only and never enter selection.
+
+    Legacy or malformed feature records rank exactly like unscoreable records.
+    In particular, there is intentionally no fallback to the old whole-slice
+    verified fraction: silently mixing the two ranking schemas could flip a
+    BoN choice merely because one candidate had a more verbose decomposition.
+    """
     if not features or features.get("unscoreable"):
-        return (-1, 0.0, 0)
-    claims = features.get("claims") or {}
-    total = features.get("slice_size") or 0
-    fraction = claims.get("verified", 0) / total if total else 0.0
-    verified_obligations = (features.get("obligations") or {}).get("verified", 0)
-    return (VERDICT_RANK.get(features.get("verdict"), 0),
-            fraction, verified_obligations)
+        return (-1, 0.0)
+    if features.get("feature_schema_version") != FEATURE_SCHEMA_VERSION:
+        return (-1, 0.0)
+
+    counts = features.get("final_obligations")
+    total = features.get("final_obligations_total")
+    if not isinstance(counts, dict) or isinstance(total, bool) \
+            or not isinstance(total, int) or total < 0:
+        return (-1, 0.0)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+           for value in counts.values()) or sum(counts.values()) != total:
+        return (-1, 0.0)
+    verdict = features.get("verdict")
+    if verdict not in VERDICT_RANK:
+        return (-1, 0.0)
+
+    verified = counts.get("verified", 0)
+    fraction = verified / total if total else 0.0
+    return (VERDICT_RANK[verdict], fraction)

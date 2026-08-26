@@ -1,0 +1,30 @@
+"""Cross-seat rule blocks (criteria), grouped by intrinsic topic.
+Which seats compose each criterion is declared where it is true —
+in every seat file's own imports — not by this layout."""
+
+from .referent import (
+    ENUMERATED_MULTI_REFERENT_RULE,
+    TRANSFORMATION_EVENT_BINDING,
+    REFERENT_METHOD_BOUNDARY,
+)
+from .scope import (
+    QUANTIFIER_ROLE_BINDING,
+    SIBLING_PARTITION_COMPLETENESS,
+    TASK_COMPLETE_OCCURRENCE_COMPOSITION,
+)
+from .provenance import (
+    SUPPORTING_PROVENANCE_BOUNDARY,
+    PROOF_CARRYING_EFFECTS,
+    SIGNED_WORLD_EVIDENCE_REUSE,
+    DERIVED_STATE_PROVENANCE,
+    PERCEPTUAL_SEMANTIC_ANCHOR,
+)
+from .task_contract import (
+    TASK_INSTANCE_CONTRACT,
+    SOURCE_TERM_ROLE_BINDING,
+)
+from .execution import (
+    OFFLINE_FROZEN_EXECUTION,
+    PARTIAL_OBSERVATION_COMPLETIONS,
+    DIRECTIONAL_EXTREMAL_SUFFICIENCY,
+)

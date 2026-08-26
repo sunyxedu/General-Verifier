@@ -19,6 +19,7 @@ from verifier.llm.schema import FixtureBackend, RoleError
 
 
 ROW = {"id": "c1", "kind": "assertion", "text": "the answer is 42"}
+FINAL_ROW = {"id": "f1", "kind": "final", "text": "the submitted set is valid"}
 
 ORACLE = {"methods": [{
     "procedure": "recompute the answer from the task's own inputs",
@@ -72,6 +73,27 @@ class SequenceDischarger:
                                artifact="d1", instrument="stub")
 
 
+class RetainedArtifactDischarger:
+    """One fixed executor artifact, with a call count for retry assertions."""
+
+    def __init__(self, artifacts):
+        self.artifacts = artifacts
+        self.calls = 0
+        self.digest = artifacts.put({
+            "instrument": "fixed-proof",
+            "finding": "the independently recomputed value is 42",
+        })
+
+    def discharge(self, row, obligation, method=None, tag=""):
+        self.calls += 1
+        return DischargeResult(
+            outcome="holds",
+            witness="independent recomputation returned 42",
+            artifact=self.digest,
+            instrument="fixed-proof",
+        )
+
+
 def game(tmp_path, roles, live_world=True, discharger=None):
     backend = FixtureBackend(roles)
     return BindingGame(
@@ -105,6 +127,87 @@ def test_judger_sees_the_declared_basis(tmp_path):
     # and the audited declaration is what the settled result carries
     assert result.outcome == "holds"
     assert result.basis == BASIS_WORLD
+
+
+def test_malformed_judger_retries_only_judger_and_keeps_executor_artifact(
+        tmp_path):
+    """The fresh-chess failure mode: AgentRole's two schema attempts both
+    fail, then a fresh Judger call succeeds against the already-built proof.
+    The expensive executor must not run again."""
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    discharger = RetainedArtifactDischarger(artifacts)
+    payloads = iter([
+        {"sufficient": "yes"},       # malformed: missing three signatures
+        {"faithful": "yes"},         # malformed again
+        JUDGE_YES,
+    ])
+    backend = FixtureBackend({
+        "oracles": ORACLE,
+        "judger": lambda _variables: next(payloads),
+    })
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    g = BindingGame(backend, artifacts, log, discharger)
+
+    result = g.run(ROW, Obligation("c1", "answer equals 42"))
+
+    assert result.outcome == "holds"
+    assert discharger.calls == 1
+    assert artifacts.get(discharger.digest)["instrument"] == "fixed-proof"
+    judger_calls = [call for call in backend.calls
+                    if call["role"] == "judger"]
+    assert len(judger_calls) == 3
+    evidence = [json.loads(call["variables"]["evidence"])
+                for call in judger_calls]
+    assert {item["artifact_digest"] for item in evidence} == {
+        discharger.digest}
+
+    events = list(log.replay())
+    failures = [event for event in events
+                if event["type"] == "judger_call_failed"]
+    assert len(failures) == 1
+    assert failures[0]["payload"]["artifact_digest"] == discharger.digest
+    assert failures[0]["payload"]["will_retry"] is True
+    assert not any(event["type"] == "method_redo" for event in events)
+    # The settled binding record continues to name the original proof digest.
+    binding = artifacts.get(result.artifact)
+    assert binding["attempts"][0]["discharge_artifact"] == discharger.digest
+    assert binding["bound"]["discharge_artifact"] == discharger.digest
+
+
+def test_persistently_malformed_judger_keeps_artifact_and_fails_closed(
+        tmp_path):
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    discharger = RetainedArtifactDischarger(artifacts)
+    backend = FixtureBackend({
+        "oracles": ORACLE,
+        # Invalid on every AgentRole schema attempt and on the bounded fresh
+        # Judger call.  No result may settle from this infrastructure failure.
+        "judger": {"sufficient": "yes"},
+    })
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    g = BindingGame(backend, artifacts, log, discharger)
+
+    result = g.run(ROW, Obligation("c1", "answer equals 42"))
+
+    assert result.outcome == "failed"
+    assert discharger.calls == 1
+    assert artifacts.get(discharger.digest)["instrument"] == "fixed-proof"
+    # Two schema attempts per AgentRole.call, across two bounded role calls.
+    assert len([call for call in backend.calls
+                if call["role"] == "judger"]) == 4
+    events = list(log.replay())
+    failures = [event for event in events
+                if event["type"] == "judger_call_failed"]
+    assert [event["payload"]["will_retry"] for event in failures] == [
+        True, False]
+    assert {event["payload"]["artifact_digest"] for event in failures} == {
+        discharger.digest}
+    assert not any(event["type"] == "method_bound" for event in events)
+    assert not any(event["type"] == "method_redo" for event in events)
+    failed_binding = artifacts.get(result.artifact)
+    assert failed_binding["attempts"][0][
+        "discharge_artifact"] == discharger.digest
+    assert failed_binding["bound"] is None
 
 
 def test_insufficient_method_is_rejected_without_executor_redo(tmp_path):
@@ -239,7 +342,8 @@ def test_missing_sufficiency_signature_fails_closed(tmp_path):
     result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
 
     assert result.outcome == "failed"
-    assert len([c for c in backend.calls if c["role"] == "judger"]) == 2
+    # Two schema attempts in each of the two bounded Judger role calls.
+    assert len([c for c in backend.calls if c["role"] == "judger"]) == 4
     events = list(g.log.replay())
     assert not any(event["type"] == "method_bound" for event in events)
     assert not any(event["type"] == "method_redo" for event in events)
@@ -650,6 +754,68 @@ def test_offline_initial_empty_gets_one_bounded_oracle_repair(tmp_path):
         e for e in g.log.replay() if e["type"] == "methods_enumerated"
     ]
     assert [e["payload"]["repair"] for e in batches] == [False, True]
+
+
+def test_offline_final_empty_repair_gets_focused_counterexample_pass(tmp_path):
+    """A load-bearing final obligation cannot go straight from two empty
+    broad batches to unobtainable when one local witness could decide it."""
+    witness_method = oracle_method(
+        "search the frozen subject for one in-scope member required by the "
+        "acceptance contract but absent from the submitted set"
+    )
+
+    def enumerate_methods(variables):
+        feedback = variables["method_feedback"]
+        if feedback == "(none)":
+            return {"methods": []}
+        parsed = json.loads(feedback)
+        if not parsed.get("focused_counterexample_fallback"):
+            return {"methods": []}
+        assert parsed["focus_reason"].startswith("both broad enumeration")
+        assert parsed["ordinary_repair_empty"] is True
+        assert parsed["initial_empty"] is True
+        assert parsed["structural_rejections"] == []
+        return {"methods": [witness_method]}
+
+    discharger = SequenceDischarger([
+        ("refuted", "required member x is absent from the submitted set"),
+    ])
+    g, backend = game(
+        tmp_path,
+        {"oracles": enumerate_methods, "judger": JUDGE_YES},
+        live_world=False,
+        discharger=discharger,
+    )
+
+    result = g.run(
+        FINAL_ROW,
+        Obligation("f1", "every required member is in the submitted set", "world"),
+    )
+
+    assert result.outcome == "refuted"
+    assert discharger.methods == [witness_method]
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 3
+    events = list(g.log.replay())
+    batches = [e for e in events if e["type"] == "methods_enumerated"]
+    assert [e["payload"].get("focused_counterexample_fallback", False)
+            for e in batches] == [False, False, True]
+
+
+def test_empty_focused_final_fallback_is_explicitly_unobtainable(tmp_path):
+    g, backend = game(
+        tmp_path,
+        {"oracles": {"methods": []}},
+        live_world=False,
+    )
+
+    result = g.run(
+        FINAL_ROW,
+        Obligation("f1", "the submitted choice is globally optimal", "world"),
+    )
+
+    assert result.outcome == "unobtainable"
+    assert "focused counterexample fallback" in result.witness
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 3
 
 
 def test_explicit_empty_oracle_stays_failed_live(tmp_path):

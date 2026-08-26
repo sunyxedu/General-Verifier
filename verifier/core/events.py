@@ -27,10 +27,12 @@ EVENT_TYPES = (
 
     # obligation & critic agent
     "obligations_compiled",
+    "obligations_residualized",
     "decomposition_attacked",
     
     # binding game
     "methods_enumerated",
+    "judger_call_failed",
     "judger_verdict",
     "method_rejected",
     "method_deferred",

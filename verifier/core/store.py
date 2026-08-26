@@ -16,8 +16,10 @@ import sqlite3
 from typing import Callable, Dict, List, Optional, Set
 
 from .model import (
-    Claim, CLAIM_EFFECT, OBLIGATION_KINDS,
+    Claim, CLAIM_EFFECT, CLAIM_FINAL, OBLIGATION_KINDS,
+    BASIS_RECORD, BASIS_WORLD,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_REFUTED, STATUS_STALE, STATUS_PARTIAL,
+    weakest_strength,
 )
 
 TriggerCallback = Callable[[str], None]
@@ -227,6 +229,111 @@ class ClaimStore:
     def get(self, claim_id: str) -> Dict:
         return self._row(claim_id)
 
+    # read-time conditional fold
+    # A stored status is LOCAL: it answers "does this statement hold
+    # ASSUMING every premise (dep) is true" — so verification never blocks
+    # on premise order and any node can be checked at any time. What a
+    # consumer may rely on is the EFFECTIVE verdict: the weakest link
+    # along the premise chain, with a refuted node poisoning everything
+    # downstream of it. Nothing is stored; folding at read time keeps
+    # local verdicts immutable and lets a premise settled later (or
+    # overturned as stale) change the read-out without rewrites.
+    _EFFECTIVE_RANK = {STATUS_VERIFIED: 3, STATUS_PARTIAL: 2,
+                       STATUS_UNVERIFIED: 1, STATUS_STALE: 1,
+                       STATUS_REFUTED: 0}
+    _RANK_STATUS = {3: STATUS_VERIFIED, 2: STATUS_PARTIAL,
+                    1: STATUS_UNVERIFIED, 0: STATUS_REFUTED}
+
+    def effective(self, claim_id: str,
+                  _memo: Optional[Dict[str, Dict]] = None) -> Dict:
+        """The read-time conditional verdict of one node.
+
+        Fold rules:
+          * a FINAL is exempt from the premise fold — its obligations are
+            the task contract, compiled independently of the solver-derived
+            graph, so solver premises are not load-bearing for its verdict;
+          * a locally refuted node, or any premise whose effective verdict
+            is refuted, makes the effective status refuted (the chain is
+            poisoned; premise falsehood is not survivable downstream);
+          * otherwise effective status is the MINIMUM of the local status
+            and every premise's effective status (verified > partial >
+            unverified/stale);
+          * basis/strength fold as weakest links over the local values and
+            every non-effect premise's effective values, and are reported
+            only for an effectively verified node. Effect premises cap
+            status only (a fabricated event poisons the chain) — they
+            reach the compiler as opaque labels, so they cannot have
+            contributed semantic content; their record basis is exempt.
+
+        Returns local status plus effective_status / effective_basis /
+        effective_strength, the transitive open (non-settled) premises,
+        and the first refuted premise found, for audit.
+        """
+        memo = {} if _memo is None else _memo
+        cached = memo.get(claim_id)
+        if cached is not None:
+            if cached.get("_visiting"):
+                raise IllegalTransition(
+                    f"dependency cycle through {claim_id[:12]}…")
+            return cached
+        memo[claim_id] = {"_visiting": True}
+        row = self._row(claim_id)
+        local = row["status"]
+        result: Dict = {
+            "id": claim_id,
+            "status": local,
+            "effective_status": local,
+            "effective_basis": row["basis"],
+            "effective_strength": row["strength"],
+            "open_premises": [],
+            "premise_refuted": None,
+        }
+        if row["kind"] == CLAIM_FINAL:
+            memo[claim_id] = result
+            return result
+
+        rank = self._EFFECTIVE_RANK.get(local, 1)
+        bases = [row["basis"]]
+        strengths = [row["strength"]]
+        open_premises: List[str] = []
+        premise_refuted: Optional[str] = None
+        for pid in sorted(self.parents(claim_id)):
+            parent = self.effective(pid, memo)
+            if parent["effective_status"] == STATUS_REFUTED:
+                premise_refuted = parent["premise_refuted"] or pid
+                break
+            prow = self._row(pid)
+            if parent["effective_status"] != STATUS_VERIFIED:
+                open_premises.append(pid)
+                open_premises.extend(parent["open_premises"])
+            rank = min(rank,
+                       self._EFFECTIVE_RANK.get(parent["effective_status"], 1))
+            if prow["kind"] != CLAIM_EFFECT:
+                bases.append(parent["effective_basis"])
+                strengths.append(parent["effective_strength"])
+
+        if premise_refuted is not None:
+            result["effective_status"] = STATUS_REFUTED
+            result["premise_refuted"] = premise_refuted
+            result["effective_basis"] = None
+            result["effective_strength"] = None
+        else:
+            result["effective_status"] = self._RANK_STATUS[rank]
+            result["open_premises"] = sorted(set(open_premises))
+            if result["effective_status"] == STATUS_VERIFIED:
+                result["effective_basis"] = (
+                    BASIS_WORLD
+                    if all(b == BASIS_WORLD for b in bases)
+                    else BASIS_RECORD)
+                result["effective_strength"] = weakest_strength(strengths)
+            elif result["effective_status"] != local:
+                # capped by a premise: the local basis/strength describe a
+                # verdict the chain does not deliver — do not advertise them
+                result["effective_basis"] = None
+                result["effective_strength"] = None
+        memo[claim_id] = result
+        return result
+
     # internals
     def _exists(self, claim_id: str) -> bool:
         return self.db.execute(
@@ -308,20 +415,27 @@ class ClaimStore:
         """A compact view of the WHOLE graph for the obligation compiler:
         every assertion/final/obligation node with its status, so already-
         proven statements can be found and relied on instead of re-demanded.
+        Statuses shown are EFFECTIVE (the read-time conditional fold) —
+        only an effectively settled verdict transfers by reuse, so showing
+        the local one would advertise reuse the inheritance gate refuses.
         Effects are omitted (their text is a ledger hash, useless to read)."""
         cur = self.db.execute(
-            "SELECT id, kind, status, text, basis, strength FROM claims "
-            "WHERE kind != 'effect'"
+            "SELECT id, kind, text FROM claims WHERE kind != 'effect'"
         )
         out: List[Dict] = []
-        for cid, kind, status, text, basis, strength in cur.fetchall():
+        memo: Dict[str, Dict] = {}
+        for cid, kind, text in cur.fetchall():
             if cid == exclude:
                 continue
-            entry = {"kind": kind, "status": status, "text": text[:300]}
-            if basis:
-                entry["basis"] = basis
-            if strength:
-                entry["strength"] = strength
+            eff = self.effective(cid, memo)
+            entry = {"kind": kind, "status": eff["effective_status"],
+                     "text": text[:300]}
+            if eff["status"] != eff["effective_status"]:
+                entry["local_status"] = eff["status"]
+            if eff["effective_basis"]:
+                entry["basis"] = eff["effective_basis"]
+            if eff["effective_strength"]:
+                entry["strength"] = eff["effective_strength"]
             out.append(entry)
             if len(out) >= cap:
                 out.append({"note": f"...truncated at {cap} entries"})

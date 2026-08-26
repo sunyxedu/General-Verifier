@@ -31,10 +31,39 @@ from typing import Any, Dict, List, Optional
 
 from . import prompts, provider
 from .schema import RoleError, validate
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, ResultMessage, query
 
 class _TransientSDKError(RuntimeError):
     """Infrastructure failure worth backing off and retrying (internal)."""
+
+
+# Raster formats the CLI's Read tool renders as image content blocks. On a
+# text-only provider such a block makes the whole request unroutable
+# (e.g. OpenRouter: 404 "No endpoints found that support image input"), so
+# under provider.TEXT_ONLY the Read is denied and the seat is told to reason
+# from textual evidence instead.
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+
+async def _deny_image_read(input_data, tool_use_id, context):
+    tool_input = (input_data or {}).get("tool_input") or {}
+    path = str(tool_input.get("file_path", ""))
+    if path.lower().endswith(_IMAGE_EXTS):
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "text-only provider: image files cannot enter model "
+                    "context here. Treat the image as an opaque artifact: "
+                    "reason from its path, size, hash, and the surrounding "
+                    "textual evidence; if the obligation hinges on unseen "
+                    "image content, treat that method as unobtainable "
+                    "rather than guessing."
+                ),
+            }
+        }
+    return {}
 
 
 def to_json_schema(spec: Any) -> Dict[str, Any]:
@@ -235,6 +264,11 @@ class AgentBackend:
             },
             max_buffer_size=64 * 1024 * 1024,  # default 1MB truncates long tool output
             stderr=stderr_cb,
+            hooks=(
+                {"PreToolUse": [HookMatcher(matcher="Read",
+                                            hooks=[_deny_image_read])]}
+                if provider.TEXT_ONLY else None
+            ),
         )
 
 
@@ -301,7 +335,12 @@ DISCHARGE_AGENT = AgentRole(
     name="discharge",
     system=prompts.DISCHARGE_SYSTEM,
     template=prompts.DISCHARGE_TEMPLATE,
-    schema={"outcome": OUTCOMES, "witness": str, "artifact": str},
+    # assumed_premises: premise claim ids (from the workspace index)
+    # whose CONTENT the check assumed instead of re-establishing; [] when
+    # the check stands on its own. Gated mechanically at the kernel to
+    # the claim's own dependency closure.
+    schema={"outcome": OUTCOMES, "witness": str, "artifact": str,
+            "assumed_premises": [str]},
     tools=["Bash", "Read", "Write", "Grep"],
 )
 

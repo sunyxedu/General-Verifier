@@ -30,10 +30,12 @@ built around three counters to that failure:
 3. **Opinions propose, mechanics decide.** LLM seats compile obligations, pick
    methods, run checks — but every seat's output passes a schema gate, every check
    leaves an auditable artifact, effect claims are re-hashed against the ledger, and
-   the status folds (claim ← obligations, certificate ← slice) always take the worst
-   case. Crashes, timeouts, malformed output: FAILED, never a pass. A wrong
-   extraction or a lazy decomposition can cost recall; it cannot mint a false
-   `verified`.
+   every fold takes the worst case: a claim's verdict is the weakest of its
+   obligations, and what a consumer may *rely on* is the weakest link of the whole
+   premise chain — in status, in evidence basis (world over record), and in
+   strength (decisive over bounded over analytic). Crashes, timeouts, malformed
+   output: FAILED, never a pass. A wrong extraction or a lazy decomposition can
+   cost recall; it cannot mint a false `verified`.
 
 ## Architecture
 
@@ -61,30 +63,58 @@ Per trace, left to right:
 4. **Gate.** The extracted graph is replayed LLM-free through the same builder that
    serves every other mode; only a structurally valid graph proceeds.
 5. **Verify.** The kernel settles the final claim's dependency closure, one claim at
-   a time. The **obligation compiler** (answer-blind, graph-aware) turns a claim into
-   world-checkable obligations; the **decomposition critic** attacks their
-   sufficiency by constructing a counterexample world, sending the compiler back to
-   repair (≤2 rounds). Each obligation node then plays the **binding game**: an
-   oracle lists only *sufficient* methods, graded on a scale of its own devising; a
-   discharge executor carries the chosen method out faithfully (installing missing
-   instruments on the spot); a judger examines the delivered artifact and sends
-   unfaithful executions back (≤3 rounds). Obligation nodes are content-addressed:
-   the same check under two claims is one node, and settled verdicts transfer for
-   free.
-6. **Certify.** A claim's status is the fold of its obligation nodes (one refuted ⇒
-   refuted, and the downstream cone is killed; all verified ⇒ verified; mixed or
-   instrument-blocked ⇒ partial). The certificate freezes the final's slice with
-   every claim's obligations and evidence nested inside; its verdict is the worst
-   case over the slice and never rounds up.
-7. **Rank.** A certificate folds into a lexicographic key — `(verdict, verified
-   fraction of the slice, verified obligation count)`. Verdict dominates absolutely;
-   the obligation count breaks ties because obligation nodes are roughly invariant
-   under extraction granularity (claim counts are not), which makes the rank
-   resistant to extractor noise. No tuned weights anywhere — selection only needs an
-   order.
+   a time — in any order, because every local verdict is **conditional**: it answers
+   "does this claim hold *given its premises*", never blocking on the premises'
+   own verification. The **obligation compiler** (answer-blind, graph-aware)
+   assumes every premise true — verified or not — and compiles the **residual**:
+   what must hold beyond the premises, the inference gap included ("decoded 11
+   records" plus "wrote the file" does not yet give "the file content is
+   correct"). An obligation that merely restates a premise verbatim is dropped
+   mechanically — the premise edge already carries it. The **decomposition
+   critic** attacks the residual by constructing a world where all premises and
+   all obligations hold and the claim is still false, sending the compiler back
+   to repair (bounded rounds, game record binding both seats). Each obligation
+   node then plays the **binding game**: an oracle lists only *sufficient*
+   methods, each with a signed evidence **basis** (world | record) and
+   **strength** (decisive | bounded | analytic); a discharge executor carries
+   the bound method out faithfully (installing missing instruments on the spot);
+   a judger audits sufficiency, fidelity, and — for any non-decisive binding —
+   whether the degradation from stronger tiers was genuinely forced. Only
+   decisive evidence may refute. Executors share a per-trace **evidence
+   workspace** (durable building material — a growing Lean project, decoded
+   inputs): borrowed work must be re-established by the instrument or declared
+   as an **assumed premise**, mechanically gated to the claim's own dependency
+   closure (a final admits none). Obligation nodes are content-addressed: the
+   same check under two claims is one node, and settled verdicts transfer free —
+   but only *effectively* settled ones (see below); a conditional verdict never
+   transfers its open assumptions away.
+6. **Certify.** Every node carries **two verdicts**: the *local* one (holds,
+   given its premises — the fold of its own obligation nodes: one refuted ⇒
+   refuted; all hold ⇒ verified, basis and strength folded weakest-link;
+   instrument-blocked ⇒ partial) and the *effective* one, computed at read time
+   by folding the whole premise chain — weakest link in status, basis and
+   strength, with a refuted premise poisoning everything downstream. Nothing is
+   rewritten: a premise settled later changes the read-out automatically. The
+   **final is exempt** from the premise fold — its obligations are compiled from
+   `task.md` alone, independent of the solver's argument, so its verdict is its
+   own adjudication (a refuted narration step neither kills nor rescues the
+   deliverable). The certificate freezes the final's slice with both verdicts,
+   open premises, assumed premises, bases, strengths and evidence disclosed per
+   entry; a verified final resting anywhere on non-decisive evidence reads out
+   as `supported`, with its bridging assumptions attached.
+7. **Rank.** A certificate folds into a lexicographic key — `(verdict band,
+   verified fraction of the final claim's task-contract obligations)`. Verdict
+   dominates absolutely; only the final contract breaks ties, so
+   narration/decomposition padding cannot change the order. Conditional and
+   whole-slice counts remain diagnostics only — they never rank. No tuned
+   weights anywhere — selection only needs an order.
 8. **Select.** Across the N traces: argmax by rank, or verdict-weighted voting when
    answers are comparable. A trace whose extraction fails outright ranks below
    everything — fail-closed, like the rest of the system.
+
+The evidence-strength ladder (decisive / bounded / analytic, strictness-descending
+execution, audited degradation, `supported` read-out) is specified in
+[docs/evidence-strength-ladder.md](docs/evidence-strength-ladder.md).
 
 ## Usage
 
@@ -126,7 +156,10 @@ one of two interchangeable backends:
   `codex exec` calls on a ChatGPT-subscription model (default `gpt-5.6-luna`), which
   also lets the verifier and an LLM-as-a-Verifier baseline share the same verifier
   model. Same schema gate, same retries; see `verifier/llm/codex_backend.py` for the
-  fidelity notes.
+  fidelity notes. `--service-tier fast` opts GV scorers into Codex Fast mode;
+  standard is the default and is explicitly forced/recorded, so standard and fast
+  runs have different config identities and never share derived state. For the
+  Codex-backed LLM-as-a-Verifier path, use `--codex-service-tier fast`.
 
 ### Interactive mode (online)
 
@@ -163,13 +196,13 @@ Claude Code plugin) is wired as an online arm. See
 
 | Module | Contents |
 |---|---|
-| `verifier/core/` | data contracts: content addressing + status machine (`model.py`), append-only event stream (`events.py`), claim store + obligation nodes + trigger rule + slices (`store.py`) |
+| `verifier/core/` | data contracts: content addressing + status machine + basis/strength lattice (`model.py`), append-only event stream (`events.py`), claim store + obligation nodes + trigger rule + slices + the read-time effective fold (`store.py`) |
 | `verifier/stream/` | ingestion: incremental graph building (`builder.py`), online tail (`tail.py`), Codex rollout → hook feed (`codex.py`) |
 | `verifier/offline.py` | the ORM path: feed ingestion, outcome-blind extraction with structural retry, certify, feature fold, lexicographic `rank_key` |
 | `verifier/selection.py` | best-of-N strategies: argmax, majority vote, verdict-weighted vote, pass@N oracle |
-| `verifier/llm/` | LLM seats: agent roles with hard tool palettes (`agents.py`), schema gate + fixture backend (`schema.py`), Codex CLI backend (`codex_backend.py`), provider wiring (`provider.py`), all prompt text (`prompts.py` — zero domain knowledge by design) |
-| `verifier/execution/` | the hands: artifact store + ledger instrument (`instruments.py`), discharge seat with workdir snapshots (`discharge.py`) |
-| `verifier/engine/` | verification core: settlement + obligation-node reuse + pruning (`kernel.py`), binding game (`game.py`), certificate (`certificate.py`) |
+| `verifier/llm/` | LLM seats: agent roles with hard tool palettes (`agents.py`), schema gate + fixture backend (`schema.py`), Codex CLI backend (`codex_backend.py`), provider wiring (`provider.py`), prompt text as a package (`prompts/` — one file per seat, zero domain knowledge by design; `prompts/criteria/` holds the 16 shared rule blocks in 5 topic groups: referent, scope, provenance, task-contract, execution) |
+| `verifier/execution/` | the hands: artifact store + ledger instrument (`instruments.py`), discharge seat with immutable workdir snapshots, the durable per-trace evidence workspace, and assumed-premise declarations (`discharge.py`) |
+| `verifier/engine/` | verification core: residual compilation, conditional settlement, effective-verdict inheritance gates (`kernel.py`), binding game with the strength ladder (`game.py`), certificate with the two-verdict disclosure (`certificate.py`) |
 | `verifier/mcp_server.py` + `cli.py` | entry points: interactive MCP server; `score` / `certify` / `replay` CLI |
 | `hooks/` + `protocol/` | recording hooks (record, never intervene); MCP mount example + solver protocol (interactive mode) |
 | `script/claim_graph.py` | graph inspector: any state dir → laid-out SVG/PNG with full claim text, obligations, witnesses |

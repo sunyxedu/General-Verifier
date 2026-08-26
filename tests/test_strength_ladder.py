@@ -565,16 +565,20 @@ def test_decisive_refutation_still_refutes(tmp_path):
 
 # ---- ranking and selection ------------------------------------------------
 
-from verifier.offline import VERDICT_RANK, rank_key
+from verifier.offline import FEATURE_SCHEMA_VERSION, VERDICT_RANK, rank_key
 from verifier.selection import scalar, weighted_vote
 
 
 def _features(verdict, frac=0.5, total=2, obligations=1):
     verified = round(frac * total)
-    return {"unscoreable": False, "verdict": verdict,
+    return {"feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "unscoreable": False, "verdict": verdict,
             "slice_size": total, "claims": {"verified": verified},
             "obligations": {"verified": obligations},
-            "obligations_total": obligations}
+            "obligations_total": obligations,
+            "final_obligations": {
+                "verified": verified, "partial": total - verified},
+            "final_obligations_total": total}
 
 
 def test_supported_ranks_between_verified_and_partial():
@@ -586,7 +590,7 @@ def test_supported_ranks_between_verified_and_partial():
 
 def test_scalar_bands_never_cross():
     """Six bands: the best trace of a lower band stays under the worst
-    trace of the band above, at the extremes of frac and obligations."""
+    trace of the band above, at the extremes of final-obligation fraction."""
     best_supported = scalar(_features("supported", frac=1.0, total=44,
                                       obligations=10_000))
     worst_verified = scalar(_features("verified", frac=0.0,

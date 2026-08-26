@@ -85,8 +85,12 @@ def test_mixed_obligations_taint_to_record(tmp_path):
 
 
 def test_record_premise_taints_dependent_claim(tmp_path):
-    """A chain of reliance must bottom out in world checks: a claim whose
-    verified assertion premise is record-level cannot come out world."""
+    """A chain of reliance must bottom out in world checks. Under
+    conditional semantics the taint is charged at read time: the LOCAL
+    basis stays the claim's own (world — its obligations were world
+    discharged), while the EFFECTIVE fold caps the chain at record
+    because the premise's content only ever entered via the solver's
+    reporting."""
     per_text = lambda text: (                                      # noqa: E731
         BASIS_RECORD if "reported" in text else BASIS_WORLD)
     store, _ = build(tmp_path, basis=per_text)
@@ -96,7 +100,10 @@ def test_record_premise_taints_dependent_claim(tmp_path):
 
     b = store.add_claim(Claim(CLAIM_ASSERTION, "the answer is 42", deps=(a,)))
     assert store.status(b) == "verified"
-    assert store.get(b)["basis"] == BASIS_RECORD
+    assert store.get(b)["basis"] == BASIS_WORLD
+    effective = store.effective(b)
+    assert effective["effective_status"] == "verified"
+    assert effective["effective_basis"] == BASIS_RECORD
 
 
 def test_effect_premise_does_not_taint(tmp_path):

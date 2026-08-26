@@ -104,4 +104,4 @@ def test_assertions_keep_the_refuted_premise_early_out(tmp_path):
     b = store.add_claim(Claim(CLAIM_ASSERTION, "conclusion", deps=(a,)))
 
     assert store.status(b) == "unverified"
-    assert store.evidence_for(b)[-1]["error"] == "depends on refuted claim"
+    assert store.evidence_for(b)[-1]["error"].startswith("premise chain refuted")

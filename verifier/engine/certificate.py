@@ -14,9 +14,16 @@ certificate exists to answer: is the deliverable right? The rest of the
 slice is the audited argument — exported in full, scored as features
 (verified fraction, obligation counts) — but a support claim failing
 eliminates that line of support, it does not decide the deliverable: the
-solver's narration is evidence about the solver, not about the world.
+solver's narration is evidence about the solver, not about the world. Its
+whole-slice counts remain diagnostic features, while BoN tie-breaking uses
+only the final claim's own task-contract obligations.
 Fail-closed is preserved where it matters: an unverified/failed task
 obligation still leaves the verdict unverified, and a refuted one refutes.
+
+Slice entries carry two verdicts per claim: the LOCAL status (conditional —
+does the statement hold assuming its premises) and the EFFECTIVE read-time
+fold over the premise chain (what a consumer may rely on), with the open
+premises and any poisoning refuted premise disclosed for audit.
 """
 from __future__ import annotations
 
@@ -44,14 +51,26 @@ def request_certificate(
             kernel.verify(claim_id)
 
     entries = []
+    effective_memo = {}
     for claim_id in slice_ids:
         row = store.get(claim_id)
+        effective = store.effective(claim_id, effective_memo)
         entries.append(
             {
                 "id": row["id"],
                 "kind": row["kind"],
                 "text": row["text"],
+                # status is LOCAL — the conditional verdict (holds assuming
+                # every premise). effective_* is the read-time fold over the
+                # premise chain: what a consumer may actually rely on.
+                # open_premises lists the transitive premises still
+                # unsettled; premise_refuted names the poisoning node.
                 "status": row["status"],
+                "effective_status": effective["effective_status"],
+                "effective_basis": effective["effective_basis"],
+                "effective_strength": effective["effective_strength"],
+                "open_premises": effective["open_premises"],
+                "premise_refuted": effective["premise_refuted"],
                 "reason": row["reason"],
                 # evidence basis of a verified node (world | record): what
                 # its verdict entitles reliance to; disclosed for audit

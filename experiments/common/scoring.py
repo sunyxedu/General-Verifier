@@ -20,17 +20,16 @@ from verifier import offline
 _write_lock = threading.Lock()
 
 
-# scalar moved into verifier/selection.py with the strength ladder: the
-# supported tier made it part of the decision surface (weighted_vote), so
-# it belongs under the fingerprint now. Re-exported for the experiment
-# drivers' existing imports.
+# scalar lives beside rank_key's selection policy: only the verdict and the
+# final claim's task-contract obligation fraction form the decision surface.
+# Re-export it for the experiment drivers' existing imports.
 from verifier.selection import scalar  # noqa: F401  (re-export)
 
 
 def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
                seats=None, effort=None, critic_rounds=None,
                label=lambda rec: str(rec), tag="score", on_record=None,
-               heartbeat=60):
+               heartbeat=60, service_tier=None):
     """jobs: list of (record, state_dir). Scores every state dir, merges
     the features into its record, appends to out_path. Returns the
     records that were scored. `on_record`, when given, fires once per
@@ -70,7 +69,8 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
             features = offline.score(state, model=model,
                                      max_rounds=max_rounds,
                                      seats=seats, effort=effort,
-                                     critic_rounds=critic_rounds)
+                                     critic_rounds=critic_rounds,
+                                     service_tier=service_tier)
         except BaseException:
             if board is not None:
                 board.advance(handle, 0.0)
@@ -90,7 +90,7 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
             say(f"[{tag} {len(done)}/{len(jobs)}] {label(record)} -> "
                 f"{features.get('verdict') or 'unscoreable'} "
                 f"score={scalar(features):.4f} "
-                f"frac={key[1]:.2f} obligations={key[2]}")
+                f"final_obligation_frac={key[1]:.2f}")
             if on_record is not None:
                 on_record(record)
         return record

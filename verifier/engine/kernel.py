@@ -110,7 +110,7 @@ class Kernel:
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),
-            live_world=live_world)
+            live_world=live_world, store=store)
         self.binder = binder      # binding game; None -> direct discharge (tests)
         self.memory = memory      # advisory stores; None -> static hints
         store.on_trigger(self.verify)  # the single rule wires straight in
@@ -153,24 +153,32 @@ class Kernel:
 
     # assertion / final
     def _verify_assertion(self, row: Dict) -> None:
-        # a FINAL is never spared adjudication by a collapsed premise: its
+        # Local verdicts are CONDITIONAL: a claim is verified/refuted
+        # assuming its premises (deps) are true, and the read-time
+        # effective fold (store.effective) charges the premise chain's
+        # actual state to every consumer. One premise state is not worth
+        # verifying under: a refuted chain — the effective verdict is
+        # refuted regardless of what local adjudication would say, so the
+        # instrument spend is pure waste. A FINAL is exempt: its
         # obligations are the task contract, compiled and established
         # independently of the argument's health — a refuted intermediate
-        # eliminates that line of support, not the deliverable's verdict
+        # eliminates that line of support, not the deliverable's verdict.
         refuted_deps = [] if row["kind"] == CLAIM_FINAL else [
             p for p in self.store.parents(row["id"])
-            if self.store.status(p) == STATUS_REFUTED
+            if self.store.effective(p)["effective_status"] == STATUS_REFUTED
         ]
         if refuted_deps:
             self.store.record_evidence(
                 row["id"],
-                {"outcome": OUTCOME_FAILED, "error": "depends on refuted claim",
+                {"outcome": OUTCOME_FAILED,
+                 "error": "premise chain refuted; conditional verification "
+                          "skipped (effective verdict is refuted)",
                  "refuted_deps": refuted_deps},
             )
             self.log.append(
                 "status_change",
                 {"claim": row["id"], "status": STATUS_UNVERIFIED,
-                 "reason": "depends on refuted claim"},
+                 "reason": "premise chain refuted"},
             )
             return
 
@@ -198,6 +206,25 @@ class Kernel:
             oid = self.store.add_obligation(row["id"], obligation)
             known = self.store.status(oid)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
+                # foreign-assumption gate: a node settled under another
+                # claim may have ASSUMED that claim's premises (declared
+                # assumed_premises on its evidence). The verdict is
+                # conditional on those; it transfers only where the same
+                # premises are in force — i.e. inside THIS claim's own
+                # dependency closure, which the conditional fold already
+                # charges. Otherwise discharge fresh.
+                ev = self.store.evidence_for(oid)
+                assumed = (ev[-1].get("assumed_premises")
+                           if ev else None) or []
+                if assumed and not set(assumed) \
+                        <= self._premises_in_force(row):
+                    self.log.append(
+                        "dedup_hit",
+                        {"claim": row["id"], "obligation": oid,
+                         "status": known, "refused": "foreign assumptions",
+                         "assumed_premises": list(assumed)})
+                    known = STATUS_UNVERIFIED  # fall through to fresh work
+            if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 # content-addressed reuse: the same world-condition was
                 # already settled under another claim. The verdict and its
                 # evidence transfer without re-spending instruments
@@ -218,33 +245,57 @@ class Kernel:
                 continue
             src = self.store.settled_statement(obligation.text,
                                                exclude=row["id"])
-            if src is not None and not basis_satisfies(
-                    self.store.get(src["id"])["basis"],
-                    obligation.required_basis):
-                # evidence below the floor transfers in NEITHER direction:
-                # a record-established verdict — verified or refuted —
-                # cannot settle a world-floor obligation by inheritance
-                # (a legacy row with no basis fails closed the same way).
-                # Fall through and discharge fresh.
-                src = None
+            if src is not None:
+                # inheritance transfers only EFFECTIVE verdicts: a local
+                # verdict is conditional on its premise chain, and letting
+                # a conditionally-verified claim settle another claim's
+                # obligation would launder the open assumptions out of the
+                # account (the final's contract most of all). A verified
+                # source must be effectively verified (its whole chain
+                # closed); a refuted source must be refuted on its own
+                # content with no open premise (a premise-poisoned or
+                # conditional refutation collapses that line of support —
+                # it does not refute the statement unconditionally).
+                # Anything else falls through to fresh discharge, which
+                # can still establish the obligation directly.
+                src_eff = self.store.effective(src["id"])
+                transferable = (
+                    (src["status"] == STATUS_VERIFIED
+                     and src_eff["effective_status"] == STATUS_VERIFIED)
+                    or (src["status"] == STATUS_REFUTED
+                        and src_eff["effective_status"] == STATUS_REFUTED
+                        and src_eff["premise_refuted"] is None
+                        and not src_eff["open_premises"])
+                )
+                if transferable and not basis_satisfies(
+                        src_eff["effective_basis"],
+                        obligation.required_basis):
+                    # evidence below the floor transfers in NEITHER
+                    # direction: a record-established verdict — verified
+                    # or refuted — cannot settle a world-floor obligation
+                    # by inheritance (a legacy row with no basis fails
+                    # closed the same way).
+                    transferable = False
+                if not transferable:
+                    src = None
             if src is not None:
                 # the graph already settled this exact statement as a CLAIM
                 # (different identity space, so node dedup cannot see it).
                 # the verdict and its evidence transfer, no instrument spent
-                outcome, witness = self._inherit(row, obligation, src)
+                outcome, witness, basis, strength = self._inherit(
+                    row, obligation, src)
                 outcomes.append(outcome)
-                node = self.store.get(oid)
-                bases.append(node["basis"] or BASIS_RECORD)
-                strengths.append(node["strength"])
+                bases.append(basis or BASIS_RECORD)
+                strengths.append(strength)
                 if outcome == OUTCOME_REFUTED:
                     refuting_witness = witness
                     break
                 continue
-            outcome, witness = self._discharge(row, obligation)
+            outcome, witness, basis, strength = self._discharge(
+                row, obligation)
             outcomes.append(outcome)
-            node = self.store.get(oid)
-            bases.append(node["basis"] or BASIS_RECORD)
-            strengths.append(node["strength"])
+            bases.append(basis or BASIS_RECORD)
+            strengths.append(strength)
             if outcome == OUTCOME_REFUTED:
                 refuting_witness = witness
                 break
@@ -259,6 +310,17 @@ class Kernel:
                     row["text"], row["text"],
                     str(refuting_witness), kind="refutation")
             self.log.append("memory_recorded", {"claim": row["id"]})
+
+    def _premises_in_force(self, row: Dict) -> set:
+        """The premise ids whose content evidence for this claim may
+        assume: the dependency closure for an ordinary claim (the
+        conditional fold charges them to every consumer), the EMPTY set
+        for a final — its contract is compiled independently and it is
+        exempt from the premise fold, so an assumption there would
+        never be charged to anyone."""
+        if row["kind"] == CLAIM_FINAL:
+            return set()
+        return set(self.store.backward_slice(row["id"])[1:])
 
     def _compile_obligations(self, row: Dict):
         memory_hits = (
@@ -277,29 +339,36 @@ class Kernel:
             row["kind"] == CLAIM_FINAL
             and task_context != "(none supplied)"
         )
-        # graph context: verified premises reach the compiler tagged with
-        # their evidence basis — world-level premises are facts residual
-        # obligations may build on; record-level ones only prove the solver
-        # reported/did as recorded. The solver's argument stays invisible
+        # graph context: EVERY premise (dep) is assumable — the claim's
+        # verdict is conditional on its premises by definition, and the
+        # read-time effective fold charges each premise's actual state
+        # (still-open, record-level, refuted) to every consumer. The
+        # compiler therefore compiles the RESIDUAL: what must hold beyond
+        # the premises. Verified premises carry their settled provenance
+        # tag; unsettled ones are assumed premises whose eventual state
+        # the fold accounts for. The solver's argument stays invisible
         # either way.
         verified_deps, pending_deps = [], []
         if not independent_final:
             for pid in self.store.parents(row["id"]):
                 prow = self.store.get(pid)
+                eff = self.store.effective(pid)
                 if prow["kind"] == CLAIM_EFFECT:
                     label = "[a verified tool-execution record]"
-                    if prow["status"] == STATUS_VERIFIED:
+                    if eff["effective_status"] == STATUS_VERIFIED:
                         verified_deps.append(label)
                     else:
                         pending_deps.append(
-                            f"{label} (status: {prow['status']})")
+                            "[a tool-execution record, assumed — status: "
+                            f"{eff['effective_status']}]")
                     continue
-                if prow["status"] == STATUS_VERIFIED:
-                    basis = prow["basis"] or BASIS_RECORD
+                if eff["effective_status"] == STATUS_VERIFIED:
+                    basis = eff["effective_basis"] or BASIS_RECORD
                     verified_deps.append(f"[{basis}-level] {prow['text']}")
                 else:
                     pending_deps.append(
-                        f"{prow['text']} (status: {prow['status']})")
+                        f"[assumed premise — status: "
+                        f"{eff['effective_status']}] {prow['text']}")
         # a run scored after the fact (offline ORM) has no live world; the
         # harness may instead have captured the delivered tree next to the
         # ledger. Absolute, like ledger_path: the checker runs elsewhere.
@@ -347,6 +416,31 @@ class Kernel:
                        o.get("required_basis", BASIS_RECORD))
             for o in payload["obligations"]
         ]
+        if not independent_final:
+            # mechanical residual filter: an obligation that restates a
+            # premise VERBATIM is a re-demand — the premise edge already
+            # carries that condition and the read-time fold charges it to
+            # this claim, so verifying it again here is duplicated work
+            # (and a spurious-failure risk for an honest claim). Dropped
+            # only on exact text identity; kept whenever dropping would
+            # empty the decomposition (an empty compile fails closed, and
+            # a claim that IS the conjunction of its premises still needs
+            # the explicit list until an empty-residual mechanism exists).
+            premise_texts = set()
+            for pid in self.store.parents(row["id"]):
+                prow = self.store.get(pid)
+                if prow["kind"] != CLAIM_EFFECT:
+                    premise_texts.add(prow["text"])
+            residual = [o for o in obligations
+                        if o.text not in premise_texts]
+            dropped = [o.text for o in obligations
+                       if o.text in premise_texts]
+            if dropped and residual:
+                self.log.append(
+                    "obligations_residualized",
+                    {"claim": row["id"], "dropped": dropped},
+                )
+                obligations = residual
         self.log.append(
             "obligations_compiled",
             {"claim": row["id"],
@@ -403,6 +497,7 @@ class Kernel:
                         ensure_ascii=False
                     ),
                     "verified_deps": variables["verified_deps"],
+                    "pending_deps": variables["pending_deps"],
                     "dependency_referent_context":
                         variables["dependency_referent_context"],
                     "game_history": json.dumps(history, ensure_ascii=False),
@@ -800,17 +895,20 @@ class Kernel:
     def _inherit(self, row: Dict, obligation: Obligation, src: Dict):
         """
         Transfer a same-text settled CLAIM's verdict onto an obligation
-        node. The node is settled too, so every later claim sharing it gets
-        the plain node-dedup path. Returns (outcome, witness).
+        node. The node is settled too (when still settleable), so every
+        later claim sharing it gets the plain node-dedup path. Returns
+        (outcome, witness, basis, strength).
         """
 
         oid = obligation.id
-        # inheritance transfers the verdict WITH its basis: a verdict
-        # settled on the solver's record does not become independent by
-        # changing identity space
-        src_row = self.store.get(src["id"])
-        src_basis = src_row["basis"] or BASIS_RECORD
-        src_strength = src_row["strength"]
+        # inheritance transfers the verdict WITH its EFFECTIVE basis and
+        # strength: a verdict settled on the solver's record — or resting
+        # anywhere in its premise chain on one — does not become
+        # independent by changing identity space. The caller has already
+        # gated on the effective verdict being settled and chain-closed.
+        src_eff = self.store.effective(src["id"])
+        src_basis = src_eff["effective_basis"] or BASIS_RECORD
+        src_strength = src_eff["effective_strength"]
         ev = self.store.evidence_for(src["id"])
         witness = ev[-1].get("witness") if ev else None
         if witness is None and src["status"] == STATUS_REFUTED:
@@ -837,24 +935,31 @@ class Kernel:
                 "witness": witness,
             },
         )
-        if outcome == OUTCOME_HOLDS:
-            self.store.set_verified(oid, basis=src_basis,
-                                    strength=src_strength)
-        else:
-            self.store.set_refuted(oid, reason=str(witness)[:200],
-                                   basis=src_basis, strength=src_strength)
+        # settle only when the node is still settleable: a node already
+        # settled elsewhere (e.g. under foreign assumptions, refused at
+        # dedup) keeps its first verdict — the evidence just recorded
+        # carries THIS claim's account
+        if self.store.status(oid) in (STATUS_UNVERIFIED, STATUS_STALE):
+            if outcome == OUTCOME_HOLDS:
+                self.store.set_verified(oid, basis=src_basis,
+                                        strength=src_strength)
+            else:
+                self.store.set_refuted(oid, reason=str(witness)[:200],
+                                       basis=src_basis,
+                                       strength=src_strength)
         self.log.append(
             "dedup_hit",
             {"claim": row["id"], "obligation": oid, "source": src["id"],
              "status": src["status"], "space": "claim"},
         )
-        return outcome, witness
+        return outcome, witness, src_basis, src_strength
 
     def _discharge(self, row: Dict, obligation: Obligation):
         """
         Discharge one obligation NODE: evidence lands on the node, and
-        the node's status is settled so any other claim sharing this
-        obligation reuses the verdict. Returns (outcome, witness).
+        the node's status is settled (when still settleable) so any other
+        claim sharing this obligation reuses the verdict. Returns
+        (outcome, witness, basis, strength).
         """
 
         oid = obligation.id
@@ -879,6 +984,7 @@ class Kernel:
                 instrument=result.instrument,
                 basis=result.basis,
                 strength=result.strength,
+                assumed_premises=result.assumed_premises,
             )
         if result.outcome in (OUTCOME_HOLDS, OUTCOME_REFUTED) \
                 and not basis_satisfies(result.basis,
@@ -902,7 +1008,37 @@ class Kernel:
                 instrument=result.instrument,
                 basis=result.basis,
                 strength=result.strength,
+                assumed_premises=result.assumed_premises,
             )
+        if result.outcome in (OUTCOME_HOLDS, OUTCOME_REFUTED) \
+                and result.assumed_premises:
+            # gate on assumed premises: evidence may assume the content
+            # of the premises IN FORCE for this claim (the conditional
+            # fold charges those to every consumer) — never anything
+            # else. For a FINAL nothing is in force: its contract is
+            # adjudicated independently of the solver-derived graph and
+            # it is exempt from the premise fold, so an assumption there
+            # would never be charged to anyone. An id outside the
+            # in-force set (or unknown) is an undeclared axiom; the
+            # verdict it produced settles nothing.
+            in_force = self._premises_in_force(row)
+            illegal = sorted(set(result.assumed_premises) - in_force)
+            if illegal:
+                why = ("a completion claim's contract admits no assumed "
+                       "premises" if row["kind"] == CLAIM_FINAL
+                       else "assumed premises outside the claim's "
+                            "dependency closure")
+                result = DischargeResult(
+                    outcome=OUTCOME_FAILED,
+                    witness=(f"{why}: {illegal} "
+                             f"(reported {result.outcome}: "
+                             f"{result.witness})"),
+                    artifact=result.artifact,
+                    instrument=result.instrument,
+                    basis=result.basis,
+                    strength=result.strength,
+                    assumed_premises=result.assumed_premises,
+                )
         evidence = Evidence(
             obligation_id=oid,
             instrument=result.instrument,
@@ -918,20 +1054,27 @@ class Kernel:
             "basis": result.basis,
             "strength": result.strength,
             "bridges": list(result.bridges),
+            "assumed_premises": list(result.assumed_premises),
             "artifact": result.artifact,
             "witness": result.witness,
             "evidence_id": evidence.id,
         }
         self.store.record_evidence(oid, evidence_payload)
-        if result.outcome == OUTCOME_HOLDS:
-            self.store.set_verified(oid, basis=result.basis,
-                                    strength=result.strength)
-        elif result.outcome == OUTCOME_REFUTED:
-            self.store.set_refuted(oid, reason=str(result.witness)[:200],
-                                   basis=result.basis,
-                                   strength=result.strength)
-        elif result.outcome == OUTCOME_UNOBTAINABLE:
-            self.store.set_partial(oid)   # well-defined check, env can't host
+        # settle only when the node is still settleable: when this fresh
+        # discharge ran because a prior settle was refused at dedup
+        # (foreign assumptions), the node keeps its first verdict and the
+        # evidence just recorded carries this claim's own account
+        if self.store.status(oid) in (STATUS_UNVERIFIED, STATUS_STALE):
+            if result.outcome == OUTCOME_HOLDS:
+                self.store.set_verified(oid, basis=result.basis,
+                                        strength=result.strength)
+            elif result.outcome == OUTCOME_REFUTED:
+                self.store.set_refuted(oid,
+                                       reason=str(result.witness)[:200],
+                                       basis=result.basis,
+                                       strength=result.strength)
+            elif result.outcome == OUTCOME_UNOBTAINABLE:
+                self.store.set_partial(oid)  # well-defined, env can't host
         # failed -> the node stays unverified; a later claim may retry it
         self.log.append(
             "discharge",
@@ -939,10 +1082,11 @@ class Kernel:
              "instrument": result.instrument, "outcome": result.outcome,
              "required_basis": obligation.required_basis,
              "basis": result.basis, "strength": result.strength,
+             "assumed_premises": list(result.assumed_premises),
              "artifact": result.artifact,
              "evidence_id": evidence.id},
         )
-        return result.outcome, result.witness
+        return result.outcome, result.witness, result.basis, result.strength
 
     # settlement
     def _settle(self, claim_id: str, outcomes: List[str],
@@ -977,15 +1121,15 @@ class Kernel:
             )
             new_status = STATUS_UNVERIFIED
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes:
-            # provenance taint fold: world only when every obligation was
-            # world-based AND every verified assertion premise it may have
-            # relied on is world-level. Effect premises are exempt — they
-            # reach the compiler as opaque labels, so they cannot have
-            # contributed semantic content. Any record component -> record:
-            # a chain of reliance must bottom out in world checks or say so.
+            # LOCAL provenance fold: world only when every obligation was
+            # world-based. This is the conditional verdict's own basis —
+            # premise taint (residual obligations may have relied on any
+            # premise) is charged at read time by store.effective, which
+            # folds every non-effect premise's effective basis into the
+            # chain. Any record component -> record: a chain of reliance
+            # must bottom out in world checks or say so.
             basis = (BASIS_WORLD
                      if bases and all(b == BASIS_WORLD for b in bases)
-                     and self._premises_world(claim_id)
                      else BASIS_RECORD)
             # strength is a weakest-link fold over the obligations that
             # settled this claim; below decisive the certificate reads
@@ -1006,16 +1150,3 @@ class Kernel:
             self.store.set_unverified(claim_id)
             new_status = STATUS_UNVERIFIED
         self.log.append("status_change", {"claim": claim_id, "status": new_status})
-
-    def _premises_world(self, claim_id: str) -> bool:
-        """True when no verified assertion premise is record-level. The
-        compiler may have built residual obligations on any verified
-        premise it was shown, so a record-level one taints the claim."""
-        for pid in self.store.parents(claim_id):
-            prow = self.store.get(pid)
-            if prow["kind"] == CLAIM_EFFECT:
-                continue
-            if prow["status"] == STATUS_VERIFIED \
-                    and (prow["basis"] or BASIS_RECORD) != BASIS_WORLD:
-                return False
-        return True

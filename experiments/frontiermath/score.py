@@ -19,7 +19,11 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
+EXPERIMENTS = os.path.dirname(HERE)
+REPO_ROOT = os.path.dirname(EXPERIMENTS)
+for _path in (REPO_ROOT, EXPERIMENTS):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 from common import results as res                        # noqa: E402
 from common import scoring                                # noqa: E402
@@ -46,7 +50,13 @@ def main():
     ap.add_argument("--effort", default=None,
                     choices=["low", "medium", "high", "xhigh", "max"],
                     help="codex seats' reasoning effort (default: medium)")
+    ap.add_argument(
+        "--service-tier", default="standard", choices=["standard", "fast"],
+        help="Codex service tier (default: standard)",
+    )
     args = ap.parse_args()
+    if args.service_tier == "fast" and args.seats != "codex":
+        ap.error("--service-tier fast requires --seats codex")
 
     results_path = os.path.join(HERE, "results", args.arm, "results.jsonl")
     scores_path = os.path.join(HERE, "results", args.arm, "scores.jsonl")
@@ -57,7 +67,8 @@ def main():
     cfg = offline.config_fields(model=args.model, seats=args.seats,
                                 effort=args.effort,
                                 max_rounds=args.max_rounds,
-                                critic_rounds=args.critic_rounds)
+                                critic_rounds=args.critic_rounds,
+                                service_tier=args.service_tier)
     done = res.recorded(scores_path, "pid", "sample", "config")
     todo = [r for r in rows
             if (r["pid"], r["sample"], cfg["config"]) not in done]
@@ -72,6 +83,7 @@ def main():
                        model=args.model, max_rounds=args.max_rounds,
                        seats=args.seats, effort=args.effort,
                        critic_rounds=args.critic_rounds,
+                       service_tier=args.service_tier,
                        label=lambda r: f"{r['pid']}#{r['sample']}",
                        tag="fm:score")
     print("[fm:score] done", flush=True)

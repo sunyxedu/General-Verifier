@@ -273,7 +273,8 @@ def _default_kernel(sc: Service, model, backend=None,
         cleanup=True,   # snapshots are the evidence; workdirs are scratch
         toolchain_dir=sc.toolchain_dir,
         state_dir=sc.state_dir,
-        live_world=sc.live_world)
+        live_world=sc.live_world,
+        store=sc.store)   # evidence-workspace index over the claim graph
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                          memory=sc.memory, live_world=sc.live_world)
     return Kernel(sc.store, sc.log, backend, sc.artifacts,

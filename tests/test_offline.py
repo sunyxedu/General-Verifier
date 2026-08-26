@@ -141,9 +141,14 @@ def test_extraction_failure_scores_unscoreable_and_ranks_last(tmp_path):
                              kernel_factory=kernel_factory, max_rounds=2)
 
     assert features["unscoreable"] is True
-    assert offline.rank_key(features) < offline.rank_key(
-        {"unscoreable": False, "verdict": "refuted",
-         "slice_size": 1, "claims": {}, "obligations": {}})
+    rankable_refuted = {
+        "feature_schema_version": offline.FEATURE_SCHEMA_VERSION,
+        "unscoreable": False,
+        "verdict": "refuted",
+        "final_obligations": {"refuted": 1},
+        "final_obligations_total": 1,
+    }
+    assert offline.rank_key(features) < offline.rank_key(rankable_refuted)
 
 
 # ---- scoring -----------------------------------------------------------------
@@ -159,10 +164,124 @@ def test_score_certifies_the_extracted_graph(tmp_path):
     assert features["slice_size"] == 3           # effect + C1 + F
     assert features["claims"]["verified"] == 3
     assert features["obligations"]["verified"] == features["obligations_total"]
+    assert features["feature_schema_version"] == offline.FEATURE_SCHEMA_VERSION
+    assert features["final_obligations"] == {"verified": 1}
+    assert features["final_obligations_total"] == 1
     assert features["extract_rounds"] == 1
     # persisted for the experiment drivers
     on_disk = json.load(open(os.path.join(state, "score.json")))
     assert on_disk == features
+
+
+def test_captured_world_seal_detects_content_and_topology_changes(tmp_path):
+    state = state_dir(tmp_path)
+    app = tmp_path / "gv" / "world" / "app"
+    app.mkdir(parents=True)
+    result = app / "result.txt"
+    result.write_text("original")
+    (tmp_path / "gv" / "world_manifest.json").write_text(
+        json.dumps({"captured_roots": ["/app"]}))
+    original = offline.captured_world_seal(state)
+
+    result.write_text("mutated")
+    assert offline.captured_world_seal(state) != original
+    result.write_text("original")
+    assert offline.captured_world_seal(state) == original
+
+    (app / "result.txt-wal").write_text("")
+    assert offline.captured_world_seal(state) != original
+
+
+def test_trusted_adapter_anchor_rejects_later_input_tampering(tmp_path):
+    state = state_dir(tmp_path)
+    seal = offline.write_immutable_input_anchor(state)
+
+    assert offline.verify_immutable_input_anchor(state) == seal
+    with open(tmp_path / "gv" / "hook_feed.jsonl", "a") as handle:
+        handle.write('{"type":"tool_result","payload":{}}\n')
+
+    with pytest.raises(offline.ImmutableInputError, match="seal mismatch"):
+        offline.verify_immutable_input_anchor(state)
+
+
+def test_sanitized_state_without_trusted_anchor_fails_closed(tmp_path):
+    state = state_dir(tmp_path)
+    (tmp_path / "gv" / ".sanitized").write_text("")
+    backend = FixtureBackend({"extract": lambda v: GOOD_COMMITS})
+
+    features = offline.score(
+        state, backend=backend, kernel_factory=kernel_factory)
+
+    assert features["unscoreable"] is True
+    assert "missing its trusted adapter seal" in features["error"]
+    assert backend.calls == []
+
+
+def test_score_fails_closed_when_verifier_mutates_captured_world(tmp_path):
+    state = state_dir(tmp_path)
+    app = tmp_path / "gv" / "world" / "app"
+    app.mkdir(parents=True)
+    (app / "main.db").write_bytes(b"frozen-db")
+    (tmp_path / "gv" / "world_manifest.json").write_text(
+        json.dumps({"captured_roots": ["/app"]}))
+
+    class MutatingDischarger(StubDischarger):
+        def discharge(self, row, obligation, method=None, tag=""):
+            (app / "main.db-wal").write_bytes(b"")
+            return super().discharge(row, obligation, method, tag)
+
+    def mutating_kernel_factory(sc):
+        return Kernel(
+            sc.store, sc.log,
+            FixtureBackend({"obligations": COMPILE}),
+            sc.artifacts, critic_role=None,
+            discharger=MutatingDischarger(),
+        )
+
+    features = offline.score(
+        state,
+        backend=FixtureBackend({"extract": lambda v: GOOD_COMMITS}),
+        kernel_factory=mutating_kernel_factory,
+    )
+
+    assert features["unscoreable"] is True
+    assert features["verdict"] is None
+    assert "immutable offline inputs mutated" in features["error"]
+    assert features["world_seal_before"] != features["world_seal_after"]
+    assert (tmp_path / "gv" / offline.IMMUTABLE_INPUT_TAINT_FILE).is_file()
+
+
+def test_feature_fold_keeps_final_contract_separate_from_slice_diagnostics():
+    cert = {
+        "final": "F",
+        "verdict": "partial",
+        "verdict_strength": None,
+        "certificate_id": "cert",
+        "slice": [
+            {
+                "id": "A", "status": "verified",
+                "obligations": [
+                    {"id": "OA1", "status": "verified"},
+                    {"id": "OA2", "status": "verified"},
+                ],
+            },
+            {
+                "id": "F", "status": "partial",
+                "obligations": [
+                    {"id": "OF1", "status": "verified"},
+                    {"id": "OF2", "status": "partial"},
+                ],
+            },
+        ],
+    }
+
+    features = offline._features(cert, extract_rounds=1)
+
+    assert features["obligations"] == {"verified": 3, "partial": 1}
+    assert features["obligations_total"] == 4
+    assert features["final_obligations"] == {"verified": 1, "partial": 1}
+    assert features["final_obligations_total"] == 2
+    assert offline.rank_key(features) == (2, 0.5)
 
 
 def test_score_resumes_from_an_extracted_graph(tmp_path):
@@ -192,6 +311,37 @@ def test_config_identity_separates_models_and_seats():
         != luna["config"]
 
 
+def test_config_identity_separates_codex_service_tiers():
+    implicit = offline.config_fields(model="gpt-5.6-terra", seats="codex")
+    standard = offline.config_fields(
+        model="gpt-5.6-terra", seats="codex", service_tier="standard")
+    fast = offline.config_fields(
+        model="gpt-5.6-terra", seats="codex", service_tier="fast")
+
+    assert implicit == standard
+    assert standard["service_tier"] == "standard"
+    assert fast["service_tier"] == "fast"
+    assert standard["config"] != fast["config"]
+    assert offline.config_id(
+        model="gpt-5.6-terra", seats="codex", service_tier="fast",
+    ) == fast["config"]
+    assert offline.config_fields()["service_tier"] == "n/a"
+    with pytest.raises(ValueError, match="only valid for Codex"):
+        offline.config_fields(service_tier="fast")
+
+
+def test_score_rejects_a_backend_tier_that_disagrees_with_its_stamp(tmp_path):
+    from verifier.llm.codex_backend import CodexBackend
+
+    with pytest.raises(ValueError, match="does not match"):
+        offline.score(
+            str(tmp_path),
+            seats="codex",
+            service_tier="standard",
+            backend=CodexBackend(cwd=str(tmp_path), service_tier="fast"),
+        )
+
+
 def test_config_identity_includes_the_critic_round_budget():
     from verifier.engine.kernel import MAX_CRITIC_ROUNDS
 
@@ -214,6 +364,7 @@ def test_score_stamps_the_config_fields(tmp_path):
     assert features["config"] == cfg["config"]
     assert features["model"] == "provider-default"
     assert features["seats"] == "sdk"
+    assert features["service_tier"] == "n/a"
 
 
 def test_stale_config_invalidates_the_derived_state(tmp_path):
@@ -275,23 +426,55 @@ def test_live_trace_commits_are_never_invalidated(tmp_path):
 
 # ---- ranking & selection -----------------------------------------------------
 
-def F(verdict, verified=0, size=1, obligations=0):
-    return {"unscoreable": False, "verdict": verdict, "slice_size": size,
-            "claims": {"verified": verified},
-            "obligations": {"verified": obligations}}
+def F(verdict, final_verified=0, final_total=1, *, slice_verified=0,
+      slice_size=1, obligations=0):
+    return {
+        "feature_schema_version": offline.FEATURE_SCHEMA_VERSION,
+        "unscoreable": False,
+        "verdict": verdict,
+        # Diagnostic-only whole-slice fields.
+        "slice_size": slice_size,
+        "claims": {"verified": slice_verified},
+        "obligations": {"verified": obligations},
+        "obligations_total": obligations,
+        # The only within-verdict ranking signal.
+        "final_obligations": {"verified": final_verified,
+                              "partial": final_total - final_verified},
+        "final_obligations_total": final_total,
+    }
 
 
 def test_rank_is_lexicographic():
     # verdict dominates absolutely, whatever the lower components say
-    assert offline.rank_key(F("verified", verified=1, size=9, obligations=1)) \
-        > offline.rank_key(F("partial", verified=9, size=9, obligations=99))
-    # same verdict: verified fraction breaks the tie
-    assert offline.rank_key(F("partial", verified=8, size=9)) \
-        > offline.rank_key(F("partial", verified=7, size=9))
-    # same fraction: obligation count breaks it (granularity-resistant)
-    assert offline.rank_key(F("partial", verified=1, size=2, obligations=9)) \
-        > offline.rank_key(F("partial", verified=1, size=2, obligations=3))
-    assert offline.rank_key(None) == (-1, 0.0, 0)
+    assert offline.rank_key(F("verified", final_verified=0, final_total=9)) \
+        > offline.rank_key(F("partial", final_verified=9, final_total=9))
+    # same verdict: the FINAL contract's verified fraction breaks the tie
+    assert offline.rank_key(F("partial", final_verified=8, final_total=9)) \
+        > offline.rank_key(F("partial", final_verified=7, final_total=9))
+    assert offline.rank_key(None) == (-1, 0.0)
+
+
+def test_rank_ignores_narration_decomposition_diagnostics():
+    compact = F("partial", final_verified=1, final_total=2,
+                slice_verified=1, slice_size=2, obligations=3)
+    padded = F("partial", final_verified=1, final_total=2,
+               slice_verified=900, slice_size=901, obligations=10_000)
+
+    assert offline.rank_key(compact) == offline.rank_key(padded) == (2, 0.5)
+    assert selection.scalar(compact) == selection.scalar(padded)
+
+
+def test_legacy_and_malformed_feature_schemas_fail_closed():
+    legacy = {
+        "unscoreable": False, "verdict": "verified", "slice_size": 1,
+        "claims": {"verified": 1}, "obligations": {"verified": 99},
+    }
+    malformed = F("verified", final_verified=1, final_total=1)
+    malformed["final_obligations_total"] = 2
+
+    assert offline.rank_key(legacy) == (-1, 0.0)
+    assert offline.rank_key(malformed) == (-1, 0.0)
+    assert selection.scalar(legacy) == 0.0
 
 
 def test_selection_strategies():
@@ -299,12 +482,13 @@ def test_selection_strategies():
         {"answer": "7", "solved": False, "features": F("unverified")},
         {"answer": "7", "solved": False, "features": F("unverified")},
         {"answer": "42", "solved": True,
-         "features": F("verified", verified=1, size=1, obligations=4)},
+         "features": F("verified", final_verified=1, final_total=1,
+                       obligations=4)},
     ]
     assert selection.argmax(rows)["answer"] == "42"
     # one trace one vote: the wrong majority wins — the baseline's failure mode
     assert selection.majority_vote(rows)["answer"] == "7"
-    # verdict-weighted: verified (3) outvotes two unverified (1+1)
+    # banded verifier weights: one verified outvotes two unverified
     assert selection.weighted_vote(rows)["answer"] == "42"
     assert selection.oracle(rows) is True
     assert selection.pass_at_1(rows) == pytest.approx(1 / 3)
@@ -313,5 +497,5 @@ def test_selection_strategies():
 def test_voting_falls_back_to_argmax_without_answers():
     rows = [{"answer": None, "solved": False, "features": F("partial")},
             {"answer": None, "solved": False,
-             "features": F("verified", verified=1)}]
+             "features": F("verified", final_verified=1)}]
     assert selection.majority_vote(rows)["features"]["verdict"] == "verified"

@@ -54,7 +54,7 @@ from ..execution.instruments import (
     ArtifactStore, authoritative_task_context, world_evidence_context,
 )
 from ..core.model import (
-    BASIS_RECORD, Obligation, basis_satisfies,
+    BASIS_RECORD, BASIS_WORLD, Obligation, basis_satisfies,
     OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
     STRENGTH_ANALYTIC, STRENGTH_DECISIVE, STRENGTHS, strength_rank,
 )
@@ -104,6 +104,7 @@ class BindingGame:
         registry: str = "[]",
         memory=None,
         live_world: bool = True,
+        judger_error_retries: int = 1,
     ):
         self.backend = backend
         self.artifacts = artifacts
@@ -112,6 +113,13 @@ class BindingGame:
         self.oracles_role = oracles_role
         self.judger_role = judger_role
         self.redo_rounds = redo_rounds
+        # AgentRole already gives one malformed generation a schema-fix
+        # re-prompt.  If that whole role call still fails (transport, parse,
+        # or schema), retry only the independent Judger against the exact same
+        # executor artifact.  This budget is deliberately separate from
+        # ``redo_rounds``: an infrastructure failure is never feedback that
+        # authorizes re-executing the bound method.
+        self.judger_error_retries = max(0, int(judger_error_retries))
         self.registry = registry
         self.memory = memory  # advisory; feeds the oracle's registry slot
         self.live_world = live_world
@@ -254,9 +262,65 @@ class BindingGame:
                     )
                     break
 
+                focused_fallback_attempted = False
+                if not repaired:
+                    # A final-world acceptance obligation is load-bearing for
+                    # candidate selection.  If both the broad first pass and
+                    # the ordinary exhausted-batch repair return no method,
+                    # give the Oracle one last *narrow* chance to enumerate a
+                    # directionally decisive local counterexample.  This is
+                    # semantic rather than task-specific: optimality,
+                    # conditional coverage, universals, and exact equalities
+                    # can often be refuted by one witness even when proving the
+                    # positive direction would require exhaustive recovery.
+                    #
+                    # The pass still only ENUMERATES.  Its method must execute
+                    # and survive the normal Judger, so the diagnostic flag can
+                    # neither become evidence nor manufacture a refutation.
+                    if (not self.live_world
+                            and row.get("kind") == "final"
+                            and obligation.required_basis == BASIS_WORLD):
+                        focused_fallback_attempted = True
+                        focused_feedback_payload = json.loads(feedback)
+                        focused_feedback_payload.update({
+                            "focused_counterexample_fallback": True,
+                            "ordinary_repair_empty": True,
+                            "focus_reason": (
+                                "both broad enumeration and the bounded "
+                                "ordinary repair returned methods=[]"
+                            ),
+                        })
+                        focused_feedback = json.dumps(
+                            focused_feedback_payload, ensure_ascii=False)
+                        try:
+                            repaired = self._enumerate(
+                                row,
+                                obligation,
+                                method_feedback=focused_feedback,
+                            )
+                        except RoleError as err:
+                            # An infrastructure/schema failure is not an
+                            # evidence-availability finding.
+                            failed_seen = True
+                            self.log.append(
+                                "methods_enumerated",
+                                {"claim": row["id"],
+                                 "obligation": obligation.id,
+                                 "repair": True,
+                                 "focused_counterexample_fallback": True,
+                                 "error": str(err)},
+                            )
+                            break
+
                 if not repaired:
                     if self.live_world:
                         failed_seen = True
+                    elif focused_fallback_attempted:
+                        unavailable_reasons.append(
+                            "focused counterexample fallback and ordinary "
+                            "oracle repair found no materially new sufficient "
+                            "method at the fixed evidence boundary"
+                        )
                     else:
                         unavailable_reasons.append(
                             "oracle repair found no materially new sufficient "
@@ -592,16 +656,26 @@ class BindingGame:
             },
         )
         methods = payload["methods"]
-        self.log.append(
-            "methods_enumerated",
-            {"claim": row["id"], "obligation": obligation.id,
-             "repair": method_feedback != "(none)",
-             "methods": [{"procedure": m["procedure"][:80],
-                          "level": m.get("level", ""),
-                          "basis": m.get("basis", ""),
-                          "strength": _method_strength(m)}
-                         for m in methods]},
-        )
+        event = {
+            "claim": row["id"],
+            "obligation": obligation.id,
+            "repair": method_feedback != "(none)",
+            "methods": [{"procedure": m["procedure"][:80],
+                         "level": m.get("level", ""),
+                         "basis": m.get("basis", ""),
+                         "strength": _method_strength(m)}
+                        for m in methods],
+        }
+        if method_feedback != "(none)":
+            try:
+                parsed_feedback = json.loads(method_feedback)
+            except (json.JSONDecodeError, TypeError):
+                parsed_feedback = {}
+            if (isinstance(parsed_feedback, dict)
+                    and parsed_feedback.get(
+                        "focused_counterexample_fallback") is True):
+                event["focused_counterexample_fallback"] = True
+        self.log.append("methods_enumerated", event)
         return methods
 
     # the judger
@@ -616,6 +690,11 @@ class BindingGame:
             "artifact_path": os.path.join(
                 self.artifacts.root, result.artifact + ".json"
             ),
+            # premise claim ids whose content the executor declared it
+            # ASSUMED (workspace borrowing without re-establishment) —
+            # part of the fidelity audit: undeclared reliance on prior
+            # artifacts or premise content is unfaithful
+            "assumed_premises": list(result.assumed_premises),
         }
         # same state-dir derivation as the kernel: the judger audits
         # refutations against the delivered world and its capture
@@ -623,46 +702,68 @@ class BindingGame:
         state = os.path.dirname(os.path.abspath(self.log.path))
         world_mode, world, manifest = world_evidence_context(
             state, live_world=self.live_world)
-        try:
-            verdict = self.judger_role.call(
-                self.backend,
-                {
-                    "obligation_text": obligation.text,
-                    "procedure": method["procedure"],
-                    "promised_artifact": method.get("artifact", ""),
-                    # the oracle's declared evidence basis — the judger
-                    # audits it as part of fidelity, and it is what the
-                    # settled verdict will carry downstream
-                    "basis": method.get("basis", ""),
-                    # the strength ladder's three inputs: sufficiency is
-                    # judged AT the declared tier, bridges must close the
-                    # gap, and a non-decisive binding needs the third
-                    # signature over the degradation record
-                    "declared_strength": _method_strength(method),
-                    "bridges": json.dumps(method.get("bridges", []),
-                                          ensure_ascii=False),
-                    "degradation_record": degradation,
-                    "task_context": authoritative_task_context(state),
-                    "ledger_path": os.path.abspath(self.log.path),
-                    "artifact_root": os.path.abspath(self.artifacts.root),
-                    "world_mode": world_mode,
-                    "world_path": world,
-                    "world_manifest": manifest,
-                    "evidence": json.dumps(evidence, ensure_ascii=False),
-                },
-            )
-        except RoleError as err:
-            # fail-closed; the _infra marker keeps a judger infrastructure
-            # failure from awarding itself a redo
-            verdict = {
-                # Internal fail-closed sentinel; public role output permits
-                # only yes/no, so neither signature can accidentally pass.
-                "sufficient": "unknown",
-                "faithful": "no",
-                "degradation": "n/a",
-                "reason": f"judger failed: {err}",
-                "_infra": True,
-            }
+        variables = {
+            "obligation_text": obligation.text,
+            "procedure": method["procedure"],
+            "promised_artifact": method.get("artifact", ""),
+            # the oracle's declared evidence basis — the judger audits it as
+            # part of fidelity, and it is what the settled verdict will carry
+            # downstream
+            "basis": method.get("basis", ""),
+            # the strength ladder's three inputs: sufficiency is judged AT the
+            # declared tier, bridges must close the gap, and a non-decisive
+            # binding needs the third signature over the degradation record
+            "declared_strength": _method_strength(method),
+            "bridges": json.dumps(method.get("bridges", []),
+                                  ensure_ascii=False),
+            "degradation_record": degradation,
+            "task_context": authoritative_task_context(state),
+            "ledger_path": os.path.abspath(self.log.path),
+            "artifact_root": os.path.abspath(self.artifacts.root),
+            "world_mode": world_mode,
+            "world_path": world,
+            "world_manifest": manifest,
+            "evidence": json.dumps(evidence, ensure_ascii=False),
+        }
+        total_calls = self.judger_error_retries + 1
+        for call_no in range(1, total_calls + 1):
+            try:
+                verdict = self.judger_role.call(self.backend, variables)
+                break
+            except RoleError as err:
+                will_retry = call_no < total_calls
+                # This is the error audit.  Backends retain ownership of usage
+                # accounting (CodexBackend records exact usage before parsing
+                # its final JSON), so do not synthesize or duplicate token
+                # rows here.
+                self.log.append(
+                    "judger_call_failed",
+                    {
+                        "obligation": obligation.id,
+                        "redo": redo,
+                        "procedure": method["procedure"][:80],
+                        "artifact_digest": result.artifact,
+                        "call": call_no,
+                        "max_calls": total_calls,
+                        "will_retry": will_retry,
+                        "error": str(err)[:500],
+                    },
+                )
+                if will_retry:
+                    continue
+                # fail-closed; the _infra marker keeps a persistent Judger
+                # infrastructure failure from awarding itself an executor
+                # redo.  The original digest remains in Attempt and in the
+                # final binding-game artifact for later audit/recovery.
+                verdict = {
+                    # Internal fail-closed sentinel; public role output permits
+                    # only yes/no, so neither signature can accidentally pass.
+                    "sufficient": "unknown",
+                    "faithful": "no",
+                    "degradation": "n/a",
+                    "reason": f"judger failed: {err}",
+                    "_infra": True,
+                }
         if redo:
             attempt.redos[-1]["audit"] = verdict
         else:
@@ -749,6 +850,10 @@ class BindingGame:
             # rests on, for certificate disclosure
             strength=_method_strength(method),
             bridges=tuple(method.get("bridges", ())),
+            # the executor's declared premise assumptions ride through the
+            # binding game onto the settled evidence — the kernel gates
+            # them against the claim's dependency closure
+            assumed_premises=result.assumed_premises,
         )
 
     def _fail(self, row, obligation, attempts, reason,

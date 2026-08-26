@@ -97,7 +97,7 @@ def test_on_commit_refutes_before_the_next_claim_is_written(tmp_path):
     # anything built on it afterwards fails closed rather than being checked
     b = store.add_claim(Claim(CLAIM_ASSERTION, "so resolve it this way", deps=(a,)))
     assert store.status(b) == "unverified"
-    assert store.evidence_for(b)[-1]["error"] == "depends on refuted claim"
+    assert store.evidence_for(b)[-1]["error"].startswith("premise chain refuted")
 
 
 def test_effects_stay_lazy_under_on_commit(tmp_path):
@@ -214,7 +214,7 @@ def test_commit_on_a_refuted_premise_says_why_it_could_not_be_checked(tmp_path):
     # no obligation was ever compiled for A2 — without the fail-closed reason
     # the solver would see a bare `unverified` and have nothing to act on
     assert out["status"] == "unverified"
-    assert out["error"] == "depends on refuted claim"
+    assert out["error"].startswith("premise chain refuted")
     assert out["refuted_deps"]
 
 

@@ -2,7 +2,8 @@
 
 Arms (identical task subset from tasks.txt, resumable by job name):
   --arm plain    stock claude-code agent (Harbor built-in)
-  --arm codex    stock codex agent (Harbor built-in)
+  --arm codex    stock Harbor codex behavior through the repository's
+                 minimal service-tier subclass
   --arm gv       gv_agent:GVClaudeCode — stock claude-code + the full
                  General Verifier mounted in the container (see gv_agent.py)
   --arm turbo    stock claude-code agent + TurboAgent, the official
@@ -41,19 +42,35 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
+EXPERIMENTS = os.path.dirname(HERE)
+REPO_ROOT = os.path.dirname(EXPERIMENTS)
+for _path in (REPO_ROOT, EXPERIMENTS, HERE):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
-from common import turbo                                 # noqa: E402
+from common import harbor_task_artifacts, turbo          # noqa: E402
 from verifier.llm import provider                        # noqa: E402
 
 DATASET = "terminal-bench/terminal-bench-2-1"
 JOBS_DIR = os.path.join(HERE, "results", "jobs")
+CODEX_AGENT = "codex_agent:TieredCodex"
+RUNTIME_SNAPSHOT_ROOT = "/gv-runtime-snapshot"
 
 
-def read_tasks():
-    with open(os.path.join(HERE, "tasks.txt")) as f:
+def read_tasks(path=None):
+    path = path or os.path.join(HERE, "tasks.txt")
+    with open(path) as f:
         return [ln.strip() for ln in f
                 if ln.strip() and not ln.startswith("#")]
+
+
+def codex_service_agent_kwargs(service_tier):
+    """Map the user-facing tier to two explicit Codex CLI controls."""
+    if service_tier == "fast":
+        return ["--ak", "service_tier=fast", "--ak", "fast_mode=enable"]
+    if service_tier == "standard":
+        return ["--ak", "service_tier=default", "--ak", "fast_mode=disable"]
+    raise ValueError(f"unknown Codex service tier: {service_tier!r}")
 
 
 def main():
@@ -67,7 +84,25 @@ def main():
     ap.add_argument("--model", default=None,
                     help="harbor model id (default: anthropic/sonnet for "
                     "claude arms; codex CLI default for codex)")
+    ap.add_argument("--effort", default=None,
+                    choices=["low", "medium", "high", "xhigh", "max"],
+                    help="reasoning effort for codex/rec-codex arms")
+    ap.add_argument(
+        "--service-tier", default=None, choices=["standard", "fast"],
+        help=("Codex service tier for codex/rec-codex arms (default: "
+              "standard; fast enables Codex Fast mode)"),
+    )
+    ap.add_argument("--dataset", default=DATASET,
+                    help="Harbor dataset id; may include an @sha256 digest")
+    ap.add_argument("--tasks-file", default=os.path.join(HERE, "tasks.txt"),
+                    help="newline-delimited task list (default: tasks.txt)")
     ap.add_argument("--n-concurrent", type=int, default=2)
+    ap.add_argument("--max-retries", type=int, default=None,
+                    help="Harbor retry count for failed trials")
+    ap.add_argument("--artifact-root", action="append", default=None,
+                    help="final-world root to collect for rec/rec-codex; may "
+                         "be repeated (default: /app, plus /gv-state for rec). "
+                         "Safe task-referenced paths are always added.")
     ap.add_argument("--job-name", default=None)
     ap.add_argument("--task", default=None, nargs="+",
                     help="run only these tasks from tasks.txt (e.g. fix-git); "
@@ -76,18 +111,62 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    tasks = read_tasks()
+    if args.effort and args.arm not in ("codex", "rec-codex"):
+        ap.error("--effort is only valid for codex/rec-codex arms")
+    if args.service_tier and args.arm not in ("codex", "rec-codex"):
+        ap.error("--service-tier is only valid for codex/rec-codex arms")
+    if args.artifact_root and args.arm not in ("rec", "rec-codex"):
+        ap.error("--artifact-root is only valid for rec/rec-codex arms")
+    tasks = read_tasks(args.tasks_file)
+    service_tier = args.service_tier or "standard"
     if args.task:
         missing = [t for t in args.task if t not in tasks]
         if missing:
-            sys.exit(f"tasks {missing} not in tasks.txt ({len(tasks)} "
-                     "tasks); add them there first")
+            sys.exit(f"tasks {missing} not in {args.tasks_file} "
+                     f"({len(tasks)} tasks); add them there first")
         tasks = list(args.task)
     job = args.job_name or (f"{args.arm}-{'-'.join(args.task)}" if args.task
                             else f"{args.arm}")
-    cmd = ["harbor", "run", "-d", DATASET, "-o", JOBS_DIR,
+
+    # Harbor 0.20 exposes artifacts at job scope, not per task.  Resolve the
+    # exact selected dataset packages before the job and pass the safe union of
+    # paths named by their public instruction/config.  This avoids unreliable
+    # broad captures such as /etc while retaining /app as the explicit default.
+    artifact_roots = tuple(args.artifact_root or ["/app"])
+    if args.arm in ("rec", "rec-codex"):
+        try:
+            artifact_resolution = (
+                harbor_task_artifacts.resolve_harbor_dataset_artifacts(
+                    args.dataset,
+                    [f"terminal-bench/{task}" for task in tasks],
+                    artifact_roots,
+                    download=not args.dry_run,
+                )
+            )
+        except harbor_task_artifacts.ArtifactDiscoveryError as exc:
+            sys.exit(f"[tb] artifact discovery failed: {exc}")
+        args.dataset = artifact_resolution.dataset
+        artifact_roots = artifact_resolution.artifacts
+        print(f"[tb] resolved dataset: {artifact_resolution.dataset}", flush=True)
+        for task, paths in artifact_resolution.referenced_by_task.items():
+            if paths:
+                print(f"[tb] task artifacts {task}: {', '.join(paths)}", flush=True)
+        for task, records in artifact_resolution.audit_by_task.items():
+            for record in records:
+                if record.decision != "rejected":
+                    continue
+                print(
+                    f"[tb] rejected artifact {task} {record.source}: "
+                    f"{record.raw!r} ({record.reason})",
+                    flush=True,
+                )
+        print(f"[tb] collected artifact union: {', '.join(artifact_roots)}", flush=True)
+
+    cmd = ["harbor", "run", "-d", args.dataset, "-o", JOBS_DIR,
            "--job-name", job, "-k", str(args.k),
            "-n", str(args.n_concurrent)]
+    if args.max_retries is not None:
+        cmd += ["--max-retries", str(args.max_retries)]
     for t in tasks:
         # registry task names are org-prefixed: terminal-bench/<task>
         cmd += ["-i", f"terminal-bench/{t}"]
@@ -100,9 +179,13 @@ def main():
     if args.arm == "plain":
         cmd += ["-a", "claude-code", "-m", args.model or "anthropic/sonnet"]
     elif args.arm == "codex":
-        cmd += ["-a", "codex"]
+        cmd += ["-a", CODEX_AGENT]
         if args.model:
             cmd += ["-m", args.model]
+        if args.effort:
+            cmd += ["--ak", f"reasoning_effort={args.effort}"]
+        cmd += codex_service_agent_kwargs(service_tier)
+        env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
     elif args.arm == "turbo":
         # stock claude-code agent; every model call goes through the
         # host-side TurboAgent proxy (harbor forwards ANTHROPIC_BASE_URL
@@ -116,13 +199,19 @@ def main():
         # deletes it afterwards, so host token state is untouched. No GV
         # payload at all — codex's own rollout log IS the ledger, and
         # harbor already copies it to trial_dir/agent/sessions/.
-        cmd += ["-a", "codex", "-m", args.model or "gpt-5.6-luna",
+        cmd += ["-a", CODEX_AGENT,
+                "-m", args.model or "gpt-5.6-luna",
                 "--agent-timeout-multiplier", "1000",
-                "--agent-setup-timeout-multiplier", "100",
-                # the final working tree, so offline obligations about the
-                # delivered state have a world to be checked against —
-                # without it only ledger obligations can discharge
-                "--artifact", "/app"]
+                "--agent-setup-timeout-multiplier", "100"]
+        # Capture declared final-world roots so offline obligations can be
+        # checked against delivered state. Harbor records each attempt in its
+        # artifact manifest and treats a missing root as a best-effort miss.
+        for root in dict.fromkeys((*artifact_roots, RUNTIME_SNAPSHOT_ROOT)):
+            cmd += ["--artifact", root]
+        if args.effort:
+            cmd += ["--ak", f"reasoning_effort={args.effort}"]
+        cmd += codex_service_agent_kwargs(service_tier)
+        env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
         env["CODEX_FORCE_AUTH_JSON"] = "1"
         env.pop("OPENAI_API_KEY", None)      # subscription auth, not a key
     elif args.arm == "rec":
@@ -130,9 +219,11 @@ def main():
                 "-m", args.model or "anthropic/sonnet",
                 "--agent-timeout-multiplier", "1000",
                 "--agent-setup-timeout-multiplier", "100",
-                # ledger + the delivered tree: offline scoring needs both,
-                # the second so delivered-state obligations have a world
-                "--artifact", "/gv-state", "--artifact", "/app"]
+                # The recorder ledger is always required. Additional roots
+                # are the captured delivered world.
+                "--artifact", "/gv-state"]
+        for root in artifact_roots:
+            cmd += ["--artifact", root]
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
     else:  # gv
         cmd += ["-a", "gv_agent:GVClaudeCode",

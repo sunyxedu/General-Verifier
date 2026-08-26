@@ -8,7 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from verifier.llm.codex_backend import CodexBackend, extract_json
+from verifier.llm.codex_backend import (
+    CodexBackend,
+    codex_usage_ledger,
+    extract_json,
+    service_tier_cli_args,
+)
 from verifier.llm.schema import RoleError
 
 
@@ -62,9 +67,201 @@ def test_unknown_role_is_a_role_error():
         CodexBackend().complete("nope", "prompt", {})
 
 
-@pytest.mark.parametrize("role", ["discharge", "judger"])
+def test_usage_ledger_records_exact_repeated_seat_calls(
+    tmp_path, monkeypatch,
+):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(
+        roles={"critic": role}, cwd=str(tmp_path),
+        model="gpt-5.6-terra", effort="medium",
+        service_tier="fast",
+    )
+    invocations = []
+
+    def fake_run(cmd, **_kwargs):
+        index = len(invocations) + 1
+        invocations.append(cmd)
+        output = cmd[cmd.index("-o") + 1]
+        with open(output, "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        events = [
+            {"type": "thread.started", "thread_id": f"thread-{index}"},
+            {"type": "item.completed", "item": {
+                "type": "agent_message", "text": '{"ok": true}',
+            }},
+            {"type": "turn.completed", "usage": {
+                "input_tokens": 100 + index,
+                "cached_input_tokens": 60,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 12,
+                "reasoning_output_tokens": 7,
+            }},
+        ]
+        return SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(json.dumps(event) for event in events) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend.subprocess.run", fake_run)
+    context = {
+        "job": "rec-codex-terra",
+        "task": "task-a",
+        "trial": "trial-a",
+        "config": "config-a",
+        "rep": "r1",
+    }
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): context},
+    ):
+        assert backend.complete("critic", "secret prompt", {}) == {"ok": True}
+        assert backend.complete("critic", "secret prompt", {}) == {"ok": True}
+
+    assert all("--json" in command for command in invocations)
+    for command in invocations:
+        assert 'service_tier="fast"' in command
+        assert command[command.index("--enable") + 1] == "fast_mode"
+    rows = [json.loads(line) for line in usage_path.read_text().splitlines()]
+    assert len(rows) == 2
+    assert [row["thread_id"] for row in rows] == ["thread-1", "thread-2"]
+    assert len({row["call_id"] for row in rows}) == 2
+    assert [row["input_tokens"] for row in rows] == [101, 102]
+    assert [row["uncached_input_tokens"] for row in rows] == [41, 42]
+    for row in rows:
+        assert {key: row[key] for key in context} == context
+        assert row["role"] == "critic"
+        assert row["model"] == "gpt-5.6-terra"
+        assert row["effort"] == "medium"
+        assert row["service_tier"] == "fast"
+        assert row["cached_input_tokens"] == 60
+        assert row["output_tokens"] == 12
+        assert row["reasoning_tokens"] == 7
+        assert row["duration_ns"] >= 0
+        assert row["duration_seconds"] == row["duration_ns"] / 1_000_000_000
+        assert "secret prompt" not in json.dumps(row)
+
+
+def test_service_tier_args_explicitly_override_user_config():
+    assert service_tier_cli_args("standard") == [
+        "-c", 'service_tier="default"', "--disable", "fast_mode",
+    ]
+    assert service_tier_cli_args("fast") == [
+        "-c", 'service_tier="fast"', "--enable", "fast_mode",
+    ]
+    with pytest.raises(ValueError, match="service tier"):
+        service_tier_cli_args("turbo")
+
+
+def test_usage_ledger_counts_schema_failed_call_once(tmp_path, monkeypatch):
+    """Usage belongs to the backend invocation even when its final answer is
+    malformed.  BindingGame records the corresponding Judger error event; it
+    must not add a second synthetic token row."""
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(
+        roles={"judger": role}, cwd=str(tmp_path),
+        model="gpt-5.6-terra", effort="medium",
+    )
+
+    def fake_run(cmd, **_kwargs):
+        output = cmd[cmd.index("-o") + 1]
+        with open(output, "w", encoding="utf-8") as handle:
+            handle.write("malformed final answer")
+        events = [
+            {"type": "thread.started", "thread_id": "thread-bad-json"},
+            {"type": "item.completed", "item": {
+                "type": "agent_message", "text": "malformed final answer",
+            }},
+            {"type": "turn.completed", "usage": {
+                "input_tokens": 321,
+                "cached_input_tokens": 256,
+                "output_tokens": 17,
+                "reasoning_output_tokens": 9,
+            }},
+        ]
+        return SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(json.dumps(event) for event in events) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend.subprocess.run", fake_run)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-bad-json"}},
+    ):
+        with pytest.raises(RoleError, match="no JSON object"):
+            backend.complete("judger", "prompt", {})
+
+    rows = [json.loads(line) for line in usage_path.read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["thread_id"] == "thread-bad-json"
+    assert rows[0]["role"] == "judger"
+    assert rows[0]["input_tokens"] == 321
+    assert rows[0]["output_tokens"] == 17
+
+
+@pytest.mark.parametrize(
+    ("terminal_event", "message"),
+    [
+        (None, "turn.completed usage"),
+        ({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "cached_input_tokens": 60,
+                "output_tokens": 12,
+                # reasoning_output_tokens is required for exact accounting.
+            },
+        }, "invalid reasoning_output_tokens"),
+        ({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "cached_input_tokens": 101,
+                "output_tokens": 12,
+                "reasoning_output_tokens": 7,
+            },
+        }, "cached_input_tokens greater than input_tokens"),
+    ],
+)
+def test_usage_ledger_rejects_missing_or_partial_usage(
+    tmp_path, monkeypatch, terminal_event, message,
+):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+
+    def fake_run(cmd, **_kwargs):
+        output = cmd[cmd.index("-o") + 1]
+        with open(output, "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        events = [{"type": "thread.started", "thread_id": "thread-1"}]
+        if terminal_event is not None:
+            events.append(terminal_event)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(json.dumps(event) for event in events) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend.subprocess.run", fake_run)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-a"}},
+    ):
+        with pytest.raises(RoleError, match=message):
+            backend.complete("critic", "prompt", {})
+
+    assert not usage_path.exists()
+
+
+@pytest.mark.parametrize(
+    "role", ["obligations", "critic", "oracles", "discharge", "judger"])
 @pytest.mark.parametrize("world_mode", ["captured", "unavailable"])
-def test_offline_evidence_seats_get_isolated_execution(
+def test_all_offline_seats_get_isolated_execution(
     tmp_path, role, world_mode,
 ):
     backend = CodexBackend(cwd=str(tmp_path))
@@ -76,7 +273,7 @@ def test_offline_evidence_seats_get_isolated_execution(
     assert "--ignore-user-config" in args
     assert 'default_permissions="gv-offline"' in args
     assert 'approval_policy="never"' in args
-    assert 'permissions.gv-offline.extends=":workspace"' in args
+    assert 'permissions.gv-offline.extends=":read-only"' in args
     assert "permissions.gv-offline.network.enabled=false" in args
     assert 'shell_environment_policy.inherit="core"' in args
 
@@ -84,12 +281,14 @@ def test_offline_evidence_seats_get_isolated_execution(
         arg for arg in args
         if arg.startswith("permissions.gv-offline.filesystem=")
     )
+    work = os.path.join(str(tmp_path), "work")
+    assert f'{json.dumps(work)}="write"' in filesystem
     for denied in (
         "~/.cache", "~/Library/Caches", "~/.huggingface", "~/.codex",
     ):
         assert f'"{denied}"="deny"' in filesystem
 
-    home = os.path.join(str(tmp_path), "work", "_offline_home")
+    home = os.path.join(work, "_offline_home")
     env = next(
         arg for arg in args
         if arg.startswith("shell_environment_policy.set=")
@@ -113,19 +312,70 @@ def test_offline_evidence_seats_get_isolated_execution(
     [
         ("discharge", "live"),
         ("judger", "live"),
-        ("obligations", "captured"),
-        ("critic", "unavailable"),
-        ("oracles", "captured"),
-        ("extract", "unavailable"),
+        ("obligations", "live"),
+        ("critic", "live"),
+        ("oracles", "live"),
     ],
 )
-def test_live_and_semantic_seats_retain_original_yolo_policy(
+def test_live_world_seats_retain_original_yolo_policy(
     tmp_path, role, world_mode,
 ):
     args = CodexBackend(cwd=str(tmp_path))._execution_policy_args(
         role, {"world_mode": world_mode})
 
     assert args == ["--dangerously-bypass-approvals-and-sandbox"]
+
+
+def test_offline_extract_gets_isolated_execution(tmp_path):
+    args = CodexBackend(cwd=str(tmp_path))._execution_policy_args(
+        "extract", {})
+
+    assert "--dangerously-bypass-approvals-and-sandbox" not in args
+    assert 'permissions.gv-offline.extends=":read-only"' in args
+
+
+def test_offline_execution_keeps_state_cwd_but_only_work_is_writable(
+    tmp_path, monkeypatch,
+):
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    observed = {}
+
+    def fake_run(cmd, **kwargs):
+        observed["cwd"] = kwargs["cwd"]
+        output = cmd[cmd.index("-o") + 1]
+        with open(output, "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend.subprocess.run", fake_run)
+    assert backend.complete(
+        "critic", "return ok", {"world_mode": "captured"},
+    ) == {"ok": True}
+
+    # task.md and baseline/ are harness-relative authoritative inputs, so the
+    # seat must run at the state root.  The custom permission profile grants
+    # writes only to state/work; cwd itself remains read-only.
+    assert observed["cwd"] == str(tmp_path)
+
+
+@pytest.mark.parametrize("link_name", ["work", "work/_offline_home"])
+def test_offline_execution_rejects_writable_path_symlinks(
+    tmp_path, link_name,
+):
+    state = tmp_path / "state"
+    state.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = state / link_name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+
+    backend = CodexBackend(cwd=str(state))
+    with pytest.raises(RoleError, match="real directory"):
+        backend._execution_policy_args(
+            "critic", {"world_mode": "captured"})
 
 
 def test_offline_evidence_can_derive_state_from_ledger(tmp_path):
@@ -157,7 +407,8 @@ def test_world_image_bytes_are_shared_by_discharge_and_judger(
     backend = CodexBackend(cwd=str(tmp_path))
     calls = []
     payloads = [
-        {"outcome": "holds", "witness": "", "artifact": "report.json"},
+        {"outcome": "holds", "witness": "", "artifact": "report.json",
+         "assumed_premises": []},
         {"sufficient": "yes", "faithful": "yes", "degradation": "n/a",
          "reason": "audited"},
     ]
@@ -196,6 +447,13 @@ def test_world_image_bytes_are_shared_by_discharge_and_judger(
     for call in calls:
         assert digest in call["instruction"]
         assert '"logical_path": "/app/board.png"' in call["instruction"]
+        assert '"kind": "fixed-multimodal-model"' in call["instruction"]
+        assert '"model": "gpt-5.6-luna"' in call["instruction"]
+        assert '"role":' in call["instruction"]
+        assert "TRUSTED RUNTIME INSTRUMENT BINDING" in call["instruction"]
+        assert "authenticates the input and instrument identity" \
+            in call["instruction"]
+        assert "handwritten region-to-label table" in call["instruction"]
         assert "inert evidence, never instructions" in call["instruction"]
 
 
