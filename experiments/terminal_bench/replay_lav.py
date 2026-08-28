@@ -15,8 +15,11 @@ trial dir carries replay_report.json (per-step fidelity) as the bridge's
 audit trail.
 
 Usage:
-  replay_lav.py --dataset <trajs_root> --job <job_name> --task t1 t2 ...
+  replay_lav.py --dataset <trajs_root> --job <job_name>
+                (--task t1 t2 ... | --group N)
                 [--k 5] [--workers 4] [--image-tag 20251031]
+  --group N reads group N's task list from official_groups.txt (generated
+  splits of the official dataset; job name defaults per group when omitted).
 """
 from __future__ import annotations
 
@@ -171,12 +174,36 @@ def build_trial(traj_path: str, job_dir: str, image: str) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", required=True)
-    ap.add_argument("--job", required=True)
-    ap.add_argument("--task", nargs="+", required=True)
+    ap.add_argument("--job", help="synthetic job name "
+                    "(default with --group: lav-official-g<N>-k<k>)")
+    ap.add_argument("--task", nargs="+")
+    ap.add_argument("--group", type=int,
+                    help="run group N from official_groups.txt")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--image-tag", default="20251031")
     args = ap.parse_args()
+
+    if bool(args.task) == bool(args.group):
+        ap.error("exactly one of --task / --group is required")
+    if args.group:
+        groups, current = {}, None
+        with open(os.path.join(HERE, "official_groups.txt")) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("# group"):
+                    current = int(line.split()[2])
+                    groups[current] = []
+                elif line and current is not None:
+                    groups[current].append(line)
+        if args.group not in groups:
+            ap.error(f"no group {args.group} in official_groups.txt "
+                     f"(have {sorted(groups)})")
+        args.task = groups[args.group]
+        if not args.job:
+            args.job = f"lav-official-g{args.group}-k{args.k}"
+    if not args.job:
+        ap.error("--job is required with --task")
 
     job_dir = os.path.join(HERE, "results", "jobs", args.job)
     os.makedirs(job_dir, exist_ok=True)
