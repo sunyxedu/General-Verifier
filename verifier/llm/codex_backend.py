@@ -59,6 +59,18 @@ _OFFLINE_WORLD_MODES = frozenset({"captured", "unavailable"})
 _OFFLINE_PROFILE = "gv-offline"
 
 _IMAGE_ROLES = frozenset({"discharge", "judger"})
+# Web search is a KNOWLEDGE channel for the contract/method seats only.
+# The evidence seats (discharge, judger) stay offline-searchless: witnesses
+# must come from sealed local execution, and audits must rest on the sealed
+# record alone — a mutable, unauthenticated web page can never be either.
+_SEARCH_ROLES = frozenset({"extract", "obligations", "critic", "oracles"})
+_SEARCH_NOTE = (
+    "\n\nWEB SEARCH (knowledge channel only): the web_search tool is "
+    "available to inform your reasoning — standards, tool capabilities, "
+    "domain conventions. Search results are UNSEALED KNOWLEDGE, never "
+    "evidence: no search result may serve as a witness, and no obligation "
+    "may be settled by citation. Never search for this benchmark task, its "
+    "repository, or its solutions; verification must not retrieve answers.")
 _IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 _MAX_IMAGE_COUNT = 4
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -378,7 +390,19 @@ class CodexBackend:
                  service_tier: str = DEFAULT_SERVICE_TIER):
         self.roles = dict(roles) if roles is not None else dict(ALL_AGENT_ROLES)
         self.cwd = cwd
-        self.model = model or DEFAULT_MODEL
+        # Compound model spec: "base[;role=model...]" — e.g.
+        # "gpt-5.6-luna;oracles=gpt-5.6-terra" runs every seat on luna
+        # except method synthesis. The full spec string is what config
+        # fingerprints hash, so mixed-seat runs never share records or
+        # derived state with single-model runs.
+        spec = model or DEFAULT_MODEL
+        parts = spec.split(";")
+        self.model = parts[0].strip()
+        self.model_overrides: Dict[str, str] = {}
+        for part in parts[1:]:
+            role_name, _, role_model = part.partition("=")
+            if role_name.strip() and role_model.strip():
+                self.model_overrides[role_name.strip()] = role_model.strip()
         self.effort = effort
         self.service_tier = normalize_service_tier(service_tier)
         self.timeout = timeout
@@ -673,11 +697,15 @@ class CodexBackend:
             "-c", f"shell_environment_policy.set={env_table}",
         ]
 
+    def _model_for(self, role_name: str) -> str:
+        return self.model_overrides.get(role_name, self.model)
+
     def complete(self, role_name: str, prompt: str,
                  variables: Dict[str, Any]) -> Any:
         role = self.roles.get(role_name)
         if role is None:
             raise RoleError(f"unknown agent role: {role_name}")
+        role_model = self._model_for(role_name)
         usage_target = _usage_target(self.cwd)
         call_id = uuid.uuid4().hex
         images = self._captured_images(role_name, variables)
@@ -692,7 +720,7 @@ class CodexBackend:
             instrument = {
                 "kind": "fixed-multimodal-model",
                 "backend": "codex-cli",
-                "model": self.model,
+                "model": role_model,
                 "effort": self.effort,
                 "service_tier": self.service_tier,
                 "role": role_name,
@@ -716,6 +744,7 @@ class CodexBackend:
         instruction = (
             (role.system + "\n\n" if role.system else "")
             + prompt
+            + (_SEARCH_NOTE if role_name in _SEARCH_ROLES else "")
             + image_note
             + "\n\nYour FINAL message must be exactly one JSON object "
               "matching this JSON Schema, with no other prose around it:\n"
@@ -743,8 +772,10 @@ class CodexBackend:
                 finally:
                     handle.close()
                 os.chmod(handle.name, 0o400)
-            cmd = ["codex", "exec", "--model", self.model,
+            cmd = ["codex", "exec", "--model", role_model,
                    "--skip-git-repo-check"]
+            if role_name in _SEARCH_ROLES:
+                cmd.extend(["-c", "tools.web_search=true"])
             if usage_target is not None:
                 cmd.append("--json")
             cmd.extend(service_tier_cli_args(self.service_tier))
@@ -793,7 +824,7 @@ class CodexBackend:
                     "call_id": call_id,
                     "thread_id": telemetry.thread_id,
                     "role": role_name,
-                    "model": self.model,
+                    "model": role_model,
                     "effort": self.effort,
                     "service_tier": self.service_tier,
                     "state_dir": (

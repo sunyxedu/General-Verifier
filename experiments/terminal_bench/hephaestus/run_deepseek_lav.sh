@@ -23,7 +23,7 @@ BASE_URL="${GV_VLLM_BASE_URL:-http://127.0.0.1:8371/v1}"
 MODEL="${GV_VLLM_MODEL:-deepseek-v4-flash-0731-h200-high}"
 MODEL_REVISION="7872f01b1d1fe23eabc4c98b48bffcef5a386062"
 SERVE_CONFIG_SHA256="8e60ecb0493f766abdefbc8966abb6fd7fa1514673fe3970c8f86e3a725f2012"
-SOURCE_HARBOR_ROOT="/Users/hemlix/Documents/General Verifier/experiments/terminal_bench/results/jobs/rec-codex-terra-medium-tb21-strat20-k5-r1"
+SOURCE_HARBOR_ROOT="${GV_SOURCE_HARBOR_ROOT:-/Users/hemlix/Documents/General Verifier/experiments/terminal_bench/results/jobs/rec-codex-terra-medium-tb21-strat20-k5-r1}"
 
 SCOPE="${GV_LAV_SCOPE:-swing6}"
 if [[ "${1:-}" == "--scope" ]]; then

@@ -1,0 +1,108 @@
+diff --git a/README.md b/README.md
+index a82cce8..6fee9b8 100644
+--- a/README.md
++++ b/README.md
+@@ -26,12 +26,15 @@ built around three counters to that failure:
+    answer file now contains Z") is checked against the **delivered world** — the
+    working tree captured when the run ended. A trace whose claims are all accurate
+    past reports proves only that the solver narrates honestly; the delivered-state
+-   claims are what carry the verdict.
++   claims are what carry the verdict. Every obligation carries a `required_basis`
++   floor — `world` or `record`, part of its identity — naming the weakest index
++   that can settle it; evidence below the floor settles nothing, in either
++   direction.
+ 3. **Opinions propose, mechanics decide.** LLM seats compile obligations, pick
+    methods, run checks — but every seat's output passes a schema gate, every check
+    leaves an auditable artifact, effect claims are re-hashed against the ledger, and
+-   the status folds (claim ← obligations, certificate ← slice) always take the worst
+-   case. Crashes, timeouts, malformed output: FAILED, never a pass. A wrong
++   the claim ← obligations status fold always takes the worst case. Crashes,
++   timeouts, malformed output: FAILED, never a pass. A wrong
+    extraction or a lazy decomposition can cost recall; it cannot mint a false
+    `verified`.
+ 
+@@ -62,26 +65,40 @@ Per trace, left to right:
+    serves every other mode; only a structurally valid graph proceeds.
+ 5. **Verify.** The kernel settles the final claim's dependency closure, one claim at
+    a time. The **obligation compiler** (answer-blind, graph-aware) turns a claim into
+-   world-checkable obligations; the **decomposition critic** attacks their
+-   sufficiency by constructing a counterexample world, sending the compiler back to
+-   repair (≤2 rounds). Each obligation node then plays the **binding game**: an
+-   oracle lists only *sufficient* methods, graded on a scale of its own devising; a
+-   discharge executor carries the chosen method out faithfully (installing missing
+-   instruments on the spot); a judger examines the delivered artifact and sends
+-   unfaithful executions back (≤3 rounds). Obligation nodes are content-addressed:
+-   the same check under two claims is one node, and settled verdicts transfer for
+-   free.
+-6. **Certify.** A claim's status is the fold of its obligation nodes (one refuted ⇒
+-   refuted, and the downstream cone is killed; all verified ⇒ verified; mixed or
+-   instrument-blocked ⇒ partial). The certificate freezes the final's slice with
+-   every claim's obligations and evidence nested inside; its verdict is the worst
+-   case over the slice and never rounds up.
++   checkable obligations, each floored at `world` or `record`; the **decomposition
++   critic** attacks their sufficiency by constructing a counterexample world, sending
++   the compiler back to repair — a stateful game whose record binds both seats, and
++   an attack still standing after the round budget (default 4, `--critic-rounds`)
++   fails the claim closed. Each obligation node then plays the **binding game**: an
++   oracle lists only *sufficient* methods, graded on a scale of its own devising
++   (methods declared below the floor never execute); a discharge executor carries
++   the chosen method out faithfully (installing missing instruments on the spot); a
++   judger examines the delivered artifact and sends unfaithful executions back (≤3
++   rounds). Every seat knows the world's evidence mode — `live`, `captured` (a
++   `world/` tree plus a manifest naming the captured roots), or `unavailable` — so
++   absence outside the captured boundary proves nothing. Obligation nodes are
++   content-addressed on text + floor: the same check at the same floor under two
++   claims is one node, and settled verdicts transfer for free.
++6. **Certify.** A claim's status is the fold of its obligation nodes: one refuted ⇒
++   refuted; all held ⇒ verified, at `world` basis only when every obligation and
++   premise was world-level (any record component taints the claim to `record`);
++   held-plus-unobtainable ⇒ partial; anything failed ⇒ unverified. A refuted premise
++   leaves its dependents unverified (that line of support is gone) — except the
++   final, whose obligations are the task contract, compiled independently of the
++   solver's argument; an all-record final abstains, since every check passing
++   without ever leaving the solver's own account is the laundering signature. The
++   certificate freezes the final's slice with every claim's obligations and evidence
++   nested inside; its verdict is the final claim's own adjudication of that contract
++   — the rest of the slice is the audited argument, exported in full and scored as
++   features, never the verdict.
+ 7. **Rank.** A certificate folds into a lexicographic key — `(verdict, verified
+    fraction of the slice, verified obligation count)`. Verdict dominates absolutely;
+    the obligation count breaks ties because obligation nodes are roughly invariant
+    under extraction granularity (claim counts are not), which makes the rank
+    resistant to extractor noise. No tuned weights anywhere — selection only needs an
+-   order.
++   order. (Experiment reports also flatten the tuple into a scalar `gv_score` —
++   five verdict bands on `[0, 1]` that never cross, `experiments/common/scoring.py`
++   — a display value, not the decision variable.)
+ 8. **Select.** Across the N traces: argmax by rank, or verdict-weighted voting when
+    answers are comparable. A trace whose extraction fails outright ranks below
+    everything — fail-closed, like the rest of the system.
+@@ -97,7 +114,8 @@ uv sync
+ ### Score a recorded trace
+ 
+ A state dir is what a recorded run leaves behind: `hook_feed.jsonl`, `task.md`,
+-`baseline/`, `final.txt`, optionally `world/` (the delivered tree).
++`baseline/`, `final.txt`, optionally `world/` (the delivered tree) with a
++`world_manifest.json` naming which roots were captured.
+ 
+ ```bash
+ # extract + certify + rank; prints the feature dict; exit 0 iff verdict == verified
+@@ -106,7 +124,8 @@ uv run python -m verifier.cli score --state-dir path/to/.gv [--model m]
+ # LLM-free: rebuild the claim graph from a trace, print label -> status
+ uv run python -m verifier.cli replay --events path/to/.gv/events.jsonl
+ 
+-# render the extracted graph for inspection (full claim text, obligations, witnesses)
++# render the extracted graph for inspection (full claim text, obligations, witnesses;
++# --details adds evidence bases and the latest obligation evidence)
+ uv run python script/claim_graph.py --state-dir path/to/.gv -o graph.svg --png
+ ```
+ 
+@@ -163,7 +182,7 @@ Claude Code plugin) is wired as an online arm. See
+ 
+ | Module | Contents |
+ |---|---|
+-| `verifier/core/` | data contracts: content addressing + status machine (`model.py`), append-only event stream (`events.py`), claim store + obligation nodes + trigger rule + slices (`store.py`) |
++| `verifier/core/` | data contracts: content addressing + status machine + evidence-basis floor (`model.py`), append-only event stream (`events.py`), claim store + obligation nodes + trigger rule + slices (`store.py`) |
+ | `verifier/stream/` | ingestion: incremental graph building (`builder.py`), online tail (`tail.py`), Codex rollout → hook feed (`codex.py`) |
+ | `verifier/offline.py` | the ORM path: feed ingestion, outcome-blind extraction with structural retry, certify, feature fold, lexicographic `rank_key` |
+ | `verifier/selection.py` | best-of-N strategies: argmax, majority vote, verdict-weighted vote, pass@N oracle |
