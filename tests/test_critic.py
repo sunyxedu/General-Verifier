@@ -941,10 +941,13 @@ def test_semantic_authority_is_not_invented_process_compliance():
         in prompts.OBLIGATIONS_SYSTEM
     assert "fixes what a result means or how it is measured" \
         in prompts.OBLIGATIONS_SYSTEM
-    assert "Explicit required or prohibited actions" \
+    assert "Only an observable action whose occurrence or nonoccurrence" \
         in prompts.OBLIGATIONS_SYSTEM
-    assert "process requirements with record floors" \
+    assert "passes EDGE NECESSITY's acceptance counterfactual" \
         in prompts.OBLIGATIONS_SYSTEM
+    assert "explicitly required or prohibited actions" \
+        in prompts.OBLIGATIONS_SYSTEM
+    assert "have record floors" in prompts.OBLIGATIONS_SYSTEM
     assert "optional, helpful, or background references create neither" \
         in prompts.OBLIGATIONS_SYSTEM
     assert "submit a log, citation, report, or proof creates a world-floor" \
@@ -965,6 +968,9 @@ def test_semantic_authority_is_not_invented_process_compliance():
         in prompts.CRITIC_SYSTEM
     assert "artifact's self-report cannot settle the action condition" \
         in prompts.CRITIC_SYSTEM
+    assert "Actions that pass this counterfactual" in prompts.CRITIC_SYSTEM
+    assert "one obligation per clause that TASK-INSTANCE CONTRACT and" \
+        in prompts.OBLIGATIONS_HARNESS_ADDENDUM
     assert "REQUIREMENT-VERSUS-GUIDANCE GATE" in prompts.CRITIC_TEMPLATE
     assert "correct-result-and-deliverables counterfactual" \
         in prompts.CRITIC_TEMPLATE

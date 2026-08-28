@@ -31,7 +31,14 @@ from typing import Any, Dict, List, Optional
 
 from . import prompts, provider
 from .schema import RoleError, validate
-from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, ResultMessage, query
+# The Claude Agent SDK backs the DEFAULT backend only; alternate backends
+# (CodexBackend) never touch it. Imported lazily so that a seats=codex run
+# does not depend on the SDK's import chain (mcp -> pydantic -> native
+# extensions) even loading — the palette of the active backend, not the
+# default one, should decide what must be importable.
+def _sdk():
+    import claude_agent_sdk
+    return claude_agent_sdk
 
 class _TransientSDKError(RuntimeError):
     """Infrastructure failure worth backing off and retrying (internal)."""
@@ -201,11 +208,12 @@ class AgentBackend:
 
         options = self._build_options(role, keep_stderr)
 
-        result: Optional[ResultMessage] = None
+        sdk = _sdk()
+        result = None
         error: Optional[Exception] = None
         try:
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, ResultMessage):
+            async for message in sdk.query(prompt=prompt, options=options):
+                if isinstance(message, sdk.ResultMessage):
                     result = message
         except Exception as err:  # noqa: BLE001 - classified below
             error = err
@@ -242,11 +250,12 @@ class AgentBackend:
             raise RoleError(f"{role.name}: sdk failure: {detail}") from error
         raise RoleError(f"{role.name}: no structured output ({detail})")
 
-    def _build_options(self, role: AgentRole, stderr_cb) -> "ClaudeAgentOptions":
+    def _build_options(self, role: AgentRole, stderr_cb):
         system_prompt: Any = {"type": "preset", "preset": "claude_code"}
         if role.system:
             system_prompt["append"] = role.system
-        return ClaudeAgentOptions(
+        sdk = _sdk()
+        return sdk.ClaudeAgentOptions(
             system_prompt=system_prompt,
             model=role.model or self.model,
             tools=list(role.tools),            # hard palette (capability boundary)
@@ -265,7 +274,7 @@ class AgentBackend:
             max_buffer_size=64 * 1024 * 1024,  # default 1MB truncates long tool output
             stderr=stderr_cb,
             hooks=(
-                {"PreToolUse": [HookMatcher(matcher="Read",
+                {"PreToolUse": [sdk.HookMatcher(matcher="Read",
                                             hooks=[_deny_image_read])]}
                 if provider.TEXT_ONLY else None
             ),

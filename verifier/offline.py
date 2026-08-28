@@ -140,8 +140,14 @@ def _sealed_tree(path: str) -> List[Dict[str, Any]]:
             records.append({"path": relative,
                             **_regular_file_seal(current, st)})
         elif stat.S_ISLNK(st.st_mode):
-            raise ImmutableInputError(
-                f"symlink forbidden in immutable input: {current}")
+            # Seal the link as a pointer (git semantics): hash its target
+            # string, never follow it. In-tree targets are sealed by the walk
+            # anyway; out-of-tree targets stay outside the evidence boundary,
+            # which the capture-manifest rules already make undecidable
+            # rather than trusted. Refusing symlinks outright made every
+            # build-style world (povray, cython, compcert) unscoreable.
+            records.append({**base, "type": "symlink",
+                            "target": os.readlink(current)})
         else:
             raise ImmutableInputError(
                 f"special file forbidden in immutable input: {current}")
@@ -543,6 +549,15 @@ def _features(cert: Dict[str, Any], extract_rounds: int,
     final_obligations = {
         o["id"]: o["status"] for o in final_entry.get("obligations", [])
     }
+    if not final_obligations:
+        # The compiler always owes the final claim a non-empty contract; an
+        # empty set means compilation died mid-run (capacity flap), not that
+        # the task demands nothing. Folding it as 0/0-unverified silently
+        # discards a possibly fully-verified graph — surface it as
+        # unscoreable so the retry sweep re-runs the trace instead.
+        raise ValueError(
+            "final claim carries no compiled obligations; "
+            "treat as incomplete verification, not a verdict")
     final_ob_counts: Dict[str, int] = {}
     for status in final_obligations.values():
         final_ob_counts[status] = final_ob_counts.get(status, 0) + 1

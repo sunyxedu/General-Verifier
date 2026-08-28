@@ -274,7 +274,10 @@ def test_all_offline_seats_get_isolated_execution(
     assert 'default_permissions="gv-offline"' in args
     assert 'approval_policy="never"' in args
     assert 'permissions.gv-offline.extends=":read-only"' in args
-    assert "permissions.gv-offline.network.enabled=false" in args
+    # Network is deliberately ON: pinned instrument toolchains (grpcio-tools,
+    # protoc, build deps) must be installable inside the profile; a DNS-dead
+    # sandbox converts those checks into structural unobtainables.
+    assert "permissions.gv-offline.network.enabled=true" in args
     assert 'shell_environment_policy.inherit="core"' in args
 
     filesystem = next(

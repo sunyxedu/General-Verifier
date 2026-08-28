@@ -6,8 +6,10 @@ from .criteria import (
     SUPPORTING_PROVENANCE_BOUNDARY,
     SOURCE_TERM_ROLE_BINDING,
     TASK_INSTANCE_CONTRACT,
+    EDGE_NECESSITY_GATE,
     QUANTIFIER_ROLE_BINDING,
     TRANSFORMATION_EVENT_BINDING,
+    IMPERATIVE_EFFECT_TIMING,
 )
 
 OBLIGATIONS_SYSTEM = (
@@ -45,12 +47,16 @@ OBLIGATIONS_SYSTEM = (
     "specialization.\n"
     + SOURCE_TERM_ROLE_BINDING
     + TASK_INSTANCE_CONTRACT
+    + EDGE_NECESSITY_GATE
     + QUANTIFIER_ROLE_BINDING
     + TRANSFORMATION_EVENT_BINDING
     + SUPPORTING_PROVENANCE_BOUNDARY
-    + "Explicit required or prohibited actions, substitute prohibitions, "
-    "mandatory non-semantic implementation/tool choices, and exclusive workflows "
-    "remain process requirements with record floors. A requirement to submit a "
+    + "Only an observable action whose occurrence or nonoccurrence "
+    "independently passes EDGE NECESSITY's acceptance counterfactual may "
+    "become a process "
+    "requirement. Within that set, explicitly required or prohibited actions, "
+    "substitute prohibitions, mandatory non-semantic implementation/tool choices, "
+    "and exclusive workflows have record floors. A requirement to submit a "
     "log, citation, report, or proof creates a world-floor deliverable condition "
     "covering its required content and validity; add a separate process condition "
     "only when the task independently requires the action itself. The submitted "
@@ -300,6 +306,7 @@ OBLIGATIONS_SYSTEM = (
     "- Mixed claims (a past discovery plus a current deliverable) get "
     "both kinds, each against its own index.\n"
     + PROOF_CARRYING_EFFECTS
+    + IMPERATIVE_EFFECT_TIMING
 )
 
 # Appended to OBLIGATIONS_SYSTEM by the MCP server only when the mounting
@@ -317,7 +324,8 @@ OBLIGATIONS_HARNESS_ADDENDUM = (
     "For a COMPLETION claim (claim kind `final`, or any claim asserting a "
     "task/deliverable is done): the claim's own description of task scope "
     "is an untrusted paraphrase — compile acceptance obligations against ./task.md "
-    "item by item, one obligation per explicit requirement. THIS "
+    "item by item, one obligation per clause that TASK-INSTANCE CONTRACT and "
+    "EDGE NECESSITY classify as an acceptance requirement. THIS "
     "OVERRIDES NECESSITY'S BASELINE: what a completion claim asserts IS "
     "completion of the authoritative task, so its obligations are "
     "entailed by ./task.md's requirements — a final whose own wording is "
@@ -328,7 +336,7 @@ OBLIGATIONS_HARNESS_ADDENDUM = (
     "hide. Preserve every requirement's quantifier exactly: an "
     "'all/every/each' requirement compiles to an obligation over the "
     "WHOLE scope, which a sample or a single instance cannot settle. "
-    "Coverage must be complete — every explicit requirement of ./task.md "
+    "Coverage must be complete — every such acceptance requirement of ./task.md "
     "gets its obligation; merge, sample, or drop none. And the task's "
     "contract is not residualized against solver-derived graph premises: "
     "for a harness final those premises are deliberately withheld here, "
@@ -498,6 +506,12 @@ OBLIGATIONS_TEMPLATE = (
     "turn `reported Y for S` into `S correctly implements an external "
     "definition and Y is true`; those are additional world claims unless the "
     "claim statement separately asserts them.\n\n"
+    "EDGE NECESSITY FINAL CHECK: immediately before output, retest every "
+    "obligation across the NEGATIVE ENTAILMENT reading set. For completion, the "
+    "task contract on the fixed instance and candidate must entail it; for a "
+    "non-final claim, the claim with every in-force premise must entail it. A "
+    "completion process condition must also pass the ACCEPTANCE COUNTERFACTUAL. "
+    "Omit or repair any obligation that fails.\n\n"
     "List the conditions (obligations) forming an equivalence "
     "decomposition of this claim GIVEN ITS PREMISES: each one entailed "
     "by the claim together with the premises (its refutation refutes the "

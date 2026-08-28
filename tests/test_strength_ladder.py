@@ -731,14 +731,74 @@ def test_acceptance_mixed_failure_and_gap_settles_partial(tmp_path):
     assert cert["verdict"] == "partial"
 
 
-def test_prompts_pin_refutation_soundness_gates():
+def test_prompts_pin_negative_entailment_gate():
     from verifier.llm import prompts
-    assert "REFUTATION SOUNDNESS GATES" in prompts.JUDGER_SYSTEM
-    assert "OPERATIONAL-DOMAIN WITNESS" in prompts.JUDGER_SYSTEM
-    assert "REJECTION EQUIVALENCE" in prompts.JUDGER_SYSTEM
-    assert "CANONICAL-RENDERING EQUALITY" in prompts.JUDGER_SYSTEM
-    assert "SELF-CONSISTENT READING" in prompts.JUDGER_SYSTEM
-    assert "NON-VACUOUS DOMAIN" in prompts.JUDGER_SYSTEM
-    assert "NEGATIVE-METHOD SOUNDNESS" in prompts.ORACLES_SYSTEM
+
+    edge = prompts.EDGE_NECESSITY_GATE
+    node = prompts.NODE_NEGATION_GATE
+    edge_systems = (prompts.OBLIGATIONS_SYSTEM, prompts.CRITIC_SYSTEM)
+    node_systems = (
+        prompts.ORACLES_SYSTEM,
+        prompts.DISCHARGE_SYSTEM,
+        prompts.JUDGER_SYSTEM,
+    )
+    assert all(system.count(edge) == 1 for system in edge_systems)
+    assert all(node not in system for system in edge_systems)
+    assert all(system.count(node) == 1 for system in node_systems)
+    assert all(edge not in system for system in node_systems)
+    assert "NEGATIVE ENTAILMENT — READING SET" in edge
+    assert "NEGATIVE ENTAILMENT — READING SET" in node
+    assert "EDGE NECESSITY — COMPILER AND CRITIC ONLY" in edge
+    assert "ACCEPTANCE COUNTERFACTUAL" in edge
+    assert "non-final claim" in edge
+    assert "under every retained reading" in edge
+    assert "NODE NEGATION — ORACLE, DISCHARGE, AND JUDGER ONLY" in node
+    assert "node-global judgment" in node
+    assert "At Oracle time apply this prospectively" in node
+    assert "out-of-domain instance" in node
+    assert "undefined or vacuous case" in node
+    assert "FOOTPRINT ENTAILMENT" in node
+    assert "under every retained reading" in node
+    assert "NEGATIVE-ONLY" in node
+    assert len(edge.split()) < 230
+    assert len(node.split()) < 320
+    assert "For a behavioral or input-handling obligation" in node
+    assert "offending content to reach the task-facing operation" in node
+    assert "merely canonical rendering difference" in node
+    assert "alternative but equivalent rejection" in node
+    assert "it never makes an imperative a requirement" in (
+        prompts.OBLIGATIONS_SYSTEM
+    )
+    assert "EDGE NECESSITY FINAL CHECK" in prompts.OBLIGATIONS_TEMPLATE
+    assert "EDGE NECESSITY FINAL CHECK" in prompts.CRITIC_TEMPLATE
+    assert "{claim_text}" not in prompts.JUDGER_TEMPLATE
+    assert "retained witness => exact obligation is false" in (
+        prompts.DISCHARGE_TEMPLATE
+    )
+    assert "retained witness => exact obligation is false" in (
+        prompts.JUDGER_TEMPLATE
+    )
+    assert "If the proposed method cannot make that implication" in (
+        prompts.JUDGER_TEMPLATE
+    )
+    assert "return sufficient=no" in prompts.JUDGER_TEMPLATE
+    assert "the audit is absent" in prompts.JUDGER_TEMPLATE
+    assert "return faithful=no" in prompts.JUDGER_TEMPLATE
+    assert "Parent claim (untrusted context" in prompts.ORACLES_TEMPLATE
+    assert "Parent claim (untrusted context" in prompts.DISCHARGE_TEMPLATE
+    assert "task's own examples fix them" not in prompts.JUDGER_SYSTEM
+    assert "uncontradicted task example" in prompts.JUDGER_SYSTEM
+    assert "never wins a manifest conflict" in prompts.JUDGER_SYSTEM
+    combined = "\n".join(edge_systems + node_systems).lower()
+    assert "the concrete demonstration and enumeration govern" not in combined
+    # The plain-reading gate is sanctioned ONLY for refutation admissibility
+    # (downgrade-only, so precision-safe): discharge owns the gate, judger
+    # mirrors it in the refutation audit. It must not spread to other seats.
+    assert "over-demand shapes that never refute" in (
+        prompts.DISCHARGE_TEMPLATE.lower())
+    assert "careful human grader" in prompts.DISCHARGE_TEMPLATE.lower()
+    assert "careful human grader" in prompts.JUDGER_SYSTEM.lower()
+    assert "careful human grader" not in prompts.OBLIGATIONS_SYSTEM.lower()
+    assert "careful human grader" not in prompts.ORACLES_SYSTEM.lower()
     assert "OPTIMALITY-REFUTATION PREFLIGHT" in prompts.ORACLES_SYSTEM
     assert "VERDICT-DIRECTION AT EXECUTION" in prompts.DISCHARGE_SYSTEM

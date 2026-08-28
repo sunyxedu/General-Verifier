@@ -37,6 +37,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -150,6 +151,68 @@ def _exact_nonnegative_int(value: Any, field: str) -> int:
         raise RoleError(
             f"codex exec turn.completed usage has invalid {field}: {value!r}")
     return value
+
+
+class TransientBackendError(RoleError):
+    """Provider-side transient failure (capacity, rate limit, transport):
+    the request never got a completed turn, so retrying with backoff is
+    sound — nothing semantic was produced to second-guess."""
+
+
+# Bounded backoff for provider capacity flaps ("Selected model is at
+# capacity"). Codex exec fails in seconds in that state, so a handful of
+# spaced retries rides out the common minutes-long window without
+# babysitting; a genuinely down provider still fails closed afterwards.
+TRANSIENT_RETRIES = 5
+TRANSIENT_BACKOFF_SECONDS = (15, 45, 90, 180, 300)
+
+_TRANSIENT_PATTERNS = (
+    "at capacity", "rate limit", "rate-limit", "overload",
+    "try again", "temporarily unavailable", "connection reset",
+    "timed out", "timeout", "502", "503", "429",
+)
+
+
+def _transient_failure_reason(stdout: str, returncode: int) -> str:
+    """A transient-failure description, or "" when the stream looks like a
+    real (retryable-by-nobody) protocol/semantic failure. Detection is
+    deliberately narrow: an explicit error/turn.failed event whose message
+    matches a known transient pattern, or a process that died before even
+    starting a thread."""
+    saw_thread = False
+    messages = []
+    for raw in (stdout or "").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "thread.started":
+            saw_thread = True
+        elif event.get("type") == "error":
+            messages.append(str(event.get("message") or ""))
+        elif event.get("type") == "turn.failed":
+            error = event.get("error")
+            if isinstance(error, dict):
+                messages.append(str(error.get("message") or ""))
+    for message in messages:
+        lowered = message.lower()
+        # Quota exhaustion is permanent until the account resets: it must
+        # fail fast, never spin in backoff (its text also says "try again",
+        # which would otherwise match the transient patterns below).
+        if "usage limit" in lowered or "purchase more credits" in lowered:
+            return ""
+    for message in messages:
+        lowered = message.lower()
+        if any(pattern in lowered for pattern in _TRANSIENT_PATTERNS):
+            return message[:200]
+    if not saw_thread and returncode != 0:
+        return f"codex exec died before thread.started (rc={returncode})"
+    return ""
 
 
 def _parse_exec_telemetry(stdout: str) -> _ExecTelemetry:
@@ -597,7 +660,15 @@ class CodexBackend:
             "-c", 'approval_policy="never"',
             "-c", f'permissions.{_OFFLINE_PROFILE}.extends=":read-only"',
             "-c", f"permissions.{_OFFLINE_PROFILE}.filesystem={filesystem}",
-            "-c", f"permissions.{_OFFLINE_PROFILE}.network.enabled=false",
+            # Network stays ON for the offline profile: discharge instruments
+            # routinely need pinned toolchains (grpcio-tools==X, protoc,
+            # build deps) that no pre-provisioned venv can anticipate, and a
+            # DNS-dead sandbox turns those checks into structural
+            # unobtainables. The trade: delivered world code exercised by an
+            # instrument may reach the network during verification. State
+            # integrity is still guarded by the immutable-input seal; results
+            # that depend on a fetched toolchain must pin exact versions.
+            "-c", f"permissions.{_OFFLINE_PROFILE}.network.enabled=true",
             "-c", 'shell_environment_policy.inherit="core"',
             "-c", f"shell_environment_policy.set={env_table}",
         ]
@@ -684,16 +755,32 @@ class CodexBackend:
                 "-c", f"model_reasoning_effort={self.effort}",
                 "-o", out.name, "--", instruction,
             ])
-            with open(os.devnull) as devnull:
-                # stdin MUST be closed: codex otherwise waits on it forever
-                started_at_unix_ns = time.time_ns()
-                started_at_monotonic_ns = time.monotonic_ns()
-                proc = subprocess.run(
-                    cmd, cwd=execution_cwd, stdin=devnull,
-                    capture_output=True,
-                    text=True, timeout=self.timeout)
-                finished_at_unix_ns = time.time_ns()
-                duration_ns = time.monotonic_ns() - started_at_monotonic_ns
+            for attempt in range(TRANSIENT_RETRIES + 1):
+                with open(os.devnull) as devnull:
+                    # stdin MUST be closed: codex otherwise waits on it forever
+                    started_at_unix_ns = time.time_ns()
+                    started_at_monotonic_ns = time.monotonic_ns()
+                    proc = subprocess.run(
+                        cmd, cwd=execution_cwd, stdin=devnull,
+                        capture_output=True,
+                        text=True, timeout=self.timeout)
+                    finished_at_unix_ns = time.time_ns()
+                    duration_ns = (time.monotonic_ns()
+                                   - started_at_monotonic_ns)
+                reason = _transient_failure_reason(
+                    proc.stdout or "", proc.returncode)
+                if not reason:
+                    break
+                if attempt >= TRANSIENT_RETRIES:
+                    raise TransientBackendError(
+                        f"{role_name}: transient codex failure persisted "
+                        f"through {TRANSIENT_RETRIES} retries: {reason}")
+                wait = TRANSIENT_BACKOFF_SECONDS[
+                    min(attempt, len(TRANSIENT_BACKOFF_SECONDS) - 1)]
+                print(f"[codex-backend] transient failure ({reason}); "
+                      f"retry {attempt + 1}/{TRANSIENT_RETRIES} "
+                      f"in {wait}s", file=sys.stderr, flush=True)
+                time.sleep(wait)
             telemetry = None
             if usage_target is not None:
                 telemetry = _parse_exec_telemetry(proc.stdout or "")

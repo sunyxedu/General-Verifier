@@ -85,6 +85,25 @@ def render_trace(state_dir):
     return "\n".join(parts)[-TRACE_CHARS:]
 
 
+def _codex_state(trial):
+    """LAV-side codex conversion cache: rollout -> hook feed + final.txt.
+
+    LAV only needs the rendered trace, so this stays deliberately lighter
+    than score.py's sanitized_state (no world copy, no immutable seal) and
+    independent of its internals."""
+    from verifier.stream import codex as codex_stream
+
+    sessions = os.path.join(trial["trial_dir"], "agent", "sessions")
+    rollout = codex_stream.newest_rollout(sessions) \
+        if os.path.isdir(sessions) else None
+    if rollout is None:
+        return None
+    state = os.path.join(HERE, "results", "lav_states", trial["trial"])
+    if not os.path.exists(os.path.join(state, "hook_feed.jsonl")):
+        codex_stream.convert(rollout, state)
+    return state
+
+
 def candidates_for(job_dir):
     """task -> [{trial, reward, trace}] from the recorder arm's trials."""
     import score as score_mod           # reuses the same state-dir logic
@@ -92,7 +111,7 @@ def candidates_for(job_dir):
     tasks = {}
     for trial in harborjobs.trials(job_dir):
         state = score_mod.find_state(trial["trial_dir"]) \
-            or score_mod.codex_state(trial)
+            or _codex_state(trial)
         if state is None:
             continue
         trace = render_trace(state)
@@ -113,6 +132,11 @@ def main():
     ap.add_argument("--pivots", type=int, default=1)
     ap.add_argument("--n-evaluations", type=int, default=2)
     ap.add_argument("--max-workers", type=int, default=6)
+    ap.add_argument("--task", default=None, nargs="+",
+                    help="score only these tasks (default: every task with "
+                    "usable trials; use this while a job is still "
+                    "generating so partially-generated pools are not "
+                    "scored and marked done)")
     ap.add_argument("--model", default=None,
                     help="model id to request (default: resolved from the "
                     "endpoint's /v1/models)")
@@ -138,6 +162,8 @@ def main():
     print(f"[lav] {len(tasks)} tasks ({len(done)} already done)", flush=True)
 
     for task, trials in sorted(tasks.items()):
+        if args.task and task not in args.task:
+            continue
         if (task,) in done:
             continue
         if len(trials) < 2:

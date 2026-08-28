@@ -5,8 +5,10 @@ from .criteria import (
     SUPPORTING_PROVENANCE_BOUNDARY,
     SOURCE_TERM_ROLE_BINDING,
     TASK_INSTANCE_CONTRACT,
+    EDGE_NECESSITY_GATE,
     QUANTIFIER_ROLE_BINDING,
     TRANSFORMATION_EVENT_BINDING,
+    IMPERATIVE_EFFECT_TIMING,
 )
 
 CRITIC_SYSTEM = (
@@ -42,9 +44,11 @@ CRITIC_SYSTEM = (
     "statement and any authority it explicitly names. Audit semantic entailment, "
     "not check feasibility: unavailable evidence is handled later.\n"
     + TASK_INSTANCE_CONTRACT
+    + EDGE_NECESSITY_GATE
     + QUANTIFIER_ROLE_BINDING
     + TRANSFORMATION_EVENT_BINDING
     + SUPPORTING_PROVENANCE_BOUNDARY
+    + IMPERATIVE_EFFECT_TIMING
     + "Rules of the attack:\n"
     "- The world must be self-consistent and must hold the CONTENT of "
     "every premise true — verified and assumed alike; the conditional "
@@ -133,16 +137,17 @@ CRITIC_SYSTEM = (
     "- COMPLETION CLAIMS (kind `final`, or any claim asserting a task is "
     "done): the claim's own wording cannot redefine acceptance scope. When an "
     "authoritative task statement is given below, READ IT and judge sufficiency "
-    "against ITS requirements, quantifiers "
-    "included: a world in which every obligation holds and yet some "
-    "explicit task requirement is unmet — an item not delivered, an "
+    "against ITS acceptance requirements as classified by TASK-INSTANCE "
+    "CONTRACT and EDGE NECESSITY, quantifiers included: a world in which every "
+    "obligation holds and yet some such explicit acceptance requirement is "
+    "unmet — an item not delivered, an "
     "'all/every' covered only partially, an output at the wrong place or "
     "in the wrong form, a result value never independently established — "
     "is a VALID sufficiency counterexample, even if the claim's own narrower "
     "wording would be satisfied in that world. The final wording contributes "
     "only a task-relevant candidate binding when TASK-INSTANCE CONTRACT says "
     "the response itself is the candidate carrier. Conversely, a world that meets "
-    "every explicit task requirement but falsifies an added obligation is a "
+    "every such task acceptance requirement but falsifies an added obligation is a "
     "VALID necessity witness only when it preserves the same fixed task instance "
     "and candidate binding. The task contract may neither be narrowed nor "
     "expanded, and a different valid candidate is not a witness about this one.\n"
@@ -177,9 +182,10 @@ CRITIC_SYSTEM = (
     "itself an acceptance criterion and apply this counterfactual: if the task-"
     "defined result and every deliverable are correct, does the clause explicitly "
     "say the task still fails solely because that action was not performed? If "
-    "not, the process counterexample is invalid. Explicit required/prohibited "
-    "actions, substitute prohibitions, mandatory non-semantic implementations, "
-    "and exclusive workflows remain process requirements and have record floors. "
+    "not, the process counterexample is invalid. Actions that pass this "
+    "counterfactual — including explicit required/prohibited actions, substitute "
+    "prohibitions, mandatory non-semantic implementations, and exclusive "
+    "workflows — remain process requirements and have record floors. "
     "A record floor is not a deficiency there: the ledger is the verifier's own "
     "hook-captured record, authoritative for whether a recorded solver action "
     "occurred; only reported CONTENT stays untrusted. Once a clause is "
@@ -311,6 +317,12 @@ CRITIC_TEMPLATE = (
     "weaker-property domain, or independent-U without explicit reset authority, "
     "with the smallest-span rewrite. A proposed omitted-item witness is valid "
     "only if that item is independently established in W and P when applicable.\n\n"
+    "EDGE NECESSITY FINAL CHECK — PASS PRECONDITION: retest every obligation "
+    "across the NEGATIVE ENTAILMENT reading set. Require the task contract on "
+    "the fixed instance and candidate to entail it for completion, or the "
+    "non-final claim with every in-force premise to entail it otherwise. A "
+    "completion process condition must also pass the ACCEPTANCE COUNTERFACTUAL. "
+    "Any failure requires an `insufficient` necessity witness.\n\n"
     "Mandatory before `pass`: first perform the per-obligation necessity "
     "attack, then perform both the temporal and sufficiency attacks and, against "
     "the task contract instantiated on the fixed task givens and actual candidate "

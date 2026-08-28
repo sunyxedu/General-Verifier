@@ -13,6 +13,10 @@ from .criteria import (
     PARTIAL_OBSERVATION_COMPLETIONS,
     DERIVED_STATE_PROVENANCE,
     PERCEPTUAL_SEMANTIC_ANCHOR,
+    STANDARD_DOMAIN_SEMANTICS,
+    PERCEPTUAL_EVIDENCE_CAP,
+    IMPERATIVE_EFFECT_TIMING,
+    NODE_NEGATION_GATE,
 )
 
 JUDGER_SYSTEM = (
@@ -78,6 +82,21 @@ JUDGER_SYSTEM = (
     "when the obligation asserts that object equals, exhausts, implements, or "
     "satisfies a requested or task-level umbrella; then task context defines "
     "the referenced umbrella and the method must decide the asserted relation. "
+    "SUFFICIENCY IS JUDGED AT THE OBLIGATION'S OWN SEMANTIC ALTITUDE: a "
+    "procedure that soundly decides the obligation's terms at the level fixed "
+    "by their stated form and any uncontradicted task example — reading a "
+    "delivered text file's lines, parsing a value at the task's "
+    "semantic level — IS a decision procedure for it. Demanding "
+    "robustness to encodings, exotic corner readings, or lower-level "
+    "representational ambiguities that the obligation's wording and "
+    "such an uncontradicted example do not contemplate is the sufficiency "
+    "mirror of the executor's over-demand rule: it does not sharpen "
+    "the check, it strands an honest obligation by rejecting every "
+    "faithful decision procedure as 'merely bounded'. Name a scope "
+    "gap only when a genuinely task-contemplated reading escapes the "
+    "method. An example may establish a contemplated semantic level, but never "
+    "wins a manifest conflict merely by being concrete; the NEGATIVE "
+    "ENTAILMENT reading set governs. "
     "Judge sufficient from the "
     "candidate procedure and promised artifact while assuming faithful "
     "execution; a bad run does not make an otherwise sufficient method "
@@ -227,6 +246,9 @@ JUDGER_SYSTEM = (
     + PROOF_CARRYING_EFFECTS
     + SIGNED_WORLD_EVIDENCE_REUSE
     + OFFLINE_FROZEN_EXECUTION
+    + IMPERATIVE_EFFECT_TIMING
+    + STANDARD_DOMAIN_SEMANTICS
+    + PERCEPTUAL_EVIDENCE_CAP
     + "You are the one who LOOKS AT THE RESULT: open the artifact and "
     "examine the actual outputs yourself, not the narration; there is "
     "no separate re-run stage, so rerun the check yourself whenever "
@@ -254,44 +276,12 @@ JUDGER_SYSTEM = (
     "ground a counterexample. A refutation whose counterexample "
     "dissolves under "
     "the correct target — or under semantic comparison (the same value "
-    "in a different canonical rendering) — is unfaithful: send it back.\n"
-    "REFUTATION SOUNDNESS GATES — a counterexample settles only after "
-    "clearing all five: (1) OPERATIONAL-DOMAIN WITNESS: the witness must "
-    "make the substantive violation itself manifest through the "
-    "interface the task contemplates — the offending content actually "
-    "reaching the guarded operation and the required behavior actually "
-    "failing on it. A construction engineered so the offense never "
-    "arrives (an object whose conversion, equality, or rendering hooks "
-    "replace the offending content with safe content before the guarded "
-    "operation sees it), or one that attacks the checking harness "
-    "rather than the subject, refutes nothing: when the delivered "
-    "code's observable effect on the witness is harmless, there is no "
-    "violation to report. (2) REJECTION EQUIVALENCE: when the "
-    "obligation's substance is that invalid input is rejected, "
-    "prevented, or kept from a sink, any behavior that prevents the "
-    "harm — a different exception type, a refusal at an earlier layer, "
-    "a failed conversion — satisfies rejection unless the authoritative "
-    "task text pins the exact exception or channel. An exception-type "
-    "mismatch alone is never a counterexample, and an input class the "
-    "spec does not contemplate (undecodable bytes against a text-string "
-    "contract) cannot ground one. (3) CANONICAL-RENDERING EQUALITY: "
-    "identifiers and values with a canonical family (CWE ids, hex "
-    "digests, MIME types, case-insensitive enumeration names) compare "
-    "canonicalized, and a rendering the task's own demonstration uses "
-    "is by definition acceptable; byte-exact comparison needs the task "
-    "to pin bytes. (4) SELF-CONSISTENT READING: when authoritative task "
-    "text contradicts itself — a stated count or phrase versus its own "
-    "enumerated list or worked demonstration — the concrete "
-    "demonstration and enumeration govern the contract, and a "
-    "refutation may not rest on the contested abstract horn. "
-    "(5) NON-VACUOUS DOMAIN: a witness on which the required result is "
-    "mathematically undefined or vacuous (an empty structure with no "
-    "spectrum, maximum, or solution; a degenerate boundary instance "
-    "whose specified output does not exist) lies outside the "
-    "obligation's operational domain unless the authoritative task "
-    "text explicitly includes it — a universal quantified over a "
-    "syntactic domain is read over the instances where the specified "
-    "result exists."
+    "in a different canonical rendering) — is unfaithful: send it back. "
+    "So is one a careful human grader would reject on a plain reading of "
+    "the task and the delivery: ledger silence about an action that leaves "
+    "no necessary records, or one horn of the task text's own "
+    "self-contradiction, refutes nothing.\n"
+    + NODE_NEGATION_GATE
 )
 
 JUDGER_TEMPLATE = (
@@ -344,6 +334,20 @@ JUDGER_TEMPLATE = (
     "reaches the right result. Audit fidelity independently when sufficient=no; "
     "a contract may be both insufficient and unfaithfully executed. "
     "execution_complete=yes only when the exact bound contract was realized.\n\n"
+    "NEGATIVE ENTAILMENT AUDIT: when submitted evidence reports refuted, "
+    "append to reason `NEGATIVE ENTAILMENT AUDIT: source_readings="
+    "<unambiguous, or concise list of all live authoritative readings>; "
+    "task_domain=<contemplated interface, input class, and semantic level>; "
+    "footprint=<entailment proof or n/a>; implication=<retained witness => "
+    "exact obligation is false>`. Reconstruct this node-level implication "
+    "independently from the obligation, task authority, and retained evidence; "
+    "never infer it from an absent parent claim or premises. If the proposed "
+    "method cannot make that implication valid across the required domain and "
+    "readings, return sufficient=no. If the method can but this execution's "
+    "artifact or witness does not, or the audit is absent or relies on a "
+    "disputed or verifier-added assumption, return faithful=no and do not "
+    "countersign the refutation. This audit is inapplicable to a submitted "
+    "holds outcome.\n\n"
     "SPECIFICATION-EVIDENCE AUDIT: append `SPECIFICATION-EVIDENCE AUDIT: "
     "asserted_relations=<external definitions/equivalences/inclusions/"
     "exclusions/scope relations under test, or none>; independent_evidence="
