@@ -286,7 +286,7 @@ def main():
     # region's in-place redraw into stacked stale frames
     live_tsv = not sys.stdout.isatty()
     header = ("task\ttrial\ttb_reward\tgv_verdict\tgv_score\t"
-              "gv_final_obligations_verified_frac\trank")
+              "gv_contrary_signals\trank")
     if live_tsv:
         print(header, flush=True)
     finished = []
@@ -311,7 +311,7 @@ def main():
             print(f"{task}\t{t['trial']}\t{reward}\t"
                   f"{features.get('verdict') or 'unscoreable'}\t"
                   f"{scoring.scalar(features):.6f}\t"
-                  f"{key[1]:.6f}\t{rank[t['trial']]}", flush=True)
+                  f"{-key[1]}\t{rank[t['trial']]}", flush=True)
 
     all_jobs, remaining, emitted = [], {}, set()
     for task in sorted(by_task):

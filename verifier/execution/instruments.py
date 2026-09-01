@@ -66,6 +66,14 @@ def world_evidence_context(
     return ("live", "", "") if live_world else ("unavailable", "", "")
 
 
+def world_map(state_dir: Optional[str], live_world: bool = True) -> str:
+    """The scheme-agnostic world description every seat receives (see
+    core.world.WorldView): the task's own addressing scheme, which
+    addresses were captured, and where they live on this host."""
+    from ..core.world import load_world_view
+    return load_world_view(state_dir, live_world=live_world).render()
+
+
 def authoritative_task_context(state_dir: Optional[str]) -> str:
     """Inline harness task truth so semantic seats cannot skip a Read."""
     if not state_dir:

@@ -239,7 +239,7 @@ def test_strict_state_scoring_and_per_task_gv_ranks(tmp_path, capsys):
     streams = capsys.readouterr()
     lines = streams.out.strip().splitlines()
     assert lines[0].endswith("\tgv_rank")
-    assert "gv_final_obligations_verified_frac" in lines[0]
+    assert "gv_contrary_signals" in lines[0]
     assert "gv_verified_frac" not in lines[0]
     by_trial = {line.split("\t")[1]: line.split("\t") for line in lines[1:]}
     assert by_trial["task-a__good"][3] == "1"

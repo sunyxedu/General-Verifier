@@ -21,7 +21,7 @@ from ..execution.discharge import AgentDischarger, DischargeResult
 from ..core.events import EventLog
 from ..execution.instruments import (
     ArtifactStore, LedgerInstrument, authoritative_task_context,
-    world_evidence_context,
+    world_evidence_context, world_map,
 )
 from ..core.model import (
     Claim, Evidence, Obligation, basis_satisfies,
@@ -30,6 +30,8 @@ from ..core.model import (
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
     STRENGTH_DECISIVE, strength_rank, weakest_strength,
+    SEVERITY_MUST, SEVERITY_SHOULD, SEVERITIES,
+    WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm import prompts
 from ..llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
@@ -149,7 +151,7 @@ class Kernel:
         # the digest check itself is a decision procedure for "the event
         # is recorded as claimed", so its strength is decisive
         self._settle(row["id"], [result.outcome], [BASIS_RECORD],
-                     [STRENGTH_DECISIVE])
+                     [STRENGTH_DECISIVE], [SEVERITY_MUST])
 
     # assertion / final
     def _verify_assertion(self, row: Dict) -> None:
@@ -201,8 +203,10 @@ class Kernel:
         outcomes: List[str] = []
         bases: List[str] = []     # per-obligation evidence basis, for the
         strengths: List[Optional[str]] = []  # and strength: both fold at
-        refuting_witness = None              # claim-level settle
-        for obligation in obligations:
+        severities: List[str] = []           # claim-level settle; severity
+        refuting_witness = None              # decides what a refutation
+        for obligation in obligations:       # is worth (must refutes, should
+            severities.append(obligation.severity)  # only lowers)
             oid = self.store.add_obligation(row["id"], obligation)
             known = self.store.status(oid)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
@@ -241,7 +245,8 @@ class Kernel:
                 if outcome == OUTCOME_REFUTED:
                     ev = self.store.evidence_for(oid)
                     refuting_witness = ev[-1].get("witness") if ev else None
-                    break
+                    if obligation.severity == SEVERITY_MUST:
+                        break
                 continue
             src = self.store.settled_statement(obligation.text,
                                                exclude=row["id"])
@@ -289,7 +294,8 @@ class Kernel:
                 strengths.append(strength)
                 if outcome == OUTCOME_REFUTED:
                     refuting_witness = witness
-                    break
+                    if obligation.severity == SEVERITY_MUST:
+                        break
                 continue
             outcome, witness, basis, strength = self._discharge(
                 row, obligation)
@@ -298,8 +304,9 @@ class Kernel:
             strengths.append(strength)
             if outcome == OUTCOME_REFUTED:
                 refuting_witness = witness
-                break
-        self._settle(row["id"], outcomes, bases, strengths)
+                if obligation.severity == SEVERITY_MUST:
+                    break
+        self._settle(row["id"], outcomes, bases, strengths, severities)
 
         if self.memory is not None:
             status = self.store.status(row["id"])
@@ -399,6 +406,7 @@ class Kernel:
             "ledger_path": os.path.abspath(self.log.path),
             "world_mode": world_mode,
             "world_path": world,
+            "world_map": world_map(state, live_world=self.live_world),
             "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
             "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
             "dependency_referent_context": json.dumps(
@@ -413,7 +421,15 @@ class Kernel:
             return None
         obligations = [
             Obligation(row["id"], o["text"],
-                       o.get("required_basis", BASIS_RECORD))
+                       o.get("required_basis", BASIS_RECORD),
+                       # edge attributes, each defaulting to the
+                       # fail-closed reading when the compiler omits it
+                       severity=(o.get("severity")
+                                 if o.get("severity") in SEVERITIES
+                                 else SEVERITY_MUST),
+                       clause=str(o.get("clause") or ""),
+                       refutable_by_absence=bool(
+                           o.get("refutable_by_absence", False)))
             for o in payload["obligations"]
         ]
         if not independent_final:
@@ -445,7 +461,11 @@ class Kernel:
             "obligations_compiled",
             {"claim": row["id"],
              "obligations": [{"text": o.text,
-                              "required_basis": o.required_basis}
+                              "required_basis": o.required_basis,
+                              "severity": o.severity,
+                              "clause": o.clause,
+                              "refutable_by_absence":
+                                  o.refutable_by_absence}
                              for o in obligations]},
         )
         return obligations
@@ -485,6 +505,7 @@ class Kernel:
                     "ledger_path": variables["ledger_path"],
                     "world_mode": variables["world_mode"],
                     "world_path": variables["world_path"],
+                    "world_map": variables["world_map"],
                     # floors ride along: the critic must attack the
                     # decomposition AS FLOORED — a record-floor
                     # obligation's holding fixes only the ledger, not
@@ -986,6 +1007,55 @@ class Kernel:
                 strength=result.strength,
                 assumed_premises=result.assumed_premises,
             )
+        if result.outcome == OUTCOME_REFUTED and not witness_admissible(
+                result.witness_kind, obligation.refutable_by_absence):
+            # WITNESS AXIOM: a refutation is made of a positive, retained
+            # observation — an execution, a world artifact's content, or
+            # two contradicting records. Absence (nothing found, nothing
+            # printed, nothing captured) refutes only a presence
+            # requirement compiled as refutable_by_absence; an undeclared
+            # kind reads as none. Anything else is an evidence gap: the
+            # finding stays in the witness for audit, the verdict is
+            # failed, never refuted.
+            kind = result.witness_kind or WITNESS_NONE
+            result = DischargeResult(
+                outcome=OUTCOME_FAILED,
+                witness=(f"refutation witness of kind {kind!r} is "
+                         f"inadmissible for this obligation (absence and "
+                         f"silence never refute unless the obligation is a "
+                         f"presence requirement); reported: "
+                         f"{result.witness}"),
+                artifact=result.artifact,
+                instrument=result.instrument,
+                basis=result.basis,
+                strength=result.strength,
+                assumed_premises=result.assumed_premises,
+                witness_kind=result.witness_kind,
+                inputs=result.inputs,
+            )
+        circular = (circular_inputs(result.inputs)
+                    if result.outcome == OUTCOME_HOLDS else [])
+        if circular:
+            # INDEPENDENCE AXIOM: a delivered artifact (anything the solver
+            # produced or changed) may be the subject of a check or an input
+            # to it, never the authority that decides whether the subject
+            # is right. A holds whose declared authority is delivered is
+            # the circular certificate — it establishes consistency with
+            # the solver's own work, not truth — and settles nothing.
+            result = DischargeResult(
+                outcome=OUTCOME_FAILED,
+                witness=(f"circular evidence: delivered artifact(s) "
+                         f"{circular} declared as authority for the check; "
+                         f"a positive verdict grounded on the solver's own "
+                         f"output establishes consistency, not truth"),
+                artifact=result.artifact,
+                instrument=result.instrument,
+                basis=result.basis,
+                strength=result.strength,
+                assumed_premises=result.assumed_premises,
+                witness_kind=result.witness_kind,
+                inputs=result.inputs,
+            )
         if result.outcome in (OUTCOME_HOLDS, OUTCOME_REFUTED) \
                 and not basis_satisfies(result.basis,
                                         obligation.required_basis):
@@ -1057,6 +1127,10 @@ class Kernel:
             "assumed_premises": list(result.assumed_premises),
             "artifact": result.artifact,
             "witness": result.witness,
+            "witness_kind": result.witness_kind,
+            "inputs": list(result.inputs),
+            "severity": obligation.severity,
+            "clause": obligation.clause,
             "evidence_id": evidence.id,
         }
         self.store.record_evidence(oid, evidence_payload)
@@ -1091,9 +1165,23 @@ class Kernel:
     # settlement
     def _settle(self, claim_id: str, outcomes: List[str],
                 bases: List[str] = (),
-                strengths: List[Optional[str]] = ()) -> None:
-        if any(o == OUTCOME_REFUTED for o in outcomes):
-            # the loop breaks at the first refutation, so the refuting
+                strengths: List[Optional[str]] = (),
+                severities: List[str] = ()) -> None:
+        severities = list(severities) or [SEVERITY_MUST] * len(outcomes)
+        must_refuted = [i for i, o in enumerate(outcomes)
+                        if o == OUTCOME_REFUTED
+                        and severities[i] == SEVERITY_MUST]
+        # NECESSITY AXIOM at fold time: a refuted SHOULD obligation is a
+        # contrary signal, not a counterexample — the task did not make
+        # acceptance depend on that clause. It lowers the claim (to
+        # partial, with the violation on record) but never refutes it.
+        should_violated = [i for i, o in enumerate(outcomes)
+                           if o == OUTCOME_REFUTED
+                           and severities[i] != SEVERITY_MUST]
+        settled = [OUTCOME_UNOBTAINABLE if i in should_violated else o
+                   for i, o in enumerate(outcomes)]
+        if must_refuted:
+            # the loop breaks at the first MUST refutation, so the refuting
             # evidence's basis is the last one collected — stored so the
             # refutation transfers (or is refused) at the right floor
             self.store.set_refuted(claim_id, reason="counterexample on record",
@@ -1101,6 +1189,16 @@ class Kernel:
                                    strength=(strengths[-1] if strengths
                                              else None))
             new_status = "refuted"
+        elif should_violated and all(
+                o in (OUTCOME_HOLDS, OUTCOME_UNOBTAINABLE) for o in settled):
+            self.store.record_evidence(
+                claim_id,
+                {"outcome": OUTCOME_UNOBTAINABLE,
+                 "contrary_signals": len(should_violated),
+                 "error": "advisory (should) clause violated; every "
+                          "acceptance (must) check that ran held"})
+            self.store.set_partial(claim_id)
+            new_status = "partial"
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes \
                 and self.store.get(claim_id)["kind"] == CLAIM_FINAL \
                 and BASIS_WORLD not in bases:
@@ -1137,9 +1235,9 @@ class Kernel:
             self.store.set_verified(claim_id, basis=basis,
                                     strength=weakest_strength(strengths))
             new_status = "verified"
-        elif any(o == OUTCOME_UNOBTAINABLE for o in outcomes) and all(
+        elif any(o == OUTCOME_UNOBTAINABLE for o in settled) and all(
                 o in (OUTCOME_HOLDS, OUTCOME_UNOBTAINABLE)
-                for o in outcomes):
+                for o in settled):
             # Partial has one narrow, terminal meaning: every check that did
             # run held, but at least one necessary check is structurally
             # unavailable inside this fixed evidence boundary. A retryable

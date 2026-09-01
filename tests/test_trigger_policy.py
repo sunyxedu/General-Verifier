@@ -39,7 +39,7 @@ class StubDischarger:
         self.seen.append(obligation.text)
         outcome = (self.outcome(row) if callable(self.outcome)
                    else self.outcome)
-        return DischargeResult(outcome=outcome, witness=self.witness,
+        return DischargeResult(witness_kind="execution", outcome=outcome, witness=self.witness,
                                artifact="", instrument="stub")
 
 
@@ -47,11 +47,12 @@ class PartialDischarger:
     def discharge(self, row, obligation, method=None, tag=""):
         if "historical output" in obligation.text:
             return DischargeResult(
+                witness_kind="execution",
                 outcome="unobtainable",
                 witness="effect excerpt was truncated before the required field",
                 artifact="", instrument="stub", basis="record",
             )
-        return DischargeResult(outcome="holds", witness=None,
+        return DischargeResult(witness_kind="execution", outcome="holds", witness=None,
                                artifact="", instrument="stub", basis="world")
 
 

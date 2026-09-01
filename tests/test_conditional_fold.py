@@ -52,6 +52,7 @@ class PerTextDischarger:
         outcome, basis, strength = self.spec.get(
             obligation.text, self.default)
         return DischargeResult(
+            witness_kind="execution",
             outcome=outcome,
             witness="w" if outcome == "refuted" else None,
             artifact="", instrument="stub", basis=basis, strength=strength)

@@ -32,7 +32,7 @@ class PerClaimDischarger:
 
     def discharge(self, row, obligation, method=None, tag=""):
         outcome = self.outcomes.get(row["text"], "holds")
-        return DischargeResult(outcome=outcome, witness="w" if outcome == "refuted" else None,
+        return DischargeResult(witness_kind="execution", outcome=outcome, witness="w" if outcome == "refuted" else None,
                                artifact="", instrument="stub", basis="world")
 
 

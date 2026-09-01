@@ -280,7 +280,7 @@ def _quarantine_immutable_inputs(
 # therefore cannot safely be used by the current BoN ranker. Keep this version
 # explicit so mixed/legacy result files fail closed instead of silently
 # reverting to the old whole-slice heuristic.
-FEATURE_SCHEMA_VERSION = 2
+FEATURE_SCHEMA_VERSION = 3
 
 
 def pipeline_fingerprint() -> str:
@@ -514,6 +514,7 @@ def _unscoreable(error: str, extract_rounds: int,
         "obligations_total": 0,
         "final_obligations": {},
         "final_obligations_total": 0,
+        "final_contrary_signals": 0,
         "extract_rounds": extract_rounds,
         "fingerprint": fingerprint,
     }
@@ -561,6 +562,13 @@ def _features(cert: Dict[str, Any], extract_rounds: int,
     final_ob_counts: Dict[str, int] = {}
     for status in final_obligations.values():
         final_ob_counts[status] = final_ob_counts.get(status, 0) + 1
+    # contrary signals on the contract: advisory (should) clauses the
+    # candidate violated. They never refute; they are the only thing that
+    # separates two candidates inside one verdict band (fewer is better).
+    final_contrary = sum(
+        1 for o in final_entry.get("obligations", [])
+        if o.get("status") == "refuted"
+        and o.get("severity", "must") != "must")
     return {
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "unscoreable": False,
@@ -584,6 +592,7 @@ def _features(cert: Dict[str, Any], extract_rounds: int,
         "obligations_total": len(obligations),
         "final_obligations": final_ob_counts,
         "final_obligations_total": len(final_obligations),
+        "final_contrary_signals": final_contrary,
         "extract_rounds": extract_rounds,
         "fingerprint": fingerprint,
     }
@@ -765,32 +774,36 @@ VERDICT_RANK = {"verified": 4, "supported": 3, "partial": 2,
 
 def rank_key(features: Optional[Dict[str, Any]]) -> tuple:
     """Lexicographic trace score, higher-is-better: certificate verdict
-    dominates absolutely; the verified fraction of the final claim's own
-    task-contract obligations breaks ties. Whole-slice claim and obligation
-    counts are diagnostics only and never enter selection.
+    dominates absolutely; inside a verdict band, only the number of
+    contrary signals on the final claim's task contract (advisory
+    clauses the candidate violated) separates candidates — fewer wins.
+    Candidates with the same verdict and the same contrary count are a
+    TIE, reported as such by selection.argmax_set: the verifier has no
+    further information and says so, rather than ranking on how many
+    incidental checks happened to be runnable.
 
-    Legacy or malformed feature records rank exactly like unscoreable records.
-    In particular, there is intentionally no fallback to the old whole-slice
-    verified fraction: silently mixing the two ranking schemas could flip a
-    BoN choice merely because one candidate had a more verbose decomposition.
+    Whole-slice counts and the verified fraction of the contract are
+    diagnostics only and never enter selection. Legacy or malformed
+    feature records rank exactly like unscoreable records.
     """
     if not features or features.get("unscoreable"):
-        return (-1, 0.0)
+        return (-1, 0)
     if features.get("feature_schema_version") != FEATURE_SCHEMA_VERSION:
-        return (-1, 0.0)
+        return (-1, 0)
 
     counts = features.get("final_obligations")
     total = features.get("final_obligations_total")
     if not isinstance(counts, dict) or isinstance(total, bool) \
             or not isinstance(total, int) or total < 0:
-        return (-1, 0.0)
+        return (-1, 0)
     if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
            for value in counts.values()) or sum(counts.values()) != total:
-        return (-1, 0.0)
+        return (-1, 0)
     verdict = features.get("verdict")
     if verdict not in VERDICT_RANK:
-        return (-1, 0.0)
-
-    verified = counts.get("verified", 0)
-    fraction = verified / total if total else 0.0
-    return (VERDICT_RANK[verdict], fraction)
+        return (-1, 0)
+    contrary = features.get("final_contrary_signals", 0)
+    if isinstance(contrary, bool) or not isinstance(contrary, int) \
+            or contrary < 0:
+        return (-1, 0)
+    return (VERDICT_RANK[verdict], -contrary)

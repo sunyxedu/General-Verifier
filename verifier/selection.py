@@ -26,16 +26,21 @@ def scalar(features) -> float:
     [0, 1]: six equal verdict bands that can never cross —
     verified [5/6, 1) · supported [4/6, 5/6) · partial [3/6, 4/6) ·
     unverified [2/6, 3/6) · refuted [1/6, 2/6) · unscoreable exactly
-    0.0. Within a band, only the verified fraction of the final claim's
-    task-contract obligations contributes. Selection keeps comparing the exact
-    tuple; this is a view, not the decision variable."""
-    rank, final_obligation_fraction = rank_key(features)
-    return (rank + 1 + 0.999 * final_obligation_fraction) / 6
+    0.0. Within a band, only the count of contrary signals on the final
+    claim's contract moves the value (zero signals sits at the top of the
+    band; each extra signal lowers it, never out of the band). Selection
+    keeps comparing the exact tuple; this is a view, not the decision
+    variable."""
+    rank, neg_contrary = rank_key(features)
+    if rank < 0:
+        return 0.0
+    return (rank + 1 + 0.999 / (1 - neg_contrary)) / 6
 
 
 def argmax(rows: List[Row]) -> Optional[Row]:
     """The single best trace by lexicographic rank; first wins ties
-    (stable, so reruns select the same trace)."""
+    (stable, so reruns select the same trace). Callers that must not
+    pretend a tie was decided use argmax_set."""
     if not rows:
         return None
     best = rows[0]
@@ -43,6 +48,17 @@ def argmax(rows: List[Row]) -> Optional[Row]:
         if rank_key(row.get("features")) > rank_key(best.get("features")):
             best = row
     return best
+
+
+def argmax_set(rows: List[Row]) -> List[Row]:
+    """Every trace sharing the top rank key — the honest read-out when
+    the verifier has no information separating them. A singleton means
+    the selection was decided; a longer list is an explicit tie, to be
+    scored as an abstention (or by expected credit), never as a pick."""
+    if not rows:
+        return []
+    top = max(rank_key(row.get("features")) for row in rows)
+    return [row for row in rows if rank_key(row.get("features")) == top]
 
 
 def _vote(rows: List[Row], weight) -> Optional[Row]:

@@ -87,6 +87,13 @@ def request_certificate(
                     {"id": o["id"], "text": o["text"],
                      "status": o["status"], "reason": o["reason"],
                      "basis": o["basis"], "strength": o["strength"],
+                     # edge attributes: the clause's modality (only a
+                     # must refutes), the clause itself, and whether an
+                     # absence witness may refute it
+                     "severity": o.get("severity", "must"),
+                     "clause": o.get("clause", ""),
+                     "refutable_by_absence":
+                         bool(o.get("refutable_by_absence", False)),
                      "evidence": store.evidence_for(o["id"])}
                     for o in store.obligation_children(claim_id)
                 ],

@@ -35,7 +35,7 @@ class BasisDischarger:
     def discharge(self, row, obligation, method=None, tag=""):
         basis = (self.basis(obligation.text) if callable(self.basis)
                  else self.basis)
-        return DischargeResult(outcome="holds", witness=None,
+        return DischargeResult(witness_kind="execution", outcome="holds", witness=None,
                                artifact="", instrument="stub", basis=basis)
 
 

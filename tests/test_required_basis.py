@@ -42,7 +42,7 @@ class BasisDischarger:
                    if callable(self.outcome) else self.outcome)
         witness = ("historical output was truncated"
                    if outcome == "unobtainable" else None)
-        return DischargeResult(outcome=outcome, witness=witness,
+        return DischargeResult(witness_kind="execution", outcome=outcome, witness=witness,
                                artifact=self.artifact, instrument="stub",
                                basis=basis)
 

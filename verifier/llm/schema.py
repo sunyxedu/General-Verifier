@@ -22,13 +22,26 @@ class RoleError(RuntimeError):
 # or [{...}]), or {"field": ("a", "b")} for a closed string enum. Mirrors
 # agents.to_json_schema. The two must accept the same specs.
 
+def optional_key(key: str) -> bool:
+    """A schema key ending in "?" is OPTIONAL: validated when present,
+    allowed absent (the consumer applies its own fail-closed default)."""
+    return key.endswith("?")
+
+
+def field_name(key: str) -> str:
+    return key[:-1] if optional_key(key) else key
+
+
 def validate(schema: Dict[str, Any], payload: Any, path: str = "$") -> None:
     if not isinstance(payload, dict):
         raise RoleError(f"{path}: expected object, got {type(payload).__name__}")
     for key, spec in schema.items():
-        if key not in payload:
-            raise RoleError(f"{path}.{key}: missing")
-        _check(spec, payload[key], f"{path}.{key}")
+        name = field_name(key)
+        if name not in payload:
+            if optional_key(key):
+                continue
+            raise RoleError(f"{path}.{name}: missing")
+        _check(spec, payload[name], f"{path}.{name}")
 
 
 def _check(spec: Any, value: Any, path: str) -> None:

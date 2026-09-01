@@ -52,11 +52,13 @@ from ..execution.discharge import DischargeResult
 from ..core.events import EventLog
 from ..execution.instruments import (
     ArtifactStore, authoritative_task_context, world_evidence_context,
+    world_map,
 )
 from ..core.model import (
     BASIS_RECORD, BASIS_WORLD, Obligation, basis_satisfies,
     OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
     STRENGTH_ANALYTIC, STRENGTH_DECISIVE, STRENGTHS, strength_rank,
+    WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm.schema import RoleError
 
@@ -434,6 +436,19 @@ class BindingGame:
                 attempt.rejected = reason
                 continue
 
+            structural = self._structural_defect(result, obligation)
+            if structural:
+                # witness / independence axioms, enforced before the
+                # judger spends a call: an absence-only refutation or a
+                # holds grounded on a delivered artifact as authority is
+                # a method defect the repair pass may fix, never evidence
+                failed_seen = True
+                structural_feedback.append({
+                    "procedure": procedure, "reason": structural})
+                self._reject(row, obligation, method, structural)
+                attempt.rejected = structural
+                continue
+
             # every substantive outcome — holds AND refuted — faces the
             # judger before it settles, for both method sufficiency and
             # execution fidelity. A refutation is the most
@@ -524,6 +539,13 @@ class BindingGame:
                         "reason": reason,
                     })
                     break
+                structural = self._structural_defect(result, obligation)
+                if structural:
+                    failed_seen = True
+                    reason = f"{structural} (redo {rounds})"
+                    structural_feedback.append({
+                        "procedure": procedure, "reason": reason})
+                    break
                 verdict = self._judge(obligation, method, result, attempt,
                                       redo=rounds, degradation=degradation)
                 if strength != STRENGTH_DECISIVE \
@@ -581,6 +603,30 @@ class BindingGame:
                        "structurally unavailable")
         return self._fail(row, obligation, attempts, reason,
                           unobtainable=unavailable_only)
+
+    @staticmethod
+    def _structural_defect(result: DischargeResult,
+                           obligation: Obligation) -> Optional[str]:
+        """The two axioms checked on the executor's own declaration,
+        before any semantic audit: a refutation needs an admissible
+        witness kind (positive observation; absence only against a
+        presence requirement), and a holds must not rest on a delivered
+        artifact standing as authority (the circular certificate)."""
+        if result.outcome == OUTCOME_REFUTED and not witness_admissible(
+                result.witness_kind, obligation.refutable_by_absence):
+            kind = result.witness_kind or WITNESS_NONE
+            return (f"refutation witness of kind {kind!r} is inadmissible: "
+                    f"absence, silence, and undeclared witnesses never "
+                    f"refute unless the obligation is a presence "
+                    f"requirement (reported: {result.witness})")
+        if result.outcome == "holds":
+            circular = circular_inputs(result.inputs)
+            if circular:
+                return (f"circular evidence: delivered artifact(s) "
+                        f"{circular} declared as authority; a holds "
+                        f"grounded on the solver's own output establishes "
+                        f"consistency, not truth")
+        return None
 
     @staticmethod
     def _blocking(method: Dict[str, str], tier_listed: set,
@@ -644,6 +690,9 @@ class BindingGame:
                 "claim_text": row["text"],
                 "obligation_text": obligation.text,
                 "required_basis": obligation.required_basis,
+                "severity": obligation.severity,
+                "clause": obligation.clause,
+                "refutable_by_absence": obligation.refutable_by_absence,
                 "task_context": authoritative_task_context(state),
                 "features": _features(row),
                 "registry": registry,
@@ -653,6 +702,7 @@ class BindingGame:
                 "world_mode": world_mode,
                 "world_path": world,
                 "world_manifest": manifest,
+                "world_map": world_map(state, live_world=self.live_world),
             },
         )
         methods = payload["methods"]
@@ -686,6 +736,12 @@ class BindingGame:
         evidence = {
             "outcome": result.outcome,
             "witness": result.witness,
+            # the executor's own classification of its refutation witness
+            # and of every input it consumed — the judger audits both:
+            # a mislabelled absence or a delivered artifact hidden under
+            # another provenance class is unfaithful
+            "witness_kind": result.witness_kind,
+            "inputs": list(result.inputs),
             "artifact_digest": result.artifact,
             "artifact_path": os.path.join(
                 self.artifacts.root, result.artifact + ".json"
@@ -704,6 +760,9 @@ class BindingGame:
             state, live_world=self.live_world)
         variables = {
             "obligation_text": obligation.text,
+            "severity": obligation.severity,
+            "clause": obligation.clause,
+            "refutable_by_absence": obligation.refutable_by_absence,
             "procedure": method["procedure"],
             "promised_artifact": method.get("artifact", ""),
             # the oracle's declared evidence basis — the judger audits it as
@@ -723,6 +782,7 @@ class BindingGame:
             "world_mode": world_mode,
             "world_path": world,
             "world_manifest": manifest,
+            "world_map": world_map(state, live_world=self.live_world),
             "evidence": json.dumps(evidence, ensure_ascii=False),
         }
         total_calls = self.judger_error_retries + 1
@@ -854,6 +914,8 @@ class BindingGame:
             # binding game onto the settled evidence — the kernel gates
             # them against the claim's dependency closure
             assumed_premises=result.assumed_premises,
+            witness_kind=result.witness_kind,
+            inputs=result.inputs,
         )
 
     def _fail(self, row, obligation, attempts, reason,

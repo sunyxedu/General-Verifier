@@ -1,33 +1,27 @@
 """
 Prompt text for the verifier's agent roles.
 
-Every role has two parts: SYSTEM (the role's identity and rules, appended to the SDK's claude_code preset) 
-and TEMPLATE (the per-call prompt, rendered with str.format over the role's variables).
+Every role has two parts: SYSTEM (the role's identity and rules, appended
+to the SDK's claude_code preset) and TEMPLATE (the per-call prompt,
+rendered with str.format over the role's variables).
 
-Temapltes stay generic. 
-Domain content arrives at runtime: from the environment the agent can probe, from the model's latent knowledge, 
-and from retrieved memory, but never from text written in the prompts.
+Templates stay generic. The only cross-seat rules are the eight axioms in
+criteria/axioms.py: epistemic, domain-free, and free of case patches.
+Domain content arrives at runtime — from the task statement, the
+authorities it names, the standard public semantics of its domain, and
+the environment the seat can probe — never from text in the prompts.
 """
 
 from .criteria import (
-    PROOF_CARRYING_EFFECTS,
-    SIGNED_WORLD_EVIDENCE_REUSE,
-    OFFLINE_FROZEN_EXECUTION,
-    TASK_COMPLETE_OCCURRENCE_COMPOSITION,
-    SIBLING_PARTITION_COMPLETENESS,
-    ENUMERATED_MULTI_REFERENT_RULE,
-    REFERENT_METHOD_BOUNDARY,
-    SUPPORTING_PROVENANCE_BOUNDARY,
-    SOURCE_TERM_ROLE_BINDING,
-    TASK_INSTANCE_CONTRACT,
-    EDGE_NECESSITY_GATE,
-    NODE_NEGATION_GATE,
-    QUANTIFIER_ROLE_BINDING,
-    DIRECTIONAL_EXTREMAL_SUFFICIENCY,
-    PARTIAL_OBSERVATION_COMPLETIONS,
-    DERIVED_STATE_PROVENANCE,
-    PERCEPTUAL_SEMANTIC_ANCHOR,
-    TRANSFORMATION_EVENT_BINDING,
+    AXIOM_AUTHORITY,
+    AXIOM_INDEPENDENCE,
+    AXIOM_NECESSITY,
+    AXIOM_SUFFICIENCY,
+    AXIOM_WITNESS,
+    AXIOM_TIME,
+    AXIOM_REFERENT,
+    AXIOM_STRENGTH,
+    AXIOMS,
 )
 from .obligations import (
     OBLIGATIONS_SYSTEM,

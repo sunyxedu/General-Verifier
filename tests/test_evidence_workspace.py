@@ -41,6 +41,7 @@ class StubDischarger:
         queue = self.spec.get(obligation.text)
         item = queue.pop(0) if queue else {}
         return DischargeResult(
+            witness_kind="execution",
             outcome=item.get("outcome", "holds"),
             witness=item.get("witness"),
             artifact="", instrument="stub",

@@ -21,8 +21,8 @@ _write_lock = threading.Lock()
 
 
 # scalar lives beside rank_key's selection policy: only the verdict and the
-# final claim's task-contract obligation fraction form the decision surface.
-# Re-export it for the experiment drivers' existing imports.
+# contrary-signal count on the final claim's contract form the decision
+# surface. Re-export it for the experiment drivers' existing imports.
 from verifier.selection import scalar  # noqa: F401  (re-export)
 
 
@@ -90,7 +90,7 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
             say(f"[{tag} {len(done)}/{len(jobs)}] {label(record)} -> "
                 f"{features.get('verdict') or 'unscoreable'} "
                 f"score={scalar(features):.4f} "
-                f"final_obligation_frac={key[1]:.2f}")
+                f"contrary_signals={-key[1]}")
             if on_record is not None:
                 on_record(record)
         return record

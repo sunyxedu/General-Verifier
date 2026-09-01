@@ -927,7 +927,7 @@ def run(
     emitted: set[str] = set()
     header = (
         "task\ttrial\ttrace_hash\ttb_reward\tgv_verdict\tgv_score\t"
-        "gv_final_obligations_verified_frac\tgv_rank")
+        "gv_contrary_signals\tgv_rank")
     print(header, flush=True)
 
     def render(task: str) -> None:
@@ -953,7 +953,7 @@ def run(
                 f"{trace.task}\t{trace.trial}\t{trace.trace_hash}\t"
                 f"{_reward_text(trace.reward)}\t"
                 f"{features.get('verdict') or 'unscoreable'}\t"
-                f"{scoring.scalar(features):.6f}\t{key[1]:.6f}\t"
+                f"{scoring.scalar(features):.6f}\t{-key[1]}\t"
                 f"{rank[wid]}",
                 flush=True)
 

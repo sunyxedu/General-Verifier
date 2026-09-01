@@ -46,7 +46,7 @@ class StubDischarger:
 
     def discharge(self, row, obligation, method=None, tag=""):
         self.seen.append(obligation.text)
-        return DischargeResult(outcome=self.outcome, witness=None,
+        return DischargeResult(witness_kind="execution", outcome=self.outcome, witness=None,
                                artifact="", instrument="stub",
                                basis="world")
 
@@ -281,7 +281,8 @@ def test_feature_fold_keeps_final_contract_separate_from_slice_diagnostics():
     assert features["obligations_total"] == 4
     assert features["final_obligations"] == {"verified": 1, "partial": 1}
     assert features["final_obligations_total"] == 2
-    assert offline.rank_key(features) == (2, 0.5)
+    assert features["final_contrary_signals"] == 0
+    assert offline.rank_key(features) == (2, 0)
 
 
 def test_score_resumes_from_an_extracted_graph(tmp_path):
@@ -427,8 +428,9 @@ def test_live_trace_commits_are_never_invalidated(tmp_path):
 # ---- ranking & selection -----------------------------------------------------
 
 def F(verdict, final_verified=0, final_total=1, *, slice_verified=0,
-      slice_size=1, obligations=0):
+      slice_size=1, obligations=0, contrary=0):
     return {
+        "final_contrary_signals": contrary,
         "feature_schema_version": offline.FEATURE_SCHEMA_VERSION,
         "unscoreable": False,
         "verdict": verdict,
@@ -448,10 +450,14 @@ def test_rank_is_lexicographic():
     # verdict dominates absolutely, whatever the lower components say
     assert offline.rank_key(F("verified", final_verified=0, final_total=9)) \
         > offline.rank_key(F("partial", final_verified=9, final_total=9))
-    # same verdict: the FINAL contract's verified fraction breaks the tie
+    # same verdict: only contrary signals on the FINAL contract separate
+    # candidates (fewer wins); the verified fraction is a diagnostic and
+    # never ranks — two candidates differing only in it are a TIE
+    assert offline.rank_key(F("partial", contrary=0)) \
+        > offline.rank_key(F("partial", contrary=2))
     assert offline.rank_key(F("partial", final_verified=8, final_total=9)) \
-        > offline.rank_key(F("partial", final_verified=7, final_total=9))
-    assert offline.rank_key(None) == (-1, 0.0)
+        == offline.rank_key(F("partial", final_verified=7, final_total=9))
+    assert offline.rank_key(None) == (-1, 0)
 
 
 def test_rank_ignores_narration_decomposition_diagnostics():
@@ -460,7 +466,7 @@ def test_rank_ignores_narration_decomposition_diagnostics():
     padded = F("partial", final_verified=1, final_total=2,
                slice_verified=900, slice_size=901, obligations=10_000)
 
-    assert offline.rank_key(compact) == offline.rank_key(padded) == (2, 0.5)
+    assert offline.rank_key(compact) == offline.rank_key(padded) == (2, 0)
     assert selection.scalar(compact) == selection.scalar(padded)
 
 

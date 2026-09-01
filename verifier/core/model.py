@@ -103,6 +103,76 @@ def weakest_strength(strengths) -> str:
     return worst
 
 
+# obligation severity — the modality of the task clause an obligation is
+# compiled from, NOT its topic. MUST: a deliverable, postcondition, or an
+# explicit hard constraint whose violation makes the task incomplete; its
+# refutation refutes the claim. SHOULD: advice, preference, or a soft
+# constraint the task states without making acceptance depend on it; its
+# refutation is a contrary signal that can only lower a verdict (to
+# partial), never refute. Defaults to MUST: an undeclared clause is read
+# in the fail-closed direction.
+SEVERITY_MUST = "must"
+SEVERITY_SHOULD = "should"
+SEVERITIES = (SEVERITY_MUST, SEVERITY_SHOULD)
+
+# witness kinds — what a refutation is made of. Only a POSITIVE, retained,
+# replayable observation may refute: an execution whose recorded output
+# contradicts the obligation, a world artifact whose recorded content
+# contradicts it, or two ledger records that contradict each other.
+# ABSENCE (nothing found, nothing printed, nothing captured) refutes only
+# an obligation compiled as a presence requirement (refutable_by_absence);
+# everywhere else it is an evidence gap. NONE = no witness was delivered.
+WITNESS_EXECUTION = "execution"
+WITNESS_WORLD_STATE = "world_state"
+WITNESS_RECORD_CONTRADICTION = "record_contradiction"
+WITNESS_ABSENCE = "absence"
+WITNESS_NONE = "none"
+WITNESS_KINDS = (WITNESS_EXECUTION, WITNESS_WORLD_STATE,
+                 WITNESS_RECORD_CONTRADICTION, WITNESS_ABSENCE, WITNESS_NONE)
+POSITIVE_WITNESS_KINDS = (WITNESS_EXECUTION, WITNESS_WORLD_STATE,
+                          WITNESS_RECORD_CONTRADICTION)
+
+
+def witness_admissible(kind, refutable_by_absence: bool) -> bool:
+    """Whether a refutation carried by a witness of this kind may settle.
+    Unknown or missing kinds read as NONE (fail closed)."""
+    if kind in POSITIVE_WITNESS_KINDS:
+        return True
+    return kind == WITNESS_ABSENCE and bool(refutable_by_absence)
+
+
+# provenance classes of an input a check consumed — where the bytes came
+# from, independent of what the check did with them. The independence
+# axiom is enforced on the (provenance, role) pair: a DELIVERED artifact
+# (anything the solver produced or changed) may be the SUBJECT of a check
+# or an INPUT fed to it, but never the AUTHORITY that decides whether the
+# subject is right — that is the circular certificate.
+PROVENANCE_TASK_GIVEN = "task_given"     # supplied by the task, unchanged
+PROVENANCE_DELIVERED = "delivered"       # produced or modified by the solver
+PROVENANCE_LEDGER = "ledger"             # the recorded action stream
+PROVENANCE_VERIFIER = "verifier"         # computed by the verifier itself
+PROVENANCE_PUBLIC = "public"             # a public standard / reference
+PROVENANCES = (PROVENANCE_TASK_GIVEN, PROVENANCE_DELIVERED,
+               PROVENANCE_LEDGER, PROVENANCE_VERIFIER, PROVENANCE_PUBLIC)
+ROLE_SUBJECT = "subject"       # the thing being checked
+ROLE_INPUT = "input"           # fed into the check
+ROLE_AUTHORITY = "authority"   # decides what the right answer is
+INPUT_ROLES = (ROLE_SUBJECT, ROLE_INPUT, ROLE_AUTHORITY)
+
+
+def circular_inputs(inputs) -> list:
+    """The declared inputs that make a positive verdict circular: a
+    delivered artifact standing as authority for the check."""
+    out = []
+    for item in inputs or ():
+        if not isinstance(item, dict):
+            continue
+        if item.get("provenance") == PROVENANCE_DELIVERED \
+                and item.get("role") == ROLE_AUTHORITY:
+            out.append(item.get("ref", "?"))
+    return out
+
+
 # internal graph node kind for obligations; deliberately NOT in KINDS so a
 # solver can never commit one — only the kernel materializes them
 OBLIGATION_KINDS = "obligation"
@@ -142,6 +212,18 @@ class Obligation:
     # did or reported (the ledger settles those). Compiled by the
     # obligation compiler; enforced mechanically at binding and settle.
     required_basis: str = BASIS_RECORD
+    # EDGE-level attributes (how THIS claim relies on the node; excluded
+    # from node identity so settled verdicts still transfer):
+    # severity — must | should (see SEVERITY_*): decides whether a
+    #   refutation of the node refutes the claim or only lowers it;
+    # clause — the verbatim source span the obligation is compiled from,
+    #   retained so necessity can be audited against the controlling text;
+    # refutable_by_absence — the obligation is a presence requirement
+    #   (a named deliverable must exist), so an absence witness may refute
+    #   it; everywhere else absence is an evidence gap.
+    severity: str = SEVERITY_MUST
+    clause: str = ""
+    refutable_by_absence: bool = False
 
     def __post_init__(self):
         # basis_satisfies reads any unknown value as a low floor — an
@@ -150,6 +232,8 @@ class Obligation:
         if self.required_basis not in (BASIS_WORLD, BASIS_RECORD):
             raise ValueError(
                 f"unknown required_basis: {self.required_basis!r}")
+        if self.severity not in SEVERITIES:
+            raise ValueError(f"unknown severity: {self.severity!r}")
 
     @property
     def id(self) -> str:

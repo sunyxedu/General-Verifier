@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from . import prompts, provider
-from .schema import RoleError, validate
+from .schema import RoleError, validate, field_name, optional_key
 # The Claude Agent SDK backs the DEFAULT backend only; alternate backends
 # (CodexBackend) never touch it. Imported lazily so that a seats=codex run
 # does not depend on the SDK's import chain (mcp -> pydantic -> native
@@ -96,8 +96,10 @@ def to_json_schema(spec: Any) -> Dict[str, Any]:
     if isinstance(spec, dict):
         return {
             "type": "object",
-            "properties": {k: to_json_schema(v) for k, v in spec.items()},
-            "required": list(spec.keys()),
+            "properties": {field_name(k): to_json_schema(v)
+                           for k, v in spec.items()},
+            "required": [field_name(k) for k in spec
+                         if not optional_key(k)],
             "additionalProperties": False,
         }
     raise ValueError(f"unsupported schema spec: {spec!r}")
@@ -294,8 +296,17 @@ COMPILE_OBLIGATIONS_AGENT = AgentRole(
     # required_basis is the obligation's evidence floor (world | record),
     # enforced mechanically: methods below it never bind, and evidence
     # below it never settles the node
+    # severity is the modality of the source clause (must | should):
+    # only a must-obligation's refutation refutes the claim. clause is
+    # the verbatim span it was compiled from. refutable_by_absence marks
+    # a presence requirement (the only shape an absence witness may
+    # refute). Optional at the gate; the kernel defaults each to the
+    # fail-closed reading (must, "", False).
     schema={"obligations": [{"text": str,
-                             "required_basis": ("world", "record")}]},
+                             "required_basis": ("world", "record"),
+                             "severity?": ("must", "should"),
+                             "clause?": str,
+                             "refutable_by_absence?": bool}]},
     tools=["Read", "Grep", "Glob"],
 )
 
@@ -348,8 +359,22 @@ DISCHARGE_AGENT = AgentRole(
     # whose CONTENT the check assumed instead of re-establishing; [] when
     # the check stands on its own. Gated mechanically at the kernel to
     # the claim's own dependency closure.
+    # witness_kind: what a refutation is made of (execution |
+    # world_state | record_contradiction | absence | none) — the kernel
+    # admits only positive kinds, and absence only against a presence
+    # requirement; missing reads as none (a refutation then settles
+    # nothing). inputs: every substantive source the check consumed,
+    # with its provenance class and the role it played — a delivered
+    # artifact in the authority role makes a positive verdict circular
+    # and the kernel refuses it.
     schema={"outcome": OUTCOMES, "witness": str, "artifact": str,
-            "assumed_premises": [str]},
+            "assumed_premises": [str],
+            "witness_kind?": ("execution", "world_state",
+                              "record_contradiction", "absence", "none"),
+            "inputs?": [{"ref": str,
+                         "provenance": ("task_given", "delivered",
+                                        "ledger", "verifier", "public"),
+                         "role": ("subject", "input", "authority")}]},
     tools=["Bash", "Read", "Write", "Grep"],
 )
 

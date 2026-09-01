@@ -1,35 +1,14 @@
-"""Cross-seat rule blocks (criteria), grouped by intrinsic topic.
-Which seats compose each criterion is declared where it is true —
-in every seat file's own imports — not by this layout."""
+"""Cross-seat rules: the eight axioms and nothing else. Every seat
+composes the subset it needs where it is true — in its own imports."""
 
-from .referent import (
-    ENUMERATED_MULTI_REFERENT_RULE,
-    TRANSFORMATION_EVENT_BINDING,
-    REFERENT_METHOD_BOUNDARY,
-)
-from .scope import (
-    QUANTIFIER_ROLE_BINDING,
-    SIBLING_PARTITION_COMPLETENESS,
-    TASK_COMPLETE_OCCURRENCE_COMPOSITION,
-)
-from .provenance import (
-    SUPPORTING_PROVENANCE_BOUNDARY,
-    PROOF_CARRYING_EFFECTS,
-    SIGNED_WORLD_EVIDENCE_REUSE,
-    DERIVED_STATE_PROVENANCE,
-    PERCEPTUAL_SEMANTIC_ANCHOR,
-)
-from .task_contract import (
-    TASK_INSTANCE_CONTRACT,
-    SOURCE_TERM_ROLE_BINDING,
-    EDGE_NECESSITY_GATE,
-    NODE_NEGATION_GATE,
-    IMPERATIVE_EFFECT_TIMING,
-)
-from .execution import (
-    OFFLINE_FROZEN_EXECUTION,
-    PARTIAL_OBSERVATION_COMPLETIONS,
-    DIRECTIONAL_EXTREMAL_SUFFICIENCY,
-    STANDARD_DOMAIN_SEMANTICS,
-    PERCEPTUAL_EVIDENCE_CAP,
+from .axioms import (
+    AXIOM_AUTHORITY,
+    AXIOM_INDEPENDENCE,
+    AXIOM_NECESSITY,
+    AXIOM_SUFFICIENCY,
+    AXIOM_WITNESS,
+    AXIOM_TIME,
+    AXIOM_REFERENT,
+    AXIOM_STRENGTH,
+    AXIOMS,
 )

@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS deps (
 CREATE TABLE IF NOT EXISTS obligation_edges (
     claim      TEXT NOT NULL,
     obligation TEXT NOT NULL,
+    -- how THIS claim relies on the node (edge attributes, outside node
+    -- identity): the source clause's modality, the clause itself, and
+    -- whether the node is a presence requirement an absence may refute
+    severity   TEXT NOT NULL DEFAULT 'must',
+    clause     TEXT NOT NULL DEFAULT '',
+    refutable_by_absence INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (claim, obligation)
 );
 CREATE TABLE IF NOT EXISTS evidence (
@@ -88,6 +94,16 @@ class ClaimStore:
         if "strength" not in cols:
             self.db.execute("ALTER TABLE claims ADD COLUMN strength TEXT")
             self.db.commit()
+        edge_cols = {r[1] for r in
+                     self.db.execute("PRAGMA table_info(obligation_edges)")}
+        for name, decl in (("severity", "TEXT NOT NULL DEFAULT 'must'"),
+                           ("clause", "TEXT NOT NULL DEFAULT ''"),
+                           ("refutable_by_absence",
+                            "INTEGER NOT NULL DEFAULT 0")):
+            if name not in edge_cols:
+                self.db.execute(
+                    f"ALTER TABLE obligation_edges ADD COLUMN {name} {decl}")
+                self.db.commit()
         self.trigger = trigger
         self._trigger_callbacks: List[TriggerCallback] = []
 
@@ -378,20 +394,33 @@ class ClaimStore:
                 (oid, OBLIGATION_KINDS, obligation.text),
             )
         self.db.execute(
-            "INSERT OR IGNORE INTO obligation_edges (claim, obligation) "
-            "VALUES (?,?)",
-            (claim_id, oid),
+            "INSERT OR IGNORE INTO obligation_edges "
+            "(claim, obligation, severity, clause, refutable_by_absence) "
+            "VALUES (?,?,?,?,?)",
+            (claim_id, oid, getattr(obligation, "severity", "must"),
+             getattr(obligation, "clause", "") or "",
+             1 if getattr(obligation, "refutable_by_absence", False) else 0),
         )
         self.db.commit()
         return oid
 
     def obligation_children(self, claim_id: str) -> List[Dict]:
-        """The obligation nodes materialized under a claim, full rows."""
+        """The obligation nodes materialized under a claim, full rows,
+        each carrying the edge attributes (severity, clause,
+        refutable_by_absence) of THIS claim's reliance on it."""
         cur = self.db.execute(
-            "SELECT obligation FROM obligation_edges WHERE claim=?",
+            "SELECT obligation, severity, clause, refutable_by_absence "
+            "FROM obligation_edges WHERE claim=?",
             (claim_id,),
         )
-        return [self._row(oid) for (oid,) in cur.fetchall()]
+        out = []
+        for oid, severity, clause, absence in cur.fetchall():
+            row = self._row(oid)
+            row["severity"] = severity
+            row["clause"] = clause
+            row["refutable_by_absence"] = bool(absence)
+            out.append(row)
+        return out
 
     def settled_statement(self, text: str,
                           exclude: Optional[str] = None) -> Optional[Dict]:

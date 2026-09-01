@@ -57,7 +57,7 @@ def oracle_with_repair(repaired, initial=ORACLE):
 
 class StubDischarger:
     def discharge(self, row, obligation, method=None, tag=""):
-        return DischargeResult(outcome="holds", witness=None,
+        return DischargeResult(witness_kind="execution", outcome="holds", witness=None,
                                artifact="d1", instrument="stub")
 
 
@@ -69,7 +69,7 @@ class SequenceDischarger:
     def discharge(self, row, obligation, method=None, tag=""):
         self.methods.append(method)
         outcome, witness = next(self.outcomes)
-        return DischargeResult(outcome=outcome, witness=witness,
+        return DischargeResult(witness_kind="execution", outcome=outcome, witness=witness,
                                artifact="d1", instrument="stub")
 
 
@@ -87,6 +87,7 @@ class RetainedArtifactDischarger:
     def discharge(self, row, obligation, method=None, tag=""):
         self.calls += 1
         return DischargeResult(
+            witness_kind="execution",
             outcome="holds",
             witness="independent recomputation returned 42",
             artifact=self.digest,

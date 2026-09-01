@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
 from .instruments import (
     ArtifactStore, authoritative_task_context, world_evidence_context,
+    world_map,
 )
 from ..core.model import BASIS_RECORD, Obligation, OUTCOME_FAILED
 from ..llm.schema import RoleError
@@ -58,6 +59,15 @@ class DischargeResult:
     # the closure fails closed at the kernel. Empty = the check stands
     # on its own.
     assumed_premises: tuple = ()
+    # what a refutation is made of (model.WITNESS_*). None = undeclared,
+    # which the kernel reads as NONE: a refutation with no admissible
+    # witness settles nothing. Positive verdicts ignore it.
+    witness_kind: Optional[str] = None
+    # the substantive sources the check consumed, each
+    # {"ref", "provenance", "role"} (model.PROVENANCE_* / ROLE_*). The
+    # independence axiom is enforced on this declaration: a delivered
+    # artifact in the authority role makes a holds circular.
+    inputs: tuple = ()
 
 
 class AgentDischarger:
@@ -211,6 +221,9 @@ class AgentDischarger:
             "promised_artifact": method.get("artifact", ""),
             "declared_basis": method.get("basis", BASIS_RECORD),
             "required_basis": obligation.required_basis,
+            "severity": obligation.severity,
+            "clause": obligation.clause,
+            "refutable_by_absence": obligation.refutable_by_absence,
             "task_context": authoritative_task_context(self.state_dir),
             "workdir": workdir,
             "toolchain_dir": self.toolchain_dir,
@@ -222,6 +235,8 @@ class AgentDischarger:
             "world_mode": world_mode,
             "world_path": world,
             "world_manifest": manifest,
+            "world_map": world_map(self.state_dir,
+                                   live_world=self.live_world),
             "snapshot_per_file_cap": SNAPSHOT_PER_FILE_CAP,
         }
         try:
@@ -249,6 +264,8 @@ class AgentDischarger:
             artifact=digest,
             instrument=self.instrument,
             assumed_premises=tuple(payload.get("assumed_premises") or ()),
+            witness_kind=payload.get("witness_kind"),
+            inputs=tuple(payload.get("inputs") or ()),
         )
 
     def _maybe_cleanup(self, workdir: str) -> None:
