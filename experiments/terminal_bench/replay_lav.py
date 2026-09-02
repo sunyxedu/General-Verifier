@@ -96,6 +96,29 @@ def final_message(steps):
     return ""
 
 
+_ERROR_MARKS = ("Traceback (most recent call last)", "ModuleNotFoundError",
+                "command not found", "No such file or directory",
+                "E: Unable to locate", "Could not find a version",
+                "Connection refused", "Temporary failure in name resolution",
+                "Read-only file system", "Permission denied")
+
+
+def classify_miss(got: str, want: str) -> str:
+    """Rough triage of a fidelity miss: environment failure (repair signal)
+    vs. benign nondeterminism (timestamps/uuids/durations) vs. unknown."""
+    if not got.strip():
+        return "got_empty"
+    if any(m in got for m in _ERROR_MARKS) \
+            and not any(m in want for m in _ERROR_MARKS):
+        return "env_error"
+    lg, lw = len(got), len(want)
+    if lw and 0.5 <= lg / lw <= 2.0:
+        gt, wt = set(got.split()), set(want.split())
+        if wt and len(gt & wt) / len(wt) >= 0.6:
+            return "noise_suspect"
+    return "other"
+
+
 def build_trial(traj_path: str, job_dir: str, image: str) -> dict:
     traj = json.load(open(traj_path))
     trial_name = traj["trial_name"]
@@ -120,14 +143,32 @@ def build_trial(traj_path: str, job_dir: str, image: str) -> dict:
             if kind != "exec":
                 steps_report.append({"kind": kind, **payload})
                 continue
-            run = replay.docker(
-                ["exec", "-w", payload.get("workdir") or "/app", name,
-                 "bash", "-lc", payload["cmd"]], timeout=900)
+            try:
+                # The source harness cut every command at 30s, so no recorded
+                # step ever ran longer; 180s leaves headroom for cold caches.
+                run = replay.docker(
+                    ["exec", "-w", payload.get("workdir") or "/app", name,
+                     "bash", "-lc", payload["cmd"]], timeout=180)
+            except subprocess.TimeoutExpired:
+                # A single overlong step (e.g. a pure-compute simulation)
+                # must not kill the trial: record the infidelity and move on.
+                steps_report.append({"kind": "exec", "match": False,
+                                     "timeout": True,
+                                     "cmd": payload["cmd"][:100]})
+                continue
             got = replay.norm(run.stdout + run.stderr)
             want = replay.norm(recorded)
             match = (got == want) or (want and want in got) \
                 or (got and got in want)
+            if not match:
+                extra = {"miss_class": classify_miss(got, want),
+                         "got_head": (run.stdout + run.stderr)[:300],
+                         "want_head": (recorded or "")[:300],
+                         "rc": run.returncode}
+            else:
+                extra = {}
             steps_report.append({"kind": "exec", "match": bool(match),
+                                 **extra,
                                  "cmd": payload["cmd"][:100]})
         # 2. world capture
         cp = replay.docker(["cp", f"{name}:/app",
@@ -219,7 +260,12 @@ def main():
         futures = [pool.submit(build_trial, t, job_dir, img)
                    for t, img in work]
         for fut in futures:
-            r = fut.result()
+            try:
+                r = fut.result()
+            except Exception as exc:
+                print(f"[replay-lav] trial crashed: {exc!r}"[:300],
+                      flush=True)
+                continue
             print(f"[replay-lav] {r['trial']}: {r['status']} "
                   f"{r.get('fidelity', '')}", flush=True)
 

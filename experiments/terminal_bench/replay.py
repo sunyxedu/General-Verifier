@@ -145,9 +145,46 @@ def parse_official(path: str):
             yield ("exec", {"cmd": cmd, "workdir": "/app"}, recorded)
 
 
+_CAPTURE_CAP = 4 * 1024 * 1024  # per-stream cap; replayed steps can emit GBs
+
+
+class _DockerResult:
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def _drain(stream, chunks, cap):
+    kept = 0
+    while True:
+        data = stream.read(65536)
+        if not data:
+            break
+        if kept < cap:
+            chunks.append(data[:cap - kept])
+            kept += len(chunks[-1])
+    stream.close()
+
+
 def docker(args, **kw):
-    return subprocess.run(["docker", *args], capture_output=True,
-                          text=True, timeout=kw.pop("timeout", 300), **kw)
+    import threading
+    timeout = kw.pop("timeout", 300)
+    proc = subprocess.Popen(["docker", *args], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, **kw)
+    out, err = [], []
+    readers = [threading.Thread(target=_drain, args=(proc.stdout, out, _CAPTURE_CAP)),
+               threading.Thread(target=_drain, args=(proc.stderr, err, _CAPTURE_CAP))]
+    for t in readers:
+        t.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        for t in readers:
+            t.join()
+    return _DockerResult(proc.returncode, "".join(out), "".join(err))
 
 
 def apply_patch(container: str, patch: str):
