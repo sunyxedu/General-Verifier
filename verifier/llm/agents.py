@@ -26,6 +26,9 @@ be a hard boundary.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -105,6 +108,51 @@ def to_json_schema(spec: Any) -> Dict[str, Any]:
     raise ValueError(f"unsupported schema spec: {spec!r}")
 
 
+def _seat_limit() -> int:
+    """Process-wide cap on in-flight seat calls, whatever the nesting of
+    trial x claim x obligation parallelism above it. Env
+    GV_MAX_CONCURRENT_SEATS (default 12); <= 0 disables the cap."""
+    try:
+        return int(os.environ.get("GV_MAX_CONCURRENT_SEATS", "12"))
+    except ValueError:
+        return 12
+
+
+class _SeatGate:
+    """A bounded semaphore sized lazily from the env, shared by every role
+    in the process; ``slot()`` yields one in-flight permit."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._sem: Optional[threading.BoundedSemaphore] = None
+        self._size = 0
+
+    def _current(self) -> Optional[threading.BoundedSemaphore]:
+        limit = _seat_limit()
+        if limit <= 0:
+            return None
+        with self._lock:
+            if self._sem is None or self._size != limit:
+                self._sem = threading.BoundedSemaphore(limit)
+                self._size = limit
+            return self._sem
+
+    @contextlib.contextmanager
+    def slot(self):
+        sem = self._current()
+        if sem is None:
+            yield
+            return
+        sem.acquire()
+        try:
+            yield
+        finally:
+            sem.release()
+
+
+SEAT_GATE = _SeatGate()
+
+
 @dataclass
 class AgentRole:
     """A verifier role: generic prompt + output contract + permitted palette."""
@@ -126,7 +174,8 @@ class AgentRole:
         last_error: Optional[RoleError] = None
         for _attempt in range(2):
             try:
-                payload = backend.complete(self.name, prompt, variables)
+                with SEAT_GATE.slot():
+                    payload = backend.complete(self.name, prompt, variables)
                 validate(self.schema, payload)
                 return payload
             except RoleError as err:

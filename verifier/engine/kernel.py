@@ -15,6 +15,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Dict, List, Optional
 
 from ..execution.discharge import AgentDischarger, DischargeResult
@@ -97,7 +99,22 @@ class Kernel:
         memory=None,
         live_world: bool = True,
         critic_rounds: Optional[int] = None,
+        parallel_obligations: int = 1,
+        parallel_claims: int = 1,
     ):
+        # parallelism is an execution strategy, not a judgment: the same
+        # obligations get the same evidence, only the schedule changes.
+        # parallel_obligations bounds concurrent discharges within one
+        # claim; parallel_claims is read by request_certificate to verify
+        # independent claims of a slice concurrently (offline only — an
+        # online commit still verifies one claim as it arrives).
+        self.parallel_obligations = max(1, int(parallel_obligations or 1))
+        self.parallel_claims = max(1, int(parallel_claims or 1))
+        self._pool: Optional[ThreadPoolExecutor] = None
+        self._pool_guard = threading.Lock()
+        self._node_locks: Dict[str, threading.Lock] = {}
+        self._claim_locks: Dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
         self.store = store
         self.log = log
         self.backend = backend
@@ -117,17 +134,39 @@ class Kernel:
         self.memory = memory      # advisory stores; None -> static hints
         store.on_trigger(self.verify)  # the single rule wires straight in
 
+    # locks and pools
+    def _lock_for(self, table: Dict[str, threading.Lock],
+                  key: str) -> threading.Lock:
+        with self._locks_guard:
+            lock = table.get(key)
+            if lock is None:
+                lock = table[key] = threading.Lock()
+            return lock
+
+    def _obligation_pool(self) -> Optional[ThreadPoolExecutor]:
+        if self.parallel_obligations <= 1:
+            return None
+        with self._pool_guard:
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(
+                    max_workers=self.parallel_obligations,
+                    thread_name_prefix="gv-obligation")
+            return self._pool
+
     # entry
     def verify(self, claim_id: str) -> str:
-        """Verify one claim; returns its resulting status. Idempotent."""
-        row = self.store.get(claim_id)
-        if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
-            return row["status"]
-        if row["kind"] == CLAIM_EFFECT:
-            self._verify_effect(row)
-        else:
-            self._verify_assertion(row)
-        return self.store.status(claim_id)
+        """Verify one claim; returns its resulting status. Idempotent, and
+        serialized per claim: two callers verifying the same claim
+        concurrently (parallel certificate slices) do the work once."""
+        with self._lock_for(self._claim_locks, claim_id):
+            row = self.store.get(claim_id)
+            if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
+                return row["status"]
+            if row["kind"] == CLAIM_EFFECT:
+                self._verify_effect(row)
+            else:
+                self._verify_assertion(row)
+            return self.store.status(claim_id)
 
     # effect: ledger check
     def _verify_effect(self, row: Dict) -> None:
@@ -200,14 +239,90 @@ class Kernel:
             )
             return
 
-        outcomes: List[str] = []
-        bases: List[str] = []     # per-obligation evidence basis, for the
-        strengths: List[Optional[str]] = []  # and strength: both fold at
-        severities: List[str] = []           # claim-level settle; severity
-        refuting_witness = None              # decides what a refutation
-        for obligation in obligations:       # is worth (must refutes, should
-            severities.append(obligation.severity)  # only lowers)
-            oid = self.store.add_obligation(row["id"], obligation)
+        settled = self._settle_obligations(row, obligations)
+        outcomes = [r[1] for r in settled]
+        bases = [r[3] or BASIS_RECORD for r in settled]
+        strengths = [r[4] for r in settled]
+        severities = [r[0].severity for r in settled]
+        refuting_witness = next(
+            (r[2] for r in settled if r[1] == OUTCOME_REFUTED
+             and r[0].severity == SEVERITY_MUST), None)
+        self._settle(row["id"], outcomes, bases, strengths, severities)
+
+        if self.memory is not None:
+            status = self.store.status(row["id"])
+            self.memory.record_obligations(
+                row["text"], [o.text for o in obligations], status)
+            if status == STATUS_REFUTED:
+                self.memory.record_attack(
+                    row["text"], row["text"],
+                    str(refuting_witness), kind="refutation")
+            self.log.append("memory_recorded", {"claim": row["id"]})
+
+    def _settle_obligations(self, row: Dict, obligations: List[Obligation]):
+        """Settle every obligation of a claim; returns
+        [(obligation, outcome, witness, basis, strength)] in compile
+        order for the obligations actually settled.
+
+        Sequential (parallel_obligations == 1): one after another,
+        stopping at the first MUST refutation — the claim is decided and
+        the remaining checks would only spend instruments.
+
+        Parallel: every obligation is submitted at once (each is an
+        independent check of a content-addressed node), results are
+        collected as they land, and the first MUST refutation cancels the
+        obligations that have not started yet; those already running
+        finish and are recorded. Latency becomes the slowest check
+        instead of the sum, at the price of some speculative work on a
+        refuted claim."""
+        pool = self._obligation_pool()
+        if pool is None or len(obligations) <= 1:
+            out = []
+            for obligation in obligations:
+                result = self._settle_one(row, obligation)
+                out.append((obligation, *result))
+                if result[0] == OUTCOME_REFUTED \
+                        and obligation.severity == SEVERITY_MUST:
+                    break
+            return out
+        futures = {pool.submit(self._settle_one, row, o): o
+                   for o in obligations}
+        pending = set(futures)
+        decided = False
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            if decided:
+                continue
+            for fut in done:
+                if fut.cancelled():
+                    continue
+                outcome = fut.result()[0]
+                if outcome == OUTCOME_REFUTED \
+                        and futures[fut].severity == SEVERITY_MUST:
+                    decided = True
+                    for other in pending:
+                        other.cancel()   # not-yet-started checks only
+        out = []
+        for fut, obligation in futures.items():
+            if fut.cancelled():
+                self.log.append(
+                    "status_change",
+                    {"claim": row["id"], "obligation": obligation.id,
+                     "status": "skipped",
+                     "reason": "claim decided by a must refutation before "
+                               "this check started"})
+                continue
+            out.append((obligation, *fut.result()))
+        return out
+
+    def _settle_one(self, row: Dict, obligation: Obligation):
+        """Settle one obligation node for this claim — by dedup, by
+        inheritance from a same-text claim, or by fresh discharge — under
+        the node's lock, so two claims sharing a node never discharge it
+        twice: the second waits, then takes the dedup path. Returns
+        (outcome, witness, basis, strength)."""
+        oid = self.store.add_obligation(row["id"], obligation)
+        with self._lock_for(self._node_locks, oid):
             known = self.store.status(oid)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 # foreign-assumption gate: a node settled under another
@@ -238,16 +353,13 @@ class Kernel:
                 self.log.append("dedup_hit",
                                 {"claim": row["id"], "obligation": oid,
                                  "status": known})
-                outcomes.append(outcome)
                 node = self.store.get(oid)
-                bases.append(node["basis"] or BASIS_RECORD)
-                strengths.append(node["strength"])
+                witness = None
                 if outcome == OUTCOME_REFUTED:
                     ev = self.store.evidence_for(oid)
-                    refuting_witness = ev[-1].get("witness") if ev else None
-                    if obligation.severity == SEVERITY_MUST:
-                        break
-                continue
+                    witness = ev[-1].get("witness") if ev else None
+                return (outcome, witness, node["basis"] or BASIS_RECORD,
+                        node["strength"])
             src = self.store.settled_statement(obligation.text,
                                                exclude=row["id"])
             if src is not None:
@@ -284,39 +396,12 @@ class Kernel:
                 if not transferable:
                     src = None
             if src is not None:
-                # the graph already settled this exact statement as a CLAIM
-                # (different identity space, so node dedup cannot see it).
-                # the verdict and its evidence transfer, no instrument spent
                 outcome, witness, basis, strength = self._inherit(
                     row, obligation, src)
-                outcomes.append(outcome)
-                bases.append(basis or BASIS_RECORD)
-                strengths.append(strength)
-                if outcome == OUTCOME_REFUTED:
-                    refuting_witness = witness
-                    if obligation.severity == SEVERITY_MUST:
-                        break
-                continue
+                return outcome, witness, basis or BASIS_RECORD, strength
             outcome, witness, basis, strength = self._discharge(
                 row, obligation)
-            outcomes.append(outcome)
-            bases.append(basis or BASIS_RECORD)
-            strengths.append(strength)
-            if outcome == OUTCOME_REFUTED:
-                refuting_witness = witness
-                if obligation.severity == SEVERITY_MUST:
-                    break
-        self._settle(row["id"], outcomes, bases, strengths, severities)
-
-        if self.memory is not None:
-            status = self.store.status(row["id"])
-            self.memory.record_obligations(
-                row["text"], [o.text for o in obligations], status)
-            if status == STATUS_REFUTED:
-                self.memory.record_attack(
-                    row["text"], row["text"],
-                    str(refuting_witness), kind="refutation")
-            self.log.append("memory_recorded", {"claim": row["id"]})
+            return outcome, witness, basis or BASIS_RECORD, strength
 
     def _premises_in_force(self, row: Dict) -> set:
         """The premise ids whose content evidence for this claim may

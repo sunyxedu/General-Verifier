@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from typing import Any, Dict, Iterator, Optional
 
@@ -58,6 +59,10 @@ class EventLog:
 
     def __init__(self, path: str):
         self.path = path
+        # one writer at a time: seq allocation and the write are atomic
+        # together, so concurrent seats (parallel obligations/claims) can
+        # never interleave into a gap or a duplicate that replay rejects
+        self._lock = threading.Lock()
         self._seq = self._last_seq()
 
     def _last_seq(self) -> int:
@@ -74,10 +79,14 @@ class EventLog:
     def append(self, type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if type not in EVENT_TYPES:
             raise ValueError(f"unknown event type: {type}")
-        self._seq += 1
-        event = {"seq": self._seq, "ts": time.time(), "type": type, "payload": payload}
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        with self._lock:
+            self._seq += 1
+            event = {"seq": self._seq, "ts": time.time(), "type": type,
+                     "payload": payload}
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event, ensure_ascii=False,
+                                   sort_keys=True) + "\n")
+                f.flush()
         return event
 
     def replay(self) -> Iterator[Dict[str, Any]]:

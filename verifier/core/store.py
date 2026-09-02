@@ -11,8 +11,10 @@ The certificate remains the backstop: it settles the final's whole slice.
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
+import threading
 from typing import Callable, Dict, List, Optional, Set
 
 from .model import (
@@ -26,7 +28,25 @@ TriggerCallback = Callable[[str], None]
 
 TRIGGER_ON_COMMIT = "on-commit"
 TRIGGER_ON_FIRST_DEPENDENT = "on-first-dependent"
-TRIGGERS = (TRIGGER_ON_COMMIT, TRIGGER_ON_FIRST_DEPENDENT)
+# lazy: the store never schedules verification; the certificate request
+# settles the whole slice (in parallel when the kernel allows). The
+# offline scorer uses it so that replaying commits does not verify claims
+# one at a time before the parallel pass can start.
+TRIGGER_LAZY = "lazy"
+TRIGGERS = (TRIGGER_ON_COMMIT, TRIGGER_ON_FIRST_DEPENDENT, TRIGGER_LAZY)
+
+
+def _locked(method):
+    """Serialize every store method: one sqlite connection shared by the
+    parallel seats. The lock is re-entrant, so nested calls (effective ->
+    parents -> _row) and trigger callbacks issued from inside add_claim
+    keep working; verification work runs outside the lock because the
+    callbacks are invoked after the transaction commits."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS claims (
@@ -83,7 +103,8 @@ class ClaimStore:
     def __init__(self, path: str = ":memory:", trigger: str = TRIGGER_ON_COMMIT):
         if trigger not in TRIGGERS:
             raise ValueError(f"unknown trigger policy: {trigger}")
-        self.db = sqlite3.connect(path)
+        self._lock = threading.RLock()
+        self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.executescript(_SCHEMA)
         # migration: stores created before evidence-basis tracking lack the
         # column (CREATE TABLE IF NOT EXISTS never alters an existing table)
@@ -116,6 +137,7 @@ class ClaimStore:
         self._trigger_callbacks.append(cb)
 
     # graph construction
+    @_locked
     def add_claim(self, claim: Claim) -> str:
         cur = self.db.execute("SELECT 1 FROM claims WHERE id=?", (claim.id,))
         if cur.fetchone():
@@ -146,25 +168,37 @@ class ClaimStore:
             self._mark_stale_cone(claim.revises)
 
         self.db.commit()
-        
+
         if self.trigger == TRIGGER_ON_COMMIT and claim.kind != CLAIM_EFFECT:
             fired.append(claim.id)
-        for claim_id in fired:
-            for cb in self._trigger_callbacks:
-                cb(claim_id)
+        if self.trigger == TRIGGER_LAZY:
+            fired = []
+        # callbacks run with the lock RELEASED (the wrapper's RLock is
+        # re-entrant, so releasing here is explicit): verification must not
+        # hold the store lock while it waits on seats or on other threads
+        self._lock.release()
+        try:
+            for claim_id in fired:
+                for cb in self._trigger_callbacks:
+                    cb(claim_id)
+        finally:
+            self._lock.acquire()
         return claim.id
 
     # status machine
+    @_locked
     def status(self, claim_id: str) -> str:
         row = self._row(claim_id)
         return row["status"]
 
+    @_locked
     def set_verified(self, claim_id: str, basis: Optional[str] = None,
                      strength: Optional[str] = None) -> None:
         self._transition(claim_id, STATUS_VERIFIED,
                          allowed={STATUS_UNVERIFIED, STATUS_STALE},
                          basis=basis, strength=strength)
 
+    @_locked
     def set_refuted(self, claim_id: str, reason: str,
                     basis: Optional[str] = None,
                     strength: Optional[str] = None) -> None:
@@ -177,10 +211,12 @@ class ClaimStore:
                          allowed={STATUS_UNVERIFIED, STATUS_STALE},
                          reason=reason, basis=basis, strength=strength)
 
+    @_locked
     def set_partial(self, claim_id: str) -> None:
         self._transition(claim_id, STATUS_PARTIAL,
                          allowed={STATUS_UNVERIFIED, STATUS_STALE})
 
+    @_locked
     def set_unverified(self, claim_id: str,
                        reason: Optional[str] = None) -> None:
         """Finish a stale/failed recheck without claiming new evidence."""
@@ -188,6 +224,7 @@ class ClaimStore:
                          allowed={STATUS_UNVERIFIED, STATUS_STALE},
                          reason=reason)
 
+    @_locked
     def _transition(self, claim_id, new, allowed, reason=None, basis=None,
                     strength=None):
         current = self.status(claim_id)
@@ -200,11 +237,13 @@ class ClaimStore:
         )
         self.db.commit()
 
+    @_locked
     def _mark_stale_cone(self, claim_id: str) -> None:
         for cid in [claim_id, *self.downstream(claim_id)]:
             self.db.execute("UPDATE claims SET status=? WHERE id=?", (STATUS_STALE, cid))
 
     # evidence
+    @_locked
     def record_evidence(self, claim_id: str, payload: dict) -> None:
         self.db.execute(
             "INSERT INTO evidence (claim_id, payload) VALUES (?,?)",
@@ -212,19 +251,23 @@ class ClaimStore:
         )
         self.db.commit()
 
+    @_locked
     def evidence_for(self, claim_id: str) -> List[dict]:
         cur = self.db.execute("SELECT payload FROM evidence WHERE claim_id=?", (claim_id,))
         return [json.loads(r[0]) for r in cur.fetchall()]
 
     # graph queries
+    @_locked
     def backward_slice(self, claim_id: str) -> List[str]:
         """The dependency closure including the claim itself (cert scope)."""
         return self._walk(claim_id, "SELECT parent FROM deps WHERE child=?")
 
+    @_locked
     def downstream(self, claim_id: str) -> List[str]:
         """Everything that (transitively) depends on claim_id, excluding it."""
         return self._walk(claim_id, "SELECT child FROM deps WHERE parent=?")[1:]
 
+    @_locked
     def _walk(self, start: str, query: str) -> List[str]:
         if not self._exists(start):
             raise UnknownDependency(f"{start[:12]}… not in store")
@@ -242,6 +285,7 @@ class ClaimStore:
             frontier = next_frontier
         return order
 
+    @_locked
     def get(self, claim_id: str) -> Dict:
         return self._row(claim_id)
 
@@ -260,6 +304,7 @@ class ClaimStore:
     _RANK_STATUS = {3: STATUS_VERIFIED, 2: STATUS_PARTIAL,
                     1: STATUS_UNVERIFIED, 0: STATUS_REFUTED}
 
+    @_locked
     def effective(self, claim_id: str,
                   _memo: Optional[Dict[str, Dict]] = None) -> Dict:
         """The read-time conditional verdict of one node.
@@ -351,17 +396,20 @@ class ClaimStore:
         return result
 
     # internals
+    @_locked
     def _exists(self, claim_id: str) -> bool:
         return self.db.execute(
             "SELECT 1 FROM claims WHERE id=?", (claim_id,)
         ).fetchone() is not None
 
+    @_locked
     def _dependent_count(self, claim_id: str) -> int:
         (n,) = self.db.execute(
             "SELECT COUNT(*) FROM deps WHERE parent=?", (claim_id,)
         ).fetchone()
         return n
 
+    @_locked
     def _row(self, claim_id: str) -> Dict:
         cur = self.db.execute(
             "SELECT id, kind, text, revises, status, reason, basis, strength "
@@ -375,11 +423,13 @@ class ClaimStore:
                 "strength")
         return dict(zip(keys, row))
 
+    @_locked
     def parents(self, claim_id: str) -> List[str]:
         cur = self.db.execute("SELECT parent FROM deps WHERE child=?", (claim_id,))
         return [r[0] for r in cur.fetchall()]
 
     # obligation nodes
+    @_locked
     def add_obligation(self, claim_id: str, obligation) -> str:
         """Materialize an obligation as a first-class graph node
         (kind='obligation') and link it to its claim. Content-addressed:
@@ -404,6 +454,7 @@ class ClaimStore:
         self.db.commit()
         return oid
 
+    @_locked
     def obligation_children(self, claim_id: str) -> List[Dict]:
         """The obligation nodes materialized under a claim, full rows,
         each carrying the edge attributes (severity, clause,
@@ -422,6 +473,7 @@ class ClaimStore:
             out.append(row)
         return out
 
+    @_locked
     def settled_statement(self, text: str,
                           exclude: Optional[str] = None) -> Optional[Dict]:
         """A currently-trusted CLAIM (assertion/final) that settled exactly
@@ -439,6 +491,7 @@ class ClaimStore:
         row = cur.fetchone()
         return {"id": row[0], "status": row[1]} if row else None
 
+    @_locked
     def graph_snapshot(self, exclude: Optional[str] = None,
                        cap: int = 150) -> List[Dict]:
         """A compact view of the WHOLE graph for the obligation compiler:

@@ -86,8 +86,14 @@ class AgentDischarger:
                  toolchain_dir: Optional[str] = None,
                  state_dir: Optional[str] = None,
                  live_world: bool = True,
-                 store=None):
+                 store=None,
+                 shared_cache_dir: Optional[str] = None):
         self.backend = backend
+        # verifier-owned install caches shared across trials (the codex
+        # backend points the executor's package caches at it and grants it
+        # write access); None keeps caches state-local
+        self.shared_cache_dir = (os.path.abspath(shared_cache_dir)
+                                 if shared_cache_dir else None)
         self.artifacts = artifacts
         self.role = role
         # ClaimStore (duck-typed, optional): lets each discharge see the
@@ -194,6 +200,8 @@ class AgentDischarger:
         os.makedirs(workdir, exist_ok=True)
         os.makedirs(self.toolchain_dir, exist_ok=True)
         os.makedirs(self.workspace_dir, exist_ok=True)
+        if self.shared_cache_dir:
+            os.makedirs(self.shared_cache_dir, exist_ok=True)
         method = method or {
             "procedure": "no bound method (direct discharge, no binding game): "
                          "choose the strongest reachable check yourself, and "
@@ -227,6 +235,7 @@ class AgentDischarger:
             "task_context": authoritative_task_context(self.state_dir),
             "workdir": workdir,
             "toolchain_dir": self.toolchain_dir,
+            "shared_cache_dir": self.shared_cache_dir or "",
             "workspace_dir": self.workspace_dir,
             "workspace_index": json.dumps(
                 self._workspace_index(row["id"]), ensure_ascii=False),

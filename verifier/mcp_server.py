@@ -104,8 +104,17 @@ class Service:
                  toolchain_dir: Optional[str] = None,
                  trigger: str = TRIGGER_ON_COMMIT,
                  live_world: bool = True,
-                 critic_rounds: Optional[int] = None):
+                 critic_rounds: Optional[int] = None,
+                 parallel_obligations: Optional[int] = None,
+                 parallel_claims: Optional[int] = None,
+                 shared_cache_dir: Optional[str] = None):
         self.toolchain_dir = toolchain_dir
+        # a verifier-owned cache root shared across trials (install caches
+        # for the executor's instruments); None keeps every cache
+        # state-local as before
+        self.shared_cache_dir = shared_cache_dir
+        self.parallel_obligations = parallel_obligations
+        self.parallel_claims = parallel_claims
         self.live_world = live_world
         os.makedirs(state_dir, exist_ok=True)
         self.state_dir = state_dir
@@ -121,7 +130,9 @@ class Service:
 
         if kernel_factory is None:
             kernel_factory = lambda sc: _default_kernel(  # noqa: E731
-                sc, model=model, critic_rounds=critic_rounds)
+                sc, model=model, critic_rounds=critic_rounds,
+                parallel_obligations=parallel_obligations,
+                parallel_claims=parallel_claims)
         self.kernel = kernel_factory(self)  # factory receives the service
 
         self._feed = Tail(os.path.join(state_dir, HOOK_FEED),
@@ -238,8 +249,20 @@ class Service:
             for label, cid in self.builder.labels.items()
         }
 
+def _parallel_default(name: str, fallback: int) -> int:
+    """Per-trial parallelism defaults: GV_PARALLEL_OBLIGATIONS (discharges
+    concurrent within one claim) and GV_PARALLEL_CLAIMS (claims of a
+    certificate slice verified concurrently; offline only)."""
+    try:
+        return max(1, int(os.environ.get(name, fallback)))
+    except ValueError:
+        return fallback
+
+
 def _default_kernel(sc: Service, model, backend=None,
-                    critic_rounds: Optional[int] = None) -> Kernel:
+                    critic_rounds: Optional[int] = None,
+                    parallel_obligations: Optional[int] = None,
+                    parallel_claims: Optional[int] = None) -> Kernel:
     from dataclasses import replace
 
     from .llm import prompts
@@ -272,16 +295,29 @@ def _default_kernel(sc: Service, model, backend=None,
         workdir_base=os.path.join(sc.state_dir, "work"),
         cleanup=True,   # snapshots are the evidence; workdirs are scratch
         toolchain_dir=sc.toolchain_dir,
+        shared_cache_dir=getattr(sc, "shared_cache_dir", None),
         state_dir=sc.state_dir,
         live_world=sc.live_world,
         store=sc.store)   # evidence-workspace index over the claim graph
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                          memory=sc.memory, live_world=sc.live_world)
+    if parallel_obligations is None:
+        parallel_obligations = getattr(sc, "parallel_obligations", None)
+    if parallel_claims is None:
+        parallel_claims = getattr(sc, "parallel_claims", None)
+    if parallel_obligations is None:
+        parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 4)
+    if parallel_claims is None:
+        # online (live world): one claim at a time as commits arrive
+        parallel_claims = (1 if sc.live_world
+                           else _parallel_default("GV_PARALLEL_CLAIMS", 4))
     return Kernel(sc.store, sc.log, backend, sc.artifacts,
                   obligations_role=obligations,
                   discharger=discharger, binder=binder,
                   memory=sc.memory, live_world=sc.live_world,
-                  critic_rounds=critic_rounds)
+                  critic_rounds=critic_rounds,
+                  parallel_obligations=parallel_obligations,
+                  parallel_claims=parallel_claims)
 
 
 # MCP wiring

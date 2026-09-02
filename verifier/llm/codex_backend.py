@@ -659,15 +659,50 @@ class CodexBackend:
         # follow a candidate-planted ``work``/HOME/cache symlink.
         for path in dict.fromkeys((work, *env.values())):
             _ensure_verifier_owned_chain(work, path)
-        for key in ("workdir", "toolchain_dir"):
+        # Shared verifier-owned roots OUTSIDE the state (a per-task
+        # toolchain, install caches) widen the writable set explicitly.
+        # Each must be a real, process-owned directory; it is never
+        # derived from candidate-controlled content. Sharing trades the
+        # per-trial isolation of instruments for latency (one install per
+        # task instead of one per trial) — the immutable-input seal still
+        # guards the evidence, and the artifact chain remains the trust
+        # anchor.
+        shared_roots: list[str] = []
+        for key in ("workdir", "toolchain_dir", "shared_cache_dir"):
             candidate = variables.get(key)
-            if candidate:
-                _ensure_verifier_owned_chain(work, os.fspath(candidate))
+            if not candidate:
+                continue
+            candidate = os.path.abspath(os.fspath(candidate))
+            try:
+                inside = os.path.commonpath((work, candidate)) == work
+            except ValueError:
+                inside = False
+            if inside:
+                _ensure_verifier_owned_chain(work, candidate)
+            else:
+                _ensure_verifier_owned_chain(candidate, candidate)
+                shared_roots.append(candidate)
+        cache_root = variables.get("shared_cache_dir")
+        if cache_root:
+            cache_root = os.path.abspath(os.fspath(cache_root))
+            # package-manager caches shared across trials: downloads and
+            # unpacked wheels are reused, installs into a fresh toolchain
+            # become hardlinks instead of fetches
+            env.update({
+                "UV_CACHE_DIR": os.path.join(cache_root, "uv"),
+                "UV_LINK_MODE": "hardlink",
+                "PIP_CACHE_DIR": os.path.join(cache_root, "pip"),
+                "npm_config_cache": os.path.join(cache_root, "npm"),
+                "CARGO_HOME": os.path.join(cache_root, "cargo"),
+                "GOMODCACHE": os.path.join(cache_root, "gomod"),
+            })
         env_table = "{" + ",".join(
             f"{key}={_toml_string(value)}" for key, value in env.items()
         ) + "}"
         filesystem = "{" + ",".join((
             f"{_toml_string(work)}=\"write\"",
+            *(f"{_toml_string(root)}=\"write\""
+              for root in dict.fromkeys(shared_roots)),
             '"~/.cache"="deny"',
             '"~/Library/Caches"="deny"',
             '"~/.huggingface"="deny"',

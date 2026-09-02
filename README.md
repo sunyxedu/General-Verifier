@@ -200,6 +200,7 @@ Claude Code plugin) is wired as an online arm. See
 | `verifier/stream/` | ingestion: incremental graph building (`builder.py`), online tail (`tail.py`), Codex rollout → hook feed (`codex.py`) |
 | `verifier/offline.py` | the ORM path: feed ingestion, outcome-blind extraction with structural retry, certify, feature fold, lexicographic `rank_key` |
 | `verifier/selection.py` | best-of-N strategies: argmax, majority vote, verdict-weighted vote, pass@N oracle |
+| `verifier/core/world.py` | the delivered world as addressable artifacts (scheme, captured roots, address map), rendered to every seat as `world_map` |
 | `verifier/llm/` | LLM seats: agent roles with hard tool palettes (`agents.py`), schema gate + fixture backend (`schema.py`), Codex CLI backend (`codex_backend.py`), provider wiring (`provider.py`), prompt text as a package (`prompts/` — one file per seat, zero domain knowledge by design; `prompts/criteria/axioms.py` holds the eight cross-seat axioms — authority, independence, necessity, sufficiency, witness, time, referent, strength — and nothing else; `tests/test_prompt_generality.py` keeps every prompt free of tool, format, and benchmark nouns; see `docs/axioms.md`) |
 | `verifier/execution/` | the hands: artifact store + ledger instrument (`instruments.py`), discharge seat with immutable workdir snapshots, the durable per-trace evidence workspace, and assumed-premise declarations (`discharge.py`) |
 | `verifier/engine/` | verification core: residual compilation, conditional settlement, effective-verdict inheritance gates (`kernel.py`), binding game with the strength ladder (`game.py`), certificate with the two-verdict disclosure (`certificate.py`) |
@@ -207,3 +208,22 @@ Claude Code plugin) is wired as an online arm. See
 | `hooks/` + `protocol/` | recording hooks (record, never intervene); MCP mount example + solver protocol (interactive mode) |
 | `script/claim_graph.py` | graph inspector: any state dir → laid-out SVG/PNG with full claim text, obligations, witnesses |
 | `experiments/` | benchmark harnesses, recorder arms, offline scorers, LLM-as-a-Verifier baseline |
+
+
+## Latency: what runs in parallel
+
+Per-trial wall time is dominated by discharge+judger rounds run one after
+another. Three knobs turn the schedule parallel without changing any
+judgment (they are deliberately NOT part of the config identity):
+
+| knob | default | effect |
+|---|---|---|
+| `GV_PARALLEL_OBLIGATIONS` / `--parallel-obligations` | 4 | the obligations of one claim discharge concurrently; the first MUST refutation cancels checks that have not started |
+| `GV_PARALLEL_CLAIMS` / `--parallel-claims` | 4 (offline) / 1 (online) | the claims of a certificate slice verify concurrently; offline scoring switches the store to the lazy trigger so replay does not verify them one by one first |
+| `GV_SHARED_DIR` / shared toolchain (on by default in `score.py`) | per task | candidates of one task share a toolchain and package caches; the codex sandbox grants that root write access and points `UV_CACHE_DIR`/`PIP_CACHE_DIR` at it |
+| `GV_MAX_CONCURRENT_SEATS` | 12 | process-wide cap on in-flight seat calls, whatever the nesting of trial x claim x obligation parallelism |
+
+The store, ledger, artifact store, and memory are serialized internally;
+obligation nodes and claims each carry a lock, so shared work is still done
+once. Support-claim verification is unchanged (all claims of the slice are
+still verified; only the schedule differs).

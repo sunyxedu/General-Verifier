@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -33,8 +34,14 @@ class ArtifactStore:
         digest = content_hash(payload)
         path = os.path.join(self.root, digest + ".json")
         if not os.path.exists(path):
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, sort_keys=True, indent=1)
+            # write-then-rename: a concurrent reader (the judger opening an
+            # artifact while another seat stores one) never sees a partial
+            # file, and two writers of the same digest are idempotent
+            tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, sort_keys=True,
+                          indent=1)
+            os.replace(tmp, path)
         return digest
 
     def get(self, digest: str) -> Dict[str, Any]:

@@ -60,7 +60,8 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
             board.log(line)     # piped log AND the live terminal view
 
     def one(job):
-        record, state = job
+        record, state = job[0], job[1]
+        extra = job[2] if len(job) > 2 else {}   # per-trial kwargs
         name = label(record)
         handle = board.begin(name) if board is not None else None
         with _write_lock:
@@ -70,7 +71,8 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
                                      max_rounds=max_rounds,
                                      seats=seats, effort=effort,
                                      critic_rounds=critic_rounds,
-                                     service_tier=service_tier)
+                                     service_tier=service_tier,
+                                     **extra)
         except BaseException:
             if board is not None:
                 board.advance(handle, 0.0)

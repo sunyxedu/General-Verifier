@@ -603,7 +603,10 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           seats: Optional[str] = None,
           effort: Optional[str] = None,
           critic_rounds: Optional[int] = None,
-          service_tier: Optional[str] = None) -> Dict[str, Any]:
+          service_tier: Optional[str] = None,
+          parallel_obligations: Optional[int] = None,
+          parallel_claims: Optional[int] = None,
+          shared_dir: Optional[str] = None) -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -614,7 +617,35 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     `model` then names the codex model (default gpt-5.6-luna) and
     `effort` its reasoning effort (default medium). ``service_tier`` is
     ``standard`` by default; ``fast`` explicitly enables Codex Fast mode.
+
+    Execution strategy (NOT part of the config identity — it changes the
+    schedule, never the judgment): ``parallel_obligations`` discharges
+    within one claim concurrently, ``parallel_claims`` verifies the
+    certificate slice's claims concurrently (the store then uses the lazy
+    trigger so replay does not verify claims one by one first), and
+    ``shared_dir`` names a verifier-owned directory outside the state
+    whose ``toolchain/`` and ``cache/`` are shared across trials. Defaults
+    come from GV_PARALLEL_OBLIGATIONS (4), GV_PARALLEL_CLAIMS (4), and
+    GV_SHARED_DIR (none).
     """
+    def _env_int(name: str, fallback: int) -> int:
+        try:
+            return max(1, int(os.environ.get(name, fallback)))
+        except ValueError:
+            return fallback
+    if parallel_obligations is None:
+        parallel_obligations = _env_int("GV_PARALLEL_OBLIGATIONS", 4)
+    if parallel_claims is None:
+        parallel_claims = _env_int("GV_PARALLEL_CLAIMS", 4)
+    if shared_dir is None:
+        shared_dir = os.environ.get("GV_SHARED_DIR") or None
+    toolchain_dir = cache_dir = None
+    if shared_dir:
+        shared_dir = os.path.abspath(os.path.expanduser(shared_dir))
+        toolchain_dir = os.path.join(shared_dir, "toolchain")
+        cache_dir = os.path.join(shared_dir, "cache")
+        for path in (shared_dir, toolchain_dir, cache_dir):
+            os.makedirs(path, exist_ok=True)
     cfg = config_fields(model=model, seats=seats, effort=effort,
                         max_rounds=max_rounds, critic_rounds=critic_rounds,
                         service_tier=service_tier)
@@ -676,7 +707,9 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                     backend=CodexBackend(cwd=sc.state_dir, model=model,
                                          effort=cfg["effort"],
                                          service_tier=cfg["service_tier"]),
-                    critic_rounds=critic_rounds)
+                    critic_rounds=critic_rounds,
+                    parallel_obligations=parallel_obligations,
+                    parallel_claims=parallel_claims)
 
     def run_verification() -> Dict[str, Any]:
         nonlocal extract_rounds
@@ -709,9 +742,16 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             extract_rounds = meta.get("rounds", 0)
 
         from .mcp_server import Service
+        from .core.store import TRIGGER_LAZY
         sc = Service(state_dir, kernel_factory=kernel_factory, model=model,
-                     trigger=TRIGGER_ON_FIRST_DEPENDENT, live_world=False,
-                     critic_rounds=critic_rounds)
+                     trigger=(TRIGGER_LAZY if parallel_claims > 1
+                              else TRIGGER_ON_FIRST_DEPENDENT),
+                     live_world=False,
+                     critic_rounds=critic_rounds,
+                     toolchain_dir=toolchain_dir,
+                     shared_cache_dir=cache_dir,
+                     parallel_obligations=parallel_obligations,
+                     parallel_claims=parallel_claims)
         if not sc.builder.finals:
             return dict(_unscoreable(
                 "no final claim in trace", extract_rounds, fingerprint),
@@ -719,7 +759,13 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         cert = request_certificate(
             sc.store, sc.kernel, sc.log, sc.artifacts,
             sc.builder.finals[-1])
-        return dict(_features(cert, extract_rounds, fingerprint), **cfg)
+        features = dict(_features(cert, extract_rounds, fingerprint), **cfg)
+        features["execution"] = {
+            "parallel_obligations": parallel_obligations,
+            "parallel_claims": parallel_claims,
+            "shared_dir": shared_dir or None,
+        }
+        return features
 
     features: Optional[Dict[str, Any]] = None
     failure: Optional[BaseException] = None

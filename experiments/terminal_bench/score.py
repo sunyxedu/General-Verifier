@@ -223,6 +223,21 @@ def main():
               "Codex Fast mode and has different credit accounting)"),
     )
     ap.add_argument(
+        "--parallel-obligations", type=int, default=None,
+        help=("discharges run concurrently within one claim (default: "
+              "GV_PARALLEL_OBLIGATIONS or 4); an execution strategy, not "
+              "part of the config identity"))
+    ap.add_argument(
+        "--parallel-claims", type=int, default=None,
+        help=("claims of a certificate slice verified concurrently "
+              "(default: GV_PARALLEL_CLAIMS or 4)"))
+    ap.add_argument(
+        "--no-shared-toolchain", action="store_true",
+        help=("keep every trial's toolchain and install caches state-local "
+              "(default: candidates of one task share "
+              "<scoring-root>/<job>/<config>/_shared/<task>, so heavy "
+              "instruments install once per task)"))
+    ap.add_argument(
         "--scores-path", default=None,
         help=("JSONL result ledger (default: results/rec_scores.jsonl). "
               "Use an isolated path for concurrently running A/B shards."),
@@ -328,9 +343,14 @@ def main():
                       "nor a codex rollout) — skipped",
                       file=sys.stderr, flush=True)
                 continue
+            extra = {"parallel_obligations": args.parallel_obligations,
+                     "parallel_claims": args.parallel_claims}
+            if not args.no_shared_toolchain:
+                extra["shared_dir"] = os.path.join(
+                    scoring_root, args.job, cfg["config"], "_shared", task)
             jobs.append(({"job": args.job, "task": task, "trial": t["trial"],
                           "reward": t["reward"], "rep": args.rep,
-                          **cfg}, state))
+                          **cfg}, state, extra))
         if jobs:
             all_jobs.extend(jobs)
             remaining[task] = len(jobs)

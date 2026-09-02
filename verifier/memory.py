@@ -16,6 +16,7 @@ storage is append-only JSONL with content-hash dedup.
 from __future__ import annotations
 
 import json
+import threading
 import os
 from typing import Dict, List, Optional
 
@@ -36,6 +37,7 @@ def _similarity(a: str, b: str) -> float:
 
 class Memory:
     def __init__(self, base_dir: str):
+        self._lock = threading.Lock()
         os.makedirs(base_dir, exist_ok=True)
         self.base_dir = base_dir
         self._records: Dict[str, List[dict]] = {}
@@ -57,14 +59,16 @@ class Memory:
         return os.path.join(self.base_dir, f"{store}.jsonl")
 
     def _append(self, store: str, record: dict) -> bool:
-        digest = content_hash(record)
-        if digest in self._seen[store]:
-            return False
-        self._seen[store].add(digest)
-        self._records[store].append(record)
-        with open(self._path(store), "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-        return True
+        with self._lock:
+            digest = content_hash(record)
+            if digest in self._seen[store]:
+                return False
+            self._seen[store].add(digest)
+            self._records[store].append(record)
+            with open(self._path(store), "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False,
+                                   sort_keys=True) + "\n")
+            return True
 
     # ---- recording (mechanical; called by kernel/game) -----------------------
 

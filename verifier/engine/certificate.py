@@ -27,6 +27,7 @@ premises and any poisoning refuted premise disclosed for audit.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 
 from ..core.events import EventLog
@@ -46,8 +47,20 @@ def request_certificate(
     log.append("verify_request", {"target": final_id, "cause": "certificate"})
 
     slice_ids = store.backward_slice(final_id)
-    for claim_id in reversed(slice_ids):
-        if store.status(claim_id) in (STATUS_UNVERIFIED, STATUS_STALE):
+    pending = [cid for cid in reversed(slice_ids)
+               if store.status(cid) in (STATUS_UNVERIFIED, STATUS_STALE)]
+    parallel = getattr(kernel, "parallel_claims", 1) or 1
+    if parallel > 1 and len(pending) > 1:
+        # every claim's LOCAL verdict is conditional on its premises and
+        # never blocks on them (the read-time fold charges premise state
+        # to consumers), so the whole slice verifies concurrently; the
+        # kernel serializes per claim and per obligation node, so shared
+        # work is still done once
+        with ThreadPoolExecutor(max_workers=parallel,
+                                thread_name_prefix="gv-claim") as pool:
+            list(pool.map(kernel.verify, pending))
+    else:
+        for claim_id in pending:
             kernel.verify(claim_id)
 
     entries = []
