@@ -50,9 +50,10 @@ output printed the pinned library version. One verifier refuted "the
 pinned version was used" on that absence; another's audit seat objected
 that a successful recorded import of the installed package establishes the
 proposition without a version-printing output, and that the absence "does
-not entail refutation". The witness axiom makes the first outcome
-impossible in any model: an `absence` witness refutes only an obligation
-compiled as a presence requirement.
+not entail refutation". The kernel rejects a declared `absence` witness
+unless the obligation permits refutation by absence. That gate depends on
+the model correctly identifying the witness and the presence requirement;
+it does not establish that the underlying interpretation is correct.
 
 **Time.** An imperative such as "repair the journal" is satisfied by the
 repair occurring and its effect holding at that time; the journal may

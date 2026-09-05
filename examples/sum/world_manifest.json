@@ -1,0 +1,7 @@
+{
+  "scheme": "filesystem",
+  "captured_roots": [
+    "/app"
+  ],
+  "note": "Hand-written quick-start fixture. The complete delivered /app directory is represented under world/app."
+}

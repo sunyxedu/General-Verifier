@@ -20,8 +20,8 @@ claim graph in three steps, each reusing the online machinery unchanged:
                 folded into a feature dict and a rank_key.
 
 rank_key is lexicographic, not a weighted sum: the certificate verdict
-dominates absolutely and the verified fraction of the FINAL claim's own
-task-contract obligations breaks ties. History claims and their obligations
+dominates absolutely; fewer violated advisory conditions on the FINAL
+claim's task contract break ties. Passed-check fractions and history claims
 remain diagnostic features, but cannot improve a candidate's rank merely by
 making the extractor's decomposition or narration more verbose. A trace whose
 extraction fails outright, or whose feature record predates this ranking

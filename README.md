@@ -1,229 +1,254 @@
+<div align="center">
+
 # General Verifier
 
-An **outcome verifier for agent traces**. A stock agent (Claude Code, Codex) solves a
-task N times with nothing attached but a pair of recording hooks; afterwards, each
-finished trace is scored in isolation — the verifier reconstructs the **claim graph**
-the run implicitly relied on, checks every claim down to mechanical gates, freezes a
-**certificate**, and folds it into a rank. Best-of-N selection then happens over the
-N certificates. The verifier never touches the generator: no feedback, no protocol in
-the solver's context, no change to its distribution — the same contract as an
-LLM-as-a-Verifier reward model, with one difference: **the score is backed by
-executed checks, not by a model's opinion of the transcript.**
+**Check whether an agent's result satisfies its task — and keep the checks, evidence, and reasons behind the verdict.**
 
-## Why not just ask a model?
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-8B5CF6)](https://github.com/sunyxedu/General-Verifier)
+[![Status: experimental](https://img.shields.io/badge/status-experimental-F59E0B)](#project-status-and-limitations)
 
-An LLM judge reads a trajectory and rates it. That fails in a specific, systematic
-way: a run that *confidently reports* wrong actions reads exactly like a run that did
-the right thing — the judge sees reporting quality, not task success. This system is
-built around three counters to that failure:
+[Quick start](#quick-start) · [Architecture](#architecture) · [How it works](#how-it-works) · [Verdicts](#reading-the-result) · [Your own traces](#score-your-own-traces) · [Development](#development)
 
-1. **Claims, not vibes.** A trace is decomposed into atomic, falsifiable claims with
-   explicit dependencies. Every claim is either checked against evidence or its
-   status says it wasn't — nothing is silently absorbed into an overall impression.
-2. **Two evidence indexes, never mixed.** A claim about a *past action* ("the solver
-   ran X and it printed Y") is checked against the **ledger** — the hooks' trusted
-   record of every tool call and result. A claim about the *delivered state* ("the
-   answer file now contains Z") is checked against the **delivered world** — the
-   working tree captured when the run ended. A trace whose claims are all accurate
-   past reports proves only that the solver narrates honestly; the delivered-state
-   claims are what carry the verdict.
-3. **Opinions propose, mechanics decide.** LLM seats compile obligations, pick
-   methods, run checks — but every seat's output passes a schema gate, every check
-   leaves an auditable artifact, effect claims are re-hashed against the ledger, and
-   every fold takes the worst case: a claim's verdict is the weakest of its
-   obligations, and what a consumer may *rely on* is the weakest link of the whole
-   premise chain — in status, in evidence basis (world over record), and in
-   strength (decisive over bounded over analytic). Crashes, timeouts, malformed
-   output: FAILED, never a pass. A wrong extraction or a lazy decomposition can
-   cost recall; it cannot mint a false `verified`.
+</div>
+
+General Verifier (GV) takes a **finished agent run**: the original task, recorded tool calls and results, the agent's final answer, and any captured deliverables. It turns the task into explicit checks, uses model agents to carry them out and audit the evidence, and saves a certificate explaining what passed, what failed, and what remains unknown. You can inspect one run or use the verdicts to select among several attempts at the same task.
+
+For example, suppose the task is “compute 1 + 2 + 3 + 4 + 5 and save the result in `/app/answer.txt`.” A transcript saying “done” tells you what the agent reported. Checking success requires computing the expected sum from the task and comparing it with the **captured answer file**. GV is built to make that distinction explicit.
+
+> [!IMPORTANT]
+> A `verified` certificate means GV accepted the compiled task checks and their evidence. Models still interpret the task, propose checks, and judge whether those checks are sufficient. A mistaken interpretation or audit can produce a false verdict. The certificate makes the judgment inspectable; it is not a guarantee of correctness.
 
 ## Architecture
 
-![General Verifier architecture](docs/architecture.svg)
+![GV architecture: captured task, trace and deliverables flow through extraction, task checks, execution and audit, then a certificate and optional selection](docs/architecture.svg)
 
-Solid lines are the **offline ORM path** (the primary object). The dashed teal
-overlay is the **online, interactive mode**: the same graph, kernel and certificate,
-but the live solver commits claims itself over MCP (no extractor) and the verdict
-flows back to it — feedback that the ORM path deliberately does not have.
+<div align="center"><a href="docs/architecture.svg">Open the diagram at full size</a></div>
 
-Per trace, left to right:
+The main workflow is **offline**: the solver finishes before verification starts, and receives no verifier feedback. An optional [interactive mode](#interactive-mode) uses the same verification engine while the solver is working.
 
-1. **Record.** The solver runs untouched; `PreToolUse`/`PostToolUse` hooks append
-   every tool call and result to a raw feed. The run leaves behind the feed, the
-   authoritative task statement, a pre-run baseline snapshot, the solver's final
-   output, and the delivered working tree.
-2. **Ingest.** Feed lines become a seq-validated, append-only event stream —
-   deterministic, no LLM.
-3. **Extract.** An LLM seat reconstructs the commit events the solver never made:
-   atomic claims in topological order, past observations anchored to ledger events
-   (`effect:<seq>`), delivered-state claims in the present tense, exactly one
-   `final`. The extractor is **outcome-blind**: structural errors (an unresolvable
-   reference, no final) bounce back for a bounded retry, but verification verdicts
-   never reach it — extraction stays independent of scoring.
-4. **Gate.** The extracted graph is replayed LLM-free through the same builder that
-   serves every other mode; only a structurally valid graph proceeds.
-5. **Verify.** The kernel settles the final claim's dependency closure, one claim at
-   a time — in any order, because every local verdict is **conditional**: it answers
-   "does this claim hold *given its premises*", never blocking on the premises'
-   own verification. The **obligation compiler** (answer-blind, graph-aware)
-   assumes every premise true — verified or not — and compiles the **residual**:
-   what must hold beyond the premises, the inference gap included ("decoded 11
-   records" plus "wrote the file" does not yet give "the file content is
-   correct"). An obligation that merely restates a premise verbatim is dropped
-   mechanically — the premise edge already carries it. The **decomposition
-   critic** attacks the residual by constructing a world where all premises and
-   all obligations hold and the claim is still false, sending the compiler back
-   to repair (bounded rounds, game record binding both seats). Each obligation
-   node then plays the **binding game**: an oracle lists only *sufficient*
-   methods, each with a signed evidence **basis** (world | record) and
-   **strength** (decisive | bounded | analytic); a discharge executor carries
-   the bound method out faithfully (installing missing instruments on the spot);
-   a judger audits sufficiency, fidelity, and — for any non-decisive binding —
-   whether the degradation from stronger tiers was genuinely forced. Only
-   decisive evidence may refute. Executors share a per-trace **evidence
-   workspace** (durable building material — a growing Lean project, decoded
-   inputs): borrowed work must be re-established by the instrument or declared
-   as an **assumed premise**, mechanically gated to the claim's own dependency
-   closure (a final admits none). Obligation nodes are content-addressed: the
-   same check under two claims is one node, and settled verdicts transfer free —
-   but only *effectively* settled ones (see below); a conditional verdict never
-   transfers its open assumptions away.
-6. **Certify.** Every node carries **two verdicts**: the *local* one (holds,
-   given its premises — the fold of its own obligation nodes: one refuted ⇒
-   refuted; all hold ⇒ verified, basis and strength folded weakest-link;
-   instrument-blocked ⇒ partial) and the *effective* one, computed at read time
-   by folding the whole premise chain — weakest link in status, basis and
-   strength, with a refuted premise poisoning everything downstream. Nothing is
-   rewritten: a premise settled later changes the read-out automatically. The
-   **final is exempt** from the premise fold — its obligations are compiled from
-   `task.md` alone, independent of the solver's argument, so its verdict is its
-   own adjudication (a refuted narration step neither kills nor rescues the
-   deliverable). The certificate freezes the final's slice with both verdicts,
-   open premises, assumed premises, bases, strengths and evidence disclosed per
-   entry; a verified final resting anywhere on non-decisive evidence reads out
-   as `supported`, with its bridging assumptions attached.
-7. **Rank.** A certificate folds into a lexicographic key — `(verdict band,
-   verified fraction of the final claim's task-contract obligations)`. Verdict
-   dominates absolutely; only the final contract breaks ties, so
-   narration/decomposition padding cannot change the order. Conditional and
-   whole-slice counts remain diagnostics only — they never rank. No tuned
-   weights anywhere — selection only needs an order.
-8. **Select.** Across the N traces: argmax by rank, or verdict-weighted voting when
-   answers are comparable. A trace whose extraction fails outright ranks below
-   everything — fail-closed, like the rest of the system.
+## Quick start
 
-The evidence-strength ladder (decisive / bounded / analytic, strictness-descending
-execution, audited degradation, `supported` read-out) is specified in
-[docs/evidence-strength-ladder.md](docs/evidence-strength-ladder.md).
+### Install
 
-## Usage
+You need Python **3.12+**, [uv](https://docs.astral.sh/uv/), and access to one of the model backends below. These commands use a POSIX shell.
 
-Managed with [uv](https://docs.astral.sh/uv/) (Python 3.12+):
+```bash
+git clone https://github.com/sunyxedu/General-Verifier.git
+cd General-Verifier
+uv sync
+uv run python -m verifier.cli --help
+```
+
+Help and graph replay require no model credentials. Scoring runs model agents, can execute commands and install verification tools, and consumes model usage.
+
+### Configure a backend
+
+The default backend uses the Claude Agent SDK with the provider configured in `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Set `DEEPSEEK_API_KEY` in `.env` to use the default provider. For OpenRouter or a custom Anthropic-compatible endpoint, use the corresponding settings in [.env.example](.env.example). `GV_MODEL` selects the model; environment variables override `.env`.
+
+Alternatively, with an authenticated `codex` CLI on your `PATH`, use `--seats codex` when scoring. This backend uses its own authentication and does not require the SDK provider's API key or `.env` setup.
+
+### Verify a small captured run
+
+[examples/sum/](examples/sum/) is a hand-written example of a finished run. Its task asks for the sum of the integers from 1 through 5; its delivered file contains `15`. The example includes the tool record, final message, and capture manifest. It needs no pre-run files because all mathematical inputs are in the task.
+
+Copy it to a separate run directory, then score it:
+
+```bash
+RUN_DIR="$(mktemp -d)"
+cp -R examples/sum/. "$RUN_DIR/"
+
+uv run python -m verifier.cli score --state-dir "$RUN_DIR"
+```
+
+For the Codex backend, replace the last command with:
+
+```bash
+uv run python -m verifier.cli score --state-dir "$RUN_DIR" --seats codex
+```
+
+Scoring prints a JSON summary and saves it as `score.json`. A successful verification includes these fields; the precise checks and verdict depend on the model run:
+
+```json
+{
+  "unscoreable": false,
+  "verdict": "verified",
+  "verdict_strength": "decisive",
+  "certificate_id": "<content hash>"
+}
+```
+
+Open the full certificate, including each check and its evidence references:
+
+```bash
+uv run python - "$RUN_DIR" <<'PY'
+import json
+import pathlib
+import sys
+
+state = pathlib.Path(sys.argv[1])
+score = json.loads((state / "score.json").read_text())
+if score.get("certificate_id"):
+    certificate = state / "artifacts" / (score["certificate_id"] + ".json")
+    print(certificate.read_text())
+else:
+    print(score.get("error", "No certificate was produced."))
+PY
+```
+
+To try a wrong answer, make a **fresh copy** of the example, replace `world/app/answer.txt` with `14`, and score that directory. A check that recomputes the sum should refute the delivered answer even though the recorded success message is unchanged.
+
+## How it works
+
+GV represents an agent's statements as **claims**. Each claim is decomposed into **obligations**: concrete conditions that must be checked to establish it.
+
+1. **Read the run.** Recorded tool events become an append-only ledger. An extractor reconstructs the claims and their dependencies. Invalid references or a missing final claim trigger a bounded structural retry; verification verdicts are never fed back to the extractor.
+2. **Define what success requires.** The compiler derives the final claim's obligations from `task.md`, independently of the solver's argument. A critic challenges whether the proposed checks are both required by the task and sufficient to establish success. If no task is supplied, GV can only check the final claim's own wording.
+3. **Choose and run checks.** For each obligation, an oracle proposes methods and declares their evidence basis and strength. An executor carries out the method and saves artifacts. A separate judger audits whether the method was sufficient, whether it was followed, and whether any weaker evidence was justified.
+4. **Apply the evidence rules.** The kernel validates structured outputs, enforces declared evidence requirements, and records failures and counterexamples. Missing evidence or a failed check cannot count as a pass. An absence witness can refute only a condition declared to require presence.
+5. **Freeze the result.** The certificate records the final verdict, individual obligations, evidence, assumptions, and unresolved work. The supporting argument is retained for inspection; the final verdict comes from the independently checked final contract.
+
+Two distinctions matter when inspecting the evidence:
+
+| Question | What GV records |
+|---|---|
+| **What was checked?** | `record`: what a retained tool result reports. `world`: the captured deliverable or an independent computation. A log saying a file was written does not establish its final contents. |
+| **How much does the check establish?** | `decisive`: declared to settle the obligation. `bounded` or `analytic`: weaker support with explicit bridging assumptions. These declarations are audited by models. |
+
+Intermediate claims may be checked **assuming their stated premises**. Their effective status also accounts for those premises, so an open premise remains visible. Reuse is scoped to the obligation's evidence requirement, absence rule, and permitted premises. The final claim admits no assumed premises: earlier conclusions must not become unearned proof of task completion.
+
+For the detailed contracts, see the [evidence axioms](docs/axioms.md) and [strength ladder](docs/evidence-strength-ladder.md).
+
+## Reading the result
+
+| Verdict | Meaning |
+|---|---|
+| `verified` | All compiled final obligations held at decisive strength, with at least one world-based check. |
+| `supported` | All held, but some evidence was bounded or analytic; inspect its bridging assumptions. |
+| `partial` | Some checks were unavailable within the retained evidence boundary, or an advisory (`should`) condition was violated. No mandatory condition was decisively refuted. |
+| `unverified` | Unresolved or failed checks prevent a conclusion. A final supported only by records also receives this verdict. |
+| `refuted` | An admissible decisive counterexample refutes a mandatory (`must`) condition of the final contract. |
+
+`unscoreable: true` is a separate scoring failure, such as unsuccessful extraction or an invalid input seal. It comes with an `error`, and `verdict` is `null`.
+
+The `score` and `certify` commands exit **0 only for `verified`**. Other verdicts, including `supported`, exit 1; invalid command-line arguments exit 2.
+
+A scored run contains:
+
+| Output | Purpose |
+|---|---|
+| `score.json` | Verdict, configuration identity, certificate reference, and diagnostic counts. |
+| `artifacts/<certificate_id>.json` | Full certificate; other JSON files in `artifacts/` retain the referenced evidence. |
+| `events.jsonl` | Source events, extracted commits, and verification history. |
+| `extract.json` | Extraction metadata and the input/configuration stamp. |
+| `claims.sqlite` | Materialized claim graph and judgments used for resuming work. |
+| `verification.json` | Identifies the inputs, source events, pipeline, and configuration behind those cached judgments. |
+
+Run `score` again with the same directory to resume. Changed source inputs, pipeline code, or model configuration invalidate incompatible derived judgments. Adapter-sealed runs whose captured inputs have changed are rejected. Keep captured inputs intact while verification is running.
+
+### Select among attempts
+
+Score each attempt in its own directory. `verifier.offline.rank_key(score)` orders candidates by:
+
+1. Verdict: `verified` > `supported` > `partial` > `unverified` > `refuted` > unscoreable.
+2. Within the same verdict, fewer violated advisory conditions on the final contract.
+
+Counts of passed checks and the length of the supporting argument do **not** break ties. `verifier.selection.argmax_set(rows)` returns every tied winner; `argmax(rows)` returns the first one for callers that need a single selection. These ranks are an ordering, not calibrated probabilities of correctness.
+
+## Score your own traces
+
+Create one directory per finished attempt:
+
+```text
+run/
+├── task.md                 # original task and acceptance requirements
+├── final.txt               # solver's final response
+├── hook_feed.jsonl         # recorded tool calls and results
+├── baseline/               # pre-run inputs, when checks need them
+├── world_manifest.json     # captured addresses and their scope
+└── world/                  # captured deliverables
+    └── app/answer.txt       # e.g. the run's /app/answer.txt
+```
+
+The [example manifest](examples/sum/world_manifest.json) maps `/app` to `world/app` and declares that `/app` was captured. An uncaptured path's absence proves nothing. Without `world/`, offline scoring treats the delivered world as unavailable; it does not substitute the scoring machine's current files. Preserve original task inputs in `baseline/` when an independent check needs them.
+
+**Claude Code:** the hooks in [hooks/](hooks/) record calls and results. The experiment recorder arms also save the task and relevant snapshots; see [experiments/README.md](experiments/README.md) for the complete collection workflow. Recording hooks alone do not capture the delivered filesystem.
+
+**Codex:** convert a native rollout into the same feed format:
+
+```bash
+uv run python -m verifier.stream.codex /path/to/rollout.jsonl /path/to/run
+uv run python -m verifier.cli score --state-dir /path/to/run --seats codex
+```
+
+Between conversion and scoring, supply the original `task.md` and any required baseline and deliverable capture. The converter writes only `hook_feed.jsonl` and `final.txt`; it cannot recover a filesystem that was never saved.
+
+### Inspect or configure a run
+
+```bash
+# Inspect scoring options; --model overrides the selected backend's default.
+uv run python -m verifier.cli score --help
+
+# Rebuild claim structure from events without calling a model.
+uv run python -m verifier.cli replay --events /path/to/run/events.jsonl
+
+# Render the saved graph, checks, and witnesses.
+uv run python script/claim_graph.py --state-dir /path/to/run -o graph.svg
+```
+
+`replay` reconstructs source claims and dependencies in a fresh store. It does not rerun checks or restore previously verified statuses; use the certificate or graph renderer to inspect saved judgments.
+
+`--max-rounds` controls extraction retries; `--critic-rounds` controls decomposition review. Codex scoring also accepts `--effort` and `--service-tier standard|fast`. These settings are recorded in the configuration identity. Offline concurrency defaults to four claims and four obligations at a time, bounded by a process-wide limit of 12 model seats; tune `GV_PARALLEL_CLAIMS`, `GV_PARALLEL_OBLIGATIONS`, and `GV_MAX_CONCURRENT_SEATS` to fit your usage budget.
+
+## Interactive mode
+
+Interactive mode exposes `commit`, `verify`, `status`, and `certificate` through MCP. The live solver receives verification feedback as it works. It needs `claude` on your `PATH` and the SDK provider configuration described above.
+
+Launch it **from a task project outside this repository**:
+
+```bash
+GV_REPO="$(pwd)"                  # run this line from General-Verifier
+cd /path/to/your/task-project
+uv run --project "$GV_REPO" python "$GV_REPO/gv_tui.py"
+```
+
+The launcher keeps its state and configuration under the task project's `.gv/`. It does not capture a pre-task baseline or write `task.md`; without a supplied task statement, completion checks use the committed final claim's wording. See the [solver protocol](protocol/solver-protocol.md) and [MCP configuration example](protocol/mcp.example.json) for manual integration.
+
+For a trace that already contains committed claims, `certify` checks its final claim and prints a certificate summary:
+
+```bash
+uv run python -m verifier.cli certify \
+  --events /path/to/events.jsonl --state-dir /path/to/certificate-state --final F
+```
+
+## Project status and limitations
+
+GV is experimental. The deterministic tests exercise evidence rules, provenance, cache invalidation, and verdict folding; they do not measure model accuracy or establish a zero false-positive rate. Interpretation, decomposition coverage, method sufficiency, and audit quality remain model-dependent.
+
+A capture only supports checks within the evidence it retained. Truncated tool output, missing pre-run inputs, uncaptured services, or unavailable instruments can leave a task unresolved. Content hashes identify retained bytes; they do not establish that the original capture was truthful or complete. Verification agents execute commands and may access the network; use an appropriate execution environment for the data and tools in your task.
+
+Benchmark collection, baseline comparisons, and selection reports live under [experiments/](experiments/README.md). Evaluate false `verified` verdicts against independent ground truth alongside selection accuracy and verification cost.
+
+## Development
 
 ```bash
 uv sync
+uv run pytest -q
 ```
 
-### Score a recorded trace
+The default test command collects only `tests/`, excluding downloaded benchmark runs and their artifacts.
 
-A state dir is what a recorded run leaves behind: `hook_feed.jsonl`, `task.md`,
-`baseline/`, `final.txt`, optionally `world/` (the delivered tree).
-
-```bash
-# extract + certify + rank; prints the feature dict; exit 0 iff verdict == verified
-uv run python -m verifier.cli score --state-dir path/to/.gv [--model m]
-
-# LLM-free: rebuild the claim graph from a trace, print label -> status
-uv run python -m verifier.cli replay --events path/to/.gv/events.jsonl
-
-# render the extracted graph for inspection (full claim text, obligations, witnesses)
-uv run python script/claim_graph.py --state-dir path/to/.gv -o graph.svg --png
-```
-
-Codex traces score through the same pipeline: `verifier/stream/codex.py` rewrites a
-Codex rollout log into the hook-feed format — the ledger format is the interface, not
-the agent.
-
-### Verifier seat backends
-
-Every LLM seat (extractor, compiler, critic, oracle, discharge, judger) runs through
-one of two interchangeable backends:
-
-- **Claude Agent SDK** (default): seats are Claude Code agents with hard tool
-  palettes, on the provider configured in `.env` (copy `.env.example`; default
-  DeepSeek-V4-Flash, `openrouter`/`custom` Anthropic-compatible endpoints supported).
-- **Codex CLI** (`--seats codex` on the experiment scorers): seats run as
-  `codex exec` calls on a ChatGPT-subscription model (default `gpt-5.6-luna`), which
-  also lets the verifier and an LLM-as-a-Verifier baseline share the same verifier
-  model. Same schema gate, same retries; see `verifier/llm/codex_backend.py` for the
-  fidelity notes. `--service-tier fast` opts GV scorers into Codex Fast mode;
-  standard is the default and is explicitly forced/recorded, so standard and fast
-  runs have different config identities and never share derived state. For the
-  Codex-backed LLM-as-a-Verifier path, use `--codex-service-tier fast`.
-
-### Interactive mode (online)
-
-The same kernel also serves a live Claude Code session over MCP — the solver commits
-claims as it works (`gv.commit` verifies before returning, handing back the failing
-obligation and its counterexample), and requests `gv.certificate` at the end. This
-mode *does* feed verdicts back into generation, so it is a different object from the
-offline verifier above — useful interactively, kept out of the ORM experiments.
-
-```bash
-uv run python gv_tui.py     # one-command session: mounts server + hooks + protocol
-```
-
-Manual mounting (`.mcp.json`, hooks, solver protocol) is documented in
-[protocol/](protocol/); the CI gate is `uv run python -m verifier.cli certify
---events trace.jsonl --state-dir .gv-ci`.
-
-## Experiments
-
-Benchmark harnesses under [experiments/](experiments/) (FrontierMath public sample,
-SWE-bench Pro, Terminal-Bench 2.1). The ORM comparison is built on **recorder arms**
-(`rec`: stock Claude Code + recording hooks; `rec-codex`: stock Codex, its own
-rollout log as the ledger): generate k trials per task, score them offline
-(`score.py`, resumable, `--task` to spend verification where selection differs), and
-compare selection strategies in `summarize.py` — pass@1, verifier argmax, pass@k
-oracle, plus verified-precision (a `verified` certificate on a wrong trace is the
-one number that must stay at zero). `lav.py` runs the official
-[LLM-as-a-Verifier](https://github.com/llm-as-a-verifier/llm-as-a-verifier) selector
-over the *same* candidate traces for a head-to-head baseline; TurboAgent (its
-Claude Code plugin) is wired as an online arm. See
-[experiments/README.md](experiments/README.md).
-
-## Module map
-
-| Module | Contents |
+| Location | Responsibility |
 |---|---|
-| `verifier/core/` | data contracts: content addressing + status machine + basis/strength lattice (`model.py`), append-only event stream (`events.py`), claim store + obligation nodes + trigger rule + slices + the read-time effective fold (`store.py`) |
-| `verifier/stream/` | ingestion: incremental graph building (`builder.py`), online tail (`tail.py`), Codex rollout → hook feed (`codex.py`) |
-| `verifier/offline.py` | the ORM path: feed ingestion, outcome-blind extraction with structural retry, certify, feature fold, lexicographic `rank_key` |
-| `verifier/selection.py` | best-of-N strategies: argmax, majority vote, verdict-weighted vote, pass@N oracle |
-| `verifier/core/world.py` | the delivered world as addressable artifacts (scheme, captured roots, address map), rendered to every seat as `world_map` |
-| `verifier/llm/` | LLM seats: agent roles with hard tool palettes (`agents.py`), schema gate + fixture backend (`schema.py`), Codex CLI backend (`codex_backend.py`), provider wiring (`provider.py`), prompt text as a package (`prompts/` — one file per seat, zero domain knowledge by design; `prompts/criteria/axioms.py` holds the eight cross-seat axioms — authority, independence, necessity, sufficiency, witness, time, referent, strength — and nothing else; `tests/test_prompt_generality.py` keeps every prompt free of tool, format, and benchmark nouns; see `docs/axioms.md`) |
-| `verifier/execution/` | the hands: artifact store + ledger instrument (`instruments.py`), discharge seat with immutable workdir snapshots, the durable per-trace evidence workspace, and assumed-premise declarations (`discharge.py`) |
-| `verifier/engine/` | verification core: residual compilation, conditional settlement, effective-verdict inheritance gates (`kernel.py`), binding game with the strength ladder (`game.py`), certificate with the two-verdict disclosure (`certificate.py`) |
-| `verifier/mcp_server.py` + `cli.py` | entry points: interactive MCP server; `score` / `certify` / `replay` CLI |
-| `hooks/` + `protocol/` | recording hooks (record, never intervene); MCP mount example + solver protocol (interactive mode) |
-| `script/claim_graph.py` | graph inspector: any state dir → laid-out SVG/PNG with full claim text, obligations, witnesses |
-| `experiments/` | benchmark harnesses, recorder arms, offline scorers, LLM-as-a-Verifier baseline |
-
-
-## Latency: what runs in parallel
-
-Per-trial wall time is dominated by discharge+judger rounds run one after
-another. Three knobs turn the schedule parallel without changing any
-judgment (they are deliberately NOT part of the config identity):
-
-| knob | default | effect |
-|---|---|---|
-| `GV_PARALLEL_OBLIGATIONS` / `--parallel-obligations` | 4 | the obligations of one claim discharge concurrently; the first MUST refutation cancels checks that have not started |
-| `GV_PARALLEL_CLAIMS` / `--parallel-claims` | 4 (offline) / 1 (online) | the claims of a certificate slice verify concurrently; offline scoring switches the store to the lazy trigger so replay does not verify them one by one first |
-| `GV_SHARED_DIR` / shared toolchain (on by default in `score.py`) | per task | candidates of one task share a toolchain and package caches; the codex sandbox grants that root write access and points `UV_CACHE_DIR`/`PIP_CACHE_DIR` at it |
-| `GV_MAX_CONCURRENT_SEATS` | 12 | process-wide cap on in-flight seat calls, whatever the nesting of trial x claim x obligation parallelism |
-
-The store, ledger, artifact store, and memory are serialized internally;
-obligation nodes and claims each carry a lock, so shared work is still done
-once. Support-claim verification is unchanged (all claims of the slice are
-still verified; only the schedule differs).
+| `verifier/offline.py`, `verifier/selection.py` | Finished-run scoring, cache identity, and candidate selection. |
+| `verifier/core/`, `verifier/stream/` | Data contracts, evidence scope, event ingestion, and claim graph. |
+| `verifier/engine/` | Compilation, critique, verification, and certificates. |
+| `verifier/execution/`, `verifier/llm/` | Check execution, retained artifacts, model roles, prompts, and backends. |
+| `verifier/cli.py`, `verifier/mcp_server.py` | CLI and interactive entry points. |
+| `hooks/`, `protocol/`, `experiments/` | Trace recording, solver integration, and evaluation harnesses. |

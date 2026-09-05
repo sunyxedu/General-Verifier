@@ -36,11 +36,17 @@ read verdicts; it contains no knowledge about your task.
 ## Wrap-up
 
 - After committing `final`, call `gv.certificate(final_label=...)`.
-- The verdict has exactly four honest values: `verified` (every obligation on the slice
-  holds), `partial` (some hold, some could not be discharged), `unverified` (unresolved
-  residue, with reasons), `refuted` (a counterexample exists on the slice). Relay the
-  verdict and certificate_id verbatim to the user/CI; do not paraphrase them into
-  anything beyond plain pass/fail wording.
+- The verdict comes from the final claim's independently checked task contract.
+  Earlier claims remain in the certificate for audit; their status does not decide
+  the final verdict. The final admits no assumed premises. If no `task.md` is
+  supplied, its own wording is the available contract.
+- There are five verdicts: `verified` (all final obligations hold at decisive strength,
+  including at least one world-based check), `supported` (all hold, but some evidence
+  is bounded or analytic), `partial` (checks are unavailable or advisory conditions
+  were violated), `unverified` (unresolved checks or insufficient evidence), and
+  `refuted` (an admissible decisive counterexample to a mandatory final obligation).
+  Relay the verdict and certificate_id verbatim to the user/CI. Include unresolved
+  conditions and, for `supported`, the disclosed bridging assumptions.
 - `unverified` is not a failure — it means "couldn't be verified": you can add supporting
   grounds and resubmit with a revise.
 - **Never leave a `refuted` or `unverified` final standing.** Read the obligation reasons

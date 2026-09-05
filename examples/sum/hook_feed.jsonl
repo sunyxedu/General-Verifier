@@ -1,0 +1,2 @@
+{"type": "tool_call", "payload": {"tool": "Bash", "tool_use_id": "sum-1", "session": "example-sum", "agent": null, "input": {"command": "python3 -c 'from pathlib import Path; Path(\"/app/answer.txt\").write_text(str(sum(range(1, 6))) + \"\\n\")'"}}}
+{"type": "tool_result", "payload": {"tool": "Bash", "tool_use_id": "sum-1", "session": "example-sum", "agent": null, "response_sha256": "834bd866d4de57d467f58d46ba410997908d107c3e81e4e8857b94199e1ea5c3", "response_chars": 39, "excerpt_truncated": false, "excerpt": "{\"exit_code\":0,\"stderr\":\"\",\"stdout\":\"\"}"}}
