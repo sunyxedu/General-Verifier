@@ -312,6 +312,33 @@ def test_config_identity_separates_models_and_seats():
         != luna["config"]
 
 
+@pytest.mark.parametrize("field,value", [
+    ("MODEL", "a-different-model"),
+    ("PROVIDER", "a-different-provider"),
+    ("ANTHROPIC_BASE_URL", "https://another.example/anthropic"),
+    ("TEXT_ONLY", True),
+])
+def test_sdk_config_tracks_the_resolved_provider(monkeypatch, field, value):
+    from verifier.llm import provider
+
+    monkeypatch.setattr(provider, "TEXT_ONLY", False)
+    original = offline.config_fields()
+    monkeypatch.setattr(provider, field, value)
+    assert offline.config_fields()["config"] != original["config"]
+
+
+def test_sdk_config_resolves_defaults_without_recording_credentials(monkeypatch):
+    from verifier.llm import provider
+
+    monkeypatch.setattr(provider, "ANTHROPIC_BASE_URL",
+                        "https://user:secret@example.test/api?token=secret")
+    original = offline.config_fields()
+    assert original == offline.config_fields(model=provider.MODEL)
+    assert "secret" not in json.dumps(original)
+    monkeypatch.setattr(provider, "API_KEY", "rotated-key")
+    assert offline.config_fields() == original
+
+
 def test_config_identity_separates_codex_service_tiers():
     implicit = offline.config_fields(model="gpt-5.6-terra", seats="codex")
     standard = offline.config_fields(
@@ -363,7 +390,7 @@ def test_score_stamps_the_config_fields(tmp_path):
 
     cfg = offline.config_fields()
     assert features["config"] == cfg["config"]
-    assert features["model"] == "provider-default"
+    assert features["model"] == cfg["model"]
     assert features["seats"] == "sdk"
     assert features["service_tier"] == "n/a"
 

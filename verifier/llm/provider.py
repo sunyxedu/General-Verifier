@@ -57,9 +57,6 @@ if PROVIDER == "deepseek":
     MODEL = cfg("GV_MODEL", "deepseek-v4-flash")
     ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
     API_KEY = cfg("DEEPSEEK_API_KEY")
-    if not API_KEY:
-        raise RuntimeError("GV_PROVIDER=deepseek needs DEEPSEEK_API_KEY "
-                           "(in .env or the environment)")
     KEY_ENV = "DEEPSEEK_API_KEY"
     LITELLM_MODEL = f"deepseek/{MODEL}"
     _X_API_KEY = API_KEY
@@ -67,9 +64,6 @@ elif PROVIDER == "openrouter":
     MODEL = cfg("GV_MODEL", "deepseek/deepseek-v4-flash")
     ANTHROPIC_BASE_URL = "https://openrouter.ai/api"
     API_KEY = cfg("OPENROUTER_API_KEY")
-    if not API_KEY:
-        raise RuntimeError("GV_PROVIDER=openrouter needs OPENROUTER_API_KEY "
-                           "(in .env or the environment)")
     KEY_ENV = "OPENROUTER_API_KEY"
     LITELLM_MODEL = f"openrouter/{MODEL}"
     _X_API_KEY = ""    # MUST be explicitly blank: Bearer-only auth, and a
@@ -78,9 +72,6 @@ elif PROVIDER == "custom":
     MODEL = cfg("GV_MODEL")
     ANTHROPIC_BASE_URL = cfg("GV_ANTHROPIC_BASE_URL")
     API_KEY = cfg("GV_API_KEY")
-    if not (MODEL and ANTHROPIC_BASE_URL and API_KEY):
-        raise RuntimeError("GV_PROVIDER=custom needs GV_MODEL, "
-                           "GV_ANTHROPIC_BASE_URL and GV_API_KEY")
     KEY_ENV = "GV_API_KEY"
     LITELLM_MODEL = cfg("GV_LITELLM_MODEL", MODEL)
     _X_API_KEY = API_KEY
@@ -117,11 +108,22 @@ CLAUDE_ENV = {
 }
 
 
+def validate_configuration():
+    """Require credentials only when starting a provider-backed process."""
+    if PROVIDER == "custom" and not (MODEL and ANTHROPIC_BASE_URL and API_KEY):
+        raise RuntimeError("GV_PROVIDER=custom needs GV_MODEL, "
+                           "GV_ANTHROPIC_BASE_URL and GV_API_KEY")
+    if not API_KEY:
+        raise RuntimeError(f"GV_PROVIDER={PROVIDER} needs {KEY_ENV} "
+                           "(in .env or the environment)")
+
+
 def claude_env(base=None):
     """
     Full process env for spawning `claude` (or anything that spawns it) against the configured provider.    
     The current environment overlaid with CLAUDE_ENV, plus a login-free CLAUDE_CONFIG_DIR.
     """
+    validate_configuration()
     env = dict(os.environ if base is None else base)
     env.update(CLAUDE_ENV)
     os.makedirs(CONFIG_DIR, exist_ok=True)

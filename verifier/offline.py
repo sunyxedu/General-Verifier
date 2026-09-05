@@ -328,13 +328,24 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         from .engine.kernel import MAX_CRITIC_ROUNDS
         critic_rounds = MAX_CRITIC_ROUNDS
     fields: Dict[str, Any] = {
-        "model": model or "provider-default",
+        "model": model,
         "seats": seats or "sdk",
         "effort": effort or ("medium" if seats == "codex" else "n/a"),
         "service_tier": resolved_service_tier,
         "max_rounds": max_rounds,
         "critic_rounds": critic_rounds,
     }
+    if fields["seats"] == "sdk":
+        from .llm import provider
+
+        fields.update({
+            "model": model or provider.MODEL,
+            "provider": provider.PROVIDER,
+            # A custom URL can contain credentials. Track its identity
+            # without copying it into public score records.
+            "endpoint_fingerprint": content_hash(provider.ANTHROPIC_BASE_URL),
+            "text_only": provider.TEXT_ONLY,
+        })
     fields["config"] = content_hash(
         {"pipeline": pipeline_fingerprint(), **fields})[:16]
     return fields

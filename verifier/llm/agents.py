@@ -32,7 +32,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from . import prompts, provider
+from . import prompts
 from .schema import RoleError, validate, field_name, optional_key
 # The Claude Agent SDK backs the DEFAULT backend only; alternate backends
 # (CodexBackend) never touch it. Imported lazily so that a seats=codex run
@@ -302,6 +302,8 @@ class AgentBackend:
         raise RoleError(f"{role.name}: no structured output ({detail})")
 
     def _build_options(self, role: AgentRole, stderr_cb):
+        from . import provider
+
         system_prompt: Any = {"type": "preset", "preset": "claude_code"}
         if role.system:
             system_prompt["append"] = role.system

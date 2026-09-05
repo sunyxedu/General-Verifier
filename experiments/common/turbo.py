@@ -97,6 +97,7 @@ class Proxy:
         self.proc = None
 
     def __enter__(self):
+        provider.validate_configuration()
         ensure_vendor()
         # the proxy's litellm backend reads the provider key from its env
         os.environ.setdefault(provider.KEY_ENV, provider.API_KEY)
@@ -131,6 +132,7 @@ class Proxy:
 
 
 def check_keys():
+    provider.validate_configuration()
     os.environ.setdefault(provider.KEY_ENV, provider.API_KEY)
     vertex = provider.cfg("VERTEX_API_KEY")
     if vertex:

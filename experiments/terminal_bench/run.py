@@ -175,7 +175,8 @@ def main():
     # key (as ANTHROPIC_API_KEY — the endpoint accepts x-api-key) into the
     # container, and the endpoint maps claude-* aliases to deepseek-v4-flash
     # server-side, so `-m anthropic/sonnet` lands on DeepSeek too.
-    env = provider.claude_env()
+    env = (dict(os.environ) if args.arm in ("codex", "rec-codex")
+           else provider.claude_env())
     if args.arm == "plain":
         cmd += ["-a", "claude-code", "-m", args.model or "anthropic/sonnet"]
     elif args.arm == "codex":
