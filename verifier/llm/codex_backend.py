@@ -822,6 +822,10 @@ class CodexBackend:
                 "-o", out.name, "--", instruction,
             ])
             for attempt in range(TRANSIENT_RETRIES + 1):
+                # Each attempt must produce its own final message. A failed
+                # process can leave a valid-looking JSON file behind.
+                with open(out.name, "w", encoding="utf-8"):
+                    pass
                 with open(os.devnull) as devnull:
                     # stdin MUST be closed: codex otherwise waits on it forever
                     started_at_unix_ns = time.time_ns()
@@ -847,6 +851,10 @@ class CodexBackend:
                       f"retry {attempt + 1}/{TRANSIENT_RETRIES} "
                       f"in {wait}s", file=sys.stderr, flush=True)
                 time.sleep(wait)
+            if proc.returncode != 0:
+                raise RoleError(
+                    f"{role_name}: codex exec failed "
+                    f"(rc={proc.returncode}, stderr={proc.stderr[-300:]!r})")
             telemetry = None
             if usage_target is not None:
                 telemetry = _parse_exec_telemetry(proc.stdout or "")

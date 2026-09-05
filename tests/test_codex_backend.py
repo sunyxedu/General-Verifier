@@ -67,6 +67,43 @@ def test_unknown_role_is_a_role_error():
         CodexBackend().complete("nope", "prompt", {})
 
 
+def test_failed_process_cannot_return_a_valid_seat_answer(tmp_path, monkeypatch):
+    backend = CodexBackend(roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
+                           cwd=str(tmp_path))
+
+    def fail_after_output(cmd, **kwargs):
+        with open(cmd[cmd.index("-o") + 1], "w") as handle:
+            json.dump({"ok": True}, handle)
+        return SimpleNamespace(returncode=1, stderr="execution failed",
+                               stdout='{"type":"thread.started","thread_id":"t1"}\n')
+
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.run", fail_after_output)
+    with pytest.raises(RoleError, match="codex exec failed"):
+        backend.complete("critic", "prompt", {})
+
+
+def test_retry_cannot_reuse_an_earlier_attempts_output(tmp_path, monkeypatch):
+    backend = CodexBackend(roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
+                           cwd=str(tmp_path))
+    attempts = []
+
+    def retry_without_output(cmd, **kwargs):
+        attempts.append(cmd)
+        if len(attempts) == 1:
+            with open(cmd[cmd.index("-o") + 1], "w") as handle:
+                json.dump({"ok": True}, handle)
+            return SimpleNamespace(returncode=1, stderr="", stdout=(
+                '{"type":"thread.started","thread_id":"t1"}\n'
+                '{"type":"turn.failed","error":{"message":"at capacity"}}\n'))
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.run", retry_without_output)
+    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _: None)
+    with pytest.raises(RoleError, match="produced no output"):
+        backend.complete("critic", "prompt", {})
+    assert len(attempts) == 2
+
+
 def test_usage_ledger_records_exact_repeated_seat_calls(
     tmp_path, monkeypatch,
 ):
