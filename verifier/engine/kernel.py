@@ -419,7 +419,9 @@ class Kernel:
             self.memory.hits_for_obligations(row["text"])
             if self.memory is not None else self.memory_hits
         )
-        # A harness final is the independent root of the task contract.
+        # Every final is independent of its premises: the effective fold
+        # exempts finals even when no separate task statement was supplied.
+        # In that case the final's own wording is the available contract.
         # Solver-derived graph nodes may later supply evidence for the
         # obligations it emits, but they must not become axioms that let the
         # compiler residualize an authoritative task requirement out of the
@@ -427,10 +429,7 @@ class Kernel:
         # compilation, so sound reuse remains available.
         state = os.path.dirname(os.path.abspath(self.log.path))
         task_context = authoritative_task_context(state)
-        independent_final = (
-            row["kind"] == CLAIM_FINAL
-            and task_context != "(none supplied)"
-        )
+        independent_final = row["kind"] == CLAIM_FINAL
         # graph context: EVERY premise (dep) is assumable — the claim's
         # verdict is conditional on its premises by definition, and the
         # read-time effective fold charges each premise's actual state

@@ -850,9 +850,12 @@ def test_critic_gets_the_task_statement_when_the_harness_wrote_one(tmp_path):
     }
 
 
-def test_harness_final_contract_is_isolated_from_solver_graph(tmp_path):
+@pytest.mark.parametrize("task_supplied", [False, True])
+def test_harness_final_contract_is_isolated_from_solver_graph(
+        tmp_path, task_supplied):
     """A verified solver definition cannot erase a task requirement."""
-    (tmp_path / "task.md").write_text("Return the complete total.")
+    if task_supplied:
+        (tmp_path / "task.md").write_text("Return the complete total.")
     store, _, backend, _ = build(
         tmp_path, {"obligations": COMPILE, "critic": PASS})
 
@@ -884,8 +887,11 @@ def test_harness_final_contract_is_isolated_from_solver_graph(tmp_path):
     }
     assert critic["dependency_referent_context"] == \
         compiler["dependency_referent_context"]
-    assert json.loads(compiler["task_context"])["text"] \
-        == "Return the complete total."
+    if task_supplied:
+        assert json.loads(compiler["task_context"])["text"] == (
+            "Return the complete total.")
+    else:
+        assert compiler["task_context"] == "(none supplied)"
     assert json.loads(critic["verified_deps"]) == []
 
 

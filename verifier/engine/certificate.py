@@ -34,6 +34,7 @@ from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
 from .kernel import Kernel
 from ..core.model import (
+    CLAIM_FINAL,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED,
     STATUS_PARTIAL, STRENGTH_DECISIVE, strength_rank,
 )
@@ -44,6 +45,8 @@ def request_certificate(
     store: ClaimStore, kernel: Kernel, log: EventLog,
     artifacts: ArtifactStore, final_id: str,
 ) -> Dict:
+    if store.get(final_id)["kind"] != CLAIM_FINAL:
+        raise ValueError("a certificate requires a final claim")
     log.append("verify_request", {"target": final_id, "cause": "certificate"})
 
     slice_ids = store.backward_slice(final_id)

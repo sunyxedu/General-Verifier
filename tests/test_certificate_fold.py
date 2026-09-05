@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from verifier.core.events import EventLog
-from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL
+from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
 from verifier.engine.certificate import request_certificate
 from verifier.engine.kernel import Kernel
@@ -105,3 +107,15 @@ def test_assertions_keep_the_refuted_premise_early_out(tmp_path):
 
     assert store.status(b) == "unverified"
     assert store.evidence_for(b)[-1]["error"].startswith("premise chain refuted")
+
+
+@pytest.mark.parametrize("kind", [CLAIM_ASSERTION, CLAIM_EFFECT])
+def test_certificate_requires_a_final_before_recording_a_request(tmp_path, kind):
+    store, kernel, log, artifacts = build(tmp_path, {})
+    target = store.add_claim(Claim(kind, "an intermediate observation"))
+    before = list(log.replay())
+
+    with pytest.raises(ValueError, match="final claim"):
+        request_certificate(store, kernel, log, artifacts, target)
+
+    assert list(log.replay()) == before
