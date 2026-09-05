@@ -437,12 +437,21 @@ class ClaimStore:
         settled verdict transfers for free. No trigger fires — obligation
         scheduling is the kernel's job, not the store's."""
         oid = obligation.id
+        for pid in obligation.premise_scope:
+            if not self._exists(pid):
+                raise UnknownDependency(f"premise {pid[:12]}… not in store")
         cur = self.db.execute("SELECT 1 FROM claims WHERE id=?", (oid,))
         if not cur.fetchone():
             self.db.execute(
                 "INSERT INTO claims (id, kind, text) VALUES (?,?,?)",
                 (oid, OBLIGATION_KINDS, obligation.text),
             )
+        # Conditional obligation nodes must also read out conditionally
+        # in graph snapshots and become stale when a premise is revised.
+        self.db.executemany(
+            "INSERT OR IGNORE INTO deps (child, parent) VALUES (?,?)",
+            [(oid, pid) for pid in obligation.premise_scope],
+        )
         self.db.execute(
             "INSERT OR IGNORE INTO obligation_edges "
             "(claim, obligation, severity, clause, refutable_by_absence) "

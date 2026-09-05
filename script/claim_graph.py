@@ -54,7 +54,7 @@ def wrap(text: str, width: int = WRAP, max_lines: int = MAX_LINES) -> list:
 
 
 def obligation_id(text: str, required_basis: str) -> str:
-    """Mirror verifier.core.model.Obligation.id without importing the package."""
+    """Recover legacy node ids from events predating explicit obligation ids."""
     value = json.dumps(
         {"text": text, "required": required_basis},
         sort_keys=True,
@@ -197,7 +197,8 @@ def load(state_dir: str) -> dict:
                         text = obligation.get("text")
                         required = obligation.get("required_basis", "record")
                         if text:
-                            required_basis[obligation_id(text, required)] = required
+                            oid = obligation.get("id") or obligation_id(text, required)
+                            required_basis[oid] = required
     # A discharge also records the floor, including for older event streams
     # that did not include it in obligations_compiled.
     for oid, payloads in evidence.items():

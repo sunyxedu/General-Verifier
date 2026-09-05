@@ -2,8 +2,8 @@
 Kernel.
 
 Compile obligations (graph-aware, answer-blind) -> materialize each as an
-obligation NODE in the claim graph (identical text anywhere = same node, so
-settled verdicts transfer for free) -> discharge each node through the
+obligation NODE in the claim graph (same statement, evidence floor, absence
+rule, and premise scope share a verdict) -> discharge each node through the
 binding game (oracle levels -> execute -> judger) -> settle the claim as a
 fold over its obligation nodes.
 
@@ -248,6 +248,17 @@ class Kernel:
             (r[2] for r in settled if r[1] == OUTCOME_REFUTED
              and r[0].severity == SEVERITY_MUST), None)
         self._settle(row["id"], outcomes, bases, strengths, severities)
+        refutation = next((r for r in settled if r[1] == OUTCOME_REFUTED
+                           and r[0].severity == SEVERITY_MUST), None)
+        if refutation is not None:
+            evidence = self.store.evidence_for(refutation[0].id)[-1]
+            self.store.record_evidence(row["id"], {
+                "outcome": OUTCOME_REFUTED,
+                "refuting_obligation": refutation[0].id,
+                "witness": evidence.get("witness"),
+                "witness_kind": evidence.get("witness_kind"),
+                "artifact": evidence.get("artifact", ""),
+            })
 
         if self.memory is not None:
             status = self.store.status(row["id"])
@@ -342,7 +353,11 @@ class Kernel:
                         {"claim": row["id"], "obligation": oid,
                          "status": known, "refused": "foreign assumptions",
                          "assumed_premises": list(assumed)})
-                    known = STATUS_UNVERIFIED  # fall through to fresh work
+                    # Never append a retry to a settled node: pairing its
+                    # old status with new evidence would erase assumptions.
+                    return (OUTCOME_FAILED,
+                            "settled evidence has foreign assumptions",
+                            None, None)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 # content-addressed reuse: the same world-condition was
                 # already settled under another claim. The verdict and its
@@ -393,6 +408,15 @@ class Kernel:
                     # by inheritance (a legacy row with no basis fails
                     # closed the same way).
                     transferable = False
+                if transferable and src["status"] == STATUS_REFUTED:
+                    evidence = self.store.evidence_for(src["id"])
+                    witness_kind = (evidence[-1].get("witness_kind")
+                                    if evidence else None)
+                    transferable = (
+                        witness_admissible(witness_kind,
+                                           obligation.refutable_by_absence)
+                        and strength_rank(src_eff["effective_strength"])
+                        >= strength_rank(STRENGTH_DECISIVE))
                 if not transferable:
                     src = None
             if src is not None:
@@ -513,7 +537,8 @@ class Kernel:
                                  else SEVERITY_MUST),
                        clause=str(o.get("clause") or ""),
                        refutable_by_absence=bool(
-                           o.get("refutable_by_absence", False)))
+                           o.get("refutable_by_absence", False)),
+                       premise_scope=tuple(self._premises_in_force(row)))
             for o in payload["obligations"]
         ]
         if not independent_final:
@@ -544,7 +569,8 @@ class Kernel:
         self.log.append(
             "obligations_compiled",
             {"claim": row["id"],
-             "obligations": [{"text": o.text,
+             "obligations": [{"id": o.id, "text": o.text,
+                              "premise_scope": list(o.premise_scope),
                               "required_basis": o.required_basis,
                               "severity": o.severity,
                               "clause": o.clause,
@@ -1030,12 +1056,13 @@ class Kernel:
                 "strength": src_strength,
                 "source": src["id"],
                 "witness": witness,
+                "witness_kind": ev[-1].get("witness_kind") if ev else None,
+                "artifact": ev[-1].get("artifact", "") if ev else "",
+                "assumed_premises": [],
             },
         )
-        # settle only when the node is still settleable: a node already
-        # settled elsewhere (e.g. under foreign assumptions, refused at
-        # dedup) keeps its first verdict — the evidence just recorded
-        # carries THIS claim's account
+        # The node lock and scoped identity keep its verdict paired with
+        # this evidence. Only previously unsettled nodes reach inheritance.
         if self.store.status(oid) in (STATUS_UNVERIFIED, STATUS_STALE):
             if outcome == OUTCOME_HOLDS:
                 self.store.set_verified(oid, basis=src_basis,
@@ -1156,7 +1183,7 @@ class Kernel:
                 strength=result.strength,
                 assumed_premises=result.assumed_premises,
             )
-        if result.outcome in (OUTCOME_HOLDS, OUTCOME_REFUTED) \
+        if result.outcome in (OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_UNOBTAINABLE) \
                 and result.assumed_premises:
             # gate on assumed premises: evidence may assume the content
             # of the premises IN FORCE for this claim (the conditional
@@ -1210,10 +1237,8 @@ class Kernel:
             "evidence_id": evidence.id,
         }
         self.store.record_evidence(oid, evidence_payload)
-        # settle only when the node is still settleable: when this fresh
-        # discharge ran because a prior settle was refused at dedup
-        # (foreign assumptions), the node keeps its first verdict and the
-        # evidence just recorded carries this claim's own account
+        # Retries append only while the node is unsettled. A settled node
+        # and its evidence history are reused together within its scope.
         if self.store.status(oid) in (STATUS_UNVERIFIED, STATUS_STALE):
             if result.outcome == OUTCOME_HOLDS:
                 self.store.set_verified(oid, basis=result.basis,
@@ -1257,12 +1282,12 @@ class Kernel:
         settled = [OUTCOME_UNOBTAINABLE if i in should_violated else o
                    for i, o in enumerate(outcomes)]
         if must_refuted:
-            # the loop breaks at the first MUST refutation, so the refuting
-            # evidence's basis is the last one collected — stored so the
-            # refutation transfers (or is refused) at the right floor
+            # Parallel checks may finish after the refutation. Provenance
+            # belongs to the deciding check, never an unrelated later one.
+            index = must_refuted[0]
             self.store.set_refuted(claim_id, reason="counterexample on record",
-                                   basis=bases[-1] if bases else None,
-                                   strength=(strengths[-1] if strengths
+                                   basis=bases[index] if bases else None,
+                                   strength=(strengths[index] if strengths
                                              else None))
             new_status = "refuted"
         elif should_violated and all(

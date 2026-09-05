@@ -212,8 +212,7 @@ class Obligation:
     # did or reported (the ledger settles those). Compiled by the
     # obligation compiler; enforced mechanically at binding and settle.
     required_basis: str = BASIS_RECORD
-    # EDGE-level attributes (how THIS claim relies on the node; excluded
-    # from node identity so settled verdicts still transfer):
+    # Reliance metadata: severity and clause are edge attributes.
     # severity — must | should (see SEVERITY_*): decides whether a
     #   refutation of the node refutes the claim or only lowers it;
     # clause — the verbatim source span the obligation is compiled from,
@@ -224,6 +223,9 @@ class Obligation:
     severity: str = SEVERITY_MUST
     clause: str = ""
     refutable_by_absence: bool = False
+    # Set by the kernel, never by a model. Conditional checks may share a
+    # verdict only within the same set of assumable premises. Finals use ().
+    premise_scope: Tuple[str, ...] = ()
 
     def __post_init__(self):
         # basis_satisfies reads any unknown value as a low floor — an
@@ -234,18 +236,21 @@ class Obligation:
                 f"unknown required_basis: {self.required_basis!r}")
         if self.severity not in SEVERITIES:
             raise ValueError(f"unknown severity: {self.severity!r}")
+        object.__setattr__(self, "premise_scope",
+                           tuple(sorted(set(self.premise_scope))))
 
     @property
     def id(self) -> str:
         """
-        identity is the content of the check AND its floor: the same text
-        demanded at world level is a different check than at record level
-        — sharing one node would let a record-satisfied verdict slip into
-        a world slot through dedup. Same text + same floor still transfers
-        settled verdicts across claims for free.
+        Identity includes every condition on evidence reuse. Different
+        assumption scopes or absence rules need separate verdicts and
+        evidence histories, even when the statement and floor coincide.
+        Versioning also prevents reuse of legacy unscoped nodes.
         """
-        return content_hash({"text": self.text,
-                             "required": self.required_basis})
+        return content_hash({"schema": "gv-obligation-v2", "text": self.text,
+                             "required": self.required_basis,
+                             "refutable_by_absence": self.refutable_by_absence,
+                             "premise_scope": self.premise_scope})
 
 
 def basis_satisfies(achieved: Optional[str], required: str) -> bool:
