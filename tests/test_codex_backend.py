@@ -337,6 +337,27 @@ def test_offline_extract_gets_isolated_execution(tmp_path):
     assert 'permissions.gv-offline.extends=":read-only"' in args
 
 
+def test_offline_execution_can_build_in_the_durable_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    args = CodexBackend(cwd=str(tmp_path))._execution_policy_args(
+        "discharge", {"world_mode": "captured", "workspace_dir": str(workspace)})
+    filesystem = next(arg for arg in args
+                      if arg.startswith("permissions.gv-offline.filesystem="))
+    assert f'{json.dumps(str(workspace))}="write"' in filesystem
+    assert workspace.is_dir()
+    assert f'{json.dumps(str(tmp_path))}="write"' not in filesystem
+
+
+def test_offline_execution_rejects_a_symlinked_workspace(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(RoleError, match="real directory"):
+        CodexBackend(cwd=str(tmp_path))._execution_policy_args(
+            "discharge", {"world_mode": "captured", "workspace_dir": str(workspace)})
+
+
 def test_offline_execution_keeps_state_cwd_but_only_work_is_writable(
     tmp_path, monkeypatch,
 ):

@@ -37,3 +37,38 @@ def test_sdk_requires_credentials_when_it_starts():
     assert result.stdout.strip() == "imported"
     assert result.returncode != 0
     assert "needs DEEPSEEK_API_KEY" in result.stderr
+
+
+@pytest.mark.parametrize("verdict,exit_code", [
+    ("verified", 0), ("supported", 1), ("unscoreable", 1),
+])
+def test_score_cli_forwards_codex_configuration(monkeypatch, capsys, verdict, exit_code):
+    from verifier import cli, offline
+
+    received = {}
+
+    def score(state_dir, **kwargs):
+        received.update(state_dir=state_dir, **kwargs)
+        return {"verdict": verdict}
+
+    monkeypatch.setattr(offline, "score", score)
+    assert cli.main([
+        "score", "--state-dir", "/tmp/example", "--seats", "codex",
+        "--model", "test-model", "--effort", "high", "--service-tier", "fast",
+        "--max-rounds", "2", "--critic-rounds", "4",
+    ]) == exit_code
+    assert received == {"state_dir": "/tmp/example", "seats": "codex",
+                        "model": "test-model", "effort": "high",
+                        "service_tier": "fast", "max_rounds": 2,
+                        "critic_rounds": 4}
+    assert json.loads(capsys.readouterr().out)["verdict"] == verdict
+
+
+@pytest.mark.parametrize("option", [["--effort", "high"], ["--service-tier", "fast"]])
+def test_score_cli_rejects_codex_options_for_sdk(option, capsys):
+    from verifier import cli
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["score", "--state-dir", "/tmp/example", *option])
+    assert error.value.code == 2
+    assert "require --seats codex" in capsys.readouterr().err

@@ -82,11 +82,14 @@ def replay(events_path: str) -> int:
 
 
 def score(state_dir: str, model: Optional[str] = None,
-          max_rounds: int = 3, critic_rounds: Optional[int] = None) -> int:
+          max_rounds: int = 3, critic_rounds: Optional[int] = None, *,
+          seats: str = "sdk", effort: Optional[str] = None,
+          service_tier: Optional[str] = None) -> int:
     from . import offline
 
     features = offline.score(state_dir, model=model, max_rounds=max_rounds,
-                             critic_rounds=critic_rounds)
+                             critic_rounds=critic_rounds, seats=seats,
+                             effort=effort, service_tier=service_tier)
     print(json.dumps(features, ensure_ascii=False, indent=1))
     return 0 if features.get("verdict") == "verified" else 1
 
@@ -95,18 +98,24 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="verifier.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    c = sub.add_parser("certify")
+    c = sub.add_parser("certify", help="verify a committed final claim")
     c.add_argument("--events", required=True)
     c.add_argument("--state-dir", required=True)
     c.add_argument("--final", default=None)
     c.add_argument("--model", default=None)
 
-    r = sub.add_parser("replay")
+    r = sub.add_parser("replay", help="rebuild claim structure without model calls")
     r.add_argument("--events", required=True)
 
-    s = sub.add_parser("score")
+    s = sub.add_parser("score", help="verify a finished run from captured inputs")
     s.add_argument("--state-dir", required=True)
     s.add_argument("--model", default=None)
+    s.add_argument("--seats", choices=("sdk", "codex"), default="sdk",
+                   help="model backend (default: sdk, configured in .env)")
+    s.add_argument("--effort", default=None,
+                   help="Codex reasoning effort (backend default: medium)")
+    s.add_argument("--service-tier", choices=("standard", "fast"), default=None,
+                   help="Codex service tier (default: standard)")
     s.add_argument("--max-rounds", type=int, default=3)
     s.add_argument("--critic-rounds", type=int, default=None)
 
@@ -114,8 +123,12 @@ def main(argv=None) -> int:
     if args.cmd == "certify":
         return certify(args.events, args.state_dir, args.final, args.model)
     if args.cmd == "score":
+        if args.seats != "codex" and (args.effort is not None
+                                      or args.service_tier is not None):
+            s.error("--effort and --service-tier require --seats codex")
         return score(args.state_dir, args.model, args.max_rounds,
-                     args.critic_rounds)
+                     args.critic_rounds, seats=args.seats, effort=args.effort,
+                     service_tier=args.service_tier)
     return replay(args.events)
 
 

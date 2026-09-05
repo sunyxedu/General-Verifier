@@ -659,8 +659,8 @@ class CodexBackend:
         # follow a candidate-planted ``work``/HOME/cache symlink.
         for path in dict.fromkeys((work, *env.values())):
             _ensure_verifier_owned_chain(work, path)
-        # Shared verifier-owned roots OUTSIDE the state (a per-task
-        # toolchain, install caches) widen the writable set explicitly.
+        # Additional verifier-owned roots (the durable evidence workspace,
+        # per-task toolchain and install caches) widen the writable set explicitly.
         # Each must be a real, process-owned directory; it is never
         # derived from candidate-controlled content. Sharing trades the
         # per-trial isolation of instruments for latency (one install per
@@ -668,7 +668,7 @@ class CodexBackend:
         # guards the evidence, and the artifact chain remains the trust
         # anchor.
         shared_roots: list[str] = []
-        for key in ("workdir", "toolchain_dir", "shared_cache_dir"):
+        for key in ("workdir", "workspace_dir", "toolchain_dir", "shared_cache_dir"):
             candidate = variables.get(key)
             if not candidate:
                 continue
