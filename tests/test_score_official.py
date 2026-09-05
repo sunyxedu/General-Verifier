@@ -278,7 +278,9 @@ def test_resume_allows_only_named_derived_state_and_sealed_sources(
     Path(state, "events.jsonl").write_text("", encoding="utf-8")
     Path(state, "extract.json").write_text("{}", encoding="utf-8")
     Path(state, "claims.sqlite").write_bytes(b"sqlite")
+    Path(state, "verification.json").write_text('{}', encoding="utf-8")
     Path(state, "artifacts").mkdir()
+    Path(state, "workspace").mkdir()
     Path(state, "work", "nested").mkdir(parents=True)
 
     assert official.sanitized_state(

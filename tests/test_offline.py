@@ -505,3 +505,65 @@ def test_voting_falls_back_to_argmax_without_answers():
             {"answer": None, "solved": False,
              "features": F("verified", final_verified=1)}]
     assert selection.majority_vote(rows)["features"]["verdict"] == "verified"
+
+
+@pytest.mark.parametrize("relative, changed", [
+    ("task.md", "a different task"),
+    ("final.txt", "a different answer"),
+    ("hook_feed.jsonl", "".join(json.dumps(e) + "\n" for e in [*FEED, FEED[0]])),
+    ("world/app/result.txt", "a different delivered artifact"),
+    ("world_manifest.json", '{"captured_roots": []}'),
+    ("baseline/files.json", '{}'),
+])
+def test_changed_inputs_rebuild_extraction_and_judgments(tmp_path, relative, changed):
+    state = state_dir(tmp_path)
+    offline.score(state, backend=FixtureBackend({"extract": GOOD_COMMITS}),
+                  kernel_factory=kernel_factory)
+    path = tmp_path / "gv" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(changed)
+    fresh = FixtureBackend({"extract": GOOD_COMMITS})
+    checks = StubDischarger("failed")
+
+    def factory(sc):
+        return Kernel(sc.store, sc.log, FixtureBackend({"obligations": COMPILE}),
+                      sc.artifacts, critic_role=None, discharger=checks)
+
+    features = offline.score(state, backend=fresh, kernel_factory=factory)
+
+    assert any(c["role"] == "extract" for c in fresh.calls)
+    assert checks.seen
+    assert features["verdict"] == "unverified"
+    assert path.read_text() == changed
+    meta = json.loads((tmp_path / "gv" / "extract.json").read_text())
+    assert meta["immutable_input_seal"] == offline.immutable_input_seal(state)
+
+
+@pytest.mark.parametrize("change", ["missing_stamp", "changed_trace"])
+def test_claim_store_is_rebuilt_without_replacing_live_commits(tmp_path, change):
+    state = state_dir(tmp_path)
+    offline.score(state, backend=FixtureBackend({"extract": GOOD_COMMITS}),
+                  kernel_factory=kernel_factory)
+    (tmp_path / "gv" / "extract.json").unlink()
+    log = EventLog(os.path.join(state, "events.jsonl"))
+    if change == "missing_stamp":
+        (tmp_path / "gv" / "verification.json").unlink(missing_ok=True)
+    else:
+        events = list(log.replay())
+        next(e for e in events if e["type"] == "tool_result")[
+            "payload"]["excerpt"] = "43"
+        (tmp_path / "gv" / "events.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in events))
+    commits = [e for e in log.replay() if e["type"] == "commit"]
+    checks = StubDischarger("failed")
+
+    def factory(sc):
+        return Kernel(sc.store, sc.log, FixtureBackend({"obligations": COMPILE}),
+                      sc.artifacts, critic_role=None, discharger=checks)
+
+    features = offline.score(state, backend=FixtureBackend({}),
+                             kernel_factory=factory)
+
+    assert features["verdict"] == "unverified"
+    assert checks.seen
+    assert [e for e in log.replay() if e["type"] == "commit"] == commits

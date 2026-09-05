@@ -449,6 +449,8 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
         backend = AgentBackend(cwd=state_dir, model=model)
     from .llm.agents import EXTRACT_CLAIMS_AGENT
 
+    input_seal = ((stamp or {}).get("immutable_input_seal")
+                  or immutable_input_seal(state_dir))
     feed = os.path.join(state_dir, "hook_feed.jsonl")
     candidate = os.path.join(state_dir, "events.extract.jsonl")
     task = _read(os.path.join(state_dir, "task.md"))
@@ -478,7 +480,8 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
         if error is None:
             os.replace(candidate, os.path.join(state_dir, "events.jsonl"))
             meta = {"rounds": round_no, "commits": len(payload["commits"]),
-                    "fingerprint": pipeline_fingerprint(), **(stamp or {})}
+                    "fingerprint": pipeline_fingerprint(), **(stamp or {}),
+                    "immutable_input_seal": input_seal}
             with open(os.path.join(state_dir, "extract.json"), "w",
                       encoding="utf-8") as f:
                 json.dump(meta, f)
@@ -714,14 +717,20 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     def run_verification() -> Dict[str, Any]:
         nonlocal extract_rounds
         events_path = os.path.join(state_dir, "events.jsonl")
+        extraction_path = os.path.join(state_dir, "extract.json")
+        verification_path = os.path.join(state_dir, "verification.json")
+        stamp = {"fingerprint": fingerprint, "config": cfg["config"],
+                 "immutable_input_seal": immutable_seal}
         meta = json.loads(
-            _read(os.path.join(state_dir, "extract.json")) or "{}")
-        if meta and (meta.get("fingerprint") != fingerprint
-                     or meta.get("config", cfg["config"]) != cfg["config"]):
+            _read(extraction_path) or "{}")
+        if os.path.exists(extraction_path) and (
+                meta.get("fingerprint") != fingerprint
+                or meta.get("config", cfg["config"]) != cfg["config"]
+                or meta.get("immutable_input_seal") != immutable_seal):
             # stale OFFLINE state: the cached extraction and every verdict
             # settled on top of it came from a different pipeline version or
-            # a different run config (model/seats/effort) — a different
-            # verifier's judgment. Wipe derived files only; every immutable
+            # a different run config or different task inputs. Wipe derived
+            # files only; every immutable
             # source remains protected by the adapter seal.
             for name in ("events.jsonl", "extract.json", "claims.sqlite",
                          "score.json"):
@@ -733,13 +742,30 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             try:
                 meta = extract(state_dir, backend=backend, model=model,
                                max_rounds=max_rounds,
-                               stamp={"config": cfg["config"]})
+                               stamp=stamp)
                 extract_rounds = meta["rounds"]
             except ExtractionError as err:
                 return dict(
                     _unscoreable(str(err), max_rounds, fingerprint), **cfg)
         else:
             extract_rounds = meta.get("rounds", 0)
+
+        # Live protocol commits are source data and survive config changes.
+        # Their materialized judgments still need the same input/config
+        # identity as extracted traces, including interrupted verification.
+        trace_hash = hashlib.sha256()
+        for event in EventLog(events_path).replay():
+            if event["type"] in (*HOOK_EVENT_TYPES, "commit"):
+                trace_hash.update(canonical(event).encode("utf-8"))
+                trace_hash.update(b"\n")
+        verification_stamp = {**stamp, "source_trace": trace_hash.hexdigest()}
+        previous = json.loads(_read(verification_path) or "{}")
+        if previous != verification_stamp:
+            for name in ("claims.sqlite", "score.json"):
+                path = os.path.join(state_dir, name)
+                if os.path.exists(path):
+                    os.remove(path)
+        _write_json_atomic(verification_path, verification_stamp)
 
         from .mcp_server import Service
         from .core.store import TRIGGER_LAZY
