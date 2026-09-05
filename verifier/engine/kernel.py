@@ -591,15 +591,10 @@ class Kernel:
                     "world_mode": variables["world_mode"],
                     "world_path": variables["world_path"],
                     "world_map": variables["world_map"],
-                    # floors ride along: the critic must attack the
-                    # decomposition AS FLOORED — a record-floor
-                    # obligation's holding fixes only the ledger, not
-                    # the underlying fact
+                    # Audit the complete contract, including which
+                    # violations refute and when absence is admissible.
                     "obligations_json": json.dumps(
-                        [{"text": o["text"],
-                          "required_basis": o.get("required_basis",
-                                                  BASIS_RECORD)}
-                         for o in payload["obligations"]],
+                        payload["obligations"],
                         ensure_ascii=False
                     ),
                     "verified_deps": variables["verified_deps"],
@@ -618,10 +613,7 @@ class Kernel:
             )
             history.append({
                 "round": round_no,
-                "reviewed_obligations": [
-                    {"text": o["text"],
-                     "required_basis": o.get("required_basis", BASIS_RECORD)}
-                    for o in payload["obligations"]],
+                "reviewed_obligations": payload["obligations"],
                 "verdict": verdict["verdict"],
                 "counterexample_world": verdict["counterexample_world"],
                 "missing_condition": verdict["missing_condition"],
@@ -713,18 +705,18 @@ class Kernel:
         """Return why an ``APPEND OBLIGATION:`` repair is not a tail append.
 
         The critic's label is a mechanical contract: every existing
-        obligation/floor pair remains byte-for-byte and in the same order,
-        and at least one new pair is appended. Other repair labels retain the
+        obligation contract remains unchanged and in the same order,
+        and at least one new obligation is appended. Other repair labels retain the
         compiler's ordinary freedom and never call this helper.
         """
-        old = [
-            (item["text"], item.get("required_basis", BASIS_RECORD))
-            for item in previous["obligations"]
-        ]
-        new = [
-            (item["text"], item.get("required_basis", BASIS_RECORD))
-            for item in candidate["obligations"]
-        ]
+        def contract(item):
+            return (item["text"], item.get("required_basis", BASIS_RECORD),
+                    item.get("severity", SEVERITY_MUST),
+                    item.get("clause", ""),
+                    item.get("refutable_by_absence", False))
+
+        old = [contract(item) for item in previous["obligations"]]
+        new = [contract(item) for item in candidate["obligations"]]
         if len(new) <= len(old):
             return (
                 f"expected more than {len(old)} obligations after append, "

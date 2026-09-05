@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from verifier.core.events import EventLog
 from verifier.core.model import (
     canonical, Claim, CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL,
@@ -1015,3 +1017,61 @@ def test_disabled_critic_restores_the_old_behavior(tmp_path):
     assert store.status(cid) == "verified"
     assert [c["role"] for c in backend.calls] == ["obligations"]
     assert ledger_events(log, "decomposition_attacked") == []
+
+
+def test_critic_and_repair_history_receive_the_entire_contract(tmp_path):
+    obligation = {
+        "text": "The requested artifact exists.",
+        "required_basis": "world",
+        "severity": "must",
+        "clause": "Deliver the requested artifact.",
+        "refutable_by_absence": True,
+    }
+    verdicts = iter([ATTACK, PASS])
+    store, _, backend, _ = build(tmp_path, {
+        "obligations": {"obligations": [obligation]},
+        "critic": lambda _v: next(verdicts),
+    })
+
+    store.add_claim(Claim(CLAIM_FINAL, "The artifact is ready."))
+
+    reviews = [c["variables"] for c in backend.calls
+               if c["role"] == "critic"]
+    assert all(json.loads(v["obligations_json"]) == [obligation]
+               for v in reviews)
+    assert json.loads(reviews[1]["game_history"])[0][
+        "reviewed_obligations"] == [obligation]
+
+
+@pytest.mark.parametrize("change", [
+    {"severity": "should"},
+    {"clause": "A different source clause."},
+    {"refutable_by_absence": True},
+])
+def test_append_repair_cannot_change_existing_judgment_conditions(
+        tmp_path, change):
+    original = {"text": "A", "required_basis": "world"}
+    extra = {"text": "B", "required_basis": "world"}
+    payloads = iter([
+        {"obligations": [original]},
+        {"obligations": [{**original, **change}, extra]},
+        {"obligations": [original, extra]},
+    ])
+    verdicts = iter([{
+        "verdict": "insufficient",
+        "counterexample_world": "A holds but B does not.",
+        "missing_condition": "APPEND OBLIGATION: require B",
+    }, PASS])
+    store, log, backend, discharger = build(tmp_path, {
+        "obligations": lambda _v: next(payloads),
+        "critic": lambda _v: next(verdicts),
+    })
+
+    cid = store.add_claim(Claim(CLAIM_FINAL, "A and B hold."))
+
+    assert store.status(cid) == "verified"
+    assert discharger.seen == ["A", "B"]
+    assert [c["role"] for c in backend.calls] == [
+        "obligations", "critic", "obligations", "obligations", "critic"]
+    assert len([e for e in ledger_events(log, "decomposition_attacked")
+                if e["payload"].get("source") == "mechanical_append_guard"]) == 1
