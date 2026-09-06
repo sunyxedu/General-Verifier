@@ -4,8 +4,8 @@
   --link: #245f9e;
   --line: #e0e5eb;
   --sidebar: #f6f7f9;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --mono: "SFMono-Regular", Consolas, "Liberation Mono", "Noto Sans Mono CJK SC", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 * { box-sizing: border-box; }
 html { scroll-padding-top: 24px; }
@@ -138,7 +138,6 @@ td code { font-size: 11px; }
   .prose h2 { font-size: 16pt; margin: 8mm 0 4mm; padding-bottom: 2mm; break-after: avoid; }
   .prose h3 { font-size: 12pt; margin: 6mm 0 3mm; break-after: avoid; }
   .prose p { orphans: 3; widows: 3; margin-bottom: 4mm; }
-  .prose h3#english-abstract + p { break-inside: avoid; }
   .prose pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 3mm 4mm; break-inside: avoid; margin: 4mm 0; }
   .prose pre code { font-size: 8pt; }
   .prose blockquote { break-inside: avoid; padding: 3mm 4mm; }

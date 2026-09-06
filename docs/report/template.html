@@ -1,50 +1,49 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <meta name="description" content="General Verifier 技术报告。用一个完整例子理解任务检查、证据审查、状态与复用，再进入关键实现和评估方法。">
+  <meta name="description" content="General Verifier checks whether an agent's result satisfies its task and preserves the evidence behind the verdict.">
   <meta property="og:type" content="article">
-  <meta property="og:title" content="General Verifier · 设计与实现">
-  <meta property="og:description" content="从一次完整验证出发，理解 General Verifier 的设计与关键实现。">
-  <title>General Verifier — 设计与实现</title>
+  <meta property="og:title" content="General Verifier · Design and Implementation">
+  <meta property="og:description" content="A complete example, the system architecture, and the key design and implementation decisions behind General Verifier.">
+  <title>General Verifier — Design and Implementation</title>
   <link rel="stylesheet" href="assets/report.css">
   <script src="assets/report.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#report">跳到正文</a>
+  <a class="skip-link" href="#report">Skip to content</a>
   <aside class="sidebar">
     <a class="brand" href="#top">General Verifier</a>
-    <p class="sidebar-description">技术报告 · 设计与实现</p>
+    <p class="sidebar-description">Technical report · Design and implementation</p>
     <details class="contents" open>
-      <summary class="contents-title">目录</summary>
-      <nav aria-label="报告目录"><ol class="chapters">$toc</ol></nav>
+      <summary class="contents-title">Contents</summary>
+      <nav aria-label="Report contents"><ol class="chapters">$toc</ol></nav>
     </details>
     <div class="sidebar-links">
-      <a href="$repository">GitHub 仓库 ↗</a>
-      <a href="$report_source">Markdown 源文 ↗</a>
-      <a href="validation.json">验证记录</a>
+      <a href="$repository">GitHub repository ↗</a>
+      <a href="$report_source">Markdown source ↗</a>
     </div>
   </aside>
 
   <main id="top">
     <div class="document">
       <div class="toolbar">
-        <span>技术报告</span>
-        <div><a href="$report_source">查看源文</a><button class="print-button" type="button" hidden>打印 / PDF</button></div>
+        <span>Technical report</span>
+        <div><a href="$report_source">View source</a><button class="print-button" type="button" hidden>Print / PDF</button></div>
       </div>
       <header class="document-header">
         <h1>General Verifier</h1>
-        <p class="subtitle">设计与实现</p>
-        <p class="metadata">实现快照 <a href="$repository/tree/$revision"><code>$short_revision</code></a><span>·</span>$reviewed_date<span>·</span><a href="validation.json">$passed 项回归测试</a></p>
+        <p class="subtitle">Design and Implementation</p>
+        <p class="metadata">Implementation <a href="$repository/tree/$revision"><code>$short_revision</code></a><span>·</span>$reviewed_date</p>
       </header>
-      <article id="report" class="prose" aria-label="技术报告正文" tabindex="-1">
+      <article id="report" class="prose" aria-label="Technical report" tabindex="-1">
         $body
       </article>
       <footer class="footer">
-        <span>General Verifier · 技术报告</span>
-        <a href="#top">回到页首 ↑</a>
+        <span>General Verifier · Technical report</span>
+        <a href="#top">Back to top ↑</a>
       </footer>
     </div>
   </main>

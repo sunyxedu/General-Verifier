@@ -56,16 +56,16 @@ if (navigator.clipboard && window.isSecureContext) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'copy-code';
-    button.textContent = '复制';
-    button.setAttribute('aria-label', '复制代码');
+    button.textContent = 'Copy';
+    button.setAttribute('aria-label', 'Copy code');
     button.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(pre.querySelector('code').textContent);
-        button.textContent = '已复制';
+        button.textContent = 'Copied';
       } catch {
-        button.textContent = '请选中文本复制';
+        button.textContent = 'Select text to copy';
       }
-      setTimeout(() => { button.textContent = '复制'; }, 1800);
+      setTimeout(() => { button.textContent = 'Copy'; }, 1800);
     });
     wrapper.append(button);
   });

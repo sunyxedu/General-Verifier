@@ -1,37 +1,37 @@
 # General Verifier
 
-General Verifier（GV）用于检查一个代理的交付结果是否满足原任务。它读取任务、工具记录、最终回答和捕获的文件，把“完成了”拆成可以逐项检查的条件，执行验证方法，并把判断依据保存为可追溯的证书。
+General Verifier (GV) checks whether an agent's result satisfies its task and preserves the evidence behind the verdict. It reads the original task, tool records, final answer, and captured files, turns the task into explicit checks, executes verification methods, and saves an inspectable certificate.
 
-这里最重要的区别是：**代理报告了成功，只能说明它说过什么；判断任务是否完成，还需要检查它实际交付了什么。** GV 围绕这一区别组织任务解释、证据收集和结果复用。
+A successful tool call can establish that an action was recorded. To establish task completion, GV must also check the delivered result against the original requirements. This distinction guides how it interprets tasks, collects evidence, and reuses results.
 
-下面先走完一个小例子，再解释整体设计和关键实现。初次阅读可以顺着第 1–3 节建立整体认识；第 4 节说明实现这些设计时需要解决的问题，第 5–7 节讨论结果的使用、适用范围和验证依据。
+This report starts with a complete example, then explains the architecture and its implementation. Sections 1–3 introduce the workflow and core design. Section 4 covers the mechanisms that preserve those design rules during execution. Sections 5–7 explain how to use the results, where the approach has limits, and what has been tested.
 
-## 1. 一次完整验证
+## 1. A complete example
 
-### 1.1 任务与捕获物
+### 1.1 The task and captured run
 
-仓库的 [examples/sum](../../examples/sum/task.md) 包含一份手写的运行样例。任务是：
+The repository includes a hand-written run in [examples/sum](../../examples/sum/task.md). Its task is:
 
-> 计算 1 到 5（包含端点）的整数和，以十进制整数加换行的形式，保存到 `/app/answer.txt`。
+> Compute the sum of the integers from 1 through 5, inclusive, and save it to `/app/answer.txt` as a base-10 integer followed by a newline.
 
-对应目录如下：
+The captured run has this structure:
 
 ```text
 examples/sum/
-├── task.md                 原任务，包括数值和文件格式要求
-├── hook_feed.jsonl         工具调用与返回记录
-├── final.txt               代理的最终回答
-├── world_manifest.json     捕获范围与地址说明
-└── world/app/answer.txt     捕获的交付文件，内容是 15 加换行
+├── task.md                 Original task, including output format
+├── hook_feed.jsonl         Tool calls and their recorded results
+├── final.txt               The agent's final answer
+├── world_manifest.json     Capture scope and path mapping
+└── world/app/answer.txt     Delivered file: 15 followed by a newline
 ```
 
-任务里的 `/app/answer.txt` 指向该次运行的文件。离线验证时，GV 根据捕获清单把它映射到 `world/app/answer.txt`。验证机自己碰巧存在的同名路径，不能替代这份交付物。
+The task's `/app/answer.txt` refers to a file from that run. During offline verification, GV uses the capture manifest to map it to `world/app/answer.txt`. A file at the same absolute path on the verifier's machine cannot substitute for the captured deliverable.
 
-这个例子不需要额外的运行前文件，因为求和的全部输入都在任务里。更复杂的任务还可以提供 `baseline/`，保存未被代理修改的原始输入。
+This example needs no files from before the run: all inputs to the sum are in the task. More complex tasks can also supply a `baseline/` directory containing original inputs that the agent has not modified.
 
-### 1.2 发起检查与找到结果
+### 1.2 Run the check and find the result
 
-先按仓库 [README](../../README.md) 安装依赖、配置模型后端。复制样例后运行：
+Follow the repository [README](../../README.md) to install dependencies and configure a model backend. Then copy and score the example:
 
 ```bash
 uv sync
@@ -40,112 +40,112 @@ cp -R examples/sum/. "$RUN_DIR/"
 uv run python -m verifier.cli score --state-dir "$RUN_DIR"
 ```
 
-如果使用已认证的 Codex CLI，在最后一行加上 `--seats codex`。评分会调用模型，也可以执行检查命令；它不是只读日志的格式转换。
+For an authenticated Codex CLI, add `--seats codex` to the last command. Scoring invokes models and can execute verification commands.
 
-运行结束后，`score.json` 保存结果摘要。其中的 `certificate_id` 指向 `artifacts/<certificate_id>.json`，后者列出最终声明、检查条件、证据和未解决的问题。文件结构可以这样理解：
+After the run, `score.json` contains the result summary. Its `certificate_id` points to `artifacts/<certificate_id>.json`, which lists the final claim, checks, evidence, and unresolved issues:
 
 ```text
-score.json                            这次运行的判定与评分特征
+score.json                            Verdict and ranking features
     └── certificate_id
-          └── artifacts/<id>.json     支撑判定的检查与证据引用
+          └── artifacts/<id>.json     Checks and evidence references
 ```
 
-### 1.3 从“写入成功”到“交付正确”
+### 1.3 Check what was delivered
 
-对这个任务，合理的最终检查至少需要覆盖两个方面：
+For this task, the final checks need to cover at least two requirements:
 
-1. 指定位置存在交付文件，且内容满足任务要求的整数与换行格式。
-2. 文件中的数值等于从原任务独立计算出的结果。
+1. A delivered file exists at the specified location and uses the required integer-and-newline format.
+2. Its value matches the result independently calculated from the original task.
 
-第二项需要重新计算 `1 + 2 + 3 + 4 + 5 = 15`，再与文件比较。日志中的“写入成功”可以帮助定位事件，却不能提供这个比较的正确答案。
+The second check recomputes `1 + 2 + 3 + 4 + 5 = 15` and compares that value with the file. A recorded message saying that the write succeeded can help locate an event, but cannot supply the expected answer for this comparison.
 
-下面用这组检查说明判定规则；它不是一次真实模型调用的测量结果：
+The table below illustrates the decision rules. It does not report a measured model run:
 
-| 捕获的文件 | 检查发现 | 对最终任务的含义 |
+| Captured file | Finding | Implication for task completion |
 |---|---|---|
-| `15` 加换行 | 数值与格式都符合要求 | 两方面都得到支持 |
-| `14` 加换行 | 数值与独立计算的 15 冲突 | 有反驳任务完成的具体见证 |
-| `15`，没有换行 | 数值正确，显式格式要求未满足 | 仍然没有完整完成任务 |
-| 文件无法读取，且捕获范围不明 | 无法确定原文件状态 | 存在证据缺口，不能直接认定文件不存在 |
+| `15` followed by a newline | Value and format match the task | Both requirements are supported |
+| `14` followed by a newline | Value conflicts with the independently computed 15 | A concrete witness refutes completion |
+| `15` without a newline | Value is correct; the explicit format requirement fails | The task is not fully complete |
+| File cannot be read; capture scope is unclear | The original file's state cannot be determined | Evidence is missing; file absence has not been established |
 
-GV 的实际检查由模型生成，可能与上面的拆分不同。这个例子给出了一个判断标准：**检查要覆盖任务真正要求的内容，并且每项结论都要能回到相应证据。** 接下来要解释的是，系统怎样组织这件事。
+GV generates its checks using models, so an actual run may decompose the task differently. The example gives us a standard for evaluating that decomposition: **the checks should cover what the task requires, and each conclusion should be traceable to its evidence.**
 
-## 2. 系统结构
+## 2. System architecture
 
-### 2.1 五个阶段与各自产物
+### 2.1 Five stages and their outputs
 
-![从捕获输入到最终证书的五个阶段](assets/pipeline.svg)
+![Five stages from captured inputs to a verification certificate](assets/pipeline.svg)
 
-*图 1：每个阶段解决一个不同的问题。后续阶段使用前一阶段的产物，同时保留能回溯到原始任务与证据的引用。*
+*Figure 1. Each stage answers a different question. Later stages use earlier outputs while retaining references to the original task and evidence.*
 
-**输入准备**确定这次运行有哪些可信的任务输入、工具记录和捕获物。它也说明哪些状态没有被保存。对求和例子，这一步区分原任务、代理的成功消息和答案文件。
+**Input preparation** identifies the task inputs, tool records, and captured artifacts available for this run, including their authority and any gaps in the capture. In the sum example, it distinguishes the original task, the agent's success message, and the answer file.
 
-**声明提取**由 Extractor 从运行记录中重建声明及其依赖。比如，“执行过写文件命令”“算出的和为 15”“任务已完成”是不同声明。提取器收到的重试反馈只涉及结构问题，例如依赖无法解析或缺少最终声明；离线验证结论不会返回给它，诱导它改写历史。
+**Claim extraction** uses the Extractor to reconstruct claims and their dependencies from the run. “A file-write command ran,” “the sum is 15,” and “the task is complete” are different claims. Retry feedback to the Extractor concerns structural problems, such as unresolved dependencies or a missing final claim. Offline verification verdicts are not fed back to it to rewrite the history.
 
-**检查生成**由 Compiler 把声明拆成检查条件，再由 Critic 审查条件是否合理。求和任务既需要数值正确，也需要满足指定的文件格式。遗漏换行要求或额外要求代理必须使用某一种算法，都会改变任务的接受标准。
+**Check generation** uses the Compiler to turn claims into checkable conditions and the Critic to review those conditions. The sum task requires both a correct value and a specific file format. Omitting the newline requirement, or adding a requirement to use a particular algorithm, would change the task's acceptance criteria.
 
-**执行与审查**包含三个角色：Oracle 提出验证方法；Executor 执行方法并保存产物；Judger 审查方法是否足够、实际操作是否遵守方法、证据是否支持结果。例如，它们可以提出并执行“独立求和后比较交付文件”的方法。
+**Execution and audit** involve three roles. The Oracle proposes a verification method. The Executor carries it out and saves artifacts. The Judger assesses whether the method is sufficient, whether execution followed it, and whether the evidence supports the result. For example, these roles can propose, execute, and audit an independent calculation followed by a comparison with the delivered file.
 
-**证书生成**由程序内核应用证据规则、合并检查结果，并保留判断依据。可选的选择器再利用这些结果，对同一任务的多个候选运行排序。
+**Certificate generation** applies the evidence rules in the program kernel, combines check results, and retains their supporting records. An optional selector uses these results to rank several candidate runs for the same task.
 
-这套分工把两个责任分开：模型处理任务和证据的语义，程序执行已经声明的约束。例如，模型判断某个方法是否足以证明条件；程序检查被声明为弱证据的方法能否用于反驳。后者可由代码直接约束，前者仍可能判断错误。
+Models interpret the meaning of tasks and evidence; code enforces the declared constraints. For example, a model assesses whether a method is sufficient, while the program enforces whether a method declared to provide weak evidence may refute a claim. The semantic assessment can still be wrong even when the program correctly enforces its rules.
 
-### 2.2 五种对象，不是一个总分
+### 2.2 Five objects to inspect
 
-| 对象 | 它记录什么 | 求和例子中的对应内容 |
+| Object | What it records | Example |
 |---|---|---|
-| 声明 `claim` | 有待判断的命题及其依赖 | “交付结果满足任务” |
-| 检查条件 `obligation` | 接受该命题需要建立的条件 | “文件数值与独立计算结果一致” |
-| 方法 `method` | 准备用什么过程建立条件 | 重新求和、读取文件、比较数值 |
-| 证据 `evidence` | 实际执行结果、见证、产物和使用的前提 | 计算得到 15，文件读到 14，以及对应记录 |
-| 证书 `certificate` | 最终判断和相关检查的汇总 | 哪项失败、依据是什么、还有哪些缺口 |
+| `claim` | A proposition to assess, with its dependencies | “The delivered result satisfies the task” |
+| `obligation` | A condition required to establish the proposition | “The file's value matches an independent calculation” |
+| `method` | A procedure intended to establish the condition | Recompute the sum, read the file, compare values |
+| `evidence` | Execution results, witnesses, artifacts, and premises used | The calculation produced 15; the file contained 14; both observations are recorded |
+| `certificate` | The final verdict and the relevant checks | Which condition failed, why, and what remains unresolved |
 
-声明还分为三类：`assertion` 是中间结论，`effect` 引用工具事件，`final` 表示最终结果声明。`effect` 的确定性检查核对事件身份和保留记录；核对“日志里确实写了 15”，并不能单独建立“正确答案是 15”。
+Claims have three kinds: an `assertion` is an intermediate conclusion, an `effect` refers to a tool event, and a `final` states the final result. A deterministic check of an `effect` verifies event identity and retained records. Confirming that a log contains 15 does not, by itself, establish that 15 is the correct answer.
 
-把这些对象分开后，读者可以定位错误发生在哪里：是任务理解错了、条件不充分、方法执行失败，还是证据本身出现了反例。仅有一个总分无法保留这些区别。
+These objects help locate the source of a failure: task interpretation, insufficient checks, failed execution, or evidence containing a counterexample. They also let a reader inspect those distinctions after a verdict has been produced.
 
-### 2.3 离线与交互共用同一内核
+### 2.3 Offline and interactive verification
 
-主要入口是离线的 [`score()`](../../verifier/offline.py#L615)：原代理已经结束，GV 对固定的运行记录评分。原代理不会收到验证反馈，因此可以在同一批候选上比较不同选择方法。
+The main entry point is offline [`score()`](../../verifier/offline.py#L615). The original agent has finished, and GV scores a fixed record of its run. The agent receives no verification feedback, allowing different selectors to be compared on the same candidates.
 
-交互入口由 [MCP 服务](../../verifier/mcp_server.py) 提供 `commit`、`verify`、`status` 和 `certificate`。代理可以提交声明、获得反馈并修订交付物。反馈会改变后续生成，所以交互改进与离线候选选择应分别评估。
+The interactive [MCP service](../../verifier/mcp_server.py) exposes `commit`, `verify`, `status`, and `certificate`. An agent can submit claims, receive feedback, and revise its deliverables. Because feedback changes subsequent generation, interactive improvement and offline candidate selection need separate evaluations.
 
-两个入口共用图存储、验证内核与证书逻辑。`replay` 的职责更窄：从事件恢复声明结构；在空存储中，它不会凭空恢复旧证据的已验证状态。
+Both entry points share the graph store, verification kernel, and certificate logic. `replay` has a narrower responsibility: reconstructing claim structure from events. Replaying into an empty store does not recreate the verified status of evidence that is no longer present.
 
-## 3. 三个关键设计
+## 3. Core design decisions
 
-### 3.1 先确定成功条件，再寻找证据
+### 3.1 Define success before collecting evidence
 
-即使执行器完全可靠，错误的检查条件仍会产生错误判定。以求和任务为例：
+Even a perfectly reliable executor will reach the wrong verdict if it is given the wrong checks. For the sum task:
 
-- 只检查“文件里有一个整数”不够，`14` 也能通过。
-- 要求“必须使用循环求和”又太多，原任务允许其他正确算法。
+- Checking only that the file contains an integer is insufficient: `14` would pass.
+- Requiring a loop to compute the sum adds a restriction the task never imposed.
 
-因此，Compiler 与 Critic 需要从两个方向审查检查条件：**任务完成时，强制检查应当成立；强制检查全部成立时，应当足以说明目标声明成立。** 前者避免增加不必要的要求，后者避免遗漏任务要求。
+The Compiler and Critic therefore review the mandatory checks in both directions: **completing the task should satisfy the checks, and satisfying all the checks should establish the target claim.** The first direction avoids unnecessary requirements; the second avoids missing requirements.
 
-对中间声明 `c`、允许假定的前提 `P` 和强制条件集合 `O`，这两个目标可以写成：
+For an intermediate claim `c`, permitted premises `P`, and mandatory conditions `O`, these review goals can be written as:
 
 ```text
-必要性：P ∧ c  ⇒  每个强制条件 o
-充分性：P ∧ O  ⇒  c
+Necessity:   P ∧ c  ⇒  each mandatory condition o
+Sufficiency: P ∧ O  ⇒  c
 ```
 
-这些式子说明审查目标。现有实现依靠模型审查自然语言中的关系，并没有把它们交给形式化证明内核。
+These formulas express the review goals. The current implementation asks models to assess relationships expressed in natural language; it does not discharge them through a formal proof kernel.
 
-Critic 必须看到检查的完整含义，包括证据要求、条件是强制还是建议、能否用缺失类见证反驳。否则，“文字没改，但把强制条件降成建议条件”就可能逃过审查。当前实现还约束只追加的修复：允许补检查，不允许顺带修改已有条件的契约。默认审查预算是 4 轮，未形成可接受分解时留下失败记录。
+The Critic must see the complete check contract, including required evidence, mandatory or advisory severity, and whether an absence witness may refute the condition. Otherwise, a repair could quietly turn a mandatory condition into an advisory one without changing its text. Repairs that only append checks are also constrained: they may add conditions but may not alter existing contracts. The default review budget is four rounds. If no acceptable decomposition emerges, the system retains a failure record.
 
-实现入口：[`_compile_obligations()`](../../verifier/engine/kernel.py#L441) 与 [Critic 提示](../../verifier/llm/prompts/critic.py)。
+Implementation: [`_compile_obligations()`](../../verifier/engine/kernel.py#L441) and the [Critic prompt](../../verifier/llm/prompts/critic.py).
 
-### 3.2 证据来自哪里，和它能说明多少，是两个问题
+### 3.2 Separate evidence source from strength
 
-先看来源。读取一条“答案为 15”的工具返回，可以确认记录内容；从原任务重新计算，再读取交付文件，才是在独立检查任务结果。GV 用 `basis` 区分二者：
+First consider the source. Reading a tool result that says “the answer is 15” establishes what the record contains. Recomputing the answer from the task and reading the captured file checks the task result independently. GV distinguishes these through `basis`:
 
-| 来源 | 含义 | 典型例子 |
+| Basis | Meaning | Example |
 |---|---|---|
-| `record` | 保留记录证明记录了什么 | 工具结果确实包含“15” |
-| `world` | 检查捕获对象，或从任务输入独立建立事实 | 重新求和，并检查交付文件 |
+| `record` | Retained records establish what was recorded | The tool result contains “15” |
+| `world` | Inspect a captured object or independently establish a fact from task inputs | Recompute the sum and inspect the delivered file |
 
-在仓库根目录，下面几行代码就能展示样例的数值比较思路：
+From the repository root, this code illustrates the numerical comparison:
 
 ```python
 from pathlib import Path
@@ -155,59 +155,59 @@ delivered = Path("examples/sum/world/app/answer.txt").read_text()
 print(int(delivered) == expected)  # True
 ```
 
-这里只展示数值检查，任务里的格式要求还需要检查。GV 中的方法由模型提出，并不硬编码这段求和代码。
+This snippet checks only the value; the required format needs its own check. GV's methods are proposed by models, rather than hard-coded to this sum.
 
-“独立”也涉及正确答案来自哪里。如果代理还写了一个 `expected.txt`，比较两个由代理生成的文件，并不能自动建立正确性。证据因此可以声明每项输入的来源及用途；内核会拒绝把已声明为代理交付物的输入当作判定正确性的权威。但这些来源是否被如实、完整地申报，仍需审查。
+Independence also depends on where the expected answer comes from. If the agent created an `expected.txt` file, comparing two files produced by that agent does not automatically establish correctness. Evidence can therefore declare the origin and role of each input. The kernel rejects an input declared to be an agent deliverable when it is used as an authority for correctness. Whether those origins are declared accurately and completely still needs review.
 
-再看强度。对真实代码运行十个测试，确实检查了交付物，却未必覆盖所有输入。GV 用 `strength` 区分方法对目标命题的支持程度：
+Now consider strength. Running ten tests against real code inspects the deliverable, but may not cover every input. GV uses `strength` to distinguish how a method supports its target:
 
-| 强度 | 方法声称建立什么 |
+| Strength | What the method claims to establish |
 |---|---|
-| `decisive` | 足以决定当前检查条件 |
-| `bounded` | 在更窄范围建立结果，再通过明确的桥接假设关联目标 |
-| `analytic` | 根据固定产物和可指出的见证进行分析性判断 |
+| `decisive` | Enough to decide the current obligation |
+| `bounded` | A result over a narrower scope, connected to the target through explicit bridge assumptions |
+| `analytic` | An analytical judgment based on fixed artifacts and identifiable witnesses |
 
-所以，来源与强度不能合并：事件身份核对可以是 `record + decisive`；有限测试可以是 `world + bounded`。这些标签是方法需要接受审查的声明，不是模型置信度。
+Basis and strength answer different questions. An event-identity check can be `record + decisive`; a finite test suite can be `world + bounded`. These labels are method claims subject to audit, not model confidence scores.
 
-系统优先尝试较强方法。退到较弱方法需要说明更强候选为何不可用，并接受 Judger 审查；一次崩溃或不利结果不能自动成为降级理由。现有规则只允许决定性反驳，较弱方法的不利发现会保留为诊断信号。执行偏离方法时可以重做，但原方法与重做反馈分别保留，便于判断到底改了什么。
+The system tries stronger methods first. Moving to a weaker method requires an explanation of why stronger candidates are unavailable and a review by the Judger. A crash or an unfavorable result does not automatically justify a downgrade. Current rules accept only decisive refutations; adverse findings from weaker methods remain diagnostic signals. An execution that departed from the method can be retried, with the original method and retry feedback retained separately for inspection.
 
-这套流程约束已列出的候选与实际执行记录。Oracle 仍可能遗漏一个更好的方法，Judger 也可能错判充分性。实现入口：[`BindingGame.run()`](../../verifier/engine/game.py#L130)。
+This process constrains the listed candidates and recorded execution. The Oracle may still miss a better method, and the Judger may misjudge sufficiency. Implementation: [`BindingGame.run()`](../../verifier/engine/game.py#L130).
 
-### 3.3 中间论证与最终交付分别判断
+### 3.3 Check the final result independently
 
-中间结论经常是有条件的。设代理声称：
+Intermediate conclusions are often conditional. Suppose the agent claims:
 
 ```text
-P：参与这次求和的数恰好是 1、2、3、4、5。
-Q：这些数的和为 15。
+P: The inputs to this sum are exactly 1, 2, 3, 4, and 5.
+Q: Their sum is 15.
 ```
 
-假定 P，验证 Q 并不困难。但如果没有建立 P，就不能把这条论证当作已经完整建立的事实。GV 为此保留两种状态：
+Assuming P, checking Q is straightforward. But until P has been established, this argument cannot be treated as a fully established fact. GV keeps two states:
 
-- **局部状态**：在允许的前提下，当前声明自己的检查是否通过。
-- **有效状态**：把前提链的实际状态也算进来后，其他检查能够依赖什么。
+- **Local state:** whether the claim's own checks pass under its permitted premises.
+- **Effective state:** what other checks may rely on after accounting for the actual state of the premise chain.
 
-Q 可以局部通过，同时仍然有效未验证。来源和强度也保留前提链中的限制：依赖弱证据的结论，不能在继承时突然变成决定性结论。
+Q may be locally verified while remaining effectively unverified. Basis and strength also retain limitations inherited from premises: a conclusion depending on weak evidence cannot become decisive merely by being reused.
 
-![有条件的中间论证与独立的最终检查](assets/reliance.svg)
+![Conditional reasoning and independent final checks in the sum example](assets/reliance.svg)
 
-*图 2：中间论证保留前提缺口；最终检查直接回到任务和捕获的交付物。两条路径都留在证书中。*
+*Figure 2. Intermediate reasoning retains its unresolved premises. Final checks return to the original task and captured deliverables. Both paths remain available in the certificate.*
 
-最终声明的允许前提集合为空。Compiler 从原任务生成完整成功条件，而不因为代理先前声称“已经算对”就省略数值检查。已经建立、且满足当前契约的证据仍可复用；禁止的是把未经建立的中间结论直接当作假设。
+A final claim has an empty set of permitted premises. The Compiler derives the complete success conditions from the original task. It cannot omit the numerical check because the agent previously claimed to have calculated the answer correctly. Established evidence may still be reused when it satisfies the current contract; unestablished intermediate conclusions cannot be assumed.
 
-反过来，如果中间解释有错误，但交付文件确实满足任务，最终结果可以独立成立。当前实现会把被反驳的前提链向下标为有效 `refuted`，含义是这条论证链不能继续依赖。它不构成“前提为假，所以结论一定为假”的逻辑证明；最终声明不采用这条传播策略决定交付物对错。
+An incorrect intermediate explanation also need not invalidate a correct deliverable. The final result can be established independently. For intermediate reasoning, the current implementation propagates an effectively `refuted` state down a refuted premise chain to mark it as unusable. This is a dependency policy, not a logical proof that a false premise makes every downstream conclusion false. Final verdicts do not use that propagation policy to decide whether the deliverable is correct.
 
-如果没有提供 `task.md`，GV 只能按最终声明自身的文字构造契约，无法声称已经检查一个未提供的原任务。实现入口：[`effective()`](../../verifier/core/store.py#L356) 与 [`request_certificate()`](../../verifier/engine/certificate.py#L44)。
+If `task.md` is absent, GV can construct a contract only from the final claim's own wording. It cannot claim to have checked an original task that was never supplied. Implementation: [`effective()`](../../verifier/core/store.py#L356) and [`request_certificate()`](../../verifier/engine/certificate.py#L44).
 
-## 4. 关键实现
+## 4. Key implementation mechanisms
 
-前面的设计需要在复用、并行和恢复执行时继续成立。否则，一次检查保留的条件可能在下一次使用时丢失。本节选取五个直接影响这一点的实现细节。
+The preceding rules must survive reuse, parallel execution, and resumption. Otherwise, conditions retained during one check can disappear the next time its result is used. Five mechanisms address this problem.
 
-### 4.1 共享检查：把适用条件写进标识
+### 4.1 Include scope in shared check identities
 
-两个声明可能需要检查同一件事。重复调用模型和工具代价较高，GV 因此把检查条件存成可共享的图节点，并根据内容生成标识。
+Two claims may require the same check. Repeating model and tool calls is expensive, so GV stores obligations as shared graph nodes with identifiers derived from their content.
 
-关键在于“同一件事”包含什么。只按文字去重，会把“假设 P 后得到 Q”与“独立建立 Q”混在一起。当前 `Obligation.id` 的主要内容如下：
+The important question is what counts as the same check. Deduplicating by text alone would conflate “establish Q assuming P” with “establish Q independently.” The main contents of `Obligation.id` are:
 
 ```python
 return content_hash({
@@ -219,207 +219,203 @@ return content_hash({
 })
 ```
 
-文字、最低证据来源要求、缺失反例规则和允许的前提范围，都会影响能否使用同一份证据。最终检查的前提范围为空，因此它不会与依赖 P 的同文检查共享同一个标识。
+Text, required evidence basis, absence rules, and permitted premise scope all affect whether evidence can be shared. A final check has an empty premise scope, so it does not share an identifier with an identically worded check that assumes P.
 
-另外两个字段放在“声明使用这项检查”的关系上：`severity` 说明该条件是强制还是建议，`clause` 记录来源原文。这样，同一个事实可以在一个任务中是硬性要求，在另一个任务中只是建议；事实检查可复用，任务接受标准仍分别保留。
+Two other fields belong to the relationship between a claim and its obligation: `severity` records whether the condition is mandatory or advisory, and `clause` records its source wording. The same fact may be mandatory in one task and advisory in another. Its factual check can be reused while each task keeps its own acceptance criteria.
 
-从同文声明继承结果时，还要检查来源的有效状态、来源与强度，以及反例是否适用于新条件。复用的是**带适用条件的结果**，不能只搬运一个 `verified` 字符串。
+Inheriting a result from an identically worded claim also requires checking the source's effective state, basis, strength, and whether any counterexample applies to the new condition. Reuse carries the result's applicability conditions along with its verdict.
 
-代码：[`Obligation.id`](../../verifier/core/model.py#L242)、[`_settle_one()`](../../verifier/engine/kernel.py#L329)。
+Code: [`Obligation.id`](../../verifier/core/model.py#L242), [`_settle_one()`](../../verifier/engine/kernel.py#L329).
 
-### 4.2 修订：同样一句话也可能需要重验
+### 4.2 Invalidate evidence after a revision
 
-第一次文件里是 `14`，代理修复成 `15` 加换行后，可能仍提交“答案文件正确”这句话。如果身份只由文字和依赖决定，第二次提交会命中第一次的记录，修复没有获得新的检查机会。
+Suppose the file initially contains `14`. After fixing it to contain `15` and a newline, the agent may submit the same statement: “The answer file is correct.” If identity depended only on text and dependencies, the new submission would hit the old record and the repair would never receive a fresh check.
 
-因此，显式 `revises` 进入声明身份。普通重复提交继续去重；指定修订前一版本，即使文字相同，也会创建新的验证版本。重复回放同一个修订事件则保持同一个标识。
+An explicit `revises` reference therefore participates in claim identity. Ordinary duplicate submissions still deduplicate. Revising a previous claim creates a new verification version even when the text is unchanged. Replaying the same revision event retains the same identifier.
 
-修订还需要使旧证据的使用者失效。当前传播覆盖三类关系：
+Revision must also invalidate users of old evidence. Propagation currently follows three kinds of relationships:
 
-1. 声明依赖，例如 Q 使用了 P。
-2. 声明与它的检查节点，包括共享同一检查的其他声明。
-3. 当前证据中记录的继承关系，例如某项结果来自另一声明。
+1. Claim dependencies, such as Q relying on P.
+2. Claims and their obligation nodes, including other claims sharing an obligation.
+3. Inheritance recorded in current evidence, such as a result borrowed from another claim.
 
-受影响的状态被标为 `stale`，来源和强度被清空，重新检查后才能继续使用；历史证据与产物仍保留。继承关系只追踪当前证据，避免一次新的独立检查仍被过时的历史来源牵连。
+Affected states become `stale`; their basis and strength are cleared until rechecking. Historical evidence and artifacts remain available. Inheritance follows current evidence so that a new independent check is not invalidated by an obsolete historical source.
 
-这种机制依赖显式修订及已记录的关系，不会自动发现所有外部状态变化。代码：[`Claim.id`](../../verifier/core/model.py#L193)、[`_mark_stale_cone()`](../../verifier/core/store.py#L258)。
+This mechanism relies on explicit revisions and recorded relationships. It does not automatically detect every external state change. Code: [`Claim.id`](../../verifier/core/model.py#L193), [`_mark_stale_cone()`](../../verifier/core/store.py#L258).
 
-### 4.3 并行：共享工作只执行一次
+### 4.3 Coordinate concurrent checks
 
-检查往往会调用模型、运行测试或安装工具。互不阻塞的检查可以并行执行，但两个声明可能同时请求同一个共享节点。
+Verification may call models, run tests, or install tools. Independent checks can run concurrently, but two claims may request the same shared node at the same time.
 
-在同一 Kernel 实例内，GV 分别按声明标识和检查节点标识加锁。一个调用获得节点锁后，会先检查已有状态，再决定复用或执行。另一个调用等待锁，随后看到已完成结果，就不再重复执行。锁覆盖“检查缓存到保存结果”的整个过程，而不只是某次数据库写入。
+Within a Kernel instance, GV uses separate locks for claim identifiers and obligation identifiers. After acquiring a node's lock, a caller checks the stored state and decides whether to reuse or execute. A waiting caller then sees the completed result and avoids repeating the work. The lock covers the entire sequence from cache inspection through result storage.
 
-并行还影响何时停止工作：一旦强制条件出现可接受反例，未开始的检查会被取消；已经运行的检查仍完成并记录。最终聚合保留实际决定反驳的那项检查的见证、来源和强度，不能用一个较晚完成的无关检查覆盖它。
+Concurrency also affects when to stop. Once a mandatory condition has an accepted counterexample, checks that have not started are cancelled. Running checks finish and retain their records. Final aggregation preserves the witness, basis, and strength of the check that actually determined the refutation; a later, unrelated result must not overwrite that provenance.
 
-代价也很明确：并行可以减少等待，却可能多做一些在反例出现后已无必要的工作。这是同一进程内的调度与去重机制，不是跨进程或分布式的“恰好执行一次”保证。
+Parallelism reduces waiting but may do work that becomes unnecessary after a counterexample arrives. These locks coordinate work within one process. They do not provide a distributed or cross-process exactly-once execution guarantee.
 
-代码：[`_settle_obligations()`](../../verifier/engine/kernel.py#L273)、[`_settle_one()`](../../verifier/engine/kernel.py#L329)。
+Code: [`_settle_obligations()`](../../verifier/engine/kernel.py#L273), [`_settle_one()`](../../verifier/engine/kernel.py#L329).
 
-### 4.4 恢复执行：先确认输入和配置没变
+### 4.4 Bind resumption to inputs and configuration
 
-上次检查的是 `15` 加换行，这次文件变成了 `14`。如果只看到 `score.json` 存在就直接读取，程序可能把旧结论套到新输入上。同样的问题也会发生在任务、模型或验证代码变化时。
+The previous run checked `15` followed by a newline; the file now contains `14`. Returning an existing `score.json` without checking its inputs could apply the old verdict to a new deliverable. Changes to the task, model, or verification code create the same problem.
 
-离线评分为缓存记录三个方面的身份：
+Offline scoring records identity across three categories:
 
-- **输入**：任务、基线、工具记录、最终回答、交付物和捕获清单。
-- **实现与配置**：验证代码、实际模型、服务商、端点指纹及相关运行选项。
-- **来源事件**：物化验证状态所依据的工具事件与声明提交。
+- **Inputs:** task, baseline, tool records, final answer, deliverables, and capture manifest.
+- **Implementation and configuration:** verification code, resolved model, provider, endpoint fingerprint, and relevant runtime options.
+- **Source events:** tool events and claim commits from which the verification state was materialized.
 
-`extract.json` 绑定提取结果的输入与配置；`verification.json` 进一步绑定验证状态及相关来源事件。不兼容时，派生判断需要重建。原本由交互协议提交的声明是来源数据，不能因为换了验证配置就一起丢掉。
+`extract.json` binds extraction results to their inputs and configuration. `verification.json` also binds verification state to relevant source events. Incompatible derived judgments must be rebuilt. Claims originally submitted through the interactive protocol are source data and must survive a verification-configuration change.
 
-另一个区别是捕获物是否已由适配器封存。普通离线目录变化后可以重新建立派生判断；适配器封存的候选发生变化时，运行会被拒绝继续接受，避免把改动后的材料冒充原候选。
+Captured candidates may also be sealed by an adapter. Changes to an ordinary offline directory can trigger rebuilding derived judgments. Changes to a sealed candidate cause rejection, preventing modified materials from being accepted as the original candidate.
 
-端点记录使用指纹，避免直接公开可能含凭据的 URL。相同远端模型名称背后的权重仍可能变化，因此配置一致不等于整个模型环境完全可复现。代码：[`score()`](../../verifier/offline.py#L615)。
+Endpoints are recorded through fingerprints rather than raw URLs that might contain credentials. A remote model alias can still point to changing weights, so matching configuration does not make the entire model environment reproducible. Code: [`score()`](../../verifier/offline.py#L615).
 
-### 4.5 保存证据：引用要能回到实际产物
+### 4.5 Retain inspectable artifacts
 
-执行器既有临时执行目录，也可以使用持久工作目录复用工具和中间文件。检查完成后，GV 保存执行结果、见证和产物快照。工作目录的存在本身不会赋予其中的结论任何验证状态。
+The Executor has temporary execution directories and can use a persistent workspace to reuse tools and intermediate files. After a check, GV saves execution results, witnesses, and artifact snapshots. Merely placing a conclusion in the workspace does not give it verified status.
 
-`ArtifactStore` 根据内容生成文件名，写入时先保存临时文件，再原子替换到目标路径。这样，并发审查者不会读到只写了一半的 JSON；相同内容也能指向同一个产物。
+`ArtifactStore` derives filenames from content. It writes a temporary file and atomically replaces the destination, so concurrent readers do not observe half-written JSON. Identical content can refer to the same artifact.
 
-保存范围需要明确：文本快照有文件数与内容大小限制，会标记截断，并排除部分工具链目录。它不等于完整运行环境的归档；哈希也不是对发布者身份的数字签名。经图继承得到的证据可能还需要沿来源声明和数据库继续追踪，所以复核时应保留状态目录和必要捕获物，而不只保留顶层证书 JSON。
+The retention scope matters. Text snapshots have file-count and content-size limits, mark truncation, and exclude some toolchain directories. They are not complete environment archives, and content hashes are not publisher signatures. Inherited evidence may require following source claims and database records. A review should therefore retain the state directory and necessary captured inputs, as well as the top-level certificate JSON.
 
-代码：[`ArtifactStore.put()`](../../verifier/execution/instruments.py#L33)、[执行与快照](../../verifier/execution/discharge.py)。
+Code: [`ArtifactStore.put()`](../../verifier/execution/instruments.py#L33), [execution and snapshots](../../verifier/execution/discharge.py).
 
-## 5. 如何读懂结果
+## 5. Reading the results
 
-### 5.1 五种判定
+### 5.1 Five verdicts
 
-最终 verdict 由最终声明自己的检查决定。中间论证保留在证书里供查看，不按整张图的“通过比例”决定交付物正确性。
+The final verdict is determined by the final claim's own checks. Intermediate reasoning remains in the certificate for inspection; the fraction of passing nodes across the whole graph does not decide deliverable correctness.
 
-| 判定 | 含义 |
+| Verdict | Meaning |
 |---|---|
-| `verified` | 最终检查全部成立、强度为决定性，且至少一项是 `world` 来源 |
-| `supported` | 最终检查全部成立，至少一项是 `world` 来源，但存在较弱强度 |
-| `partial` | 存在结构性不可用检查或建议条件违反，其余检查成立，且没有强制反例 |
-| `unverified` | 检查失败、尚未解决，或最终只建立了记录层面的支持 |
-| `refuted` | 强制条件存在被接受的决定性反例 |
+| `verified` | All final checks are established with decisive strength, including at least one with `world` basis |
+| `supported` | All final checks are established, including at least one with `world` basis, but some strength is weaker |
+| `partial` | Some checks are structurally unavailable or advisory conditions are violated; the remaining checks are established and there is no mandatory counterexample |
+| `unverified` | Checks failed, remain unresolved, or establish only record-level support for the final result |
+| `refuted` | A mandatory condition has an accepted decisive counterexample |
 
-有强制反例时，`refuted` 优先决定结果。没有强制反例时，一次运行失败不能算作 `partial`；系统还不知道它只是暂时失败，还是在捕获范围内确实不可验证，因此把结果留在 `unverified`。
+An accepted mandatory counterexample gives `refuted` priority. Without one, an execution failure does not qualify as `partial`: the system has not established whether the failure is temporary or the check is structurally unavailable under the capture. It remains `unverified`.
 
-`unscoreable` 则是独立的评分失败标记，例如提取失败或输入封存失效。它没有建立反例，不能与 `refuted` 混为一谈。CLI 只在 `verified` 时返回退出码 0。
+`unscoreable` is a separate scoring-failure flag, for example after extraction failure or an invalidated input seal. It does not establish a counterexample. The CLI returns exit code 0 only for `verified`.
 
-### 5.2 按证据链检查证书
+### 5.2 Follow the evidence in a certificate
 
-阅读证书时，可以按以下顺序定位问题：
+To inspect a certificate:
 
-1. 找到 `final` 指向的声明，确认检查覆盖了原任务，而不是只重复最终回答。
-2. 查看该声明的 `obligations`，定位失败、不可用或被反驳的条件。
-3. 沿 `evidence` 查看方法、产物和见证；若证据有假定前提或桥接假设，一起检查。
-4. 对中间声明同时看局部与有效状态，注意 `open_premises` 和 `premise_refuted`。
+1. Find the claim referenced by `final` and check that its conditions cover the original task, rather than merely repeating the final answer.
+2. Inspect its `obligations` for failed, unavailable, or refuted conditions.
+3. Follow `evidence` to the method, artifacts, and witnesses. Review any assumed premises or bridge assumptions too.
+4. For intermediate claims, compare local and effective state, including `open_premises` and `premise_refuted`.
 
-例如，答案文件为 `14` 时，可信的反驳应当指出文件读到了什么、为什么正确结果应为 15，以及比较如何进行。只有“这个答案看起来不对”的审查意见，不足以代替这条证据链。
+If the answer file contains `14`, a credible refutation should identify what was read, why the expected answer is 15, and how the comparison was performed. An opinion that the answer “looks wrong” does not supply that evidence chain.
 
-### 5.3 多个候选怎样排序
+### 5.3 Rank several candidates
 
-选择器先按判定档位排序，再用最终契约中被违反的建议条件数量打破平局：
+The selector ranks candidates by verdict band, then by the number of violated advisory conditions in the final contract:
 
 ```text
 verified > supported > partial > unverified > refuted > unscoreable
-同一档位内：被违反的最终建议条件越少，排序越靠前。
+Within a band: fewer violated final advisory conditions rank higher.
 ```
 
-它不奖励更多通过项，也不使用通过比例。因此，把一个容易检查的条件拆成十项，不会仅凭增加通过数量获得更高排名。不过，建议条件如何拆分仍可能改变违反计数；这不是对所有分解方式都不变的评分。
+It uses neither pass counts nor pass ratios. Splitting one easy condition into ten does not improve a candidate's rank merely by adding passes. However, splitting advisory conditions may change the violation count, so ranking is not invariant to every decomposition.
 
-同键候选保持平局。`argmax_set` 返回所有最高候选，`argmax` 在必须选一个时稳定地取第一个。排序键及供投票使用的标量都不是经过校准的正确率概率。
+Candidates with identical keys remain tied. `argmax_set` returns the entire best set; `argmax` stably selects the first when one answer is required. Neither the ranking key nor the scalar used for voting is a calibrated probability of correctness.
 
-代码：[证书](../../verifier/engine/certificate.py)、[排序特征](../../verifier/offline.py)、[选择器](../../verifier/selection.py)。
+Code: [certificates](../../verifier/engine/certificate.py), [ranking features](../../verifier/offline.py), [selection](../../verifier/selection.py).
 
-## 6. 通用性与边界
+## 6. Generality and limitations
 
-### 6.1 “General”需要分别检验三件事
+### 6.1 Three meanings of generality
 
-GV 用任务、声明、检查方法和证据描述问题，接口没有绑定某一种编程语言或 benchmark。但能表达任务、能执行验证、能可靠判定，是三个不同层次：
+GV expresses problems through tasks, claims, verification methods, and evidence. Its interface is not tied to one programming language or benchmark. Assessing generality still requires three separate questions:
 
-- **表达范围**：任务要求、外部标准和依赖是否能在当前接口中准确表达。
-- **工具可达性**：当前捕获物和环境是否允许执行需要的方法。
-- **判断质量**：模型是否能在新领域找到充分检查并正确审查证据。
+- **Expressiveness:** can the interface accurately represent the task requirements, external standards, and dependencies?
+- **Tool access:** do the captured inputs and execution environment permit the required verification method?
+- **Judgment quality:** can models find sufficient checks and audit the evidence correctly in a new domain?
 
-例如，一个外部服务的状态没有被捕获，通用接口也不能补出那份证据。Prompt 中没有领域专有名词，只能抑制明显的特例增长，不能证明规则在新领域可靠。
+A general interface cannot recover an external service state that was never captured. Prompts without domain-specific terms can discourage obvious special cases, but do not demonstrate reliability in new domains.
 
-### 6.2 来源引用的作用
+### 6.2 Trace a check to its source
 
-`clause` 记录检查对应的任务或声明原文，用来追问“这项要求从哪里来”。它有助于发现前面的“必须用循环”这类额外限制。
+`clause` records the task or claim wording behind an obligation. It helps answer “Where did this requirement come from?” and detect additions such as requiring a loop in the sum example.
 
-但引用原文不等于证明推导。检查可能来自多句话共同作用、任务引用的外部标准，或从目标推出的必要条件。即使在求和例子里，“结果为 15”也包含计算推导，原任务并没有直接给出 15 这个答案。
+A quotation does not establish a derivation. An obligation may follow from several sentences together, an external standard referenced by the task, or a necessary consequence of the goal. Even “the result is 15” requires a calculation: the original sum task does not provide that answer directly.
 
-因此，这个字段更适合作为可审查的来源记录，不能当作检查充分合理的完整证明。把直接引用、权威来源和派生理由分别记录，是一个可以实验比较的改进方向；当前实现尚未建立这样的完整表示。
+The field is therefore an inspectable source record, not a complete justification of the obligation. Separately recording direct quotations, authoritative sources, and derivation reasons is a possible design to evaluate. The current implementation does not provide that full representation.
 
-### 6.3 缺失何时能作为反例
+### 6.3 Decide when absence is evidence
 
-`refutable_by_absence` 这个布尔字段配合见证类别，控制“没有找到”能否作为反例。例如，任务要求文件必须存在，且完整捕获目录能确定没有它，缺失可能构成反驳；截断日志里没有提到这个文件，则只能说明日志不够。
+The Boolean `refutable_by_absence` works with witness categories to control whether “not found” can refute a condition. If a task requires a file and a complete directory capture establishes that it is absent, absence may be a counterexample. A truncated log that never mentions the file only establishes a gap in the log.
 
-决定性区别涉及搜索范围、捕获完整性和时间。当前程序执行的是缺失类别与布尔标记的匹配，这些更深的语义仍需模型审查。同一观察被描述为 `absence` 还是 `execution`，也可能触发不同门槛，需要测试这种分类是否稳定。
+The distinction depends on search scope, capture completeness, and time. The program currently matches an absence category against the Boolean flag; models must review the deeper semantics. Describing the same observation as `absence` or `execution` may also trigger different gates, making classification stability a relevant test.
 
-设计要解决的问题具有通用性，但布尔表达本身较粗。后续应检验：加入这个字段是否减少误判，是否同时拒绝了合理反例，以及更明确的搜索范围记录是否更有效。
+The underlying problem applies broadly, but a Boolean is a coarse representation. Evaluation should determine whether the field reduces false verdicts, rejects valid counterexamples, or would benefit from more explicit records of search scope.
 
-### 6.4 需要保留的可信边界
+### 6.4 Trust boundaries
 
-有几项边界直接影响如何解释证书：
+Several boundaries affect how a certificate should be interpreted.
 
-**模型语义判断。** Schema 能检查字段结构，不能证明检查完整、方法充分或证据分类正确。最终契约不接收显式中间前提，但这不是对所有文件访问的隔离。不同角色也可能使用相同模型，分工不意味着错误相互独立。任务和产物里的指令仍可能影响模型。
+**Model judgments.** A schema checks structure, not the completeness of obligations, sufficiency of methods, or correctness of evidence categories. Final contracts receive no explicit intermediate premises, but this does not isolate every file access. Different roles may also use the same model, so their errors need not be independent. Instructions embedded in tasks and artifacts can still influence models.
 
-**捕获与运行环境。** 输入前后指纹可以发现持久改变，不能证明执行过程中从未短暂改动；符号链接也不等于其指向的外部状态已被冻结。SDK 与 Codex 的工具权限配置不同，不能把整个系统概括成统一的安全沙箱。
+**Capture and execution.** Before-and-after fingerprints can detect persistent changes, but cannot prove that no temporary mutation occurred during execution. A captured symbolic link does not freeze the external state it points to. SDK and Codex backends have different tool-permission configurations; the system does not provide one uniform sandbox policy.
 
-**接受政策。** `must/should`、只允许决定性反驳、最终至少包含一项 `world` 检查，都是当前政策。例如，一个只要求发生某种可观察操作的任务，可能合理地依赖记录；现有的全记录弃权规则仍可能让它停在 `unverified`。这些政策需要用任务数据检验。
+**Acceptance policies.** Mandatory versus advisory conditions, decisive-only refutation, and requiring at least one `world` check for a fully accepted final result are current policy choices. A task that only requires an observable operation may reasonably rely on records, yet the all-record abstention rule may leave it `unverified`. These policies need evaluation against task data.
 
-这些边界决定 GV 证书的含义：它是一份保留了任务解释、检查过程和证据依据的判断记录，语义正确性仍需要独立评价。
+A GV certificate retains a judgment's task interpretation, checks, and evidence. Its semantic correctness still requires independent evaluation.
 
-## 7. 验证依据与研究问题
+## 7. Validation and research questions
 
-### 7.1 已经验证了什么
+### 7.1 What has been tested
 
-本文描述的实现快照是 `e55aa91`。该版本通过 **469 项 pytest 测试**，测试时间、完整 commit 和文件指纹保存在 [validation.json](validation.json)。这是该快照的软件回归结果，不是模型准确率或代码覆盖率。
+This report describes implementation snapshot `e55aa91`. That revision passed **469 pytest tests**. This is a software regression result for that snapshot, not a model-accuracy or code-coverage measurement.
 
-| 机制 | 回归检查关注的行为 | 代表性测试 |
+| Mechanism | Behavior covered by regression tests | Representative tests |
 |---|---|---|
-| 条件生成与最终契约 | 审查完整字段，最终不接受假定前提 | [Critic](../../tests/test_critic.py)、[证书](../../tests/test_certificate_fold.py) |
-| 证据复用 | 保留前提、来源、强度及反例适用规则 | [证据复用](../../tests/test_evidence_reuse.py) |
-| 修订与并行 | 修订后重验，共享节点并发时只执行一次 | [修订](../../tests/test_revisions.py)、[并行](../../tests/test_parallel.py) |
-| 恢复与捕获 | 输入或配置变化后不沿用不兼容判断 | [离线评分](../../tests/test_offline.py)、[输入封存](../../tests/test_candidate_seal.py) |
-| 执行失败 | 失败进程或上次残留输出不能成为新成功 | [Codex 后端](../../tests/test_codex_backend.py) |
+| Check generation and final contract | Full-field review; no assumed premises for final checks | [Critic](../../tests/test_critic.py), [certificate folding](../../tests/test_certificate_fold.py) |
+| Evidence reuse | Preserve premises, basis, strength, and counterexample applicability | [Evidence reuse](../../tests/test_evidence_reuse.py) |
+| Revisions and concurrency | Recheck revisions; avoid duplicate execution of concurrent shared checks | [Revisions](../../tests/test_revisions.py), [parallel checks](../../tests/test_parallel.py) |
+| Resumption and capture | Reject incompatible judgments after input or configuration changes | [Offline scoring](../../tests/test_offline.py), [candidate sealing](../../tests/test_candidate_seal.py) |
+| Execution failures | Failed processes and leftover output cannot become fresh success | [Codex backend](../../tests/test_codex_backend.py) |
 
-多数角色用固定响应替代，以便单独测试程序规则；部分用例实际读取文件、执行计算或模拟子进程故障。这能检验具体软件行为，不能证明真实模型会生成同样充分的检查。
+Most model roles use fixed responses so that program rules can be tested in isolation. Some cases read real files, execute calculations, or simulate subprocess failures. These tests establish specific software behavior; they do not establish that live models will generate equally sufficient checks.
 
-复核该快照时，检出完整版本后运行 `uv run pytest -q`。当前主分支还包含网站构建测试，因此测试总数可能不同。
+To reproduce the snapshot's regression run, check out its full revision and run `uv run pytest -q`. The current main branch also includes website build tests, so its test count may differ.
 
-### 7.2 怎样评价设计是否有收益
+### 7.2 How to evaluate the design
 
-仓库包含 FrontierMath、SWE-bench Pro 和 Terminal-Bench 的[实验入口](../../experiments/README.md)。本文没有从未核对来源与版本的运行目录中整理性能榜单。以下是待执行的评估方案。
+The repository has [experiment entry points](../../experiments/README.md) for FrontierMath, SWE-bench Pro, and Terminal-Bench. This report does not derive a performance leaderboard from run directories whose provenance and versions have not been checked. The following is a proposed evaluation protocol.
 
-首先固定每个任务的候选运行，让所有离线选择器看到相同的任务、记录和交付物。正确性标签来自独立评估，并在验证结束前对角色隐藏。交互模式会改变生成过程，应另设实验组。
+First, fix the candidate runs for each task. Every offline selector should see the same tasks, records, and deliverables. Correctness labels should come from independent evaluation and remain hidden from verifier roles until verification ends. Interactive verification needs a separate experimental group because it changes generation.
 
-然后同时报告三个方面：最强判定中有多少错误，正确候选中有多少获得支持，以及验证为此花费的调用、token、费用和时间。失败与 `unscoreable` 运行也进入分母。对于候选选择，还应报告成功率、平局集合和重复评分的波动，避免一个单一准确率掩盖过度弃权或高成本。
+Then report three dimensions together: errors among the strongest verdicts, the share of correct candidates that receive support, and the calls, tokens, cost, and time required. Failures and `unscoreable` runs belong in the denominators. Candidate selection should also report success rate, tied sets, and variability across repeated scoring, so that one accuracy number does not hide excessive abstention or cost.
 
-最后用消融检验具体机制：独立最终检查、Critic、实际执行、来源与强度门槛、复用与缓存，以及来源引用和缺失规则分别带来了什么变化。对比例给出分母与置信区间，对同任务比较使用配对分析；观察到零次错误时，也要报告样本规模和不确定性。
+Ablations should test the contributions of independent final checks, the Critic, actual execution, basis and strength gates, reuse and caching, source quotations, and absence rules. Report denominators and confidence intervals for proportions, and use paired comparisons for the same tasks. Zero observed errors still requires a sample size and an uncertainty estimate.
 
-通用性实验尤其应冻结 prompt 和判定政策，在未用于调整规则的领域上测试。任务复述、无关成功消息、截断证据、等价见证表述和候选顺序变化，可以帮助辨别系统究竟依赖任务事实还是叙述形式。
+For generality, freeze prompts and verdict policies before testing domains not used to tune the rules. Task paraphrases, irrelevant success messages, truncated evidence, equivalent witness descriptions, and candidate-order changes can help reveal whether judgments depend on task facts or presentation.
 
-## 附录：实现索引与参考
+## Appendix: code and references
 
-### 代码阅读顺序
+### Code reading guide
 
-| 想了解的问题 | 入口 |
+| Question | Entry point |
 |---|---|
-| 一次离线评分怎样开始与恢复 | [`offline.score`](../../verifier/offline.py#L615) |
-| 任务怎样变成检查条件 | [`Kernel._compile_obligations`](../../verifier/engine/kernel.py#L441) |
-| 方法怎样被执行和审查 | [`BindingGame.run`](../../verifier/engine/game.py#L130) |
-| 相同检查怎样共享结果 | [`Kernel._settle_one`](../../verifier/engine/kernel.py#L329) |
-| 前提怎样影响可依赖的结论 | [`ClaimStore.effective`](../../verifier/core/store.py#L356) |
-| 修订怎样使旧证据失效 | [`ClaimStore._mark_stale_cone`](../../verifier/core/store.py#L258) |
-| 最终检查怎样聚合 | [`Kernel._settle`](../../verifier/engine/kernel.py#L1267)、[`request_certificate`](../../verifier/engine/certificate.py#L44) |
-| 捕获地址怎样映射 | [`WorldView`](../../verifier/core/world.py) |
+| How does offline scoring start and resume? | [`offline.score`](../../verifier/offline.py#L615) |
+| How does a task become checks? | [`Kernel._compile_obligations`](../../verifier/engine/kernel.py#L441) |
+| How are methods executed and audited? | [`BindingGame.run`](../../verifier/engine/game.py#L130) |
+| How do claims share a check result? | [`Kernel._settle_one`](../../verifier/engine/kernel.py#L329) |
+| How do premises limit a usable conclusion? | [`ClaimStore.effective`](../../verifier/core/store.py#L356) |
+| How do revisions invalidate old evidence? | [`ClaimStore._mark_stale_cone`](../../verifier/core/store.py#L258) |
+| How are final checks combined? | [`Kernel._settle`](../../verifier/engine/kernel.py#L1267), [`request_certificate`](../../verifier/engine/certificate.py#L44) |
+| How are captured paths resolved? | [`WorldView`](../../verifier/core/world.py) |
 
-网页版代码链接固定到本文审查的实现版本。Markdown 相对链接遵循 GitHub 当前浏览版本；核对具体行号时，请切到 `validation.json` 中记录的 commit。
+Code links on the website are pinned to the implementation reviewed here. Relative Markdown links follow the revision being browsed on GitHub. To inspect the cited line numbers, switch to implementation snapshot `e55aa91`.
 
-### 相关研究
+### Related work
 
-[LLM-as-a-Verifier](https://arxiv.org/abs/2607.05391) 研究从评分 token 的概率分布构造连续分数，以及评分粒度、重复评估和条件分解等设计。GV 同样可以用于候选选择，但额外组织了执行方法、声明依赖、证据条件和证书。两者需要在相同候选和成本条件下比较，结构差异本身不证明性能优势。
+[LLM-as-a-Verifier](https://arxiv.org/abs/2607.05391) studies continuous scores derived from rating-token probability distributions, together with scoring granularity, repeated evaluation, and conditional decomposition. GV can also select among candidates, while additionally organizing execution methods, claim dependencies, evidence conditions, and certificates. A comparison requires the same candidates and cost constraints; structural differences alone do not establish a performance advantage.
 
-[Agent-as-a-Judge](https://arxiv.org/abs/2410.10934) 使用具备代理能力的系统进行评估，包括细粒度要求和中间反馈。使用工具的评估代理不是 GV 独有的概念；本报告关注的是证据条件怎样在拆解、复用、修订和恢复中得到保留。
+[Agent-as-a-Judge](https://arxiv.org/abs/2410.10934) uses agentic systems for evaluation, including fine-grained requirements and intermediate feedback. Tool-using evaluation agents are not unique to GV. This report focuses on how evidence conditions survive decomposition, reuse, revision, and resumption.
 
-[Proof-Carrying Code](https://www.usenix.org/legacy/publications/library/proceedings/osdi96/full_papers/necula/html/node2.html) 让生产者提供证明，消费者检查证明后接受程序。GV 的结果携带依据，但自然语言解释与语义审查仍由模型参与，certificate 不等同于形式化证明证书。
-
-### English abstract
-
-General Verifier checks completed agent runs by turning task requirements into explicit obligations, executing verification methods, auditing the resulting evidence, and retaining an inspectable certificate. This report follows a small captured run through the system, then explains three design choices: reviewing the task contract, separating evidence basis from strength, and checking final deliverables independently of assumed intermediate claims. It connects these choices to scoped reuse, revision invalidation, concurrency control, input-bound resumption, and artifact storage. The report documents deterministic regression evidence at an identified source revision and proposes an evaluation protocol; it does not present measured cross-domain model performance.
+[Proof-Carrying Code](https://www.usenix.org/legacy/publications/library/proceedings/osdi96/full_papers/necula/html/node2.html) has producers supply proofs that consumers check before accepting programs. GV retains supporting evidence, but models still participate in natural-language interpretation and semantic audit. Its certificate is not a formal proof certificate.

@@ -19,7 +19,7 @@ from markdown_it.token import Token
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "docs" / "report"
 ASSETS = ("pipeline.svg", "reliance.svg", "report.css", "report.js")
-PUBLISHED = {"index.html", "report.md", "validation.json", ".nojekyll"} | {
+PUBLISHED = {"index.html", "report.md", ".nojekyll"} | {
     f"assets/{name}" for name in ASSETS
 }
 
@@ -85,7 +85,7 @@ def render_report(markdown: str, repository: str, revision: str,
                 chapters[-1]["children"].append((title, anchor))
             link = Token("link_open", "a", 1)
             link.attrs = {"href": f"#{anchor}", "class": "heading-anchor",
-                          "aria-label": f"链接到：{title}"}
+                          "aria-label": f"Link to {title}"}
             symbol = Token("text", "", 0)
             symbol.content = "#"
             inline.children.extend([link, symbol, Token("link_close", "a", -1)])
@@ -105,7 +105,7 @@ def render_report(markdown: str, repository: str, revision: str,
 
     # Tables remain keyboard-scrollable on narrow screens.
     md.renderer.rules["table_open"] = lambda *_: (
-        '<div class="table-wrap" role="region" aria-label="数据表格，可横向滚动" '
+        '<div class="table-wrap" role="region" aria-label="Table; scroll horizontally for more columns" '
         'tabindex="0"><table>\n'
     )
     md.renderer.rules["table_close"] = lambda *_: "</table></div>\n"
@@ -113,7 +113,7 @@ def render_report(markdown: str, repository: str, revision: str,
 
     def linked_image(tokens, index, options, env):
         src = escape(tokens[index].attrGet("src") or "", quote=True)
-        return (f'<a class="figure-link" href="{src}" title="查看原尺寸图表">'
+        return (f'<a class="figure-link" href="{src}" title="Open full-size diagram">'
                 f'{render_image(tokens, index, options, env)}</a>')
 
     md.renderer.rules["image"] = linked_image
@@ -146,15 +146,13 @@ def build(output: Path, repository: str = "sunyxedu/General-Verifier") -> Path:
     source_paths = set(git("ls-tree", "-r", "--name-only", revision).splitlines())
     markdown = (REPORT / "report.md").read_text(encoding="utf-8")
     body, toc = render_report(markdown, repository, revision, source_paths)
-    result = validation["result"]
-    passed = result["tests"] - result["failures"] - result["errors"] - result["skipped"]
     reviewed_date = validation["started_at_utc"][:10]
     repo_url = f"https://github.com/{repository}"
     template = Template((REPORT / "template.html").read_text(encoding="utf-8"))
     page = template.substitute(
         body=body, toc=toc, repository=escape(repo_url),
         revision=revision, short_revision=revision[:7],
-        reviewed_date=escape(reviewed_date), passed=passed,
+        reviewed_date=escape(reviewed_date),
         report_source=f"{repo_url}/blob/{git('rev-parse', 'HEAD')}/docs/report/report.md",
     )
 
@@ -162,7 +160,6 @@ def build(output: Path, repository: str = "sunyxedu/General-Verifier") -> Path:
     # recursive deletion, or dependency on API keys / the verifier package.
     payload = {
         "index.html": page.encode(), "report.md": markdown.encode(),
-        "validation.json": (REPORT / "validation.json").read_bytes(),
         ".nojekyll": b"",
     }
     payload.update({f"assets/{name}": (REPORT / "assets" / name).read_bytes()
