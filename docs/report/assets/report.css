@@ -27,15 +27,10 @@ th, td { vertical-align: top; text-align: left; }
 .copy-code { position: absolute; right: .4rem; top: .4rem; border: 1px solid #e9ecef; border-radius: .15rem; padding: .25rem .5rem; background: #fff; color: #687078; font-size: .7rem; cursor: pointer; opacity: 0; }
 .code-block:hover .copy-code, .code-block:focus-within .copy-code { opacity: 1; }
 .copy-code:focus-visible { outline: 2px solid #05b; }
-.diagram-frame { display: block; margin: 1rem 0; container-type: inline-size; }
+.diagram-frame { display: block; margin: 1rem 0; }
 .diagram-scroll { display: block; width: 100%; overflow: auto; }
-.diagram-scroll svg { display: block; width: 100%; min-width: 700px; height: auto; letter-spacing: normal; }
-.diagram-tools { display: flex; justify-content: space-between; gap: 1rem; margin-top: .35rem; color: #687078; font-size: .75rem; }
-.diagram-tools a { margin-left: auto; }
-.diagram-hint { display: none; }
-@container (max-width: 699px) {
-  .diagram-hint { display: inline; }
-}
+.diagram-scroll svg { display: block; width: 100%; height: auto; letter-spacing: normal; }
+.diagram-tools { display: block; margin-top: .35rem; text-align: right; font-size: .75rem; }
 .markdown p:has(> em:only-child) { font-size: .8125rem; color: #687078; }
 .markdown p:has(> em:only-child) em { font-style: normal; }
 .book-search li small { display: block; margin-top: .25rem; line-height: 1.4; color: #687078; }
@@ -73,7 +68,6 @@ th, td { vertical-align: top; text-align: left; }
   .markdown p { orphans: 3; widows: 3; }
   .markdown p:has(> .diagram-frame) { break-inside: avoid; break-after: avoid; }
   .markdown p:has(> em:only-child) { break-inside: avoid; }
-  .diagram-frame { container-type: normal; }
   .diagram-scroll { overflow: visible; }
   .diagram-scroll svg { min-width: 0; }
   .markdown pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 3mm 4mm; break-inside: avoid; }

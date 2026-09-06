@@ -1,34 +1,44 @@
 # General Verifier
 
-General Verifier (GV) checks whether an AI agent completed its task. It reads the original task, the agent's recorded actions and final answer, and the files captured from the run.
+General Verifier (GV) checks whether an AI agent's result satisfies its task. It turns the requirements into checks, executes verification methods, and records the evidence behind its verdict.
 
-GV turns the requirements into explicit checks, runs verification methods, and saves the evidence behind its verdict in a certificate. The certificate shows which checks passed, which failed, and which remain unresolved.
+For installation and backend configuration, see the [repository README](../../README.md). To run a small example and inspect its result, start with [Getting started](#getting-started).
 
 ## How verification works
 
-Verification moves through four stages. Follow the diagram from left to right; select an action to read its explanation. The [workflow guide](#verification-workflow) describes how the stages fit together.
+The workflow has four stages. For an explanation of the steps, see [Verification workflow](#verification-workflow), or select an action in the diagram.
 
-![Verification workflow, with actions grouped into four stages and optional candidate selection marked by a dashed border](assets/pipeline.svg)
+![Verification workflow: reconstruct the run, define the checks, establish evidence, and produce the result; candidate ranking is optional](assets/pipeline.svg)
 
-*[Contract review](#review-and-repair) and [evidence audit](#execution-and-audit) expand the decision points within these stages.*
+*[Contract review](#review-and-repair) and [evidence audit](#execution-and-audit) describe the review and retry loops within these stages.*
+
+### Reconstruct the task context
+
+GV reads the original task, tool records, final answer, and captured files. It extracts claims and their dependencies while keeping the original inputs available for verification. See the [input example](#the-task-and-captured-run) and [objects in the claim graph](#five-objects-to-inspect).
+
+### Review the task requirements
+
+The Compiler proposes checks, and the Critic reviews whether they cover the claim without imposing extra requirements. A rejected contract must be repaired and reviewed before verification proceeds. See [Task contracts](#task-contracts).
+
+### Execute and audit verification methods
+
+GV executes methods against records, captured deliverables, or task inputs. It then audits whether the method can establish the condition and whether execution followed that method. See [Evidence and audit](#evidence-and-audit) for acceptance, retry, and rejection decisions.
+
+### Inspect the verdict and evidence
+
+The final verdict comes from checks of the original task and delivered result. The certificate retains their evidence and unresolved issues. See [Independent final checks](#independent-final-checks) for the design rule and [Reading the results](#reading-the-results) for interpreting a certificate.
 
 ## Using General Verifier
 
-Start with [Getting started](#getting-started) for a runnable example, including the input files, command, and resulting certificate. Installation and backend configuration are described in the [repository README](../../README.md).
+The [offline scorer](#offline-and-interactive-verification) checks a completed run. The same verification kernel is available through an interactive MCP service, where an agent can submit claims, receive feedback, and revise its work.
 
-- **Check a completed run:** offline scoring reads a fixed record of what the agent did and delivered. See [the task and captured run](#the-task-and-captured-run).
-- **Give feedback during a run:** the [interactive service](#offline-and-interactive-verification) lets an agent submit claims, inspect results, and revise its work.
-- **Inspect or compare results:** [Reading the results](#reading-the-results) explains the five verdicts, evidence references, and candidate ranking.
+For several runs of the same task, [candidate selection](#rank-several-candidates) compares verdicts and violations of advisory conditions. Ties remain explicit; the ranking is not a probability of correctness.
 
 ## Design and implementation
 
-The design addresses three questions:
+[Implementation](#implementation) explains evidence reuse, revision invalidation, concurrent checks, resumption, and artifact storage.
 
-- [Task contracts](#task-contracts): do the checks cover the task without adding requirements?
-- [Evidence and audit](#evidence-and-audit): can the method establish the condition, and did its execution follow the method?
-- [Independent final checks](#independent-final-checks): does the delivered result satisfy the original task, even when intermediate reasoning remains unresolved?
-
-[Implementation](#implementation) explains how these rules survive evidence reuse, revisions, parallel checks, and resumption. [Scope and limitations](#scope-and-limitations) describes the assumptions behind a verdict; [Evaluation](#evaluation) sets out how to measure their effect. The [code reading guide and related work](#code-and-references) provide further detail.
+[Scope and limitations](#scope-and-limitations) describes what a certificate can establish and the assumptions it depends on. [Evaluation](#evaluation) sets out how to measure reliability and cost. The [code reading guide and related work](#code-and-references) provide further detail.
 
 ## Getting started
 

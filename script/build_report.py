@@ -192,7 +192,6 @@ def render_tokens(md: MarkdownIt, original: list[Token], repository: str,
                 f'<span class="diagram-scroll" role="region" aria-label="{label}" '
                 f'tabindex="0">{svg}</span>'
                 '<span class="diagram-tools">'
-                '<span class="diagram-hint">Scroll horizontally to follow the flow.</span>'
                 f'<a href="{src}">Open full-size diagram ↗</a>'
                 '</span></span>'
             )
