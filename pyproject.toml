@@ -2,6 +2,8 @@
 name = "general-verifier"
 version = "0.1.0"
 description = "Test-time verification harness: verifies solver claims through mechanical evidence gates"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "mcp",

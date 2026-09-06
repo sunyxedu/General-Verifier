@@ -4,6 +4,7 @@
   <a href="https://hemlix.me/General-Verifier/"><img alt="Documentation" src="https://img.shields.io/badge/docs-hemlix.me%2FGeneral--Verifier-2f6fb3"></a>
   <a href="pyproject.toml"><img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776ab"></a>
   <a href="https://hemlix.me/General-Verifier/runtime.html#model-backends"><img alt="Backends" src="https://img.shields.io/badge/backends-Claude%20Agent%20SDK%20%7C%20Codex%20CLI-6c757d"></a>
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-2f6fb3"></a>
 </p>
 
 <h3 align="center">Test-time verification for LLM agents: check the work, not the story</h3>
@@ -111,3 +112,7 @@ The [documentation site](https://hemlix.me/General-Verifier/) opens with the arc
   url    = {https://github.com/sunyxedu/General-Verifier}
 }
 ```
+
+## License
+
+General Verifier is released under the [Apache License 2.0](LICENSE). The documentation site bundles third-party theme and font assets under their own licenses, listed in [docs/report/assets/licenses/NOTICE.txt](docs/report/assets/licenses/NOTICE.txt).
