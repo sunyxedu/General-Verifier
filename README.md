@@ -16,7 +16,7 @@ General Verifier (GV) takes a **finished agent run**: the original task, recorde
 
 For example, suppose the task is “compute 1 + 2 + 3 + 4 + 5 and save the result in `/app/answer.txt`.” A transcript saying “done” tells you what the agent reported. Checking success requires computing the expected sum from the task and comparing it with the **captured answer file**. GV is built to make that distinction explicit.
 
-The [technical report](docs/report/report.md) explains the architecture, evidence rules, generality questions, and evaluation plan in Chinese, with an English abstract. Its [web edition](https://sunyxedu.github.io/General-Verifier/) becomes available after the [one-time GitHub Pages setup](docs/report/README.md); subsequent report changes publish automatically.
+The [technical report](https://hemlix.me/General-Verifier/) follows a complete example through the architecture, design decisions, and key implementation details, then discusses generality and evaluation. It is written in Chinese with an English abstract. [Markdown source](docs/report/report.md) and [publishing instructions](docs/report/README.md) are also available; report changes on `main` publish automatically.
 
 > [!IMPORTANT]
 > A `verified` certificate means GV accepted the compiled task checks and their evidence. Models still interpret the task, propose checks, and judge whether those checks are sufficient. A mistaken interpretation or audit can produce a false verdict. The certificate makes the judgment inspectable; it is not a guarantee of correctness.
