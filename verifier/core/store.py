@@ -368,8 +368,8 @@ class ClaimStore:
             and every premise's effective status (verified > partial >
             unverified/stale);
           * basis/strength fold as weakest links over the local values and
-            every non-effect premise's effective values, and are reported
-            only for an effectively verified node. Effect premises cap
+            every non-effect premise's effective values, for both positive
+            and locally refuted verdicts whose premises are closed. Effect premises cap
             status only (a fabricated event poisons the chain) — they
             reach the compiler as opaque labels, so they cannot have
             contributed semantic content; their record basis is exempt.
@@ -429,13 +429,17 @@ class ClaimStore:
         else:
             result["effective_status"] = self._RANK_STATUS[rank]
             result["open_premises"] = sorted(set(open_premises))
-            if result["effective_status"] == STATUS_VERIFIED:
+            if result["effective_status"] in (STATUS_VERIFIED, STATUS_REFUTED) \
+                    and not open_premises:
+                # Refuting under a premise still relies on that premise.
+                # A decisive local counterexample cannot shed a merely
+                # recorded or weakly supported premise during inheritance.
                 result["effective_basis"] = (
                     BASIS_WORLD
                     if all(b == BASIS_WORLD for b in bases)
                     else BASIS_RECORD)
                 result["effective_strength"] = weakest_strength(strengths)
-            elif result["effective_status"] != local:
+            elif result["effective_status"] != local or open_premises:
                 # capped by a premise: the local basis/strength describe a
                 # verdict the chain does not deliver — do not advertise them
                 result["effective_basis"] = None

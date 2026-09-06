@@ -152,3 +152,40 @@ def test_shared_premise_scope_reuses_one_conditional_check(tmp_path):
     assert store.effective(node["id"])["effective_status"] == "verified"
     store.add_claim(Claim(CLAIM_ASSERTION, "revised premise", revises=premise))
     assert store.status(node["id"]) == "stale"
+
+
+@pytest.mark.parametrize("premise_basis,premise_strength,expected", [
+    ("record", "decisive", "unverified"),
+    ("world", "bounded", "unverified"),
+    ("world", "analytic", "unverified"),
+    ("world", "decisive", "refuted"),
+])
+def test_inherited_refutation_preserves_its_premises_evidence_limits(
+        tmp_path, premise_basis, premise_strength, expected):
+    calls = []
+
+    def discharge(row, _obligation):
+        calls.append(row["text"])
+        if row["text"] == "premise":
+            return result("holds", basis=premise_basis, strength=premise_strength)
+        if row["text"] == "source":
+            return result("refuted", assumed_premises=(premise,), strength="decisive")
+        return result("failed")
+
+    store, kernel, log, artifacts = build(tmp_path, {
+        "premise": [{"text": "premise check", "required_basis": "record"}],
+        "source": [{"text": "counterexample check", "required_basis": "world"}],
+        "final": [{"text": "source", "required_basis": "world"}],
+    }, discharge)
+    premise = store.add_claim(Claim(CLAIM_ASSERTION, "premise"))
+    source = store.add_claim(Claim(CLAIM_ASSERTION, "source", deps=(premise,)))
+    final = store.add_claim(Claim(CLAIM_FINAL, "final"))
+    assert kernel.verify(premise) == "verified"
+    assert kernel.verify(source) == "refuted"
+    assert store.get(source)["basis"] == "world"
+    effective = store.effective(source)
+    assert effective["effective_basis"] == premise_basis
+    assert effective["effective_strength"] == premise_strength
+    cert = request_certificate(store, kernel, log, artifacts, final)
+    assert cert["verdict"] == expected
+    assert ("final" in calls) == (expected == "unverified")
