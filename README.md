@@ -2,13 +2,13 @@
 
 # General Verifier
 
-**Check whether an agent's result satisfies its task — and keep the checks, evidence, and reasons behind the verdict.**
+**Verifies AI agent results against task requirements and preserves the evidence behind each verdict.** [Technical report ↗](https://hemlix.me/General-Verifier/)
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-8B5CF6)](https://github.com/sunyxedu/General-Verifier)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-F59E0B)](#project-status-and-limitations)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Technical report](docs/report/report.md) · [How it works](#how-it-works) · [Verdicts](#reading-the-result) · [Your own traces](#score-your-own-traces) · [Development](#development)
+[Quick start](#quick-start) · [Architecture](#architecture) · [How it works](#how-it-works) · [Verdicts](#reading-the-result) · [Your own traces](#score-your-own-traces) · [Development](#development)
 
 </div>
 
@@ -16,7 +16,7 @@ General Verifier (GV) takes a **finished agent run**: the original task, recorde
 
 For example, suppose the task is “compute 1 + 2 + 3 + 4 + 5 and save the result in `/app/answer.txt`.” A transcript saying “done” tells you what the agent reported. Checking success requires computing the expected sum from the task and comparing it with the **captured answer file**. GV is built to make that distinction explicit.
 
-The [technical report](https://hemlix.me/General-Verifier/) follows a complete example through the architecture, design decisions, and key implementation details, then discusses generality and evaluation. It is written in Chinese with an English abstract. [Markdown source](docs/report/report.md) and [publishing instructions](docs/report/README.md) are also available; report changes on `main` publish automatically.
+The [technical report](https://hemlix.me/General-Verifier/) follows a complete example through the architecture, design decisions, and key implementation details, then discusses generality and evaluation. [Markdown source](docs/report/report.md) and [publishing instructions](docs/report/README.md) are also available; report changes on `main` publish automatically.
 
 > [!IMPORTANT]
 > A `verified` certificate means GV accepted the compiled task checks and their evidence. Models still interpret the task, propose checks, and judge whether those checks are sufficient. A mistaken interpretation or audit can produce a false verdict. The certificate makes the judgment inspectable; it is not a guarantee of correctness.
