@@ -16,3 +16,6 @@ experiments/frontiermath/_raw/
 
 # provider secrets
 .env
+
+# Generated technical report site
+/_site/
