@@ -1,90 +1,130 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="520" viewBox="0 0 1120 520" role="img" aria-labelledby="title desc">
-  <title id="title">General Verifier architecture</title>
-  <desc id="desc">The original task is compiled into checks and reviewed for coverage, with feedback to revise the checks. The resulting task contract enters a verification loop: propose a method, execute it using retained inputs and captured files, and audit its evidence. Audit feedback can retry the method. The verification kernel enforces evidence rules and retains artifacts. The final certificate links the verdict to the checks, evidence, and unresolved issues. This diagram focuses on completion checks; the reconstructed claim graph remains available for inspection.</desc>
-  <defs>
-    <marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 7 3.5 0 7Z" fill="#526476"/></marker>
-    <marker id="feedback" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 7 3.5 0 7Z" fill="#8a6bac"/></marker>
-    <marker id="input-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 7 3.5 0 7Z" fill="#4c81a9"/></marker>
-    <style>
-      text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; fill: #243444; }
-      .heading { font-size: 23px; font-weight: 600; text-anchor: middle; }
-      .label { font-size: 21px; font-weight: 500; text-anchor: middle; }
-      .detail { font-size: 18px; fill: #526476; }
-      .flow { fill: none; stroke: #526476; stroke-width: 2; stroke-linejoin: round; marker-end: url(#arrow); }
-      .feedback { fill: none; stroke: #8a6bac; stroke-width: 2; stroke-dasharray: 5 4; stroke-linejoin: round; marker-end: url(#feedback); }
-      .input { fill: none; stroke: #4c81a9; stroke-width: 2; stroke-linejoin: round; marker-end: url(#input-arrow); }
-      .reasoning { fill: #f5f0fa; stroke: #b39acb; stroke-width: 1.5; }
-    </style>
-  </defs>
-  <rect width="1120" height="520" fill="#ffffff"/>
-
-  <!-- Four stages, with artifacts distinct from the processes that act on them. -->
-  <text x="108" y="43" class="heading">Task and run</text>
-  <text x="360" y="43" class="heading">Define success</text>
-  <text x="690" y="43" class="heading">Establish evidence</text>
-  <text x="1007" y="43" class="heading">Inspect result</text>
-
-  <!-- Original task and inputs are the authority for completion checks. -->
-  <path d="M19 111H174L198 135V191H19Z" fill="#f0f7fc" stroke="#91b4cf" stroke-width="1.5"/>
-  <path d="M174 111V135H198" fill="none" stroke="#91b4cf" stroke-width="1.5"/>
-  <text x="35" y="148" font-size="21" font-weight="600">Original task</text>
-  <text x="35" y="175" class="detail">Required outcome</text>
-  <path d="M199 151H248" class="flow"/>
-
-  <!-- Reviewed task contract. -->
-  <rect x="250" y="118" width="220" height="66" rx="7" class="reasoning"/>
-  <text x="360" y="157" class="label">Compile checks</text>
-  <path d="M360 185V220" class="flow"/>
-  <rect x="250" y="223" width="220" height="66" rx="7" class="reasoning"/>
-  <text x="360" y="262" class="label">Review coverage</text>
-  <path d="M470 248H491V151H473" class="feedback"/>
-  <rect x="467" y="193" width="49" height="22" fill="#fff"/>
-  <text x="491" y="209" text-anchor="middle" font-size="16" fill="#765591">Revise</text>
-  <path d="M360 290V329" class="flow"/>
-  <path d="M250 332H449L470 353V400H250Z" fill="#fff" stroke="#a4b3c0" stroke-width="1.5"/>
-  <path d="M449 332V353H470" fill="none" stroke="#a4b3c0" stroke-width="1.5"/>
-  <text x="360" y="359" class="label">Task contract</text>
-  <text x="360" y="385" class="detail" text-anchor="middle">Required checks</text>
-  <path d="M471 365H522V151H565" class="flow"/>
-
-  <!-- Verification loop; the executor receives the retained run, not just text checks. -->
-  <rect x="567" y="118" width="242" height="66" rx="7" class="reasoning"/>
-  <text x="688" y="157" class="label">Propose a method</text>
-  <path d="M688 185V220" class="flow"/>
-  <rect x="567" y="223" width="242" height="66" rx="7" fill="#eef7f4" stroke="#89b7a8" stroke-width="1.5"/>
-  <text x="688" y="262" class="label">Execute with tools</text>
-  <path d="M688 290V327" class="flow"/>
-  <rect x="567" y="330" width="242" height="70" rx="7" class="reasoning"/>
-  <text x="688" y="360" class="label">Audit the evidence</text>
-  <text x="688" y="386" class="detail" text-anchor="middle">Method + execution</text>
-  <path d="M810 349H843V151H812" class="feedback"/>
-  <rect x="822" y="193" width="42" height="22" fill="#fff"/>
-  <text x="843" y="209" text-anchor="middle" font-size="16" fill="#765591">Retry</text>
-
-  <!-- Captured context can inform compilation; retained evidence also feeds execution. -->
-  <rect x="24" y="282" width="174" height="114" rx="3" fill="#fff" stroke="#b5c7d5" stroke-width="1.5"/>
-  <rect x="18" y="276" width="174" height="114" rx="3" fill="#f0f7fc" stroke="#91b4cf" stroke-width="1.5"/>
-  <text x="34" y="308" font-size="20" font-weight="600">Captured run</text>
-  <text x="34" y="337" class="detail">Trace + response</text>
-  <text x="34" y="365" class="detail">Inputs + files</text>
-  <path d="M193 304H218V169H248" class="flow"/>
-  <path d="M199 345H224V444H548V256H565" class="input"/>
-  <rect x="257" y="429" width="255" height="28" fill="#fff"/>
-  <text x="384" y="449" class="detail" text-anchor="middle" style="fill:#4c81a9">Retained inputs and files</text>
-
-  <!-- Accepted checks, refutations, and unresolved checks all remain inspectable. -->
-  <path d="M810 379H879V256H908" class="flow"/>
-  <path d="M911 165H1075L1100 190V354H911Z" fill="#fbfcfd" stroke="#9aafbf" stroke-width="1.5"/>
-  <path d="M1075 165V190H1100" fill="none" stroke="#9aafbf" stroke-width="1.5"/>
-  <text x="929" y="207" font-size="22" font-weight="600">Certificate</text>
-  <path d="M929 225H1080" stroke="#d4dfe7" stroke-width="1.5"/>
-  <circle cx="934" cy="249" r="4" fill="#4c81a9"/>
-  <text x="948" y="256" font-size="20">Verdict</text>
-  <text x="929" y="285" class="detail">Checks</text>
-  <path d="M934 294V308H945" fill="none" stroke="#9aafbf" stroke-width="1.5"/>
-  <text x="952" y="315" class="detail">Evidence</text>
-  <text x="929" y="343" class="detail">Open questions</text>
-
-  <path d="M250 481H844" stroke="#d8e0e7"/>
-  <text x="547" y="507" class="detail" text-anchor="middle"><tspan font-weight="600">Kernel</tspan> · enforces evidence rules and retains artifacts</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="760" viewBox="0 0 1720 760" role="img" aria-label="General Verifier architecture: a captured run becomes a claim graph, a task contract, audited evidence, and a certificate">
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9aa5b1"/></marker>
+  <marker id="arrowp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5b3fa0"/></marker>
+</defs>
+<rect width="1720" height="760" fill="#ffffff"/>
+<circle cx="45" cy="36" r="15" fill="#1f2933"/>
+<text x="45" y="42" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#fff;font-weight:700">1</text>
+<text x="70" y="44" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:24px;fill:#1f2933;font-weight:700">Captured run</text>
+<rect x="30" y="124" width="300" height="376" rx="12" fill="#ffffff" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="48" y="150" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:17px;fill:#52606d;font-weight:400">task.md</text>
+<text x="48" y="176" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:19px;fill:#1f2933;font-weight:400">Sum the integers 1..5 and</text>
+<text x="48" y="200" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:19px;fill:#1f2933;font-weight:400">save it to /app/answer.txt as</text>
+<text x="48" y="224" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:19px;fill:#1f2933;font-weight:400">an integer plus a newline.</text>
+<path d="M48 242 h264" stroke="#e5e9ee" stroke-width="1.5"/>
+<text x="48" y="270" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:17px;fill:#52606d;font-weight:400">tool trace</text>
+<text x="48" y="296" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:18px"><tspan style="fill:#52606d">Bash </tspan><tspan style="fill:#1f2933">write answer.txt</tspan></text>
+<text x="48" y="320" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:18px"><tspan style="fill:#1e7a4c">→ exit 0, stderr empty</tspan></text>
+<path d="M48 338 h264" stroke="#e5e9ee" stroke-width="1.5"/>
+<text x="48" y="366" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:17px;fill:#52606d;font-weight:400">final response</text>
+<text x="48" y="392" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:19px;fill:#1f2933;font-weight:400;font-style:italic">“Wrote 15 to /app/answer.txt.”</text>
+<path d="M48 410 h264" stroke="#e5e9ee" stroke-width="1.5"/>
+<text x="48" y="438" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:17px;fill:#52606d;font-weight:400">delivered file</text>
+<text x="48" y="466" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:20px"><tspan style="fill:#52606d">answer.txt  </tspan><tspan style="fill:#b3261e;font-weight:600">14⏎</tspan></text>
+<text x="48" y="486" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:16px;fill:#52606d;font-weight:400;font-style:italic">The log says success.</text>
+<text x="180" y="545" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:18px;fill:#52606d;font-weight:400">task · trace · response · files</text>
+<path d="M342 274 h34 v-12 l30 28 l-30 28 v-12 h-34 z" fill="#2f6fb3" opacity="0.85"/>
+<circle cx="415" cy="36" r="15" fill="#1f2933"/>
+<text x="415" y="42" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#fff;font-weight:700">2</text>
+<text x="440" y="44" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:24px;fill:#1f2933;font-weight:700">Claim graph</text>
+<rect x="500.5" y="77" width="99" height="30" rx="8" fill="#e6f4ea"/>
+<text x="550" y="98" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1e7a4c;font-weight:600">extract</text>
+<rect x="400" y="124" width="300" height="376" rx="12" fill="#ffffff" stroke="#c9d1d9" stroke-width="1.6"/>
+<rect x="418" y="144" width="264" height="92" rx="9" fill="#ffffff" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="432" y="170" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:17px;fill:#52606d;font-weight:400">F</text>
+<text x="432" y="196" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">answer.txt contains 15</text>
+<text x="432" y="218" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">followed by a newline</text>
+<rect x="611" y="153" width="61" height="22" rx="6" fill="#eaf2fb"/>
+<text x="641.5" y="169" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:14px;fill:#2f6fb3;font-weight:600">final</text>
+<rect x="418" y="268" width="264" height="92" rx="9" fill="#ffffff" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="432" y="294" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:17px;fill:#52606d;font-weight:400">C1</text>
+<text x="432" y="320" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">as of effect:2, the write</text>
+<text x="432" y="342" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">command ran with exit 0</text>
+<rect x="575" y="277" width="97" height="22" rx="6" fill="#f1ecfb"/>
+<text x="623.5" y="293" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:14px;fill:#5b3fa0;font-weight:600">assertion</text>
+<rect x="418" y="392" width="264" height="70" rx="9" fill="#ffffff" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="432" y="418" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:17px;fill:#52606d;font-weight:400">effect:2</text>
+<text x="432" y="444" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">tool result, seq 2</text>
+<rect x="602" y="401" width="70" height="22" rx="6" fill="#fdf1dc"/>
+<text x="637.0" y="417" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:14px;fill:#8a5a00;font-weight:600">effect</text>
+<path d="M550 236 v30" fill="none" stroke="#9aa5b1" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M550 360 v30" fill="none" stroke="#9aa5b1" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="562" y="258" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:14px;fill:#52606d;font-weight:400">depends on</text>
+<text x="562" y="382" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:14px;fill:#52606d;font-weight:400">depends on</text>
+<text x="550" y="545" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:18px;fill:#52606d;font-weight:400">what the run claims, in order</text>
+<path d="M712 274 h34 v-12 l30 28 l-30 28 v-12 h-34 z" fill="#2f6fb3" opacity="0.85"/>
+<circle cx="785" cy="36" r="15" fill="#1f2933"/>
+<text x="785" y="42" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#fff;font-weight:700">3</text>
+<text x="810" y="44" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:24px;fill:#1f2933;font-weight:700">Task contract</text>
+<rect x="790.5" y="63" width="99" height="30" rx="8" fill="#e6f4ea"/>
+<text x="840" y="84" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1e7a4c;font-weight:600">compile</text>
+<rect x="935.5" y="63" width="89" height="30" rx="8" fill="#fbebe9"/>
+<text x="980" y="84" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#b3261e;font-weight:600">attack</text>
+<rect x="770" y="124" width="300" height="376" rx="12" fill="#ffffff" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="788" y="154" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#52606d;font-weight:400">for F, from task.md only:</text>
+<rect x="788" y="168" width="264" height="86" rx="9" fill="#fbfcfd" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="802" y="196" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">answer.txt holds the sum</text>
+<text x="802" y="218" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">of the integers 1..5</text>
+<text x="802" y="242" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:14px"><tspan style="fill:#52606d">basis </tspan><tspan style="fill:#2f6fb3;font-weight:600">world</tspan><tspan style="fill:#52606d">   severity </tspan><tspan style="fill:#1f2933;font-weight:600">must</tspan></text>
+<rect x="788" y="268" width="264" height="86" rx="9" fill="#fbfcfd" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="802" y="296" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">answer.txt is a base-10</text>
+<text x="802" y="318" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">integer plus one newline</text>
+<text x="802" y="342" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:14px"><tspan style="fill:#52606d">basis </tspan><tspan style="fill:#2f6fb3;font-weight:600">world</tspan><tspan style="fill:#52606d">   severity </tspan><tspan style="fill:#1f2933;font-weight:600">must</tspan></text>
+<text x="788" y="386" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#52606d;font-weight:400">for C1:</text>
+<rect x="788" y="398" width="264" height="86" rx="9" fill="#fbfcfd" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="802" y="426" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">record at seq 2 shows the</text>
+<text x="802" y="448" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1f2933;font-weight:400">write with exit code 0</text>
+<text x="802" y="472" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:14px"><tspan style="fill:#52606d">basis </tspan><tspan style="fill:#2f6fb3;font-weight:600">record</tspan><tspan style="fill:#52606d">   severity </tspan><tspan style="fill:#1f2933;font-weight:600">must</tspan></text>
+<text x="920" y="545" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:18px;fill:#52606d;font-weight:400">conditions that must hold</text>
+<path d="M980 93 v14 h-140 v-12" fill="none" stroke="#5b3fa0" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrowp)"/>
+<text x="910" y="120" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:13px;fill:#5b3fa0;font-weight:400">repair within budget</text>
+<path d="M1082 274 h34 v-12 l30 28 l-30 28 v-12 h-34 z" fill="#2f6fb3" opacity="0.85"/>
+<circle cx="1155" cy="36" r="15" fill="#1f2933"/>
+<text x="1155" y="42" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#fff;font-weight:700">4</text>
+<text x="1180" y="44" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:24px;fill:#1f2933;font-weight:700">Evidence</text>
+<rect x="1150.5" y="63" width="99" height="30" rx="8" fill="#e6f4ea"/>
+<text x="1200" y="84" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1e7a4c;font-weight:600">propose</text>
+<rect x="1255.5" y="63" width="99" height="30" rx="8" fill="#e6f4ea"/>
+<text x="1305" y="84" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1e7a4c;font-weight:600">execute</text>
+<rect x="1359.0" y="63" width="78" height="30" rx="8" fill="#e6f4ea"/>
+<text x="1398" y="84" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#1e7a4c;font-weight:600">audit</text>
+<rect x="1140" y="124" width="300" height="376" rx="12" fill="#ffffff" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="1158" y="154" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:16px;fill:#52606d;font-weight:400">method: recompute, then compare</text>
+<rect x="1158" y="166" width="264" height="118" rx="9" fill="#f6f8fa" stroke="#e1e6eb" stroke-width="1.6"/>
+<text x="1170" y="194" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:16px"><tspan style="fill:#1f2933">expected </tspan><tspan style="fill:#52606d">= sum(range(1, 6))</tspan></text>
+<text x="1170" y="218" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:16px"><tspan style="fill:#1f2933">delivered</tspan><tspan style="fill:#52606d"> = read(world/app/</tspan></text>
+<text x="1170" y="242" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:16px"><tspan style="fill:#52606d">           answer.txt)</tspan></text>
+<text x="1170" y="270" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:16px"><tspan style="fill:#1f2933">15 ≠ 14  → </tspan><tspan style="fill:#b3261e;font-weight:600">refuted</tspan></text>
+<text x="1158" y="314" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#52606d;font-weight:400">kernel gates</text>
+<text x="1170" y="340" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:16px"><tspan style="fill:#1e7a4c;font-weight:600">✓ </tspan><tspan style="fill:#1f2933">decisive strength</tspan></text>
+<text x="1170" y="364" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:16px"><tspan style="fill:#1e7a4c;font-weight:600">✓ </tspan><tspan style="fill:#1f2933">positive witness</tspan></text>
+<text x="1170" y="388" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:16px"><tspan style="fill:#1e7a4c;font-weight:600">✓ </tspan><tspan style="fill:#1f2933">independent authority</tspan></text>
+<text x="1170" y="412" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:16px"><tspan style="fill:#1e7a4c;font-weight:600">✓ </tspan><tspan style="fill:#1f2933">world basis ≥ floor</tspan></text>
+<text x="1158" y="454" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#52606d;font-weight:400">judger</text>
+<text x="1170" y="480" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:16px"><tspan style="fill:#1f2933">sufficient </tspan><tspan style="fill:#1e7a4c;font-weight:600">yes</tspan><tspan style="fill:#1f2933">   faithful </tspan><tspan style="fill:#1e7a4c;font-weight:600">yes</tspan></text>
+<text x="1290" y="545" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:18px;fill:#52606d;font-weight:400">run with tools, then audited</text>
+<path d="M1398 93 v14 h-93 v-12" fill="none" stroke="#5b3fa0" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrowp)"/>
+<text x="1352" y="120" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:13px;fill:#5b3fa0;font-weight:400">redo, up to 3×</text>
+<path d="M1452 274 h34 v-12 l30 28 l-30 28 v-12 h-34 z" fill="#2f6fb3" opacity="0.85"/>
+<circle cx="1525" cy="36" r="15" fill="#1f2933"/>
+<text x="1525" y="42" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#fff;font-weight:700">5</text>
+<text x="1550" y="44" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:24px;fill:#1f2933;font-weight:700">Certificate</text>
+<path d="M1510 122 a12 12 0 0 1 12 -12 h150 l28 28 v250 a12 12 0 0 1 -12 12 h-166 a12 12 0 0 1 -12 -12 z" fill="#ffffff" stroke="#c9d1d9" stroke-width="1.6"/>
+<path d="M1672 110 v28 h28" fill="none" stroke="#c9d1d9" stroke-width="1.6"/>
+<text x="1526" y="150" text-anchor="start" style="font-family:'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;font-size:17px;fill:#52606d;font-weight:400">verdict</text>
+<rect x="1526" y="164" width="130" height="36" rx="8" fill="#fbebe9"/>
+<text x="1591" y="189" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:20px;fill:#b3261e;font-weight:700">refuted</text>
+<text x="1526" y="236" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:15px"><tspan style="fill:#b3261e;font-weight:600">✗ </tspan><tspan style="fill:#1f2933">value 14, expected 15</tspan></text>
+<text x="1526" y="262" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:15px"><tspan style="fill:#1e7a4c;font-weight:600">✓ </tspan><tspan style="fill:#1f2933">integer + newline</tspan></text>
+<text x="1526" y="288" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:15px"><tspan style="fill:#1e7a4c;font-weight:600">✓ </tspan><tspan style="fill:#1f2933">write recorded</tspan></text>
+<text x="1526" y="330" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:15px;fill:#52606d;font-weight:400;font-style:italic">every check links</text>
+<text x="1526" y="350" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:15px;fill:#52606d;font-weight:400;font-style:italic">to its evidence</text>
+<text x="1526" y="370" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:15px;fill:#52606d;font-weight:400;font-style:italic">and witness</text>
+<text x="1605" y="545" text-anchor="middle" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:18px;fill:#52606d;font-weight:400">verdict + evidence</text>
+<path d="M30 590 h1660" stroke="#e5e9ee" stroke-width="1.5"/>
+<text x="30" y="626" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:19px;fill:#1f2933;font-weight:600">Models interpret the task and audit evidence.</text>
+<text x="30" y="652" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#52606d;font-weight:400">The kernel enforces the rules: no refutation below decisive strength, no absence as proof, no delivered artifact as its own authority, no record evidence for a world claim.</text>
+<text x="30" y="700" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#52606d;font-weight:400">The final verdict is compiled from the task statement and checked against the delivered world. The agent’s own report of success never counts as evidence.</text>
+<text x="30" y="736" text-anchor="start" style="font-family:Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;font-size:17px;fill:#52606d;font-weight:400">Offline: score a captured run.   Interactive: an MCP server verifies each claim as the agent commits it.</text>
 </svg>
