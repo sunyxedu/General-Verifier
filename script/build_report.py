@@ -174,13 +174,10 @@ def build(output: Path, repository: str = "sunyxedu/General-Verifier") -> Path:
     source_paths = set(git("ls-tree", "-r", "--name-only", revision).splitlines())
     markdown = (REPORT / "report.md").read_text(encoding="utf-8")
     body, toc = render_report(markdown, repository, revision, source_paths)
-    reviewed_date = validation["started_at_utc"][:10]
     repo_url = f"https://github.com/{repository}"
     template = Template((REPORT / "template.html").read_text(encoding="utf-8"))
     page = template.substitute(
         body=body, toc=toc, repository=escape(repo_url),
-        revision=revision, short_revision=revision[:7],
-        reviewed_date=escape(reviewed_date),
         report_source=f"{repo_url}/blob/{git('rev-parse', 'HEAD')}/docs/report/report.md",
     )
 
