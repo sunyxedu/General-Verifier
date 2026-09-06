@@ -14,7 +14,10 @@ read verdicts; it contains no knowledge about your task.
   - `deps`: every already-committed claim this conclusion directly depends on; to reference
     a tool-execution result use `effect:<seq>` (the event sequence number captured by the hooks)
   - To correct a conclusion, resubmit with `revises=<old label>`: the old conclusion and
-    everything downstream of it are automatically invalidated
+    its checks are invalidated, along with consumers of shared or inherited evidence.
+    The statement may stay the same after you repair the underlying result: an explicit
+    revision creates a new claim version and runs a fresh check. Repeating a commit
+    without `revises` reuses the existing version.
 - A claim's statement must be **self-contained and checkable**: write "for all 1≤n≤100,
   6 divides n³−n", not "the property above holds".
 - **Give every claim a temporal index.** A claim about the current/final state is checked

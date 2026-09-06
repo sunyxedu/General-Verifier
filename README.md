@@ -210,6 +210,8 @@ uv run python script/claim_graph.py --state-dir /path/to/run -o graph.svg
 
 Interactive mode exposes `commit`, `verify`, `status`, and `certificate` through MCP. The live solver receives verification feedback as it works. It needs `claude` on your `PATH` and the SDK provider configuration described above.
 
+After repairing a result, submit the claim with `revises` pointing to its old label, even if the wording stays the same. GV creates a new version and invalidates the old checks and any conclusions that reused their evidence. Repeating a commit without `revises` keeps the existing version.
+
 Launch it **from a task project outside this repository**:
 
 ```bash

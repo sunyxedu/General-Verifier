@@ -191,15 +191,14 @@ class Claim:
 
     @property
     def id(self) -> str:
-        # identity = content + position in the graph (sorted dep set).
-        # revises is lineage metadata: resubmitting identical content dedups.
-        return content_hash(
-            {
-                "kind": self.kind,
-                "text": self.text,
-                "deps": sorted(self.deps),
-            }
-        )
+        # Ordinary repeated commits still dedup. An explicit revision is
+        # a new verification epoch even when the statement is unchanged:
+        # the solver may have repaired the world rather than its wording.
+        identity = {"kind": self.kind, "text": self.text,
+                    "deps": sorted(self.deps)}
+        if self.revises is not None:
+            identity["revises"] = self.revises
+        return content_hash(identity)
 
 
 @dataclass(frozen=True)

@@ -88,6 +88,10 @@ CREATE TABLE IF NOT EXISTS evidence (
     claim_id TEXT NOT NULL,
     payload  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS store_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -125,6 +129,19 @@ class ClaimStore:
                 self.db.execute(
                     f"ALTER TABLE obligation_edges ADD COLUMN {name} {decl}")
                 self.db.commit()
+        if self.db.execute(
+                "SELECT 1 FROM store_metadata WHERE key='revision_identity'"
+        ).fetchone() is None:
+            # Revision IDs formerly ignored lineage. On replay they get
+            # new IDs; their old cached rows must not remain eligible as
+            # inheritance sources alongside the newly checked versions.
+            legacy = [r[0] for r in self.db.execute(
+                "SELECT id FROM claims WHERE revises IS NOT NULL")]
+            for cid in legacy:
+                self._mark_stale_cone(cid)
+            self.db.execute(
+                "INSERT INTO store_metadata VALUES ('revision_identity', '1')")
+            self.db.commit()
         self.trigger = trigger
         self._trigger_callbacks: List[TriggerCallback] = []
 

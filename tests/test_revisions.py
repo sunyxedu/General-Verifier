@@ -4,7 +4,7 @@ import json
 import pytest
 
 from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL
-from verifier.core.store import TRIGGER_LAZY
+from verifier.core.store import ClaimStore, TRIGGER_LAZY, TRIGGER_ON_COMMIT
 from verifier.engine.certificate import request_certificate
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
@@ -61,4 +61,51 @@ def test_revision_invalidates_shared_and_inherited_verdicts(tmp_path, original, 
     node, = sc.store.obligation_children(final)
     latest = sc.store.evidence_for(node["id"])[-1]
     assert latest["outcome"] == ("holds" if revised == "15" else "refuted")
-    assert json.loads((tmp_path / "state/artifacts" / (latest["artifact"] + ".json")).read_text())["observed"] == revised
+    evidence_path = tmp_path / "state/artifacts" / (latest["artifact"] + ".json")
+    assert json.loads(evidence_path.read_text())["observed"] == revised
+
+
+def test_legacy_revision_judgments_are_invalidated_once(tmp_path):
+    path = str(tmp_path / "legacy.sqlite")
+    store = ClaimStore(path, trigger=TRIGGER_LAZY)
+    base = store.add_claim(Claim(CLAIM_ASSERTION, "original"))
+    legacy = store.add_claim(Claim(CLAIM_ASSERTION, "revised"))
+    consumer = store.add_claim(Claim(CLAIM_ASSERTION, "consumer", deps=(legacy,)))
+    for cid in (base, legacy, consumer):
+        store.set_verified(cid, basis="world")
+    # Reproduce a pre-migration store: revised text used the same identity
+    # as a non-revising claim, with lineage kept only in the row.
+    store.db.execute("UPDATE claims SET revises=? WHERE id=?", (base, legacy))
+    store.db.execute("DELETE FROM store_metadata")
+    store.db.commit()
+    store.db.close()
+
+    migrated = ClaimStore(path, trigger=TRIGGER_LAZY)
+    assert migrated.status(legacy) == migrated.status(consumer) == "stale"
+    assert migrated.status(base) == "verified"
+    replacement = migrated.add_claim(Claim(CLAIM_ASSERTION, "revised", revises=legacy))
+    assert replacement != legacy
+    migrated.set_verified(replacement, basis="world")
+    migrated.db.close()
+    reopened = ClaimStore(path, trigger=TRIGGER_LAZY)
+    assert reopened.status(replacement) == "verified"
+
+
+def test_same_statement_can_be_revised_and_replayed_without_rechecking(tmp_path):
+    sc, answer, calls, factory = service(tmp_path, trigger=TRIGGER_ON_COMMIT)
+    answer.write_text("14")
+    first = sc.commit("A1", "assertion", "the answer is right", [])
+    assert first["status"] == "refuted"
+    assert sc.commit("A1", "assertion", "the answer is right", []) == first
+    assert len(calls) == 1
+
+    answer.write_text("15")
+    revised = sc.commit("A2", "assertion", "the answer is right", [], revises="A1")
+    assert revised["status"] == "verified"
+    assert revised["claim_id"] != first["claim_id"]
+    assert sc.store.status(first["claim_id"]) == "stale"
+    assert len(calls) == 2
+    restarted = Service(sc.state_dir, kernel_factory=factory)
+    assert restarted.builder.resolve("A2") == revised["claim_id"]
+    assert restarted.store.status(revised["claim_id"]) == "verified"
+    assert len(calls) == 2
