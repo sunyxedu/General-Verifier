@@ -2,8 +2,6 @@
 
 # General Verifier
 
-**Verifies AI agent results against task requirements and preserves the evidence behind each verdict.** [Technical report ↗](https://hemlix.me/General-Verifier/)
-
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-8B5CF6)](https://github.com/sunyxedu/General-Verifier)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-F59E0B)](#project-status-and-limitations)
