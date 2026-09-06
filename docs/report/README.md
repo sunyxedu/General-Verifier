@@ -2,9 +2,9 @@
 
 [Read the report](https://hemlix.me/General-Verifier/) · [Markdown source](report.md)
 
-The report follows the repository's sum example through a complete verification run, then explains the architecture, three core design decisions, key implementation mechanisms, result interpretation, limitations, and evaluation. It is written in English and includes four diagrams and links to the reviewed implementation.
+The website opens with a short explanation of GV and a clickable workflow. Focused pages cover getting started, the workflow, task contracts, evidence audit, independent final checks, implementation, results, limitations, evaluation, and references. All pages are in English.
 
-The published website provides nested navigation, clickable workflow steps, section links, code copying, mobile layouts, and print styles. Wide diagrams scroll within their own viewport and have a full-size link. The text, diagrams, and navigation also work offline without JavaScript.
+The left navigation is a site map; the right navigation lists sections on the current page. Both collapse on narrow screens. The site also provides code copying, section links, and print styles. Wide diagrams scroll within their own viewport and have a full-size link. Text, diagrams, and links work offline without JavaScript; native menus remain expandable.
 
 ## Publish with GitHub Pages
 
@@ -33,7 +33,7 @@ uv run --no-project --with-requirements docs/report/requirements.txt python scri
 python3 -m http.server 8000 --bind 127.0.0.1 --directory _site
 ```
 
-Open **<http://localhost:8000/>** or open `_site/index.html` directly in a browser. Use **Print / PDF** at the top of the page, or the browser's print menu, to export a copy. Content, navigation, and images require neither JavaScript nor an external CDN.
+Open **<http://localhost:8000/>** or open `_site/index.html` directly in a browser. Use **Print this page** at the bottom, or the browser's print menu, to export the current topic. Choose **Read as one page** in the site map to read or print the complete report. Content, navigation, and images require neither JavaScript nor an external CDN.
 
 The site build installs only two pinned Markdown parser dependencies. It does not start the verifier or invoke models. The default output directory, `_site/`, is ignored by Git.
 
@@ -42,13 +42,15 @@ The site build installs only two pinned Markdown parser dependencies. It does no
 Write for technical readers who are new to GV:
 
 - Use English throughout the report, diagrams, navigation, and interface labels.
-- Start with one complete example that connects inputs, processing, and outputs before introducing internal terminology. Preserve every requirement of the real task, including output format.
+- Open with the project's purpose, what it reads and produces, and a workflow that links to explanations. Put the runnable example on Getting started; preserve every task requirement, including output format.
+- Give each topic a short introduction that works when readers arrive directly from a link. Introduce the shared example where needed instead of assuming that every reader has read the preceding page.
 - Explain why a component exists before describing how it works. Choose implementation details that affect correctness, reproducibility, or cost, and explain the problem each mechanism solves.
 - Reuse the same example when developing a concept. Keep code snippets focused and link to the complete implementation at a fixed revision.
 - Distinguish measured results, explanatory examples, and proposed experiments. When discussing a semantic limitation, say which conclusion it limits.
-- Keep the page focused on the text. Chapters should follow the learning sequence; nested navigation should help readers find details. Keep version metadata and tool links brief, and leave the detailed validation manifest out of the public site.
+- Keep the layout plain: a white background, normal-weight headings, site navigation, and a separate page contents list. Avoid numbered chapter headings, a report-style cover, subtitles, and metadata strips.
+- The overview's browser title is General Verifier. Topic tabs use the topic name followed by General Verifier. Keep commit IDs, dates, regression counts, and validation records out of the published prose; retain the implementation pin internally for source links.
 
-The organization draws on [Tradingflow's introduction](https://bridgekat.github.io/tradingflow/tradingflow/index.html) and [graph module](https://bridgekat.github.io/tradingflow/tradingflow_graph/index.html), which lead from examples into abstractions and implementation; the [Rust Book's ownership chapter](https://doc.rust-lang.org/stable/book/ch04-01-what-is-ownership.html), which develops rules through connected examples; and the [AFL++ documentation](https://aflplus.plus/docs/) and [AFL technical notes](https://aflplus.plus/docs/technical_details/), which connect workflow, mechanisms, and implementation choices. Claims about GV itself are grounded in the repository code and tests cited in the report.
+The main layout reference is [AFL++ documentation](https://aflplus.plus/docs/): an overview introduces the workflow, actions link to detailed explanations, and site navigation is separate from the current page's contents. Its [in-depth guide](https://aflplus.plus/docs/fuzzing_in_depth/) connects operational steps to their reasons. The [Rust Book](https://doc.rust-lang.org/stable/book/ch04-01-what-is-ownership.html) and [Tradingflow](https://bridgekat.github.io/tradingflow/tradingflow/index.html) also show how to build explanations around concrete examples. Claims about GV itself must come from its implementation.
 
 ## Diagram conventions
 
@@ -65,7 +67,7 @@ Use action labels and named outputs. Group related actions under a stage heading
 
 The [AFL++ overview](https://aflplus.plus/docs/) provided the model for grouped stages, required/optional notation, and links from steps to detailed documentation. Its [overview SVG source](https://github.com/AFLplusplus/AFLplusplus/blob/dev/docs/resources/0_fuzzing_process_overview.drawio.svg) is a diagrams.net export with embedded editor data. GV's figures are native SVG source files in `assets/`; edit their elements and labels directly. Keep text as SVG text so it stays sharp when enlarged or printed.
 
-Overview actions link to `../index.html#section-anchor` in the standalone SVG. The site builder validates those destinations and rewrites them to in-page links when embedding the diagram. Prefix every SVG ID with its diagram name to prevent collisions across figures. The bundled SVGs are trusted repository assets and are embedded directly into the page.
+Overview actions link to `../topic.html#section-anchor` in the standalone SVG. The builder validates both the topic and the anchor. Embedded actions navigate to the same destination; in the complete report, they stay within the document. Prefix every SVG ID with its diagram name to prevent collisions across figures. The bundled SVGs are trusted repository assets and are embedded directly into the page.
 
 After changing a figure, inspect it at normal reading size and in print. Check text bounds, arrow crossings, branch labels, keyboard access, and the narrow-screen scroll view. Confirm that each depicted branch agrees with the reviewed implementation. A diagram may summarize a mechanism, but its caption or nearby text must state the scope of that summary.
 
@@ -73,16 +75,22 @@ After changing a figure, inspect it at normal reading size and in print. Check t
 
 | File | Purpose |
 |---|---|
-| [report.md](report.md) | Single source for the report body; readable directly on GitHub |
+| [report.md](report.md) | Single source for the overview, topic pages, and complete report; readable on GitHub |
 | `validation.json` | Maintainer record of the reviewed implementation, test results, and fingerprints; read during the build and excluded from publication |
 | [assets/](assets/) | Four SVG diagrams, site styles, and interactions |
-| [template.html](template.html) | Page structure and implementation version metadata |
-| [build_report.py](../../script/build_report.py) | Render the page and navigation; validate and pin code references |
+| [template.html](template.html) | Shared page structure, site map, and current-page contents |
+| [build_report.py](../../script/build_report.py) | Split topics, route section links, render navigation, and pin code references |
 | [report.yml](../../.github/workflows/report.yml) | Build, check, deploy, and publish the report URL |
 
-The report's **469 tests** refer to the implementation snapshot recorded in `validation.json`. Publishing the website does not rerun models, update research findings, or turn historical test results into validation of current code. The builder pins implementation links to that snapshot and checks that each referenced file exists at that Git revision.
+The historical regression record belongs in `validation.json`, which is excluded from the published files. Publishing the website does not rerun models, update research findings, or turn historical test results into validation of current code. The builder pins implementation links to that snapshot and checks that each referenced file exists at that Git revision.
 
 Text and layout changes may retain the existing implementation snapshot. If the report begins describing new behavior, review the relevant code and run its tests before updating the report, revision, and measured results together. Do not update only the commit or test count.
+
+## Page boundaries and links
+
+`report.md` remains the only prose source. `PAGE_SECTIONS` in the builder names the H2 headings that start topic pages. Content before the first topic forms the overview. Use H3 headings for subsections inside a topic; the builder displays them as H2 on that page. Keep the topic headings in the configured reading order.
+
+Use ordinary `#section-anchor` links in Markdown. The builder resolves them to the owning topic page, while the complete reading view keeps them in the same document. All headings receive their IDs before splitting, so links are identical across the Markdown, topic pages, and complete view. When adding a topic, update `PAGE_SECTIONS`; the publication allowlist and navigation derive from that list.
 
 ## Check the build
 
@@ -90,4 +98,4 @@ Text and layout changes may retain the existing implementation snapshot. If the 
 uv run --no-project --with-requirements docs/report/requirements.txt python -m unittest discover -s tests -p test_report_build.py -v
 ```
 
-These checks cover page and embedded diagram references, historical code links, duplicate anchors, and publication boundaries. Renaming a section targeted by a diagram requires updating the SVG link; an unresolved destination stops the build. The output directory contains only explicitly listed report files. The builder refuses to overwrite a directory containing unexpected files. Use `--output /path/to/empty-directory` to choose a fresh output location.
+These checks cover links and target anchors across every HTML page and standalone SVG, the complete reading view, historical code links, duplicate anchors, and publication boundaries. Renaming a section targeted by a diagram requires updating the SVG link; an unresolved destination stops the build. The output directory contains only explicitly listed report files. The builder refuses to overwrite a directory containing unexpected files. Use `--output /path/to/empty-directory` to choose a fresh output location.

@@ -10,7 +10,7 @@ Verification moves through four stages. Follow the diagram from left to right; s
 
 ![Verification workflow, with actions grouped into four stages and optional candidate selection marked by a dashed border](assets/pipeline.svg)
 
-*Solid boxes are core actions; the dashed box is optional candidate selection. [Task contracts](#task-contracts) and [evidence audit](#execution-and-audit) explain the review and retry loops.*
+*[Contract review](#review-and-repair) and [evidence audit](#execution-and-audit) expand the decision points within these stages.*
 
 ## Using General Verifier
 
