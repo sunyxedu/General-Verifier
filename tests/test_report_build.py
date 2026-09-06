@@ -74,7 +74,7 @@ class ReportBuildTests(unittest.TestCase):
             build(output)
             complete = PageLinks()
             complete.feed((output / "report.html").read_text())
-            # Every topic section is available in the complete reading/print view.
+            # Every topic page is available in the complete reading/print view.
             for name in HTML_PAGES - {"report.html"}:
                 page = PageLinks()
                 page.feed((output / name).read_text())
@@ -82,9 +82,9 @@ class ReportBuildTests(unittest.TestCase):
             overview = PageLinks()
             overview.feed((output / "index.html").read_text())
             self.assertIn("contracts.html#task-contracts", overview.urls)
-            self.assertIn("results.html#five-verdicts", overview.urls)
+            self.assertIn("evidence.html#evidence", overview.urls)
             self.assertIn("#task-contracts", complete.urls)
-            self.assertIn("#five-verdicts", complete.urls)
+            self.assertIn("#evidence", complete.urls)
             # In the complete view, content links stay within that document.
             self.assertNotIn("contracts.html#task-contracts", complete.urls)
 

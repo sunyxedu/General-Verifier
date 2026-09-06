@@ -1,28 +1,22 @@
-# General Verifier technical report
+# General Verifier documentation site
 
-[Read the report](https://hemlix.me/General-Verifier/) · [Markdown source](report.md)
+[Read the documentation](https://hemlix.me/General-Verifier/) · [Markdown source](report.md)
 
-The website opens with a short introduction, a compact workflow, and a brief explanation of each stage. Focused pages cover getting started, the workflow, task contracts, evidence audit, independent final checks, implementation, results, limitations, evaluation, and references. All pages are in English.
+The site opens with an overview: what GV does, a five-stage diagram whose actions link to their explanations, the two rules that shape the design, and a routing table for different readers. Fourteen topic pages follow in reading order, grouped in the site map as Start, Design, Guides, Internals, and Reference. All pages are in English.
 
-The site uses the Hugo Book theme distributed with the AFL++ website. The left column contains search and the site map; the right column contains the current page's section links without a heading. At the theme's mobile breakpoint, these become a navigation drawer and an optional section list opened by header icons. Diagrams fit the content width and link to their full-size SVG. Text, links, fonts, and native navigation work offline without JavaScript; search and code copying are optional JavaScript features.
+The layout is the Hugo Book theme distributed with the AFL++ website. The left column holds search and the site map; the right column holds the current page's sections. At the theme's mobile breakpoint these become a navigation drawer and a section list opened from the header. Diagrams fit the content width and link to their full-size SVG. Text, links, fonts, and navigation work offline without JavaScript; search and code copying are optional JavaScript features.
 
 ## Publish with GitHub Pages
 
 For the initial setup:
 
 1. Open **Settings → Pages → Build and deployment → Source** in the repository and select **GitHub Actions**.
-2. Push the report commits to `main`. If they are already pushed, use **Actions → Technical report → Run workflow**.
-3. Wait for `build` and `deploy` to succeed, then open **Read the report** in the run summary. The URL also appears in the `github-pages` deployment environment.
+2. Push to `main`. If the commits are already pushed, use **Actions → Documentation → Run workflow**.
+3. Wait for `build` and `deploy` to succeed, then open the link in the run summary. The URL also appears in the `github-pages` deployment environment.
 
-This repository's published URL is:
+This repository publishes to **<https://hemlix.me/General-Verifier/>**; the default GitHub Pages URL redirects there. A fork uses the URL in its own deployment summary.
 
-**<https://hemlix.me/General-Verifier/>**
-
-The default GitHub Pages URL, <https://sunyxedu.github.io/General-Verifier/>, redirects there. For a fork or a different domain configuration, use the actual URL in the deployment summary.
-
-Subsequent changes to the report, diagrams, or site build files publish automatically when pushed to `main`. Pull requests check the build and upload a downloadable site artifact; deployment happens after merge. The deployment summary uses the URL returned by GitHub.
-
-Enabling Pages for the first time requires repository settings access and a repository and account that support Pages. The normal workflow `GITHUB_TOKEN` cannot enable it by itself. Later deployments use GitHub's automatically issued token and need no model API key, manually created personal access token, or additional deployment secret. See the [GitHub custom Pages workflow documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages) and [configure-pages permissions for initial enablement](https://github.com/actions/configure-pages/blob/v5/action.yml).
+Later changes to `docs/report/**`, the builder, its test, or the workflow publish automatically when pushed to `main`. Pull requests check the build and upload a downloadable site artifact; deployment happens after merge. Deployments use GitHub's automatically issued token and need no model API key or additional secret.
 
 ## Read locally
 
@@ -33,75 +27,81 @@ uv run --no-project --with-requirements docs/report/requirements.txt python scri
 python3 -m http.server 8000 --bind 127.0.0.1 --directory _site
 ```
 
-Open **<http://localhost:8000/>** or open `_site/index.html` directly in a browser. Use the browser's print menu to export the current topic. The complete document remains available at `_site/report.html` for full-document printing and existing links; it has no entry in the site map. Content, navigation, and images require neither JavaScript nor an external CDN.
+Open **<http://localhost:8000/>**, or open `_site/index.html` directly. The complete document is also available at `_site/report.html` for printing; it has no entry in the site map. The build installs two pinned Markdown parser dependencies, does not start the verifier, and does not call a model. The default output directory, `_site/`, is ignored by Git.
 
-The site build installs only two pinned Markdown parser dependencies. It does not start the verifier or invoke models. The default output directory, `_site/`, is ignored by Git.
+## How the site is organized
 
-## Writing and organization
+| Page | Group | Answers |
+|---|---|---|
+| Overview | | What is GV, how does a run flow through it, where should I start? |
+| Getting started | Start | How do I install it, run the example, and read the result? |
+| Architecture | Design | What are the components, roles, files, and entry points? |
+| Claims and the claim graph | Design | What is a claim, how do tool results enter the graph, what do statuses mean? |
+| Task contracts | Design | How does a claim become obligations, and how are they reviewed? |
+| Evidence | Design | How is one obligation settled: methods, execution, gates, audit? |
+| Verdicts and certificates | Design | How do outcomes become a status, a verdict, a certificate, a rank? |
+| Roles and the eight axioms | Design | How are model roles constrained, and what are they told about evidence? |
+| Capturing agent runs | Guides | How do I record and score my own runs? |
+| Interactive verification | Guides | How does an agent get verification feedback while it works? |
+| Identity, reuse, and revision | Internals | What makes two checks the same, and what does a revision invalidate? |
+| Execution, resumption, and backends | Internals | Concurrency, resumption stamps, artifacts, and the two model backends |
+| Reference | Reference | Commands, variables, files, formats, fields, code map |
+| Scope and limitations | Reference | What a certificate does and does not establish; how to evaluate GV |
 
-Write for technical readers who are new to GV:
+The sum example from `examples/sum/` is the running example on every page that needs one.
 
-- Use English throughout the report, diagrams, navigation, and interface labels.
-- Open with the project's purpose, what it reads and produces, and a workflow that links to explanations. Put the runnable example on Getting started; preserve every task requirement, including output format.
-- Give each topic a short introduction that works when readers arrive directly from a link. Introduce the shared example where needed instead of assuming that every reader has read the preceding page.
-- Explain why a component exists before describing how it works. Choose implementation details that affect correctness, reproducibility, or cost, and explain the problem each mechanism solves.
-- Reuse the same example when developing a concept. Keep code snippets focused and link to the complete implementation at a fixed revision.
-- Distinguish measured results, explanatory examples, and proposed experiments. When discussing a semantic limitation, say which conclusion it limits.
-- Keep the reference theme's typography, spacing, and navigation. Put the current page's contents in the right column, without a visible heading. Use the theme's icon controls on narrow screens; do not insert an extra contents heading above the article. Do not add a single-page reading link, a report-style cover, subtitles, or metadata strips.
-- Keep the overview diagram compact: short action labels, thin borders, stage groups sized to their contents, and a small legend for optional work. Put detailed explanations in the stage summaries and linked topic pages.
-- The overview's browser title is General Verifier. Topic tabs use the topic name followed by General Verifier. Keep commit IDs, dates, regression counts, and validation records out of the published prose; retain the implementation pin internally for source links.
+## Writing guidelines
 
-The main layout reference is [AFL++ documentation](https://aflplus.plus/docs/): an overview introduces the workflow, actions link to detailed explanations, and site navigation is separate from the current page's contents. Its [in-depth guide](https://aflplus.plus/docs/fuzzing_in_depth/) connects operational steps to their reasons. The [Rust Book](https://doc.rust-lang.org/stable/book/ch04-01-what-is-ownership.html) and [Tradingflow](https://bridgekat.github.io/tradingflow/tradingflow/index.html) also show how to build explanations around concrete examples. Claims about GV itself must come from its implementation.
+Write for technical readers who are new to GV.
 
-## Diagram conventions
+- Open each page with one or two sentences saying what problem the page's subject solves, then explain the mechanism. A reader arriving from a link should not need the previous page.
+- Explain why a component exists before how it works. Choose implementation details that affect correctness, reproducibility, or cost, and say which problem each mechanism solves.
+- Prefer short sentences, tables for parallel facts, and one running example. Keep code snippets focused; link to the implementation at the pinned revision with `../../path#Lnn` links, which the builder turns into GitHub links.
+- Every claim about GV's behavior must come from the code. Distinguish measured results, explanatory examples, and policy choices.
+- Keep the reference theme's typography, spacing, and navigation. Do not add a cover, subtitles, metadata strips, or a single-page reading link.
 
-The diagrams answer different questions:
+The structural models are the [AFL++ documentation](https://aflplus.plus/docs/) (an overview diagram whose steps link to detail pages, and a site map separate from the page's sections), the [Rust Book](https://doc.rust-lang.org/stable/book/ch04-01-what-is-ownership.html) (one running example carried through a difficult concept), and [Tradingflow](https://bridgekat.github.io/tradingflow/tradingflow/index.html) (a concise index that routes readers).
 
-| Figure | Reader's question |
-|---|---|
-| `pipeline.svg` | What happens to a run, and where can I read about each stage? |
-| `contract.svg` | When are task checks accepted, repaired, or left unresolved? |
-| `audit.svg` | When is evidence accepted, retried, or rejected? |
-| `reliance.svg` | Why can an intermediate claim pass locally while its premise remains unresolved? |
+## Diagrams
 
-Use action labels and named outputs. Group related actions under a stage heading. Keep the overview readable on its own, then expand its difficult decisions in separate figures near their explanations. In control-flow diagrams, diamonds ask questions, arrow labels state branch conditions, and return arrows show the exact operation repeated. Show budget exhaustion wherever a retry appears. The overview uses a dashed border for optional selection and explains that convention in its legend; color carries no essential meaning.
+Diagrams are native SVG in `assets/`, generated from short scripts and edited by hand as needed. Text stays text so it remains sharp and searchable.
 
-The [AFL++ overview](https://aflplus.plus/docs/) provided the model for grouped stages, required/optional notation, and links from steps to detailed documentation. Its [overview SVG source](https://github.com/AFLplusplus/AFLplusplus/blob/dev/docs/resources/0_fuzzing_process_overview.drawio.svg) is a diagrams.net export with embedded editor data. GV's figures are native SVG source files in `assets/`; edit their elements and labels directly. Keep text as SVG text so it stays sharp when enlarged or printed.
+| Figure | Page | Reader's question |
+|---|---|---|
+| `pipeline.svg` | Overview | What happens to a run, and where do I read about each stage? |
+| `components.svg` | Architecture | Which components exist and how does data move between them? |
+| `graph.svg` | Claims | What does a claim graph look like for the sum example? |
+| `contract.svg` | Task contracts | When is a contract accepted, repaired, or abandoned? |
+| `audit.svg` | Evidence | When is a result accepted, redone, or rejected? |
+| `ladder.svg` | Evidence | In which order do strength tiers run, and what unlocks a weaker tier? |
+| `settle.svg` | Verdicts | How do obligation outcomes become a claim status? |
 
-Overview actions link to `../topic.html#section-anchor` in the standalone SVG. The builder validates both the topic and the anchor. Embedded actions navigate to the same destination; in the complete report, they stay within the document. Prefix every SVG ID with its diagram name to prevent collisions across figures. The bundled SVGs are trusted repository assets and are embedded directly into the page.
+Conventions: rectangles are actions or objects, diamonds are decisions, arrow labels state the branch condition, dashed borders mark optional work, and shaded boxes mark mechanical steps or terminal states. Overview actions link to `../page.html#anchor`; the builder validates every target and rewrites the links for each page. Prefix every SVG id with the diagram name so ids never collide when several diagrams share a page. After changing a figure, check text bounds and arrow crossings at reading size and confirm that every depicted branch matches the implementation.
 
-After changing a figure, inspect it at normal reading size and in print. Check text bounds, arrow crossings, branch labels, keyboard access, and scaling on narrow screens. Confirm that each depicted branch agrees with the reviewed implementation. A diagram may summarize a mechanism, but its caption or nearby text must state the scope of that summary.
-
-## Source files and implementation version
+## Source files and the pinned implementation
 
 | File | Purpose |
 |---|---|
-| [report.md](report.md) | Single source for the overview, topic pages, and complete report; readable on GitHub |
-| `validation.json` | Maintainer record of the reviewed implementation, test results, and fingerprints; read during the build and excluded from publication |
-| [assets/](assets/) | Four SVG diagrams, bundled theme and fonts, GV overrides, interactions, and license notices |
-| [template.html](template.html) | Shared page structure, site map, and current-page contents |
-| [build_report.py](../../script/build_report.py) | Split topics, route section links, render navigation, and pin code references |
-| [report.yml](../../.github/workflows/report.yml) | Build, check, deploy, and publish the report URL |
+| [report.md](report.md) | The single Markdown source for the overview, the topic pages, and the complete view |
+| `validation.json` | Maintainer record of the reviewed implementation commit; read during the build, excluded from publication |
+| [assets/](assets/) | Diagrams, the bundled theme and fonts, GV overrides, interactions, and license notices |
+| [template.html](template.html) | Shared page structure, site map, and current-page sections |
+| [build_report.py](../../script/build_report.py) | Splits topics, resolves section links, renders navigation, pins code links |
+| [report.yml](../../.github/workflows/report.yml) | Builds, checks, deploys, and prints the published URL |
 
-The historical regression record belongs in `validation.json`, which is excluded from the published files. Publishing the website does not rerun models, update research findings, or turn historical test results into validation of current code. The builder pins implementation links to that snapshot and checks that each referenced file exists at that Git revision.
-
-Text and layout changes may retain the existing implementation snapshot. If the report begins describing new behavior, review the relevant code and run its tests before updating the report, revision, and measured results together. Do not update only the commit or test count.
-
-## Theme and navigation
-
-The bundled `assets/book.css` comes from the [AFL++ website source](https://github.com/AFLplusplus/Website/tree/1cb95db7f3667cc42d5ae2863931c15d7e81d0b7), which uses Hugo Book. Its geometry is retained: 16rem side columns, a 90rem maximum page width, and a 57rem mobile breakpoint. Roboto and Roboto Mono are bundled locally. The exact source and license notices are in [assets/licenses/NOTICE.txt](assets/licenses/NOTICE.txt).
-
-Keep GV changes in `assets/report.css`. The overrides support 320px screens, accessible native menu controls, responsive inline SVGs, and printing. Do not replace the theme with a separate approximation of its layout.
-
-Stylesheets, scripts, and full-size diagram links use content fingerprints in their URLs. GitHub Pages caches assets, so keeping the same URL after a layout change can combine new HTML with old styles. The builder changes the URL when the asset changes.
-
-Search uses an index derived from the same Markdown headings and text. Each result opens its owning topic and section. The index is embedded as inert JSON, and result labels are created with `textContent`; code examples cannot become executable markup. Search requires no external service and works from local files.
+Code links are pinned to `reviewed_commit` in `validation.json`, and the builder checks that each linked file exists at that revision. Text and layout changes may keep the existing pin. If a page starts describing new behavior, review the code and run its tests before updating the pin and the prose together; never update only the commit.
 
 ## Page boundaries and links
 
-`report.md` remains the only prose source. `PAGE_SECTIONS` in the builder names the H2 headings that start topic pages. Content before the first topic forms the overview. Use H3 headings for subsections inside a topic; the builder displays them as H2 on that page. Keep the topic headings in the configured reading order.
+`PAGE_SECTIONS` in the builder names the H2 headings that start topic pages and the group each page belongs to; content before the first topic forms the overview. Use H3 headings for sections inside a topic; the builder shows them as H2 on that page. Keep the H2 headings in `report.md` in the same order as `PAGE_SECTIONS`.
 
-Use ordinary `#section-anchor` links in Markdown. The builder resolves them to the owning topic page, while the complete reading view keeps them in the same document. All headings receive their IDs before splitting, so links are identical across the Markdown, topic pages, and complete view. When adding a topic, update `PAGE_SECTIONS`; the publication allowlist and navigation derive from that list.
+Write ordinary `#anchor` links in Markdown. All headings get their ids before splitting, so the builder can route a link to the owning page while the complete view keeps it in-document. Adding a topic means adding a row to `PAGE_SECTIONS`; the publication allowlist and the site map derive from it.
+
+## Theme and navigation
+
+`assets/book.css` comes from the [AFL++ website source](https://github.com/AFLplusplus/Website/tree/1cb95db7f3667cc42d5ae2863931c15d7e81d0b7), which uses Hugo Book. Roboto and Roboto Mono are bundled locally; the exact sources and licenses are in [assets/licenses/NOTICE.txt](assets/licenses/NOTICE.txt). GV's overrides live in `assets/report.css` and support 320px screens, accessible native menu controls, responsive inline SVGs, and printing. Stylesheet, script, and full-size diagram URLs carry content fingerprints so a layout change never combines new HTML with cached old assets.
+
+Search uses an index built from the same headings and text. Each result opens its owning page and section. The index is embedded as inert JSON, and results are created with `textContent`, so code examples cannot become markup.
 
 ## Check the build
 
@@ -109,4 +109,4 @@ Use ordinary `#section-anchor` links in Markdown. The builder resolves them to t
 uv run --no-project --with-requirements docs/report/requirements.txt python -m unittest discover -s tests -p test_report_build.py -v
 ```
 
-These checks cover links and target anchors across every HTML page, standalone SVG, and search result, as well as the complete reading view, historical code links, duplicate anchors, and publication boundaries. Renaming a section targeted by a diagram requires updating the SVG link; an unresolved destination stops the build. The output directory contains only explicitly listed report files. The builder refuses to overwrite a directory containing unexpected files. Use `--output /path/to/empty-directory` to choose a fresh output location.
+The checks cover every link and anchor across all HTML pages, embedded and standalone SVGs, and search results, plus the complete view, pinned code links, duplicate anchors, and publication boundaries. Renaming a section that a diagram targets requires updating the SVG link; an unresolved destination stops the build. The builder writes only explicitly listed files and refuses to overwrite a directory containing anything else; use `--output /path/to/empty-directory` for a fresh location.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the report into a small, self-contained GitHub Pages directory."""
+"""Build the documentation site into a small, self-contained GitHub Pages directory."""
 
 from __future__ import annotations
 
@@ -21,7 +21,8 @@ from markdown_it.token import Token
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "docs" / "report"
-DIAGRAMS = ("pipeline.svg", "contract.svg", "audit.svg", "reliance.svg")
+DIAGRAMS = ("pipeline.svg", "components.svg", "graph.svg", "contract.svg",
+            "audit.svg", "ladder.svg", "settle.svg")
 ASSETS = (
     *DIAGRAMS, "book.css", "report.css", "report.js",
     "fonts/roboto-v19-latin-regular.woff2",
@@ -31,18 +32,22 @@ ASSETS = (
     "licenses/NOTICE.txt", "licenses/hugo-book-MIT.txt",
     "licenses/normalize-MIT.txt", "licenses/fonts-Apache-2.0.txt",
 )
-# These H2 sections start topic pages. Earlier sections form the overview.
+# These H2 sections start topic pages, in reading order. Earlier sections
+# form the overview. The third field groups pages in the site map.
 PAGE_SECTIONS = (
-    ("getting-started.html", "Getting started", "Using GV"),
-    ("workflow.html", "Verification workflow", "Using GV"),
+    ("getting-started.html", "Getting started", "Start"),
+    ("architecture.html", "Architecture", "Design"),
+    ("claims.html", "Claims and the claim graph", "Design"),
     ("contracts.html", "Task contracts", "Design"),
-    ("evidence.html", "Evidence and audit", "Design"),
-    ("final-checks.html", "Independent final checks", "Design"),
-    ("implementation.html", "Implementation", "Design"),
-    ("results.html", "Reading the results", "Using GV"),
+    ("evidence.html", "Evidence", "Design"),
+    ("verdicts.html", "Verdicts and certificates", "Design"),
+    ("roles.html", "Roles and the eight axioms", "Design"),
+    ("capture.html", "Capturing agent runs", "Guides"),
+    ("interactive.html", "Interactive verification", "Guides"),
+    ("reuse.html", "Identity, reuse, and revision", "Internals"),
+    ("runtime.html", "Execution, resumption, and backends", "Internals"),
+    ("reference.html", "Reference", "Reference"),
     ("limitations.html", "Scope and limitations", "Reference"),
-    ("evaluation.html", "Evaluation", "Reference"),
-    ("references.html", "Code and references", "Reference"),
 )
 HTML_PAGES = {"index.html", "report.html", *(page[0] for page in PAGE_SECTIONS)}
 PUBLISHED = HTML_PAGES | {"report.md", ".nojekyll"} | {
@@ -222,12 +227,19 @@ def render_report(markdown: str, repository: str, revision: str,
 
 
 def site_navigation(current_page: str) -> str:
+    """The site map: the overview, then each page under its group."""
     def item(path: str, title: str) -> str:
         current = ' aria-current="page"' if path == current_page else ""
         return f'<li><a href="{path}"{current}>{escape(title)}</a></li>'
 
+    groups: list[tuple[str, list[str]]] = []
+    for path, title, group in PAGE_SECTIONS:
+        if not groups or groups[-1][0] != group:
+            groups.append((group, []))
+        groups[-1][1].append(item(path, title))
     links = [item("index.html", "Overview")]
-    links.extend(item(path, title) for path, title, _ in PAGE_SECTIONS)
+    links.extend(f'<li>{escape(group)}<ul>{"".join(items)}</ul></li>'
+                 for group, items in groups)
     return '<ul><li><strong>Site map</strong><ul>' + "".join(links) + '</ul></li></ul>'
 
 
@@ -335,7 +347,7 @@ def main() -> None:
     try:
         destination = build(args.output, args.repository)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
-        parser.exit(1, f"Report build failed: {exc}\n")
+        parser.exit(1, f"Site build failed: {exc}\n")
     print(f"Built {destination}")
 
 

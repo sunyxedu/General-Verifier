@@ -1,4 +1,4 @@
-name: Technical report
+name: Documentation
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out report and reviewed source history
+      - name: Check out the docs and reviewed source history
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -33,15 +33,15 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install report dependencies
+      - name: Install site dependencies
         run: python -m pip install -r docs/report/requirements.txt
-      - name: Check report publication
+      - name: Check the documentation build
         run: python -m unittest discover -s tests -p test_report_build.py -v
-      - name: Build the report
+      - name: Build the documentation
         env:
           REPORT_REPOSITORY: ${{ github.repository }}
         run: python script/build_report.py --repository "$REPORT_REPOSITORY"
-      - name: Upload the report site
+      - name: Upload the site
         uses: actions/upload-pages-artifact@v4
         with:
           path: _site
@@ -64,11 +64,11 @@ jobs:
       # One-time repository setup: Settings > Pages > Source > GitHub Actions.
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
-      - name: Deploy the report
+      - name: Deploy the documentation
         id: deployment
         uses: actions/deploy-pages@v4
-      - name: Show the report link
+      - name: Show the documentation link
         env:
           REPORT_URL: ${{ steps.deployment.outputs.page_url }}
         run: |
-          printf '### Technical report\n\n[Read the report](%s)\n' "$REPORT_URL" >> "$GITHUB_STEP_SUMMARY"
+          printf '### Documentation\n\n[Read the documentation](%s)\n' "$REPORT_URL" >> "$GITHUB_STEP_SUMMARY"

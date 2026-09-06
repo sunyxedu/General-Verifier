@@ -1,82 +1,107 @@
-<svg xmlns="http://www.w3.org/2000/svg" id="pipeline-diagram" width="1052" height="316" viewBox="0 0 1052 316" role="group" aria-labelledby="pipeline-title pipeline-desc" lang="en">
-  <title id="pipeline-title">General Verifier workflow</title>
-  <desc id="pipeline-desc">Read the four stages from left to right, and the actions within each stage from top to bottom. Reconstruct the run, define its checks, execute and audit verification methods, then produce a verdict and certificate. Ranking multiple runs is optional. Each action links to its explanation.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" id="pipeline-diagram" width="1064" height="344" viewBox="0 0 1064 344" role="group" aria-labelledby="pipeline-title pipeline-desc" lang="en">
+  <title id="pipeline-title">How General Verifier processes a run</title>
+  <desc id="pipeline-desc">Five stages read left to right; the actions in each stage run top to bottom. Capture the run, reconstruct its claims, define the task contract, establish evidence, and decide the verdict. Ranking several runs is optional. Each action links to the page that explains it.</desc>
   <defs>
-    <marker id="pipeline-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#333"/></marker>
+    <marker id="pipeline-diagram-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#39434d"/></marker>
     <style>
-      #pipeline-diagram text { font-family: Arial, Helvetica, sans-serif; font-size: 15px; fill: #111; }
-      #pipeline-diagram .heading { font-weight: 700; }
-      #pipeline-diagram .box { fill: #fff; stroke: #333; stroke-width: 1; }
-      #pipeline-diagram .optional { stroke-dasharray: 4 3; }
-      #pipeline-diagram .flow { fill: none; stroke: #333; stroke-width: 1; marker-end: url(#pipeline-arrow); }
-      #pipeline-diagram a:hover .box, #pipeline-diagram a:focus .box { fill: #f0f5fa; stroke: #05b; }
+      #pipeline-diagram text { font-family: Arial, Helvetica, sans-serif; fill: #202830; font-size: 15px; }
+      #pipeline-diagram .heading { font-size: 16px; font-weight: 700; }
+      #pipeline-diagram .small { font-size: 13px; fill: #46515c; }
+      #pipeline-diagram .mono { font-family: "Roboto Mono", Menlo, Consolas, monospace; font-size: 13px; }
+      #pipeline-diagram .label { font-size: 13px; paint-order: stroke; stroke: white; stroke-width: 5px; stroke-linejoin: round; }
+      #pipeline-diagram .node { fill: white; stroke: #59636d; stroke-width: 1.2; }
+      #pipeline-diagram .shade { fill: #f3f5f7; stroke: #59636d; stroke-width: 1.2; }
+      #pipeline-diagram .group { fill: white; stroke: #a3aab1; stroke-width: 1; }
+      #pipeline-diagram .optional { stroke-dasharray: 5 4; }
+      #pipeline-diagram .flow { fill: none; stroke: #39434d; stroke-width: 1.4; marker-end: url(#pipeline-diagram-arrow); }
+      #pipeline-diagram .dep { fill: none; stroke: #39434d; stroke-width: 1.4; stroke-dasharray: 5 4; marker-end: url(#pipeline-diagram-arrow); }
+      #pipeline-diagram .plain { fill: none; stroke: #a3aab1; stroke-width: 1; }
+      #pipeline-diagram a:hover .node, #pipeline-diagram a:focus .node { fill: #eef4fa; stroke: #245f9e; stroke-width: 2; }
+      #pipeline-diagram a { cursor: pointer; }
       #pipeline-diagram a:focus { outline: none; }
     </style>
   </defs>
-  <rect width="1052" height="316" fill="#fff"/>
-  <rect x="11" y="8" width="244" height="170" rx="5" class="box"/>
-  <path d="M11 36h244" fill="none" stroke="#333"/>
-  <text x="133" y="27" text-anchor="middle" class="heading">Reconstruct the run</text>
-  <a href="../getting-started.html#the-task-and-captured-run" target="_top" aria-label="Read: Read task and files">
-    <rect x="33" y="54" width="200" height="34" rx="3" class="box"/>
-    <text x="133" y="76" text-anchor="middle">Read task and files</text>
+  <rect width="1064" height="344" fill="white"/>
+  <rect x="8" y="8" width="200" height="158" rx="5" class="group"/>
+  <path d="M8 38h200" class="plain"/>
+  <text x="108.0" y="28.0" text-anchor="middle" class="heading">1  Capture the run</text>
+  <a href="../capture.html#record-the-tool-trace" target="_top" aria-label="Read: Record tool calls">
+  <rect x="20.0" y="54" width="176" height="34" rx="4" class="node"/>
+  <text x="108.0" y="76.0" text-anchor="middle" class="">Record tool calls</text>
   </a>
-  <path d="M133 88v28" class="flow"/>
-  <a href="../workflow.html#five-objects-to-inspect" target="_top" aria-label="Read: Extract claims">
-    <rect x="33" y="116" width="200" height="34" rx="3" class="box"/>
-    <text x="133" y="138" text-anchor="middle">Extract claims</text>
+  <path d="M108.0 88v22" class="flow"/>
+  <a href="../capture.html#lay-out-the-state-directory" target="_top" aria-label="Read: Save task and outputs">
+  <rect x="20.0" y="110" width="176" height="34" rx="4" class="node"/>
+  <text x="108.0" y="132.0" text-anchor="middle" class="">Save task and outputs</text>
   </a>
-  <path d="M255 107h18" class="flow"/>
-  <rect x="273" y="8" width="244" height="170" rx="5" class="box"/>
-  <path d="M273 36h244" fill="none" stroke="#333"/>
-  <text x="395" y="27" text-anchor="middle" class="heading">Define the checks</text>
-  <a href="../contracts.html#task-contracts" target="_top" aria-label="Read: Compile checks">
-    <rect x="295" y="54" width="200" height="34" rx="3" class="box"/>
-    <text x="395" y="76" text-anchor="middle">Compile checks</text>
+  <path d="M208 71h16" class="flow"/>
+  <rect x="224" y="8" width="200" height="158" rx="5" class="group"/>
+  <path d="M224 38h200" class="plain"/>
+  <text x="324.0" y="28.0" text-anchor="middle" class="heading">2  Reconstruct</text>
+  <a href="../claims.html#effects-the-tool-trace-as-claims" target="_top" aria-label="Read: Ingest the ledger">
+  <rect x="236.0" y="54" width="176" height="34" rx="4" class="node"/>
+  <text x="324.0" y="76.0" text-anchor="middle" class="">Ingest the ledger</text>
   </a>
-  <path d="M395 88v28" class="flow"/>
-  <a href="../contracts.html#review-and-repair" target="_top" aria-label="Read: Review the contract">
-    <rect x="295" y="116" width="200" height="34" rx="3" class="box"/>
-    <text x="395" y="138" text-anchor="middle">Review the contract</text>
+  <path d="M324.0 88v22" class="flow"/>
+  <a href="../claims.html#extraction-reconstructing-claims-offline" target="_top" aria-label="Read: Extract claims">
+  <rect x="236.0" y="110" width="176" height="34" rx="4" class="node"/>
+  <text x="324.0" y="132.0" text-anchor="middle" class="">Extract claims</text>
   </a>
-  <path d="M517 107h18" class="flow"/>
-  <rect x="535" y="8" width="244" height="236" rx="5" class="box"/>
-  <path d="M535 36h244" fill="none" stroke="#333"/>
-  <text x="657" y="27" text-anchor="middle" class="heading">Establish evidence</text>
-  <a href="../evidence.html#evidence-strength" target="_top" aria-label="Read: Propose a method">
-    <rect x="557" y="54" width="200" height="34" rx="3" class="box"/>
-    <text x="657" y="76" text-anchor="middle">Propose a method</text>
+  <path d="M424 71h16" class="flow"/>
+  <rect x="440" y="8" width="200" height="158" rx="5" class="group"/>
+  <path d="M440 38h200" class="plain"/>
+  <text x="540.0" y="28.0" text-anchor="middle" class="heading">3  Define the contract</text>
+  <a href="../contracts.html#the-compiler" target="_top" aria-label="Read: Compile obligations">
+  <rect x="452.0" y="54" width="176" height="34" rx="4" class="node"/>
+  <text x="540.0" y="76.0" text-anchor="middle" class="">Compile obligations</text>
   </a>
-  <path d="M657 88v28" class="flow"/>
-  <a href="../evidence.html#execution-and-audit" target="_top" aria-label="Read: Execute the method">
-    <rect x="557" y="116" width="200" height="34" rx="3" class="box"/>
-    <text x="657" y="138" text-anchor="middle">Execute the method</text>
+  <path d="M540.0 88v22" class="flow"/>
+  <a href="../contracts.html#the-critic" target="_top" aria-label="Read: Review the contract">
+  <rect x="452.0" y="110" width="176" height="34" rx="4" class="node"/>
+  <text x="540.0" y="132.0" text-anchor="middle" class="">Review the contract</text>
   </a>
-  <path d="M657 150v28" class="flow"/>
-  <a href="../evidence.html#execution-and-audit" target="_top" aria-label="Read: Audit the evidence">
-    <rect x="557" y="178" width="200" height="34" rx="3" class="box"/>
-    <text x="657" y="200" text-anchor="middle">Audit the evidence</text>
+  <path d="M640 71h16" class="flow"/>
+  <rect x="656" y="8" width="200" height="214" rx="5" class="group"/>
+  <path d="M656 38h200" class="plain"/>
+  <text x="756.0" y="28.0" text-anchor="middle" class="heading">4  Establish evidence</text>
+  <a href="../evidence.html#the-oracle-proposes-methods" target="_top" aria-label="Read: Propose methods">
+  <rect x="668.0" y="54" width="176" height="34" rx="4" class="node"/>
+  <text x="756.0" y="76.0" text-anchor="middle" class="">Propose methods</text>
   </a>
-  <path d="M779 107h18" class="flow"/>
-  <rect x="797" y="8" width="244" height="236" rx="5" class="box"/>
-  <path d="M797 36h244" fill="none" stroke="#333"/>
-  <text x="919" y="27" text-anchor="middle" class="heading">Produce the result</text>
-  <a href="../results.html#five-verdicts" target="_top" aria-label="Read: Combine final checks">
-    <rect x="819" y="54" width="200" height="34" rx="3" class="box"/>
-    <text x="919" y="76" text-anchor="middle">Combine final checks</text>
+  <path d="M756.0 88v22" class="flow"/>
+  <a href="../evidence.html#the-executor-runs-the-method" target="_top" aria-label="Read: Execute a method">
+  <rect x="668.0" y="110" width="176" height="34" rx="4" class="node"/>
+  <text x="756.0" y="132.0" text-anchor="middle" class="">Execute a method</text>
   </a>
-  <path d="M919 88v28" class="flow"/>
-  <a href="../results.html#follow-the-evidence-in-a-certificate" target="_top" aria-label="Read: Save the certificate">
-    <rect x="819" y="116" width="200" height="34" rx="3" class="box"/>
-    <text x="919" y="138" text-anchor="middle">Save the certificate</text>
+  <path d="M756.0 144v22" class="flow"/>
+  <a href="../evidence.html#the-judger-audits-the-result" target="_top" aria-label="Read: Audit the evidence">
+  <rect x="668.0" y="166" width="176" height="34" rx="4" class="node"/>
+  <text x="756.0" y="188.0" text-anchor="middle" class="">Audit the evidence</text>
   </a>
-  <path d="M919 150v28" class="flow"/>
-  <a href="../results.html#rank-several-candidates" target="_top" aria-label="Read: Rank candidate runs">
-    <rect x="819" y="178" width="200" height="34" rx="3" class="box optional"/>
-    <text x="919" y="200" text-anchor="middle">Rank candidate runs</text>
+  <path d="M856 71h16" class="flow"/>
+  <rect x="872" y="8" width="200" height="214" rx="5" class="group"/>
+  <path d="M872 38h200" class="plain"/>
+  <text x="972.0" y="28.0" text-anchor="middle" class="heading">5  Decide</text>
+  <a href="../verdicts.html#settling-a-claim" target="_top" aria-label="Read: Fold the obligations">
+  <rect x="884.0" y="54" width="176" height="34" rx="4" class="node"/>
+  <text x="972.0" y="76.0" text-anchor="middle" class="">Fold the obligations</text>
   </a>
-  <rect x="690" y="275" width="172" height="30" rx="3" class="box"/>
-  <text x="776" y="295" text-anchor="middle">Core action</text>
-  <rect x="868" y="275" width="172" height="30" rx="3" class="box optional"/>
-  <text x="954" y="295" text-anchor="middle">Optional action</text>
+  <path d="M972.0 88v22" class="flow"/>
+  <a href="../verdicts.html#the-certificate" target="_top" aria-label="Read: Write the certificate">
+  <rect x="884.0" y="110" width="176" height="34" rx="4" class="node"/>
+  <text x="972.0" y="132.0" text-anchor="middle" class="">Write the certificate</text>
+  </a>
+  <path d="M972.0 144v22" class="flow"/>
+  <a href="../verdicts.html#comparing-candidates" target="_top" aria-label="Read: Rank candidates">
+  <rect x="884.0" y="166" width="176" height="34" rx="4" class="node optional"/>
+  <text x="972.0" y="188.0" text-anchor="middle" class="">Rank candidates</text>
+  </a>
+  <text x="540.0" y="194.5" text-anchor="middle" class="small">review loop: repair and</text>
+  <text x="540.0" y="215.5" text-anchor="middle" class="small">re-review within budget</text>
+  <text x="756.0" y="250.5" text-anchor="middle" class="small">audit loop: redo the same</text>
+  <text x="756.0" y="271.5" text-anchor="middle" class="small">method or try the next one</text>
+  <rect x="540" y="300" width="180" height="30" rx="4" class="node"/>
+  <text x="630.0" y="320.0" text-anchor="middle" class="">Core action</text>
+  <rect x="740" y="300" width="316" height="30" rx="4" class="node optional"/>
+  <text x="898.0" y="320.0" text-anchor="middle" class="">Optional: needs several runs of one task</text>
 </svg>

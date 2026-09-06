@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="ladder-diagram" width="1000" height="300" viewBox="0 0 1000 300" role="group" aria-labelledby="ladder-title ladder-desc" lang="en">
+  <title id="ladder-title">Strength tiers run strongest first</title>
+  <desc id="ladder-desc">Methods are sorted by declared strength. Decisive methods run first. A bounded method runs only after every listed decisive method was audited structurally unavailable; an analytic method waits on both stronger tiers. Failed attempts do not unlock a weaker tier. Only decisive evidence may refute.</desc>
+  <defs>
+    <marker id="ladder-diagram-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#39434d"/></marker>
+    <style>
+      #ladder-diagram text { font-family: Arial, Helvetica, sans-serif; fill: #202830; font-size: 15px; }
+      #ladder-diagram .heading { font-size: 16px; font-weight: 700; }
+      #ladder-diagram .small { font-size: 13px; fill: #46515c; }
+      #ladder-diagram .mono { font-family: "Roboto Mono", Menlo, Consolas, monospace; font-size: 13px; }
+      #ladder-diagram .label { font-size: 13px; paint-order: stroke; stroke: white; stroke-width: 5px; stroke-linejoin: round; }
+      #ladder-diagram .node { fill: white; stroke: #59636d; stroke-width: 1.2; }
+      #ladder-diagram .shade { fill: #f3f5f7; stroke: #59636d; stroke-width: 1.2; }
+      #ladder-diagram .group { fill: white; stroke: #a3aab1; stroke-width: 1; }
+      #ladder-diagram .optional { stroke-dasharray: 5 4; }
+      #ladder-diagram .flow { fill: none; stroke: #39434d; stroke-width: 1.4; marker-end: url(#ladder-diagram-arrow); }
+      #ladder-diagram .dep { fill: none; stroke: #39434d; stroke-width: 1.4; stroke-dasharray: 5 4; marker-end: url(#ladder-diagram-arrow); }
+      #ladder-diagram .plain { fill: none; stroke: #a3aab1; stroke-width: 1; }
+      #ladder-diagram a:hover .node, #ladder-diagram a:focus .node { fill: #eef4fa; stroke: #245f9e; stroke-width: 2; }
+      #ladder-diagram a { cursor: pointer; }
+      #ladder-diagram a:focus { outline: none; }
+    </style>
+  </defs>
+  <rect width="1000" height="300" fill="white"/>
+  <rect x="20" y="40" width="300" height="60" rx="4" class="shade"/>
+  <text x="170.0" y="75.0" text-anchor="middle" class="heading">decisive</text>
+  <rect x="20" y="110" width="300" height="96" rx="4" class="node"/>
+  <text x="170.0" y="143.0" text-anchor="middle" class="">A decision procedure for the</text>
+  <text x="170.0" y="163.0" text-anchor="middle" class="">obligation as written</text>
+  <text x="170.0" y="183.0" text-anchor="middle" class="small">may establish or refute</text>
+  <path d="M320 70h30" class="flow"/>
+  <rect x="350" y="40" width="300" height="60" rx="4" class="shade"/>
+  <text x="500.0" y="75.0" text-anchor="middle" class="heading">bounded</text>
+  <rect x="350" y="110" width="300" height="96" rx="4" class="node"/>
+  <text x="500.0" y="143.0" text-anchor="middle" class="">A narrower sound instrument plus</text>
+  <text x="500.0" y="163.0" text-anchor="middle" class="">declared bridging assumptions</text>
+  <text x="500.0" y="183.0" text-anchor="middle" class="small">establishes only</text>
+  <path d="M650 70h30" class="flow"/>
+  <rect x="680" y="40" width="300" height="60" rx="4" class="shade"/>
+  <text x="830.0" y="75.0" text-anchor="middle" class="heading">analytic</text>
+  <rect x="680" y="110" width="300" height="96" rx="4" class="node"/>
+  <text x="830.0" y="143.0" text-anchor="middle" class="">A disciplined reading of pinned</text>
+  <text x="830.0" y="163.0" text-anchor="middle" class="">artifacts with a witness trace</text>
+  <text x="830.0" y="183.0" text-anchor="middle" class="small">establishes only</text>
+  <text x="350" y="232.0" text-anchor="middle" class="small">unlocked only after every listed decisive method</text>
+  <text x="350" y="250.0" text-anchor="middle" class="small">is audited unobtainable (not merely failed)</text>
+  <text x="680" y="232.0" text-anchor="middle" class="small">unlocked only after decisive and bounded</text>
+  <text x="680" y="250.0" text-anchor="middle" class="small">tiers are audited unobtainable</text>
+  <text x="20" y="289.0" text-anchor="start" class="small">The judger countersigns each degradation: if a stronger route was actually completable, the weaker evidence is rejected.</text>
+</svg>

@@ -5,7 +5,7 @@
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
   <a href="docs/usage.md">Usage guide</a> ·
-  <a href="https://hemlix.me/General-Verifier/">Technical report</a>
+  <a href="https://hemlix.me/General-Verifier/">Documentation</a>
 </p>
 
 General Verifier (GV) checks whether an **LLM agent's result satisfies its task**. It reads the original instructions, recorded tool calls and results, final response, and captured files, then uses verification agents to investigate whether the task was completed. The output is a verdict linked to the checks and evidence behind it.
@@ -18,7 +18,7 @@ Suppose an agent is asked to compute a sum and save it to a file. A successful w
 
 GV first reconstructs the agent's claims and turns the original task into explicit completion checks. A reviewer challenges whether those checks cover the requirements without adding new ones. For each check, verification agents choose a method, execute it with tools, and audit whether the resulting evidence supports the conclusion.
 
-**Task requirements define success.** The final checks must stand without assuming the agent's intermediate claims are true. A certificate preserves the checks, their evidence, and unresolved issues so you can inspect how the verdict was reached. The [technical report](https://hemlix.me/General-Verifier/workflow.html) explains the design and implementation.
+**Task requirements define success.** The final checks must stand without assuming the agent's intermediate claims are true. A certificate preserves the checks, their evidence, and unresolved issues so you can inspect how the verdict was reached. The [documentation](https://hemlix.me/General-Verifier/) explains the design and implementation, starting with the [architecture](https://hemlix.me/General-Verifier/architecture.html).
 
 ## Installation
 
@@ -78,8 +78,8 @@ For agent evaluation or test-time selection, score each attempt separately and [
 
 ## Project status
 
-GV is experimental. Models interpret requirements, propose checks, and audit evidence, so a certificate is an inspectable judgment, not a guarantee of correctness. Missing inputs or incomplete captures can leave a task unresolved. See [scope and limitations](https://hemlix.me/General-Verifier/limitations.html) for the trust assumptions and [evaluation](https://hemlix.me/General-Verifier/evaluation.html) for how to measure reliability and cost.
+GV is experimental. Models interpret requirements, propose checks, and audit evidence, so a certificate is an inspectable judgment, not a guarantee of correctness. Missing inputs or incomplete captures can leave a task unresolved. See [scope and limitations](https://hemlix.me/General-Verifier/limitations.html) for the trust assumptions and how to measure reliability and cost.
 
 ## Development
 
-After installation, run the tests with `uv run pytest -q`. The [code reading guide](https://hemlix.me/General-Verifier/references.html#code-reading-guide) connects the design to its implementation; [experiments/](experiments/README.md) contains the benchmark collection and comparison workflows.
+After installation, run the tests with `uv run pytest -q`. The [code map](https://hemlix.me/General-Verifier/reference.html#code-map) connects the design to its implementation; [experiments/](experiments/README.md) contains the benchmark collection and comparison workflows.

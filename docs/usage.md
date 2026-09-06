@@ -2,7 +2,7 @@
 
 Start with the [README](../README.md) for installation and a first verification run. This guide covers backend settings, collecting your own runs, inspecting results, and interactive use. Commands assume a POSIX shell and the General-Verifier repository as the current directory unless stated otherwise.
 
-For the reasoning behind the checks and verdicts, read the [technical report](https://hemlix.me/General-Verifier/).
+For the reasoning behind the checks and verdicts, read the [documentation](https://hemlix.me/General-Verifier/).
 
 ## Backend configuration
 
