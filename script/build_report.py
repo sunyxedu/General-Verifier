@@ -13,6 +13,7 @@ from string import Template
 from urllib.parse import quote, unquote, urlsplit
 
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,12 +62,14 @@ def render_report(markdown: str, repository: str, revision: str,
         raise ValueError("The report must begin with one H1 title.")
     tokens = tokens[3:]  # The page template supplies the report title.
     ids: set[str] = set()
-    toc = []
+    chapters = []
     for index, token in enumerate(tokens):
         if token.type == "heading_open":
             if token.tag == "h1":
                 raise ValueError("Only one H1 title is allowed.")
-            title = tokens[index + 1].content
+            inline = tokens[index + 1]
+            title = "".join(child.content for child in inline.children or []
+                            if child.type in {"text", "code_inline"})
             slug = re.sub(r"[^\w\-\s]", "", title.lower())
             slug = re.sub(r"[\s_]+", "-", slug).strip("-") or "section"
             anchor = slug
@@ -77,7 +80,15 @@ def render_report(markdown: str, repository: str, revision: str,
             ids.add(anchor)
             token.attrSet("id", anchor)
             if token.tag == "h2":
-                toc.append(f'<li><a href="#{escape(anchor)}">{escape(title)}</a></li>')
+                chapters.append({"title": title, "anchor": anchor, "children": []})
+            elif token.tag == "h3" and chapters:
+                chapters[-1]["children"].append((title, anchor))
+            link = Token("link_open", "a", 1)
+            link.attrs = {"href": f"#{anchor}", "class": "heading-anchor",
+                          "aria-label": f"链接到：{title}"}
+            symbol = Token("text", "", 0)
+            symbol.content = "#"
+            inline.children.extend([link, symbol, Token("link_close", "a", -1)])
         for child in token.children or []:
             for attribute in ("href", "src"):
                 url = child.attrGet(attribute)
@@ -106,6 +117,22 @@ def render_report(markdown: str, repository: str, revision: str,
                 f'{render_image(tokens, index, options, env)}</a>')
 
     md.renderer.rules["image"] = linked_image
+    toc = []
+    for index, chapter in enumerate(chapters):
+        title, anchor = escape(chapter["title"]), escape(chapter["anchor"])
+        children = "".join(
+            f'<li><a href="#{escape(child_anchor)}">{escape(child_title)}</a></li>'
+            for child_title, child_anchor in chapter["children"]
+        )
+        if children:
+            opened = " open" if index == 0 else ""
+            toc.append(
+                f'<li><details class="chapter" data-section="{anchor}"{opened}>'
+                f'<summary><a class="chapter-link" href="#{anchor}">{title}</a></summary>'
+                f'<ol class="sections">{children}</ol></details></li>'
+            )
+        else:
+            toc.append(f'<li><a class="chapter-link" href="#{anchor}">{title}</a></li>')
     return md.renderer.render(tokens, md.options, {}), "\n".join(toc)
 
 

@@ -4,72 +4,49 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <meta name="description" content="General Verifier 技术报告：从代理声明到检查条件、方法执行和可审计证书。系统架构、证据规则、通用性与评估方案。">
+  <meta name="description" content="General Verifier 技术报告。用一个完整例子理解任务检查、证据审查、状态与复用，再进入关键实现和评估方法。">
   <meta property="og:type" content="article">
-  <meta property="og:title" content="General Verifier · 技术报告">
-  <meta property="og:description" content="把“任务已完成”变成可以逐项检查的证据。">
-  <title>General Verifier — 技术报告</title>
+  <meta property="og:title" content="General Verifier · 设计与实现">
+  <meta property="og:description" content="从一次完整验证出发，理解 General Verifier 的设计与关键实现。">
+  <title>General Verifier — 设计与实现</title>
   <link rel="stylesheet" href="assets/report.css">
   <script src="assets/report.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#report">跳到正文</a>
-  <header class="masthead">
-    <a class="wordmark" href="#top" aria-label="General Verifier 报告首页"><span class="monogram">GV<span>·</span></span><span>GENERAL VERIFIER</span></a>
-    <a class="repository-link" href="$repository">GitHub 仓库 <span aria-hidden="true">↗</span></a>
-  </header>
+  <aside class="sidebar">
+    <a class="brand" href="#top">General Verifier</a>
+    <p class="sidebar-description">技术报告 · 设计与实现</p>
+    <details class="contents" open>
+      <summary class="contents-title">目录</summary>
+      <nav aria-label="报告目录"><ol class="chapters">$toc</ol></nav>
+    </details>
+    <div class="sidebar-links">
+      <a href="$repository">GitHub 仓库 ↗</a>
+      <a href="$report_source">Markdown 源文 ↗</a>
+      <a href="validation.json">验证记录</a>
+    </div>
+  </aside>
 
   <main id="top">
-    <section class="hero" aria-labelledby="title">
-      <div class="hero-copy">
-        <p class="eyebrow">TECHNICAL REPORT <span>/</span> 系统设计与实现</p>
-        <h1 id="title">General Verifier</h1>
-        <p class="subtitle">从代理的声明，<br>到可以检查的证据。</p>
-        <p class="hero-description">怎样判断一个代理真的完成了任务？<br class="desktop-break">本文从一次完整运行出发，解释 GV 如何组织检查、执行方法、<br class="wide-break">审查证据，并保留结论成立所需的条件。</p>
-        <div class="hero-actions">
-          <a class="button primary" href="#report">阅读报告 <span aria-hidden="true">↓</span></a>
-          <a class="button" href="$report_source">Markdown 源文</a>
-          <button class="button print-button" type="button" hidden>打印 / 存为 PDF</button>
-        </div>
+    <div class="document">
+      <div class="toolbar">
+        <span>技术报告</span>
+        <div><a href="$report_source">查看源文</a><button class="print-button" type="button" hidden>打印 / PDF</button></div>
       </div>
-      <aside class="report-card" aria-label="报告版本与范围">
-        <div class="card-mark" aria-hidden="true"><span></span><span></span><span></span></div>
-        <p class="card-title">实现快照</p>
-        <dl>
-          <div><dt>审查版本</dt><dd><a href="$repository/tree/$revision"><code>$short_revision</code> ↗</a></dd></div>
-          <div><dt>验证日期</dt><dd>$reviewed_date</dd></div>
-          <div><dt>回归测试</dt><dd><a href="validation.json">$passed 项通过 ↗</a></dd></div>
-          <div><dt>语言</dt><dd>中文 · English abstract</dd></div>
-        </dl>
-        <p class="card-note">测试约束已知程序行为。<br>模型准确率与跨领域收益仍需实验检验。</p>
-      </aside>
-    </section>
-
-    <div class="reading-map" aria-label="阅读路线">
-      <span class="map-label">阅读路线</span>
-      <span><b>01—03</b> 问题与架构</span>
-      <span><b>04—07</b> 方法与证据</span>
-      <span><b>08—11</b> 通用性与验证</span>
-      <span><b>12—14</b> 复现与研究背景</span>
-    </div>
-
-    <div class="document-layout">
-      <aside class="sidebar">
-        <details class="contents" open>
-          <summary>目录 <span aria-hidden="true">↕</span></summary>
-          <nav aria-label="报告目录"><ol>$toc</ol></nav>
-        </details>
-        <p class="sidebar-note">代码链接固定到审查版本。<br><a href="validation.json">查看验证记录 ↗</a></p>
-      </aside>
+      <header class="document-header">
+        <h1>General Verifier</h1>
+        <p class="subtitle">设计与实现</p>
+        <p class="metadata">实现快照 <a href="$repository/tree/$revision"><code>$short_revision</code></a><span>·</span>$reviewed_date<span>·</span><a href="validation.json">$passed 项回归测试</a></p>
+      </header>
       <article id="report" class="prose" aria-label="技术报告正文" tabindex="-1">
         $body
       </article>
+      <footer class="footer">
+        <span>General Verifier · 技术报告</span>
+        <a href="#top">回到页首 ↑</a>
+      </footer>
     </div>
   </main>
-
-  <footer class="footer">
-    <span>GENERAL VERIFIER <span class="footer-dot">/</span> TECHNICAL REPORT</span>
-    <span>实现 <a href="$repository/tree/$revision">$short_revision</a> · $reviewed_date · <a href="#top">回到页首 ↑</a></span>
-  </footer>
 </body>
 </html>
