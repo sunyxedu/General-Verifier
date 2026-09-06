@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="730" viewBox="0 0 1120 730" role="img" aria-labelledby="title desc">
+  <title id="title">From a completed agent run to an inspectable certificate</title>
+  <desc id="desc">Captured inputs enter a claim graph. A compiler and critic construct obligations. Oracle, executor and judger bind and audit methods. The kernel applies evidence gates and issues a final certificate. Model judgments and program checks have different responsibilities.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#526b77"/></marker>
+    <style>
+      text{font-family:Arial,Helvetica,sans-serif;fill:#1c3541}
+      .label{font-size:13px;font-weight:700;letter-spacing:1.7px;fill:#557380}
+      .heading{font-size:20px;font-weight:700}
+      .body{font-size:17px;fill:#4b626d}
+      .small{font-size:15px;fill:#4b626d}
+      .wire{fill:none;stroke:#526b77;stroke-width:2;marker-end:url(#arrow)}
+      .card{fill:#fff;stroke:#c9d8dc;stroke-width:1.5}
+    </style>
+  </defs>
+  <rect width="1120" height="730" rx="20" fill="#f3f7f7"/>
+  <text x="38" y="43" class="label">01 / OFFLINE VERIFICATION</text>
+  <text x="38" y="79" font-size="29" font-weight="700">A verdict keeps the conditions behind its evidence.</text>
+
+  <rect x="38" y="115" width="306" height="151" rx="12" class="card"/>
+  <text x="58" y="147" class="label">CAPTURED RUN</text>
+  <text x="58" y="181" class="heading">Task + retained inputs</text>
+  <text x="58" y="212" class="body">Tool events · final answer</text>
+  <text x="58" y="239" class="body">Deliverables · capture manifest</text>
+
+  <rect x="405" y="115" width="292" height="151" rx="12" class="card"/>
+  <text x="425" y="147" class="label">EXTRACTOR</text>
+  <text x="425" y="181" class="heading">Claims + dependencies</text>
+  <text x="425" y="212" class="body">Reconstruct the argument</text>
+  <text x="425" y="239" class="body">Retain event references</text>
+
+  <rect x="758" y="115" width="324" height="151" rx="12" class="card"/>
+  <text x="778" y="147" class="label">COMPILER + CRITIC</text>
+  <text x="778" y="181" class="heading">Obligation contracts</text>
+  <text x="778" y="212" class="body">Necessity + sufficiency review</text>
+  <text x="778" y="239" class="body">Final: no assumed premises</text>
+  <path d="M344 190H397" class="wire"/>
+  <path d="M697 190H750" class="wire"/>
+  <path d="M920 266V311" class="wire"/>
+
+  <rect x="38" y="321" width="1044" height="166" rx="12" fill="#e6f0f0" stroke="#aac6c7" stroke-width="1.5"/>
+  <text x="58" y="352" class="label">METHOD BINDING / MODEL ROLES</text>
+  <rect x="58" y="369" width="294" height="95" rx="8" fill="#fff"/>
+  <text x="78" y="401" class="heading">Oracle</text>
+  <text x="78" y="433" class="body">Method · basis · strength</text>
+  <rect x="403" y="369" width="304" height="95" rx="8" fill="#fff"/>
+  <text x="423" y="401" class="heading">Executor</text>
+  <text x="423" y="433" class="body">Run checks · retain artifacts</text>
+  <rect x="758" y="369" width="304" height="95" rx="8" fill="#fff"/>
+  <text x="778" y="401" class="heading">Judger</text>
+  <text x="778" y="433" class="body">Audit method + execution</text>
+  <path d="M352 414H395" class="wire"/>
+  <path d="M707 414H750" class="wire"/>
+  <path d="M920 487V525" class="wire"/>
+  <text x="58" y="513" class="small">Bounded retries: method repair, execution redo, audited strength downgrade</text>
+
+  <rect x="582" y="535" width="500" height="111" rx="12" fill="#1c4855"/>
+  <text x="604" y="565" font-size="13" font-weight="700" letter-spacing="1.7" style="fill:#b8d7dd">KERNEL / PROGRAM CHECKS</text>
+  <text x="604" y="596" font-size="23" font-weight="700" style="fill:#fff">Evidence gates + state aggregation</text>
+  <text x="604" y="625" font-size="17" style="fill:#d5e6e8">Scope · basis · witness · strength · input identity</text>
+  <rect x="38" y="535" width="476" height="111" rx="12" fill="#fff" stroke="#bf6948" stroke-width="1.5"/>
+  <text x="60" y="567" class="label" style="fill:#a24d32">CERTIFICATE</text>
+  <text x="60" y="598" class="heading">Final verdict + inspectable evidence</text>
+  <text x="60" y="627" class="body">Assumptions · open checks · optional ranking</text>
+  <path d="M582 589H523" class="wire"/>
+  <text x="38" y="691" class="small">Models interpret meaning. Program gates enforce declared contracts, not semantic truth.</text>
+</svg>

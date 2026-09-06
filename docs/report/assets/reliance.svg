@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="605" viewBox="0 0 1120 605" role="img" aria-labelledby="title desc">
+  <title id="title">Conditional support and independent final verification</title>
+  <desc id="desc">An open premise P leaves Q effectively unverified even when Q passes locally under P. A separate final path checks the original task against the deliverable without assuming intermediate claims. An error in the argument does not by itself decide the final verdict.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#526b77"/></marker>
+    <style>
+      text{font-family:Arial,Helvetica,sans-serif;fill:#1c3541}
+      .label{font-size:13px;font-weight:700;letter-spacing:1.5px;fill:#557380}
+      .heading{font-size:21px;font-weight:700}
+      .body{font-size:17px;fill:#4b626d}
+      .wire{fill:none;stroke:#526b77;stroke-width:2;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1120" height="605" rx="20" fill="#f3f7f7"/>
+  <text x="38" y="43" class="label">02 / WHAT MAY A CONSUMER RELY ON?</text>
+  <text x="38" y="80" font-size="29" font-weight="700">A local pass does not erase an open premise.</text>
+
+  <text x="38" y="130" class="label">INTERMEDIATE ARGUMENT / CONDITIONAL</text>
+  <rect x="38" y="148" width="290" height="125" rx="12" fill="#fff" stroke="#c9d8dc" stroke-width="1.5"/>
+  <text x="60" y="184" class="heading">Premise P</text>
+  <text x="60" y="218" class="body">Evidence still unresolved</text>
+  <text x="60" y="249" font-size="17" font-weight="700" fill="#a24d32">status: unverified</text>
+  <rect x="412" y="148" width="290" height="125" rx="12" fill="#fff" stroke="#c9d8dc" stroke-width="1.5"/>
+  <text x="434" y="184" class="heading">Claim Q, assuming P</text>
+  <text x="434" y="218" class="body">Its own checks hold</text>
+  <text x="434" y="249" font-size="17" font-weight="700">local: verified</text>
+  <rect x="786" y="148" width="296" height="125" rx="12" fill="#fbefe8" stroke="#ce937b" stroke-width="1.5"/>
+  <text x="808" y="184" class="heading">Q is still conditional</text>
+  <text x="808" y="218" class="body">Open premise: P</text>
+  <text x="808" y="249" font-size="17" font-weight="700">effective: unverified</text>
+  <path d="M328 211H403" class="wire" stroke-dasharray="5 5"/>
+  <path d="M702 211H777" class="wire"/>
+  <text x="38" y="311" class="body">Evidence basis and strength also retain the limits of the premise chain.</text>
+
+  <path d="M38 340H1082" stroke="#c9d8dc"/>
+  <text x="38" y="375" class="label">FINAL DELIVERABLE / NO ASSUMED INTERMEDIATE CLAIMS</text>
+  <rect x="38" y="394" width="290" height="108" rx="12" fill="#fff" stroke="#c9d8dc" stroke-width="1.5"/>
+  <text x="60" y="432" class="heading">Original task</text>
+  <text x="60" y="468" class="body">What must be delivered?</text>
+  <rect x="412" y="394" width="290" height="108" rx="12" fill="#fff" stroke="#c9d8dc" stroke-width="1.5"/>
+  <text x="434" y="432" class="heading">Final obligations</text>
+  <text x="434" y="468" class="body">Check captured deliverables</text>
+  <rect x="786" y="394" width="296" height="108" rx="12" fill="#1c4855"/>
+  <text x="808" y="432" font-size="23" font-weight="700" style="fill:#fff">Final verdict</text>
+  <text x="808" y="468" font-size="17" style="fill:#d5e6e8">Determined by these checks</text>
+  <path d="M328 447H403" class="wire"/>
+  <path d="M702 447H777" class="wire"/>
+  <text x="38" y="551" class="body">The certificate retains both paths. A failed argument does not, by itself, prove a wrong deliverable.</text>
+  <text x="38" y="579" font-size="15" fill="#557380">Illustrative state transition, not an empirical model evaluation.</text>
+</svg>
