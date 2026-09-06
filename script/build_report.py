@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+from hashlib import sha256
 from html import escape
 import json
 from pathlib import Path
@@ -21,7 +22,15 @@ from markdown_it.token import Token
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "docs" / "report"
 DIAGRAMS = ("pipeline.svg", "contract.svg", "audit.svg", "reliance.svg")
-ASSETS = (*DIAGRAMS, "report.css", "report.js")
+ASSETS = (
+    *DIAGRAMS, "book.css", "report.css", "report.js",
+    "fonts/roboto-v19-latin-regular.woff2",
+    "fonts/roboto-v19-latin-700.woff2",
+    "fonts/roboto-v19-latin-300italic.woff2",
+    "fonts/roboto-mono-v6-latin-regular.woff2",
+    "licenses/NOTICE.txt", "licenses/hugo-book-MIT.txt",
+    "licenses/normalize-MIT.txt", "licenses/fonts-Apache-2.0.txt",
+)
 # These H2 sections start topic pages. Earlier sections form the overview.
 PAGE_SECTIONS = (
     ("getting-started.html", "Getting started", "Using GV"),
@@ -45,6 +54,12 @@ def git(*args: str) -> str:
     return subprocess.check_output(
         ["git", "-C", str(ROOT), *args], text=True,
     ).strip()
+
+
+def asset_url(name: str) -> str:
+    """A new URL prevents cached CSS/JS from being mixed with new markup."""
+    fingerprint = sha256((REPORT / "assets" / name).read_bytes()).hexdigest()[:16]
+    return f"assets/{name}?v={fingerprint}"
 
 
 def source_url(url: str, repository: str, revision: str,
@@ -158,7 +173,9 @@ def render_tokens(md: MarkdownIt, original: list[Token], repository: str,
 
     def linked_image(tokens, index, options, env):
         source = tokens[index].attrGet("src") or ""
-        src = escape(source, quote=True)
+        src = escape(asset_url(source.removeprefix("assets/"))
+                     if source in {f"assets/{name}" for name in DIAGRAMS} else source,
+                     quote=True)
         if source in {f"assets/{name}" for name in DIAGRAMS}:
             ET.register_namespace("", "http://www.w3.org/2000/svg")
             diagram = ET.fromstring((REPORT / source).read_text(encoding="utf-8"))
@@ -210,12 +227,25 @@ def site_navigation(current_page: str) -> str:
         current = ' aria-current="page"' if path == current_page else ""
         return f'<li><a href="{path}"{current}>{escape(title)}</a></li>'
 
-    links = ['<ul>' + item("index.html", "Overview") + '</ul>']
-    for group in ("Using GV", "Design", "Reference"):
-        items = "".join(item(path, title) for path, title, section in PAGE_SECTIONS
-                        if section == group)
-        links.append(f'<p class="nav-group">{group}</p><ul>{items}</ul>')
-    return "\n".join(links)
+    links = [item("index.html", "Overview")]
+    links.extend(item(path, title) for path, title, _ in PAGE_SECTIONS)
+    return '<ul><li><strong>Site map</strong><ul>' + "".join(links) + '</ul></li></ul>'
+
+
+def search_entries(tokens: list[Token], destinations: dict[str, str],
+                   page_titles: dict[str, str]) -> list[dict[str, str]]:
+    """Index each section with the text before the next heading."""
+    entries = []
+    for index, token in enumerate(tokens):
+        if token.type == "heading_open":
+            url = destinations[token.attrGet("id")]
+            entries.append({"title": heading_title(tokens[index + 1]),
+                            "page": page_titles[urlsplit(url).path],
+                            "url": url, "text": ""})
+        elif entries and token.type in {"inline", "fence", "code_block"}:
+            text = heading_title(token) if token.type == "inline" else token.content
+            entries[-1]["text"] += " " + text
+    return entries
 
 
 def render_site(markdown: str, repository: str, revision: str,
@@ -239,6 +269,12 @@ def render_site(markdown: str, repository: str, revision: str,
     template = Template((REPORT / "template.html").read_text(encoding="utf-8"))
     repo_url = f"https://github.com/{repository}"
     source = f"{repo_url}/blob/{git('rev-parse', 'HEAD')}/docs/report/report.md"
+    index_data = json.dumps(search_entries(
+        tokens, destinations, {path: title for path, title, _ in starts},
+    ), ensure_ascii=False).replace("<", "\\u003c")
+    asset_urls = {"theme_url": asset_url("book.css"),
+                  "style_url": asset_url("report.css"),
+                  "script_url": asset_url("report.js")}
     pages = {}
     for index, (path, title, start) in enumerate(starts + [("report.html", "General Verifier", 0)]):
         complete = path == "report.html"
@@ -248,19 +284,12 @@ def render_site(markdown: str, repository: str, revision: str,
             destinations, path, full_document=complete,
             promote_headings=path not in {"index.html", "report.html"},
         )
-        previous = starts[index - 1] if 0 < index < len(starts) else None
-        following = starts[index + 1] if index + 1 < len(starts) else None
-        pager = ""
-        for relation, target in (("prev", previous), ("next", following)):
-            if target:
-                label = "Previous" if relation == "prev" else "Next"
-                pager += (f'<a rel="{relation}" href="{target[0]}">'
-                          f'<span>{label}</span>{escape(target[1])}</a>')
         pages[path] = template.substitute(
             title=escape(title), title_id=escape(tokens[start].attrGet("id")),
             tab_title=escape("General Verifier" if path in {"index.html", "report.html"}
                              else f"{title} | General Verifier"),
-            body=body, toc=toc, navigation=site_navigation(path), pager=pager,
+            body=body, toc=toc, navigation=site_navigation(path),
+            search_index=index_data, **asset_urls,
             repository=escape(repo_url), report_source=escape(source),
         ).encode()
     return pages

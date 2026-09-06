@@ -1,6 +1,7 @@
 """Publication checks; also runnable with stdlib unittest and docs dependencies."""
 
 from html.parser import HTMLParser
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,14 +15,26 @@ class PageLinks(HTMLParser):
         super().__init__()
         self.ids = []
         self.urls = []
+        self.search_data = ""
+        self.in_search_index = False
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == "script" and attrs.get("id") == "search-index":
+            self.in_search_index = True
         if "id" in attrs:
             self.ids.append(attrs["id"])
         for field in ("href", "src"):
             if field in attrs:
                 self.urls.append(attrs[field])
+
+    def handle_data(self, data):
+        if self.in_search_index:
+            self.search_data += data
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.in_search_index = False
 
 
 class ReportBuildTests(unittest.TestCase):
@@ -38,7 +51,8 @@ class ReportBuildTests(unittest.TestCase):
                     self.assertEqual(len(parser.ids), len(set(parser.ids)), name)
                     documents[(output / name).resolve()] = parser
             for path, parser in documents.items():
-                for url in parser.urls:
+                search_links = [entry["url"] for entry in json.loads(parser.search_data or "[]")]
+                for url in parser.urls + search_links:
                     parsed = urlsplit(url)
                     if parsed.scheme or parsed.netloc:
                         continue

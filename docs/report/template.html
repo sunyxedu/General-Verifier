@@ -9,40 +9,58 @@
   <meta property="og:title" content="$tab_title">
   <meta property="og:description" content="How General Verifier turns agent tasks into checks, gathers evidence, and produces a verdict.">
   <title>$tab_title</title>
-  <link rel="stylesheet" href="assets/report.css">
-  <script src="assets/report.js" defer></script>
+  <link rel="stylesheet" href="$theme_url">
+  <link rel="stylesheet" href="$style_url">
+  <script src="$script_url" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#report">Skip to content</a>
-  <div class="layout" id="top">
-    <aside class="sidebar">
-      <a class="brand" href="index.html">General Verifier</a>
-      <details class="site-menu" open>
-        <summary>Site map</summary>
-        <nav aria-label="Site map">$navigation</nav>
-        <p class="nav-group">Links</p>
+  <input type="checkbox" class="menu-control visually-hidden" id="menu-control" aria-label="Toggle site navigation">
+  <main class="container flex" id="top">
+    <aside class="book-menu">
+      <nav aria-label="Site map">
+        <h2 class="book-brand"><a href="index.html">General Verifier</a></h2>
+        <div class="book-search" hidden>
+          <input type="search" id="book-search-input" placeholder="Search" aria-label="Search documentation" maxlength="100" autocomplete="off" aria-controls="book-search-results">
+          <ul id="book-search-results" aria-label="Search results" hidden></ul>
+          <span id="search-status" class="visually-hidden" role="status"></span>
+        </div>
+        $navigation
         <ul class="resource-links">
-          <li><a href="$repository">GitHub repository ↗</a></li>
-          <li><a href="$report_source">Markdown source ↗</a></li>
+          <li><strong>Links</strong>
+            <ul>
+              <li><a href="$repository">Repo (GitHub)</a></li>
+              <li><a href="$report_source">Markdown source</a></li>
+            </ul>
+          </li>
         </ul>
-      </details>
+      </nav>
     </aside>
 
-    <main class="document">
-      <article id="report" class="prose" tabindex="-1">
+    <div class="book-page">
+      <header class="book-header">
+        <div class="flex align-center justify-between">
+          <label for="menu-control" class="menu-label" title="Site navigation">
+            <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </label>
+          <strong>$title</strong>
+          <label for="toc-control" class="toc-label" title="Page sections">
+            <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M3 5h18M7 10h14M7 15h14M3 20h18" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </label>
+        </div>
+        <input type="checkbox" class="visually-hidden" id="toc-control" aria-label="Toggle page sections">
+        <aside class="mobile-toc hidden"><nav aria-label="Page sections"><ul>$toc</ul></nav></aside>
+      </header>
+      <article id="report" class="markdown" tabindex="-1">
         <h1 id="$title_id">$title</h1>
         $body
       </article>
-      <nav class="page-navigation" aria-label="Reading order">$pager</nav>
-      <footer class="footer">
-        <button class="print-button" type="button" hidden>Print this page</button>
-        <a href="#top">Back to top ↑</a>
-      </footer>
-    </main>
+    </div>
 
-    <aside class="page-sidebar">
-      <nav class="page-menu" aria-label="Page sections"><ul>$toc</ul></nav>
+    <aside class="book-toc">
+      <nav aria-label="Page sections"><ul>$toc</ul></nav>
     </aside>
-  </div>
+  </main>
+  <script type="application/json" id="search-index">$search_index</script>
 </body>
 </html>
