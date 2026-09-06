@@ -72,21 +72,21 @@ GV generates its checks using models, so an actual run may decompose the task di
 
 ## 2. System architecture
 
-### 2.1 Five stages and their outputs
+### 2.1 Four stages from input to result
 
-![Five stages from captured inputs to a verification certificate](assets/pipeline.svg)
+A run moves through four stages: reconstruct what happened, define what must be checked, collect evidence, and produce a result. The overview groups the actions inside each stage. Select an action to open its explanation.
 
-*Figure 1. Each stage answers a different question. Later stages use earlier outputs while retaining references to the original task and evidence.*
+![Verification workflow, with actions grouped into four stages and optional candidate selection marked by a dashed border](assets/pipeline.svg)
 
-**Input preparation** identifies the task inputs, tool records, and captured artifacts available for this run, including their authority and any gaps in the capture. In the sum example, it distinguishes the original task, the agent's success message, and the answer file.
+*Figure 1. Read stages left to right and actions top to bottom. Solid boxes are core actions; the dashed box is optional candidate selection. Figures 2 and 3 expand review and audit.*
 
-**Claim extraction** uses the Extractor to reconstruct claims and their dependencies from the run. “A file-write command ran,” “the sum is 15,” and “the task is complete” are different claims. Retry feedback to the Extractor concerns structural problems, such as unresolved dependencies or a missing final claim. Offline verification verdicts are not fed back to it to rewrite the history.
+**1. Reconstruct the run.** Input preparation identifies the original task, tool records, final answer, and captured files, including any gaps in the capture. The Extractor then reconstructs claims and their dependencies. In the sum example, “a file-write command ran,” “the sum is 15,” and “the task is complete” are different claims. Extraction retries address structural problems such as unresolved dependencies or a missing final claim. Offline verdicts are not fed back to the Extractor to rewrite the history.
 
-**Check generation** uses the Compiler to turn claims into checkable conditions and the Critic to review those conditions. The sum task requires both a correct value and a specific file format. Omitting the newline requirement, or adding a requirement to use a particular algorithm, would change the task's acceptance criteria.
+**2. Define the checks.** The Compiler turns a claim into checkable conditions. The Critic reviews the complete contract, including which conditions are mandatory. For the sum, the checks must cover both the expected value and the required file format. A rejected contract goes back for repair within a fixed budget. If no acceptable contract emerges, the claim remains unverified. [Contract review](#31-define-success-before-collecting-evidence) explains this loop.
 
-**Execution and audit** involve three roles. The Oracle proposes a verification method. The Executor carries it out and saves artifacts. The Judger assesses whether the method is sufficient, whether execution followed it, and whether the evidence supports the result. For example, these roles can propose, execute, and audit an independent calculation followed by a comparison with the delivered file.
+**3. Establish evidence.** For each obligation, the Oracle proposes methods, the Executor runs an eligible method and retains its artifacts, and the Judger audits the result. An accepted result settles that check. Rejected attempts may lead to a redo or a different method; exhausted search retains a failure or an availability gap. [Execution and audit](#32-separate-evidence-source-from-strength) explains these branches. Compatible established evidence can also be [reused](#41-include-scope-in-shared-check-identities), avoiding a new execution.
 
-**Certificate generation** applies the evidence rules in the program kernel, combines check results, and retains their supporting records. An optional selector uses these results to rank several candidate runs for the same task.
+**4. Produce the result.** The kernel combines the final claim's own checks into a verdict. The certificate retains those checks, their evidence, and the relevant intermediate reasoning; `score.json` contains the summary. When several runs solve the same task, the optional selector ranks their results. [Reading the results](#5-reading-the-results) explains the verdicts and how to inspect their basis.
 
 Models interpret the meaning of tasks and evidence; code enforces the declared constraints. For example, a model assesses whether a method is sufficient, while the program enforces whether a method declared to provide weak evidence may refute a claim. The semantic assessment can still be wrong even when the program correctly enforces its rules.
 
@@ -122,6 +122,12 @@ Even a perfectly reliable executor will reach the wrong verdict if it is given t
 - Requiring a loop to compute the sum adds a restriction the task never imposed.
 
 The Compiler and Critic therefore review the mandatory checks in both directions: **completing the task should satisfy the checks, and satisfying all the checks should establish the target claim.** The first direction avoids unnecessary requirements; the second avoids missing requirements.
+
+In the sum example, a proposed check that only requires an integer would accept `14`. That is a useful counterexample for the Critic: it exposes a missing value requirement. The Compiler can repair the proposal, but the repaired contract must pass review before its checks are used.
+
+![Contract review flow: compile checks, review them, accept the contract or repair it within budget, otherwise remain unverified](assets/contract.svg)
+
+*Figure 2. Contract review for a final claim. A diamond asks a question; each outgoing arrow names the answer. Repair returns to review, and budget exhaustion stops acceptance.*
 
 For an intermediate claim `c`, permitted premises `P`, and mandatory conditions `O`, these review goals can be written as:
 
@@ -169,7 +175,21 @@ Now consider strength. Running ten tests against real code inspects the delivera
 
 Basis and strength answer different questions. An event-identity check can be `record + decisive`; a finite test suite can be `world + bounded`. These labels are method claims subject to audit, not model confidence scores.
 
-The system tries stronger methods first. Moving to a weaker method requires an explanation of why stronger candidates are unavailable and a review by the Judger. A crash or an unfavorable result does not automatically justify a downgrade. Current rules accept only decisive refutations; adverse findings from weaker methods remain diagnostic signals. An execution that departed from the method can be retried, with the original method and retry feedback retained separately for inspection.
+The system tries stronger methods first. A weaker method becomes eligible only after the stronger listed tiers have been found structurally unavailable; omitted stronger tiers and the downgrade itself are reviewed by the Judger. A crash or an unfavorable result does not automatically justify moving to a weaker method.
+
+Once an eligible method is selected, execution follows this path:
+
+![Evidence audit flow: execute a method, enforce evidence gates, audit the result, then accept, redo the same method, or reject the attempt](assets/audit.svg)
+
+*Figure 3. One candidate method. A result must pass both the kernel's evidence rules and the Judger's audit. The return arrow repeats execution of the same method; it does not redefine the obligation.*
+
+The **kernel gates** check the declared basis, admissible witness, and input authority. They also enforce decisive-only refutation: adverse findings from weaker methods remain diagnostic signals. Execution failures and unavailable results are recorded without becoming accepted evidence.
+
+The **Judger** then assesses substantive results, including proposed refutations. It checks whether the method can decide the obligation and whether execution actually followed that method against the right target. In the sum example, independently recomputing the sum is a suitable method, but reading an unrelated file on the verifier's machine would be an execution error. Such a deviation can trigger a redo of the same method. A procedure that merely compares two agent-authored answer files needs a different method, because its source of correctness is inadequate.
+
+A redo retains the original method and the execution feedback, then submits the new artifacts for a fresh audit. The default limit is three redos. A failure to obtain a valid Judger response uses a separate audit retry; it does not authorize executing the method again.
+
+Rejected candidates remain in the attempt record. An exhausted batch can request a bounded Oracle repair. For offline final obligations requiring `world` evidence, an empty repair can also trigger one focused search for a decisive counterexample. These searches only propose methods: any new method still has to execute and pass the same audit. If no candidate settles the check, the system retains a failure or a structural availability gap.
 
 This process constrains the listed candidates and recorded execution. The Oracle may still miss a better method, and the Judger may misjudge sufficiency. Implementation: [`BindingGame.run()`](../../verifier/engine/game.py#L130).
 
@@ -191,7 +211,7 @@ Q may be locally verified while remaining effectively unverified. Basis and stre
 
 ![Conditional reasoning and independent final checks in the sum example](assets/reliance.svg)
 
-*Figure 2. Intermediate reasoning retains its unresolved premises. Final checks return to the original task and captured deliverables. Both paths remain available in the certificate.*
+*Figure 4. Intermediate reasoning retains its unresolved premises. Final checks return to the original task and captured deliverables. Both paths remain available in the certificate.*
 
 A final claim has an empty set of permitted premises. The Compiler derives the complete success conditions from the original task. It cannot omit the numerical check because the agent previously claimed to have calculated the answer correctly. Established evidence may still be reused when it satisfies the current contract; unestablished intermediate conclusions cannot be assumed.
 

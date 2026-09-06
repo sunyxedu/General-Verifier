@@ -1,49 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="452" viewBox="0 0 1000 452" role="img" aria-labelledby="title desc" lang="en">
-  <title id="title">Two verification paths through the sum example</title>
-  <desc id="desc">An intermediate argument assumes the inputs are exactly 1 through 5 and locally verifies that their sum is 15. Its effective state remains unverified until the premise is established. The final path independently computes the sum from the task, reads the captured file, and checks its format. These final checks determine the verdict.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" id="reliance-diagram" width="1000" height="494" viewBox="0 0 1000 494" role="group" aria-labelledby="reliance-title reliance-desc" lang="en">
+  <title id="reliance-title">Conditional reasoning and an independent final check</title>
+  <desc id="reliance-desc">In the first lane the agent assumes that the inputs are exactly 1 through 5, locally verifies that their sum is 15, but remains effectively unverified until the input premise is established. In the second lane the final checks independently use the original task and captured file. Only these final checks determine the final verdict.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#84929f"/></marker>
+    <marker id="reliance-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#39434d"/></marker>
     <style>
-      text{font-family:Arial,Helvetica,sans-serif;fill:#273444}
-      .label{font-size:15px;fill:#536373}
-      .name{font-size:18px;font-weight:600}
-      .body{font-size:16px;fill:#536373}
-      .state{font-size:16px;fill:#476b93}
-      .box{fill:#f7f9fb;stroke:#d7e0e7;rx:8}
-      .arrow{stroke:#84929f;stroke-width:1.5;fill:none;marker-end:url(#arrow)}
+      #reliance-diagram text { font-family: Arial, Helvetica, sans-serif; fill: #202830; font-size: 16px; }
+      #reliance-diagram .heading { font-size: 18px; font-weight: 700; }
+      #reliance-diagram .small { font-size: 14px; fill: #46515c; }
+      #reliance-diagram .label { font-size: 14px; paint-order: stroke; stroke: white; stroke-width: 5px; stroke-linejoin: round; }
+      #reliance-diagram .node { fill: white; stroke: #59636d; stroke-width: 1.2; }
+      #reliance-diagram .group { fill: white; stroke: #a3aab1; stroke-width: 1; }
+      #reliance-diagram .optional { stroke-dasharray: 5 4; }
+      #reliance-diagram .flow { fill: none; stroke: #39434d; stroke-width: 1.4; marker-end: url(#reliance-arrow); }
+      #reliance-diagram a:hover .node, #reliance-diagram a:focus .node { fill: #eef4fa; stroke: #245f9e; stroke-width: 2; }
+      #reliance-diagram a { cursor: pointer; }
+      #reliance-diagram a:focus { outline: none; }
     </style>
   </defs>
-  <rect width="1000" height="452" fill="#fff"/>
-  <text x="20" y="29" class="label">Intermediate reasoning: each conclusion retains the premises it depends on.</text>
-  <rect x="20" y="49" width="282" height="123" class="box"/>
-  <text x="40" y="84" class="name">P: Inputs are exactly 1–5</text>
-  <text x="40" y="118" class="body">An intermediate agent claim</text>
-  <text x="40" y="147" class="state">Premise not yet established</text>
-  <path d="M303 112H350" class="arrow" stroke-dasharray="4 4"/>
-  <rect x="360" y="49" width="282" height="123" class="box"/>
-  <text x="380" y="84" class="name">Q: Their sum is 15</text>
-  <text x="380" y="118" class="body">Check Q while assuming P</text>
-  <text x="380" y="147" class="state">Local: verified</text>
-  <path d="M643 112H688" class="arrow"/>
-  <rect x="698" y="49" width="282" height="123" rx="8" fill="#fff8e9" stroke="#dbc492"/>
-  <text x="718" y="84" class="name">An unresolved premise</text>
-  <text x="718" y="118" class="body">P still needs to be established</text>
-  <text x="718" y="147" class="state">Effective: unverified</text>
-  <path d="M20 209H980" stroke="#e2e7ed"/>
-  <text x="20" y="245" class="label">Final deliverable: derive the full success conditions from the task, with no assumed intermediate claims.</text>
-  <rect x="20" y="265" width="282" height="123" class="box"/>
-  <text x="40" y="300" class="name">Original task</text>
-  <text x="40" y="334" class="body">Sum 1–5; write the file</text>
-  <text x="40" y="363" class="body">Use an integer and a newline</text>
-  <path d="M303 328H350" class="arrow"/>
-  <rect x="360" y="265" width="282" height="123" class="box"/>
-  <text x="380" y="300" class="name">Independent checks</text>
-  <text x="380" y="334" class="body">Recompute; read captured file</text>
-  <text x="380" y="363" class="body">Compare value; check format</text>
-  <path d="M643 328H688" class="arrow"/>
-  <rect x="698" y="265" width="282" height="123" rx="8" fill="#eef5fc" stroke="#9cb5cf"/>
-  <text x="718" y="300" class="name">Final verdict</text>
-  <text x="718" y="334" class="body">Determined by the task checks</text>
-  <text x="718" y="363" class="body">Intermediate reasoning kept</text>
-  <text x="20" y="430" class="label">This diagram illustrates state relationships, not a measured model evaluation.</text>
+  <rect width="1000" height="494" fill="white"/>
+  <rect x="16" y="16" width="968" height="190" rx="5" class="group"/>
+  <path d="M16 58 H984" stroke="#a3aab1"/>
+  <text x="500.0" y="43" text-anchor="middle" class="heading">Intermediate reasoning: retain every assumed premise</text>
+  <rect x="38" y="88" width="270" height="78" rx="4" class="node"/>
+  <text x="173.0" y="121.5" text-anchor="middle" class="">P: inputs are exactly 1–5</text>
+  <text x="173.0" y="142.5" text-anchor="middle" class="">Premise not yet established</text>
+  <path d="M308 127 H362" class="flow"/>
+  <rect x="362" y="88" width="270" height="78" rx="4" class="node"/>
+  <text x="497.0" y="111.0" text-anchor="middle" class="">Q: their sum is 15</text>
+  <text x="497.0" y="132.0" text-anchor="middle" class="">Assume P for this check</text>
+  <text x="497.0" y="153.0" text-anchor="middle" class="">Local state: verified</text>
+  <path d="M632 127 H686" class="flow"/>
+  <rect x="686" y="88" width="276" height="78" rx="4" class="node"/>
+  <text x="824.0" y="121.5" text-anchor="middle" class="">P is still unresolved</text>
+  <text x="824.0" y="142.5" text-anchor="middle" class="">Effective state: unverified</text>
+  <rect x="16" y="242" width="968" height="190" rx="5" class="group"/>
+  <path d="M16 284 H984" stroke="#a3aab1"/>
+  <text x="500.0" y="269" text-anchor="middle" class="heading">Final deliverable: check the original task without assumed intermediate claims</text>
+  <rect x="38" y="314" width="270" height="78" rx="4" class="node"/>
+  <text x="173.0" y="347.5" text-anchor="middle" class="">Task: sum 1–5; write the file</text>
+  <text x="173.0" y="368.5" text-anchor="middle" class="">Use an integer and a newline</text>
+  <path d="M308 353 H362" class="flow"/>
+  <rect x="362" y="314" width="270" height="78" rx="4" class="node"/>
+  <text x="497.0" y="347.5" text-anchor="middle" class="">Recompute; read captured file</text>
+  <text x="497.0" y="368.5" text-anchor="middle" class="">Compare value and format</text>
+  <path d="M632 353 H686" class="flow"/>
+  <rect x="686" y="314" width="276" height="78" rx="4" class="node"/>
+  <text x="824.0" y="347.5" text-anchor="middle" class="">Determine the final verdict</text>
+  <text x="824.0" y="368.5" text-anchor="middle" class="">from these task checks</text>
+  <text x="20" y="471" text-anchor="start" class="small">An open intermediate premise does not replace a final task check. This is an illustrative state relationship.</text>
 </svg>

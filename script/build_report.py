@@ -18,7 +18,8 @@ from markdown_it.token import Token
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "docs" / "report"
-ASSETS = ("pipeline.svg", "reliance.svg", "report.css", "report.js")
+DIAGRAMS = ("pipeline.svg", "contract.svg", "audit.svg", "reliance.svg")
+ASSETS = (*DIAGRAMS, "report.css", "report.js")
 PUBLISHED = {"index.html", "report.md", ".nojekyll"} | {
     f"assets/{name}" for name in ASSETS
 }

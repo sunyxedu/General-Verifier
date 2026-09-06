@@ -1,50 +1,105 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="264" viewBox="0 0 1000 264" role="img" aria-labelledby="title desc" lang="en">
-  <title id="title">The five stages of General Verifier</title>
-  <desc id="desc">Input preparation identifies the task and capture. The Extractor reconstructs claims. The Compiler and Critic generate and review obligations. The Oracle, Executor, and Judger propose, execute, and audit methods. The kernel combines results and evidence into a certificate.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" id="pipeline-diagram" width="1000" height="510" viewBox="0 0 1000 510" role="group" aria-labelledby="pipeline-title pipeline-desc" lang="en">
+  <title id="pipeline-title">A run through General Verifier</title>
+  <desc id="pipeline-desc">Read the four stages from left to right, and each stage from top to bottom. Reconstruct the captured run; define and review its checks; propose, execute, and audit verification methods; then combine final checks and save the certificate. Ranking multiple runs is optional. Select a step to read its explanation.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#84929f"/></marker>
+    <marker id="pipeline-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#39434d"/></marker>
     <style>
-      text{font-family:Arial,Helvetica,sans-serif;fill:#273444}
-      .step{font-size:13px;fill:#64748b}
-      .name{font-size:18px;font-weight:600}
-      .detail{font-size:14px;fill:#536373}
-      .role{font-size:12px;fill:#476b93}
-      .arrow{stroke:#84929f;stroke-width:1.5;fill:none;marker-end:url(#arrow)}
-      .box{fill:#f7f9fb;stroke:#d7e0e7;rx:8}
+      #pipeline-diagram text { font-family: Arial, Helvetica, sans-serif; fill: #202830; font-size: 16px; }
+      #pipeline-diagram .heading { font-size: 16px; font-weight: 700; }
+      #pipeline-diagram .small { font-size: 14px; fill: #46515c; }
+      #pipeline-diagram .label { font-size: 14px; paint-order: stroke; stroke: white; stroke-width: 5px; stroke-linejoin: round; }
+      #pipeline-diagram .node { fill: white; stroke: #59636d; stroke-width: 1.2; }
+      #pipeline-diagram .group { fill: white; stroke: #a3aab1; stroke-width: 1; }
+      #pipeline-diagram .optional { stroke-dasharray: 5 4; }
+      #pipeline-diagram .flow { fill: none; stroke: #39434d; stroke-width: 1.4; marker-end: url(#pipeline-arrow); }
+      #pipeline-diagram a:hover .node, #pipeline-diagram a:focus .node { fill: #eef4fa; stroke: #245f9e; stroke-width: 2; }
+      #pipeline-diagram a { cursor: pointer; }
+      #pipeline-diagram a:focus { outline: none; }
     </style>
   </defs>
-  <rect width="1000" height="264" fill="#fff"/>
-  <text x="20" y="27" class="step">Captured inputs define what can be checked. The certificate retains the evidence behind each result.</text>
-  <rect x="20" y="50" width="160" height="147" class="box"/>
-  <text x="37" y="78" class="step">01 / PREPARE</text>
-  <text x="37" y="113" class="name">Task + files</text>
-  <text x="37" y="143" class="detail">Task, tool records</text>
-  <text x="37" y="168" class="detail">Final answer, files</text>
-  <path d="M181 123H211" class="arrow"/>
-  <rect x="220" y="50" width="160" height="147" class="box"/>
-  <text x="237" y="78" class="step">02 / EXTRACT</text>
-  <text x="237" y="113" class="name">Claim graph</text>
-  <text x="237" y="143" class="detail">Claims + premises</text>
-  <text x="237" y="172" class="role">Extractor</text>
-  <path d="M381 123H411" class="arrow"/>
-  <rect x="420" y="50" width="160" height="147" class="box"/>
-  <text x="437" y="78" class="step">03 / COMPILE</text>
-  <text x="437" y="113" class="name">Obligations</text>
-  <text x="437" y="143" class="detail">Required checks</text>
-  <text x="437" y="172" class="role">Compiler · Critic</text>
-  <path d="M581 123H611" class="arrow"/>
-  <rect x="620" y="50" width="160" height="147" class="box"/>
-  <text x="637" y="78" class="step">04 / CHECK</text>
-  <text x="637" y="113" class="name">Evidence</text>
-  <text x="637" y="143" class="detail">Methods + audit</text>
-  <text x="637" y="168" class="role">Oracle · Executor</text>
-  <text x="637" y="186" class="role">Judger</text>
-  <path d="M781 123H811" class="arrow"/>
-  <rect x="820" y="50" width="160" height="147" rx="8" fill="#eef5fc" stroke="#9cb5cf"/>
-  <text x="837" y="78" class="step">05 / CERTIFY</text>
-  <text x="837" y="113" class="name">Certificate</text>
-  <text x="837" y="143" class="detail">Verdict + evidence</text>
-  <text x="837" y="172" class="role">Kernel</text>
-  <path d="M20 223H980" stroke="#e2e7ed"/>
-  <text x="20" y="249" class="detail">Final task checks determine the verdict. Certificates can also help rank candidate runs for the same task.</text>
+  <rect width="1000" height="510" fill="white"/>
+  <text x="20" y="25" text-anchor="start" class="small">Follow the stages left to right; read the actions inside each stage top to bottom.</text>
+  <rect x="16" y="48" width="224" height="330" rx="5" class="group"/>
+  <path d="M16 90 H240" stroke="#a3aab1"/>
+  <text x="128.0" y="75" text-anchor="middle" class="heading">1. Reconstruct the run</text>
+  <rect x="264" y="48" width="224" height="330" rx="5" class="group"/>
+  <path d="M264 90 H488" stroke="#a3aab1"/>
+  <text x="376.0" y="75" text-anchor="middle" class="heading">2. Define the checks</text>
+  <rect x="512" y="48" width="224" height="330" rx="5" class="group"/>
+  <path d="M512 90 H736" stroke="#a3aab1"/>
+  <text x="624.0" y="75" text-anchor="middle" class="heading">3. Establish evidence</text>
+  <rect x="760" y="48" width="224" height="330" rx="5" class="group"/>
+  <path d="M760 90 H984" stroke="#a3aab1"/>
+  <text x="872.0" y="75" text-anchor="middle" class="heading">4. Produce the result</text>
+  <path d="M240 207 H264" class="flow"/>
+  <path d="M488 207 H512" class="flow"/>
+  <path d="M736 207 H760" class="flow"/>
+  <a href="../index.html#11-the-task-and-captured-run" target="_top" aria-label="Read: Read the task and captured files">
+  <rect x="34" y="112" width="188" height="54" rx="4" class="node"/>
+  <text x="128.0" y="133.5" text-anchor="middle" class="">Read the task</text>
+  <text x="128.0" y="154.5" text-anchor="middle" class="">and captured files</text>
+  </a>
+  <path d="M128 166 V204" class="flow"/>
+  <a href="../index.html#22-five-objects-to-inspect" target="_top" aria-label="Read: Extract claims and dependencies">
+  <rect x="34" y="204" width="188" height="54" rx="4" class="node"/>
+  <text x="128.0" y="225.5" text-anchor="middle" class="">Extract claims</text>
+  <text x="128.0" y="246.5" text-anchor="middle" class="">and dependencies</text>
+  </a>
+  <text x="128" y="305" text-anchor="middle" class="small">Output: claims +</text>
+  <text x="128" y="326" text-anchor="middle" class="small">original task context</text>
+  <a href="../index.html#31-define-success-before-collecting-evidence" target="_top" aria-label="Read: Compile checkable conditions">
+  <rect x="282" y="112" width="188" height="54" rx="4" class="node"/>
+  <text x="376.0" y="133.5" text-anchor="middle" class="">Compile checkable</text>
+  <text x="376.0" y="154.5" text-anchor="middle" class="">conditions</text>
+  </a>
+  <path d="M376 166 V204" class="flow"/>
+  <a href="../index.html#31-define-success-before-collecting-evidence" target="_top" aria-label="Read: Review the contract and repair if needed">
+  <rect x="282" y="204" width="188" height="54" rx="4" class="node"/>
+  <text x="376.0" y="225.5" text-anchor="middle" class="">Review the contract</text>
+  <text x="376.0" y="246.5" text-anchor="middle" class="">and repair if needed</text>
+  </a>
+  <text x="376" y="305" text-anchor="middle" class="small">Output: reviewed</text>
+  <text x="376" y="326" text-anchor="middle" class="small">obligations</text>
+  <a href="../index.html#32-separate-evidence-source-from-strength" target="_top" aria-label="Read: Propose eligible verification methods">
+  <rect x="530" y="112" width="188" height="54" rx="4" class="node"/>
+  <text x="624.0" y="133.5" text-anchor="middle" class="">Propose eligible</text>
+  <text x="624.0" y="154.5" text-anchor="middle" class="">verification methods</text>
+  </a>
+  <path d="M624 166 V189" class="flow"/>
+  <a href="../index.html#32-separate-evidence-source-from-strength" target="_top" aria-label="Read: Execute a method and retain artifacts">
+  <rect x="530" y="189" width="188" height="54" rx="4" class="node"/>
+  <text x="624.0" y="210.5" text-anchor="middle" class="">Execute a method</text>
+  <text x="624.0" y="231.5" text-anchor="middle" class="">and retain artifacts</text>
+  </a>
+  <path d="M624 243 V266" class="flow"/>
+  <a href="../index.html#32-separate-evidence-source-from-strength" target="_top" aria-label="Read: Audit the method and its evidence">
+  <rect x="530" y="266" width="188" height="54" rx="4" class="node"/>
+  <text x="624.0" y="287.5" text-anchor="middle" class="">Audit the method</text>
+  <text x="624.0" y="308.5" text-anchor="middle" class="">and its evidence</text>
+  </a>
+  <text x="624" y="352" text-anchor="middle" class="small">Output: check results</text>
+  <a href="../index.html#51-five-verdicts" target="_top" aria-label="Read: Combine final task checks">
+  <rect x="778" y="112" width="188" height="54" rx="4" class="node"/>
+  <text x="872.0" y="133.5" text-anchor="middle" class="">Combine final</text>
+  <text x="872.0" y="154.5" text-anchor="middle" class="">task checks</text>
+  </a>
+  <path d="M872 166 V189" class="flow"/>
+  <a href="../index.html#52-follow-the-evidence-in-a-certificate" target="_top" aria-label="Read: Save the certificate and result summary">
+  <rect x="778" y="189" width="188" height="54" rx="4" class="node"/>
+  <text x="872.0" y="210.5" text-anchor="middle" class="">Save the certificate</text>
+  <text x="872.0" y="231.5" text-anchor="middle" class="">and result summary</text>
+  </a>
+  <path d="M872 243 V280" class="flow"/>
+  <a href="../index.html#53-rank-several-candidates" target="_top" aria-label="Read: Rank candidate runs for the same task">
+  <rect x="778" y="280" width="188" height="54" rx="4" class="node optional"/>
+  <text x="872.0" y="301.5" text-anchor="middle" class="">Rank candidate runs</text>
+  <text x="872.0" y="322.5" text-anchor="middle" class="">for the same task</text>
+  </a>
+  <text x="872" y="357" text-anchor="middle" class="small">Optional selection</text>
+  <rect x="18" y="410" width="144" height="36" rx="4" class="node"/>
+  <text x="90.0" y="433.0" text-anchor="middle" class="">Core action</text>
+  <rect x="188" y="410" width="164" height="36" rx="4" class="node optional"/>
+  <text x="270.0" y="433.0" text-anchor="middle" class="">Optional action</text>
+  <text x="980" y="433" text-anchor="end" class="small">Select any action to open its explanation.</text>
+  <text x="20" y="481" text-anchor="start" class="small">Review and audit can reject or retry work. Figures 2 and 3 expand those branches.</text>
 </svg>
