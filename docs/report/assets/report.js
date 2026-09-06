@@ -1,40 +1,34 @@
-// Content and nested navigation remain usable without JavaScript.
+// All pages, section links, and diagrams also work without JavaScript.
 const printButton = document.querySelector('.print-button');
 printButton.hidden = false;
 printButton.addEventListener('click', () => window.print());
 
-const contents = document.querySelector('.contents');
-const mobile = window.matchMedia('(max-width: 860px)');
-const setContents = () => { contents.open = !mobile.matches; };
-setContents();
-mobile.addEventListener('change', setContents);
-contents.addEventListener('click', event => {
-  if (mobile.matches && event.target.closest('a[href^="#"]')) contents.open = false;
+const siteMenu = document.querySelector('.site-menu');
+const pageMenu = document.querySelector('.page-menu');
+const mobile = window.matchMedia('(max-width: 760px)');
+const narrow = window.matchMedia('(max-width: 1200px)');
+const setMenus = () => {
+  siteMenu.open = !mobile.matches;
+  pageMenu.open = !narrow.matches;
+};
+setMenus();
+mobile.addEventListener('change', setMenus);
+narrow.addEventListener('change', setMenus);
+pageMenu.addEventListener('click', event => {
+  if (narrow.matches && event.target.closest('a')) pageMenu.open = false;
 });
 
-const links = [...document.querySelectorAll('.contents a')];
+const links = [...pageMenu.querySelectorAll('a')];
 const headings = [...document.querySelectorAll('.prose h2, .prose h3')];
-const chapters = [...document.querySelectorAll('.chapter')];
-let currentChapter = null;
 let scheduled = false;
 function markSection() {
   const heading = headings.findLast(node => node.getBoundingClientRect().top <= 120);
-  const link = heading && links.find(node => decodeURIComponent(node.hash.slice(1)) === heading.id);
-  const chapter = link?.closest('.chapter');
-  if (chapter !== currentChapter) {
-    if (currentChapter) {
-      currentChapter.classList.remove('is-active');
-      if (!currentChapter.contains(document.activeElement)) currentChapter.open = false;
+  for (const link of links) {
+    if (heading && decodeURIComponent(link.hash.slice(1)) === heading.id) {
+      link.setAttribute('aria-current', 'location');
+    } else {
+      link.removeAttribute('aria-current');
     }
-    if (chapter) {
-      chapter.classList.add('is-active');
-      chapter.open = true;
-    }
-    currentChapter = chapter;
-  }
-  for (const item of links) {
-    if (item === link) item.setAttribute('aria-current', 'location');
-    else item.removeAttribute('aria-current');
   }
   scheduled = false;
 }

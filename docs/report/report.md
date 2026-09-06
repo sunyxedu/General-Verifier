@@ -1,14 +1,40 @@
 # General Verifier
 
-General Verifier (GV) checks whether an agent's result satisfies its task and preserves the evidence behind the verdict. It reads the original task, tool records, final answer, and captured files, turns the task into explicit checks, executes verification methods, and saves an inspectable certificate.
+General Verifier (GV) checks whether an AI agent completed its task. It reads the original task, the agent's recorded actions and final answer, and the files captured from the run.
 
-A successful tool call can establish that an action was recorded. To establish task completion, GV must also check the delivered result against the original requirements. This distinction guides how it interprets tasks, collects evidence, and reuses results.
+GV turns the requirements into explicit checks, runs verification methods, and saves the evidence behind its verdict in a certificate. The certificate shows which checks passed, which failed, and which remain unresolved.
 
-This report starts with a complete example, then explains the architecture and its implementation. Sections 1–3 introduce the workflow and core design. Section 4 covers the mechanisms that preserve those design rules during execution. Sections 5–7 explain how to use the results, where the approach has limits, and what has been tested.
+## How verification works
 
-## 1. A complete example
+Verification moves through four stages. Follow the diagram from left to right; select an action to read its explanation. The [workflow guide](#verification-workflow) describes how the stages fit together.
 
-### 1.1 The task and captured run
+![Verification workflow, with actions grouped into four stages and optional candidate selection marked by a dashed border](assets/pipeline.svg)
+
+*Solid boxes are core actions; the dashed box is optional candidate selection. [Task contracts](#task-contracts) and [evidence audit](#execution-and-audit) explain the review and retry loops.*
+
+## Using General Verifier
+
+Start with [Getting started](#getting-started) for a runnable example, including the input files, command, and resulting certificate. Installation and backend configuration are described in the [repository README](../../README.md).
+
+- **Check a completed run:** offline scoring reads a fixed record of what the agent did and delivered. See [the task and captured run](#the-task-and-captured-run).
+- **Give feedback during a run:** the [interactive service](#offline-and-interactive-verification) lets an agent submit claims, inspect results, and revise its work.
+- **Inspect or compare results:** [Reading the results](#reading-the-results) explains the five verdicts, evidence references, and candidate ranking.
+
+## Design and implementation
+
+The design addresses three questions:
+
+- [Task contracts](#task-contracts): do the checks cover the task without adding requirements?
+- [Evidence and audit](#evidence-and-audit): can the method establish the condition, and did its execution follow the method?
+- [Independent final checks](#independent-final-checks): does the delivered result satisfy the original task, even when intermediate reasoning remains unresolved?
+
+[Implementation](#implementation) explains how these rules survive evidence reuse, revisions, parallel checks, and resumption. [Scope and limitations](#scope-and-limitations) describes the assumptions behind a verdict; [Evaluation](#evaluation) sets out how to measure their effect. The [code reading guide and related work](#code-and-references) provide further detail.
+
+## Getting started
+
+This example shows the files GV reads, how to run verification, and where to inspect the result. It uses a small arithmetic task so that the expected answer and every output requirement are easy to check.
+
+### The task and captured run
 
 The repository includes a hand-written run in [examples/sum](../../examples/sum/task.md). Its task is:
 
@@ -29,7 +55,7 @@ The task's `/app/answer.txt` refers to a file from that run. During offline veri
 
 This example needs no files from before the run: all inputs to the sum are in the task. More complex tasks can also supply a `baseline/` directory containing original inputs that the agent has not modified.
 
-### 1.2 Run the check and find the result
+### Run the check and find the result
 
 Follow the repository [README](../../README.md) to install dependencies and configure a model backend. Then copy and score the example:
 
@@ -50,7 +76,7 @@ score.json                            Verdict and ranking features
           └── artifacts/<id>.json     Checks and evidence references
 ```
 
-### 1.3 Check what was delivered
+### Check what was delivered
 
 For this task, the final checks need to cover at least two requirements:
 
@@ -70,27 +96,29 @@ The table below illustrates the decision rules. It does not report a measured mo
 
 GV generates its checks using models, so an actual run may decompose the task differently. The example gives us a standard for evaluating that decomposition: **the checks should cover what the task requires, and each conclusion should be traceable to its evidence.**
 
-## 2. System architecture
+## Verification workflow
 
-### 2.1 Four stages from input to result
+GV reconstructs a run, defines its checks, establishes evidence, and produces a result. The [overview diagram](#how-verification-works) shows the whole path; this page explains the responsibilities of each stage. [Getting started](#getting-started) follows these stages with a small arithmetic task.
 
-A run moves through four stages: reconstruct what happened, define what must be checked, collect evidence, and produce a result. The overview groups the actions inside each stage. Select an action to open its explanation.
+### Reconstruct the run
 
-![Verification workflow, with actions grouped into four stages and optional candidate selection marked by a dashed border](assets/pipeline.svg)
+ Input preparation identifies the original task, tool records, final answer, and captured files, including any gaps in the capture. The Extractor then reconstructs claims and their dependencies. In the sum example, “a file-write command ran,” “the sum is 15,” and “the task is complete” are different claims. Extraction retries address structural problems such as unresolved dependencies or a missing final claim. Offline verdicts are not fed back to the Extractor to rewrite the history.
 
-*Figure 1. Read stages left to right and actions top to bottom. Solid boxes are core actions; the dashed box is optional candidate selection. Figures 2 and 3 expand review and audit.*
+### Define the checks
 
-**1. Reconstruct the run.** Input preparation identifies the original task, tool records, final answer, and captured files, including any gaps in the capture. The Extractor then reconstructs claims and their dependencies. In the sum example, “a file-write command ran,” “the sum is 15,” and “the task is complete” are different claims. Extraction retries address structural problems such as unresolved dependencies or a missing final claim. Offline verdicts are not fed back to the Extractor to rewrite the history.
+ The Compiler turns a claim into checkable conditions. The Critic reviews the complete contract, including which conditions are mandatory. For the sum, the checks must cover both the expected value and the required file format. A rejected contract goes back for repair within a fixed budget. If no acceptable contract emerges, the claim remains unverified. [Contract review](#task-contracts) explains this loop.
 
-**2. Define the checks.** The Compiler turns a claim into checkable conditions. The Critic reviews the complete contract, including which conditions are mandatory. For the sum, the checks must cover both the expected value and the required file format. A rejected contract goes back for repair within a fixed budget. If no acceptable contract emerges, the claim remains unverified. [Contract review](#31-define-success-before-collecting-evidence) explains this loop.
+### Establish evidence
 
-**3. Establish evidence.** For each obligation, the Oracle proposes methods, the Executor runs an eligible method and retains its artifacts, and the Judger audits the result. An accepted result settles that check. Rejected attempts may lead to a redo or a different method; exhausted search retains a failure or an availability gap. [Execution and audit](#32-separate-evidence-source-from-strength) explains these branches. Compatible established evidence can also be [reused](#41-include-scope-in-shared-check-identities), avoiding a new execution.
+ For each obligation, the Oracle proposes methods, the Executor runs an eligible method and retains its artifacts, and the Judger audits the result. An accepted result settles that check. Rejected attempts may lead to a redo or a different method; exhausted search retains a failure or an availability gap. [Execution and audit](#evidence-and-audit) explains these branches. Compatible established evidence can also be [reused](#include-scope-in-shared-check-identities), avoiding a new execution.
 
-**4. Produce the result.** The kernel combines the final claim's own checks into a verdict. The certificate retains those checks, their evidence, and the relevant intermediate reasoning; `score.json` contains the summary. When several runs solve the same task, the optional selector ranks their results. [Reading the results](#5-reading-the-results) explains the verdicts and how to inspect their basis.
+### Produce the result
+
+ The kernel combines the final claim's own checks into a verdict. The certificate retains those checks, their evidence, and the relevant intermediate reasoning; `score.json` contains the summary. When several runs solve the same task, the optional selector ranks their results. [Reading the results](#reading-the-results) explains the verdicts and how to inspect their basis.
 
 Models interpret the meaning of tasks and evidence; code enforces the declared constraints. For example, a model assesses whether a method is sufficient, while the program enforces whether a method declared to provide weak evidence may refute a claim. The semantic assessment can still be wrong even when the program correctly enforces its rules.
 
-### 2.2 Five objects to inspect
+### Five objects to inspect
 
 | Object | What it records | Example |
 |---|---|---|
@@ -104,7 +132,7 @@ Claims have three kinds: an `assertion` is an intermediate conclusion, an `effec
 
 These objects help locate the source of a failure: task interpretation, insufficient checks, failed execution, or evidence containing a counterexample. They also let a reader inspect those distinctions after a verdict has been produced.
 
-### 2.3 Offline and interactive verification
+### Offline and interactive verification
 
 The main entry point is offline [`score()`](../../verifier/offline.py#L615). The original agent has finished, and GV scores a fixed record of its run. The agent receives no verification feedback, allowing different selectors to be compared on the same candidates.
 
@@ -112,22 +140,28 @@ The interactive [MCP service](../../verifier/mcp_server.py) exposes `commit`, `v
 
 Both entry points share the graph store, verification kernel, and certificate logic. `replay` has a narrower responsibility: reconstructing claim structure from events. Replaying into an empty store does not recreate the verified status of evidence that is no longer present.
 
-## 3. Core design decisions
+## Task contracts
 
-### 3.1 Define success before collecting evidence
+The task contract defines the conditions that must hold for a claim to be accepted. The Compiler proposes these conditions, and the Critic reviews whether they match the task.
 
-Even a perfectly reliable executor will reach the wrong verdict if it is given the wrong checks. For the sum task:
+### Cover the task requirements
+
+Even a perfectly reliable executor will reach the wrong verdict if it is given the wrong checks. Consider the [example task](#getting-started): save the sum of 1 through 5 to `/app/answer.txt` as an integer followed by a newline.
 
 - Checking only that the file contains an integer is insufficient: `14` would pass.
 - Requiring a loop to compute the sum adds a restriction the task never imposed.
 
 The Compiler and Critic therefore review the mandatory checks in both directions: **completing the task should satisfy the checks, and satisfying all the checks should establish the target claim.** The first direction avoids unnecessary requirements; the second avoids missing requirements.
 
+### Review and repair
+
 In the sum example, a proposed check that only requires an integer would accept `14`. That is a useful counterexample for the Critic: it exposes a missing value requirement. The Compiler can repair the proposal, but the repaired contract must pass review before its checks are used.
 
 ![Contract review flow: compile checks, review them, accept the contract or repair it within budget, otherwise remain unverified](assets/contract.svg)
 
-*Figure 2. Contract review for a final claim. A diamond asks a question; each outgoing arrow names the answer. Repair returns to review, and budget exhaustion stops acceptance.*
+*Contract review for a final claim. A diamond asks a question; each outgoing arrow names the answer. Repair returns to review, and budget exhaustion stops acceptance.*
+
+### Necessity and sufficiency
 
 For an intermediate claim `c`, permitted premises `P`, and mandatory conditions `O`, these review goals can be written as:
 
@@ -138,13 +172,19 @@ Sufficiency: P ∧ O  ⇒  c
 
 These formulas express the review goals. The current implementation asks models to assess relationships expressed in natural language; it does not discharge them through a formal proof kernel.
 
+### Preserve the full contract
+
 The Critic must see the complete check contract, including required evidence, mandatory or advisory severity, and whether an absence witness may refute the condition. Otherwise, a repair could quietly turn a mandatory condition into an advisory one without changing its text. Repairs that only append checks are also constrained: they may add conditions but may not alter existing contracts. The default review budget is four rounds. If no acceptable decomposition emerges, the system retains a failure record.
 
 Implementation: [`_compile_obligations()`](../../verifier/engine/kernel.py#L441) and the [Critic prompt](../../verifier/llm/prompts/critic.py).
 
-### 3.2 Separate evidence source from strength
+## Evidence and audit
 
-First consider the source. Reading a tool result that says “the answer is 15” establishes what the record contains. Recomputing the answer from the task and reading the captured file checks the task result independently. GV distinguishes these through `basis`:
+GV checks both how evidence was obtained and what it can establish. A method must meet the obligation's requirements, and its execution must survive an audit before its result can be accepted.
+
+### Evidence source
+
+First consider the source. In the [sum example](#getting-started), reading a tool result that says “the answer is 15” establishes what the record contains. Recomputing the answer from the task and reading the captured file checks the task result independently. GV distinguishes these through `basis`:
 
 | Basis | Meaning | Example |
 |---|---|---|
@@ -165,6 +205,8 @@ This snippet checks only the value; the required format needs its own check. GV'
 
 Independence also depends on where the expected answer comes from. If the agent created an `expected.txt` file, comparing two files produced by that agent does not automatically establish correctness. Evidence can therefore declare the origin and role of each input. The kernel rejects an input declared to be an agent deliverable when it is used as an authority for correctness. Whether those origins are declared accurately and completely still needs review.
 
+### Evidence strength
+
 Now consider strength. Running ten tests against real code inspects the deliverable, but may not cover every input. GV uses `strength` to distinguish how a method supports its target:
 
 | Strength | What the method claims to establish |
@@ -177,15 +219,19 @@ Basis and strength answer different questions. An event-identity check can be `r
 
 The system tries stronger methods first. A weaker method becomes eligible only after the stronger listed tiers have been found structurally unavailable; omitted stronger tiers and the downgrade itself are reviewed by the Judger. A crash or an unfavorable result does not automatically justify moving to a weaker method.
 
+### Execution and audit
+
 Once an eligible method is selected, execution follows this path:
 
 ![Evidence audit flow: execute a method, enforce evidence gates, audit the result, then accept, redo the same method, or reject the attempt](assets/audit.svg)
 
-*Figure 3. One candidate method. A result must pass both the kernel's evidence rules and the Judger's audit. The return arrow repeats execution of the same method; it does not redefine the obligation.*
+*Execution and audit for one candidate method. A result must pass both the kernel's evidence rules and the Judger's audit. The return arrow repeats execution of the same method; it does not redefine the obligation.*
 
 The **kernel gates** check the declared basis, admissible witness, and input authority. They also enforce decisive-only refutation: adverse findings from weaker methods remain diagnostic signals. Execution failures and unavailable results are recorded without becoming accepted evidence.
 
 The **Judger** then assesses substantive results, including proposed refutations. It checks whether the method can decide the obligation and whether execution actually followed that method against the right target. In the sum example, independently recomputing the sum is a suitable method, but reading an unrelated file on the verifier's machine would be an execution error. Such a deviation can trigger a redo of the same method. A procedure that merely compares two agent-authored answer files needs a different method, because its source of correctness is inadequate.
+
+### Retries and unresolved checks
 
 A redo retains the original method and the execution feedback, then submits the new artifacts for a fresh audit. The default limit is three redos. A failure to obtain a valid Judger response uses a separate audit retry; it does not authorize executing the method again.
 
@@ -193,7 +239,11 @@ Rejected candidates remain in the attempt record. An exhausted batch can request
 
 This process constrains the listed candidates and recorded execution. The Oracle may still miss a better method, and the Judger may misjudge sufficiency. Implementation: [`BindingGame.run()`](../../verifier/engine/game.py#L130).
 
-### 3.3 Check the final result independently
+## Independent final checks
+
+GV retains the agent's intermediate reasoning, but the final verdict must be established from the original task and delivered result. This prevents an unchecked intermediate conclusion from becoming an assumption in the final check.
+
+### Conditional intermediate claims
 
 Intermediate conclusions are often conditional. Suppose the agent claims:
 
@@ -211,19 +261,23 @@ Q may be locally verified while remaining effectively unverified. Basis and stre
 
 ![Conditional reasoning and independent final checks in the sum example](assets/reliance.svg)
 
-*Figure 4. Intermediate reasoning retains its unresolved premises. Final checks return to the original task and captured deliverables. Both paths remain available in the certificate.*
+*Intermediate reasoning retains its unresolved premises. Final checks return to the original task and captured deliverables. Both paths remain available in the certificate.*
+
+### Return to the original task
 
 A final claim has an empty set of permitted premises. The Compiler derives the complete success conditions from the original task. It cannot omit the numerical check because the agent previously claimed to have calculated the answer correctly. Established evidence may still be reused when it satisfies the current contract; unestablished intermediate conclusions cannot be assumed.
+
+### An incorrect premise and a correct result
 
 An incorrect intermediate explanation also need not invalidate a correct deliverable. The final result can be established independently. For intermediate reasoning, the current implementation propagates an effectively `refuted` state down a refuted premise chain to mark it as unusable. This is a dependency policy, not a logical proof that a false premise makes every downstream conclusion false. Final verdicts do not use that propagation policy to decide whether the deliverable is correct.
 
 If `task.md` is absent, GV can construct a contract only from the final claim's own wording. It cannot claim to have checked an original task that was never supplied. Implementation: [`effective()`](../../verifier/core/store.py#L356) and [`request_certificate()`](../../verifier/engine/certificate.py#L44).
 
-## 4. Key implementation mechanisms
+## Implementation
 
-The preceding rules must survive reuse, parallel execution, and resumption. Otherwise, conditions retained during one check can disappear the next time its result is used. Five mechanisms address this problem.
+The rules for contracts and evidence must survive reuse, parallel execution, and resumption. Otherwise, conditions retained during one check can disappear the next time its result is used. Five mechanisms address this problem.
 
-### 4.1 Include scope in shared check identities
+### Include scope in shared check identities
 
 Two claims may require the same check. Repeating model and tool calls is expensive, so GV stores obligations as shared graph nodes with identifiers derived from their content.
 
@@ -247,9 +301,9 @@ Inheriting a result from an identically worded claim also requires checking the 
 
 Code: [`Obligation.id`](../../verifier/core/model.py#L242), [`_settle_one()`](../../verifier/engine/kernel.py#L329).
 
-### 4.2 Invalidate evidence after a revision
+### Invalidate evidence after a revision
 
-Suppose the file initially contains `14`. After fixing it to contain `15` and a newline, the agent may submit the same statement: “The answer file is correct.” If identity depended only on text and dependencies, the new submission would hit the old record and the repair would never receive a fresh check.
+In the [sum example](#getting-started), suppose the file initially contains `14`. After fixing it to contain `15` and a newline, the agent may submit the same statement: “The answer file is correct.” If identity depended only on text and dependencies, the new submission would hit the old record and the repair would never receive a fresh check.
 
 An explicit `revises` reference therefore participates in claim identity. Ordinary duplicate submissions still deduplicate. Revising a previous claim creates a new verification version even when the text is unchanged. Replaying the same revision event retains the same identifier.
 
@@ -263,7 +317,7 @@ Affected states become `stale`; their basis and strength are cleared until reche
 
 This mechanism relies on explicit revisions and recorded relationships. It does not automatically detect every external state change. Code: [`Claim.id`](../../verifier/core/model.py#L193), [`_mark_stale_cone()`](../../verifier/core/store.py#L258).
 
-### 4.3 Coordinate concurrent checks
+### Coordinate concurrent checks
 
 Verification may call models, run tests, or install tools. Independent checks can run concurrently, but two claims may request the same shared node at the same time.
 
@@ -275,7 +329,7 @@ Parallelism reduces waiting but may do work that becomes unnecessary after a cou
 
 Code: [`_settle_obligations()`](../../verifier/engine/kernel.py#L273), [`_settle_one()`](../../verifier/engine/kernel.py#L329).
 
-### 4.4 Bind resumption to inputs and configuration
+### Bind resumption to inputs and configuration
 
 The previous run checked `15` followed by a newline; the file now contains `14`. Returning an existing `score.json` without checking its inputs could apply the old verdict to a new deliverable. Changes to the task, model, or verification code create the same problem.
 
@@ -291,7 +345,7 @@ Captured candidates may also be sealed by an adapter. Changes to an ordinary off
 
 Endpoints are recorded through fingerprints rather than raw URLs that might contain credentials. A remote model alias can still point to changing weights, so matching configuration does not make the entire model environment reproducible. Code: [`score()`](../../verifier/offline.py#L615).
 
-### 4.5 Retain inspectable artifacts
+### Retain inspectable artifacts
 
 The Executor has temporary execution directories and can use a persistent workspace to reuse tools and intermediate files. After a check, GV saves execution results, witnesses, and artifact snapshots. Merely placing a conclusion in the workspace does not give it verified status.
 
@@ -301,9 +355,9 @@ The retention scope matters. Text snapshots have file-count and content-size lim
 
 Code: [`ArtifactStore.put()`](../../verifier/execution/instruments.py#L33), [execution and snapshots](../../verifier/execution/discharge.py).
 
-## 5. Reading the results
+## Reading the results
 
-### 5.1 Five verdicts
+### Five verdicts
 
 The final verdict is determined by the final claim's own checks. Intermediate reasoning remains in the certificate for inspection; the fraction of passing nodes across the whole graph does not decide deliverable correctness.
 
@@ -319,7 +373,7 @@ An accepted mandatory counterexample gives `refuted` priority. Without one, an e
 
 `unscoreable` is a separate scoring-failure flag, for example after extraction failure or an invalidated input seal. It does not establish a counterexample. The CLI returns exit code 0 only for `verified`.
 
-### 5.2 Follow the evidence in a certificate
+### Follow the evidence in a certificate
 
 To inspect a certificate:
 
@@ -330,7 +384,7 @@ To inspect a certificate:
 
 If the answer file contains `14`, a credible refutation should identify what was read, why the expected answer is 15, and how the comparison was performed. An opinion that the answer “looks wrong” does not supply that evidence chain.
 
-### 5.3 Rank several candidates
+### Rank several candidates
 
 The selector ranks candidates by verdict band, then by the number of violated advisory conditions in the final contract:
 
@@ -345,9 +399,9 @@ Candidates with identical keys remain tied. `argmax_set` returns the entire best
 
 Code: [certificates](../../verifier/engine/certificate.py), [ranking features](../../verifier/offline.py), [selection](../../verifier/selection.py).
 
-## 6. Generality and limitations
+## Scope and limitations
 
-### 6.1 Three meanings of generality
+### Three meanings of generality
 
 GV expresses problems through tasks, claims, verification methods, and evidence. Its interface is not tied to one programming language or benchmark. Assessing generality still requires three separate questions:
 
@@ -357,7 +411,7 @@ GV expresses problems through tasks, claims, verification methods, and evidence.
 
 A general interface cannot recover an external service state that was never captured. Prompts without domain-specific terms can discourage obvious special cases, but do not demonstrate reliability in new domains.
 
-### 6.2 Trace a check to its source
+### Trace a check to its source
 
 `clause` records the task or claim wording behind an obligation. It helps answer “Where did this requirement come from?” and detect additions such as requiring a loop in the sum example.
 
@@ -365,7 +419,7 @@ A quotation does not establish a derivation. An obligation may follow from sever
 
 The field is therefore an inspectable source record, not a complete justification of the obligation. Separately recording direct quotations, authoritative sources, and derivation reasons is a possible design to evaluate. The current implementation does not provide that full representation.
 
-### 6.3 Decide when absence is evidence
+### Decide when absence is evidence
 
 The Boolean `refutable_by_absence` works with witness categories to control whether “not found” can refute a condition. If a task requires a file and a complete directory capture establishes that it is absent, absence may be a counterexample. A truncated log that never mentions the file only establishes a gap in the log.
 
@@ -373,7 +427,7 @@ The distinction depends on search scope, capture completeness, and time. The pro
 
 The underlying problem applies broadly, but a Boolean is a coarse representation. Evaluation should determine whether the field reduces false verdicts, rejects valid counterexamples, or would benefit from more explicit records of search scope.
 
-### 6.4 Trust boundaries
+### Trust boundaries
 
 Several boundaries affect how a certificate should be interpreted.
 
@@ -385,37 +439,29 @@ Several boundaries affect how a certificate should be interpreted.
 
 A GV certificate retains a judgment's task interpretation, checks, and evidence. Its semantic correctness still requires independent evaluation.
 
-## 7. Validation and research questions
+## Evaluation
 
-### 7.1 What has been tested
+Software regression tests check the program's rules for contracts, evidence, revisions, and resumption. They do not measure whether live models choose sufficient checks or interpret evidence correctly. The evaluation below is a proposed protocol for measuring those semantic judgments and their cost.
 
-This report describes implementation snapshot `e55aa91`. That revision passed **469 pytest tests**. This is a software regression result for that snapshot, not a model-accuracy or code-coverage measurement.
+### How to evaluate the design
 
-| Mechanism | Behavior covered by regression tests | Representative tests |
-|---|---|---|
-| Check generation and final contract | Full-field review; no assumed premises for final checks | [Critic](../../tests/test_critic.py), [certificate folding](../../tests/test_certificate_fold.py) |
-| Evidence reuse | Preserve premises, basis, strength, and counterexample applicability | [Evidence reuse](../../tests/test_evidence_reuse.py) |
-| Revisions and concurrency | Recheck revisions; avoid duplicate execution of concurrent shared checks | [Revisions](../../tests/test_revisions.py), [parallel checks](../../tests/test_parallel.py) |
-| Resumption and capture | Reject incompatible judgments after input or configuration changes | [Offline scoring](../../tests/test_offline.py), [candidate sealing](../../tests/test_candidate_seal.py) |
-| Execution failures | Failed processes and leftover output cannot become fresh success | [Codex backend](../../tests/test_codex_backend.py) |
-
-Most model roles use fixed responses so that program rules can be tested in isolation. Some cases read real files, execute calculations, or simulate subprocess failures. These tests establish specific software behavior; they do not establish that live models will generate equally sufficient checks.
-
-To reproduce the snapshot's regression run, check out its full revision and run `uv run pytest -q`. The current main branch also includes website build tests, so its test count may differ.
-
-### 7.2 How to evaluate the design
-
-The repository has [experiment entry points](../../experiments/README.md) for FrontierMath, SWE-bench Pro, and Terminal-Bench. This report does not derive a performance leaderboard from run directories whose provenance and versions have not been checked. The following is a proposed evaluation protocol.
+The repository has [experiment entry points](../../experiments/README.md) for FrontierMath, SWE-bench Pro, and Terminal-Bench. The presence of experiment code alone does not establish accuracy or a performance advantage.
 
 First, fix the candidate runs for each task. Every offline selector should see the same tasks, records, and deliverables. Correctness labels should come from independent evaluation and remain hidden from verifier roles until verification ends. Interactive verification needs a separate experimental group because it changes generation.
 
-Then report three dimensions together: errors among the strongest verdicts, the share of correct candidates that receive support, and the calls, tokens, cost, and time required. Failures and `unscoreable` runs belong in the denominators. Candidate selection should also report success rate, tied sets, and variability across repeated scoring, so that one accuracy number does not hide excessive abstention or cost.
+### Measure reliability, coverage, and cost
+
+Report three dimensions together: errors among the strongest verdicts, the share of correct candidates that receive support, and the calls, tokens, cost, and time required. Failures and `unscoreable` runs belong in the denominators. Candidate selection should also report success rate, tied sets, and variability across repeated scoring, so that one accuracy number does not hide excessive abstention or cost.
+
+### Test the design choices
 
 Ablations should test the contributions of independent final checks, the Critic, actual execution, basis and strength gates, reuse and caching, source quotations, and absence rules. Report denominators and confidence intervals for proportions, and use paired comparisons for the same tasks. Zero observed errors still requires a sample size and an uncertainty estimate.
 
+### Test new domains and equivalent inputs
+
 For generality, freeze prompts and verdict policies before testing domains not used to tune the rules. Task paraphrases, irrelevant success messages, truncated evidence, equivalent witness descriptions, and candidate-order changes can help reveal whether judgments depend on task facts or presentation.
 
-## Appendix: code and references
+## Code and references
 
 ### Code reading guide
 
@@ -430,7 +476,7 @@ For generality, freeze prompts and verdict policies before testing domains not u
 | How are final checks combined? | [`Kernel._settle`](../../verifier/engine/kernel.py#L1267), [`request_certificate`](../../verifier/engine/certificate.py#L44) |
 | How are captured paths resolved? | [`WorldView`](../../verifier/core/world.py) |
 
-Code links on the website are pinned to the implementation reviewed here. Relative Markdown links follow the revision being browsed on GitHub. To inspect the cited line numbers, switch to implementation snapshot `e55aa91`.
+Code links open the implementation discussed on these pages.
 
 ### Related work
 

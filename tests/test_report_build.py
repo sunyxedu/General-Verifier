@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from urllib.parse import unquote, urlsplit
 
-from script.build_report import PUBLISHED, ROOT, build, render_report, source_url
+from script.build_report import HTML_PAGES, PUBLISHED, ROOT, build, render_report, source_url
 
 
 class PageLinks(HTMLParser):
@@ -28,24 +28,51 @@ class ReportBuildTests(unittest.TestCase):
     def test_full_site_has_only_report_files_and_resolved_local_links(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "site"
-            page = build(output)
-            first_build = page.read_bytes()
-            parser = PageLinks()
-            parser.feed(first_build.decode())
-            self.assertEqual(len(parser.ids), len(set(parser.ids)))
-            for url in parser.urls:
-                parsed = urlsplit(url)
-                if parsed.scheme or parsed.netloc:
-                    continue
-                if parsed.path:
-                    self.assertTrue((output / unquote(parsed.path)).is_file(), url)
-                if parsed.fragment:
-                    self.assertIn(unquote(parsed.fragment), parser.ids, url)
+            build(output)
+            first_build = {name: (output / name).read_bytes() for name in PUBLISHED}
+            documents = {}
+            for name in PUBLISHED:
+                if name.endswith((".html", ".svg")):
+                    parser = PageLinks()
+                    parser.feed(first_build[name].decode())
+                    self.assertEqual(len(parser.ids), len(set(parser.ids)), name)
+                    documents[(output / name).resolve()] = parser
+            for path, parser in documents.items():
+                for url in parser.urls:
+                    parsed = urlsplit(url)
+                    if parsed.scheme or parsed.netloc:
+                        continue
+                    target = (path.parent / unquote(parsed.path)).resolve() if parsed.path else path
+                    self.assertTrue(target.is_relative_to(output), (path.name, url))
+                    self.assertTrue(target.is_file(), (path.name, url))
+                    if parsed.fragment:
+                        self.assertIn(unquote(parsed.fragment), documents[target].ids, (path.name, url))
             self.assertEqual(
                 {p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()},
                 PUBLISHED,
             )
-            self.assertEqual(build(output).read_bytes(), first_build)
+            build(output)
+            self.assertEqual({name: (output / name).read_bytes() for name in PUBLISHED}, first_build)
+
+    def test_topic_navigation_and_single_page_reading_share_the_same_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            build(output)
+            complete = PageLinks()
+            complete.feed((output / "report.html").read_text())
+            # Every topic section is available in the complete reading/print view.
+            for name in HTML_PAGES - {"report.html"}:
+                page = PageLinks()
+                page.feed((output / name).read_text())
+                self.assertTrue(set(page.ids).issubset(complete.ids), name)
+            overview = PageLinks()
+            overview.feed((output / "index.html").read_text())
+            self.assertIn("contracts.html#task-contracts", overview.urls)
+            self.assertIn("results.html#five-verdicts", overview.urls)
+            self.assertIn("#task-contracts", complete.urls)
+            self.assertIn("#five-verdicts", complete.urls)
+            # In the complete view, content links stay within that document.
+            self.assertNotIn("contracts.html#task-contracts", complete.urls)
 
     def test_implementation_links_are_pinned_to_reviewed_history(self):
         revision = "a" * 40

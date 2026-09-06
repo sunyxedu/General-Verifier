@@ -4,45 +4,49 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <meta name="description" content="General Verifier checks whether an agent's result satisfies its task and preserves the evidence behind the verdict.">
-  <meta property="og:type" content="article">
-  <meta property="og:title" content="General Verifier">
+  <meta name="description" content="How General Verifier checks AI agent results: task contracts, verification methods, evidence, and verdicts.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="$tab_title">
   <meta property="og:description" content="How General Verifier turns agent tasks into checks, gathers evidence, and produces a verdict.">
-  <title>General Verifier</title>
+  <title>$tab_title</title>
   <link rel="stylesheet" href="assets/report.css">
   <script src="assets/report.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#report">Skip to content</a>
-  <aside class="sidebar">
-    <a class="brand" href="#top">General Verifier</a>
-    <details class="contents" open>
-      <summary class="contents-title">Contents</summary>
-      <nav aria-label="Report contents"><ol class="chapters">$toc</ol></nav>
-    </details>
-    <div class="sidebar-links">
-      <a href="$repository">GitHub repository ↗</a>
-      <a href="$report_source">Markdown source ↗</a>
-    </div>
-  </aside>
+  <div class="layout" id="top">
+    <aside class="sidebar">
+      <a class="brand" href="index.html">General Verifier</a>
+      <details class="site-menu" open>
+        <summary>Site map</summary>
+        <nav aria-label="Site map">$navigation</nav>
+        <p class="nav-group">Links</p>
+        <ul class="resource-links">
+          <li><a href="$repository">GitHub repository ↗</a></li>
+          <li><a href="$report_source">Markdown source ↗</a></li>
+          <li><a href="report.html">Read as one page</a></li>
+        </ul>
+      </details>
+    </aside>
 
-  <main id="top">
-    <div class="document">
-      <div class="toolbar">
-        <span>Technical report</span>
-        <div><a href="$report_source">View source</a><button class="print-button" type="button" hidden>Print / PDF</button></div>
-      </div>
-      <header class="document-header">
-        <h1>General Verifier</h1>
-      </header>
-      <article id="report" class="prose" aria-label="Technical report" tabindex="-1">
+    <main class="document">
+      <article id="report" class="prose" tabindex="-1">
+        <h1 id="$title_id">$title</h1>
         $body
       </article>
+      <nav class="page-navigation" aria-label="Reading order">$pager</nav>
       <footer class="footer">
-        <span>General Verifier · Technical report</span>
+        <button class="print-button" type="button" hidden>Print this page</button>
         <a href="#top">Back to top ↑</a>
       </footer>
-    </div>
-  </main>
+    </main>
+
+    <aside class="page-sidebar">
+      <details class="page-menu" open>
+        <summary>On this page</summary>
+        <nav aria-label="On this page"><ul>$toc</ul></nav>
+      </details>
+    </aside>
+  </div>
 </body>
 </html>
