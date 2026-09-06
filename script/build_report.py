@@ -11,6 +11,7 @@ import re
 import subprocess
 from string import Template
 from urllib.parse import quote, unquote, urlsplit
+from xml.etree import ElementTree as ET
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -113,7 +114,33 @@ def render_report(markdown: str, repository: str, revision: str,
     render_image = md.renderer.rules["image"]
 
     def linked_image(tokens, index, options, env):
-        src = escape(tokens[index].attrGet("src") or "", quote=True)
+        source = tokens[index].attrGet("src") or ""
+        src = escape(source, quote=True)
+        if source in {f"assets/{name}" for name in DIAGRAMS}:
+            # Inline only the bundled diagrams so their step links work in
+            # place. Each SVG remains a standalone, downloadable source file.
+            ET.register_namespace("", "http://www.w3.org/2000/svg")
+            diagram = ET.fromstring((REPORT / source).read_text(encoding="utf-8"))
+            for link in diagram.iter("{http://www.w3.org/2000/svg}a"):
+                href = link.get("href", "")
+                prefix = "../index.html#"
+                if not href.startswith(prefix):
+                    raise ValueError(f"Diagram link must target a report section: {href}")
+                anchor = unquote(href[len(prefix):])
+                if anchor not in ids:
+                    raise ValueError(f"Unknown diagram section: {href}")
+                link.set("href", f"#{anchor}")
+            label = escape(tokens[index].content, quote=True)
+            svg = ET.tostring(diagram, encoding="unicode")
+            return (
+                '<span class="diagram-frame">'
+                f'<span class="diagram-scroll" role="region" aria-label="{label}" '
+                f'tabindex="0">{svg}</span>'
+                '<span class="diagram-tools">'
+                '<span class="diagram-hint">Scroll horizontally to follow the flow.</span>'
+                f'<a href="{src}">Open full-size diagram ↗</a>'
+                '</span></span>'
+            )
         return (f'<a class="figure-link" href="{src}" title="Open full-size diagram">'
                 f'{render_image(tokens, index, options, env)}</a>')
 
