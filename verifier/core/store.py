@@ -239,8 +239,39 @@ class ClaimStore:
 
     @_locked
     def _mark_stale_cone(self, claim_id: str) -> None:
-        for cid in [claim_id, *self.downstream(claim_id)]:
-            self.db.execute("UPDATE claims SET status=? WHERE id=?", (STATUS_STALE, cid))
+        # Claim dependencies alone omit two forms of reliance: a claim's
+        # compiled checks, and verdicts inherited from another statement.
+        # Invalidate both the checks and every consumer of their evidence.
+        affected_by: Dict[str, Set[str]] = {}
+
+        def link(source, consumer):
+            affected_by.setdefault(source, set()).add(consumer)
+
+        for parent, child in self.db.execute("SELECT parent, child FROM deps"):
+            link(parent, child)
+        for owner, obligation in self.db.execute(
+                "SELECT claim, obligation FROM obligation_edges"):
+            link(owner, obligation)
+            link(obligation, owner)
+        # Only the current evidence matters: a later independent check
+        # must not retain an obsolete inheritance dependency forever.
+        for consumer, payload in self.db.execute(
+                "SELECT claim_id, payload FROM evidence WHERE rowid IN "
+                "(SELECT MAX(rowid) FROM evidence GROUP BY claim_id)"):
+            evidence = json.loads(payload)
+            if evidence.get("instrument") == "graph" and evidence.get("source"):
+                link(evidence["source"], consumer)
+
+        stale, pending = set(), [claim_id]
+        while pending:
+            cid = pending.pop()
+            if cid in stale:
+                continue
+            stale.add(cid)
+            pending.extend(affected_by.get(cid, ()))
+        self.db.executemany(
+            "UPDATE claims SET status=?, reason=NULL, basis=NULL, strength=NULL "
+            "WHERE id=?", [(STATUS_STALE, cid) for cid in stale])
 
     # evidence
     @_locked
