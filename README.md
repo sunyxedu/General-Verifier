@@ -8,13 +8,15 @@
 [![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-8B5CF6)](https://github.com/sunyxedu/General-Verifier)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-F59E0B)](#project-status-and-limitations)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [How it works](#how-it-works) · [Verdicts](#reading-the-result) · [Your own traces](#score-your-own-traces) · [Development](#development)
+[Quick start](#quick-start) · [Architecture](#architecture) · [Technical report](docs/report/report.md) · [How it works](#how-it-works) · [Verdicts](#reading-the-result) · [Your own traces](#score-your-own-traces) · [Development](#development)
 
 </div>
 
 General Verifier (GV) takes a **finished agent run**: the original task, recorded tool calls and results, the agent's final answer, and any captured deliverables. It turns the task into explicit checks, uses model agents to carry them out and audit the evidence, and saves a certificate explaining what passed, what failed, and what remains unknown. You can inspect one run or use the verdicts to select among several attempts at the same task.
 
 For example, suppose the task is “compute 1 + 2 + 3 + 4 + 5 and save the result in `/app/answer.txt`.” A transcript saying “done” tells you what the agent reported. Checking success requires computing the expected sum from the task and comparing it with the **captured answer file**. GV is built to make that distinction explicit.
+
+The [technical report](docs/report/report.md) explains the architecture, evidence rules, generality questions, and evaluation plan in Chinese, with an English abstract. Its [web edition](https://sunyxedu.github.io/General-Verifier/) becomes available after the [one-time GitHub Pages setup](docs/report/README.md); subsequent report changes publish automatically.
 
 > [!IMPORTANT]
 > A `verified` certificate means GV accepted the compiled task checks and their evidence. Models still interpret the task, propose checks, and judge whether those checks are sufficient. A mistaken interpretation or audit can produce a false verdict. The certificate makes the judgment inspectable; it is not a guarantee of correctness.
