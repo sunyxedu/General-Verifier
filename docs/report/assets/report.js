@@ -6,17 +6,9 @@ printButton.addEventListener('click', () => window.print());
 const siteMenu = document.querySelector('.site-menu');
 const pageMenu = document.querySelector('.page-menu');
 const mobile = window.matchMedia('(max-width: 760px)');
-const narrow = window.matchMedia('(max-width: 1200px)');
-const setMenus = () => {
-  siteMenu.open = !mobile.matches;
-  pageMenu.open = !narrow.matches;
-};
-setMenus();
-mobile.addEventListener('change', setMenus);
-narrow.addEventListener('change', setMenus);
-pageMenu.addEventListener('click', event => {
-  if (narrow.matches && event.target.closest('a')) pageMenu.open = false;
-});
+const setSiteMenu = () => { siteMenu.open = !mobile.matches; };
+setSiteMenu();
+mobile.addEventListener('change', setSiteMenu);
 
 const links = [...pageMenu.querySelectorAll('a')];
 const headings = [...document.querySelectorAll('.prose h2, .prose h3')];

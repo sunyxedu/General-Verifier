@@ -4,7 +4,7 @@
 
 The website opens with a short explanation of GV and a clickable workflow. Focused pages cover getting started, the workflow, task contracts, evidence audit, independent final checks, implementation, results, limitations, evaluation, and references. All pages are in English.
 
-The left navigation is a site map; the right navigation lists sections on the current page. Both collapse on narrow screens. The site also provides code copying, section links, and print styles. Wide diagrams scroll within their own viewport and have a full-size link. Text, diagrams, and links work offline without JavaScript; native menus remain expandable.
+The left navigation is a site map; the right navigation lists sections on the current page without a visible heading. On narrow screens, the site map collapses and the right-hand list is hidden. The site also provides code copying, section links, and print styles. Wide diagrams scroll within their own viewport and have a full-size link. Text, diagrams, and links work offline without JavaScript; the native site menu remains expandable.
 
 ## Publish with GitHub Pages
 
@@ -33,7 +33,7 @@ uv run --no-project --with-requirements docs/report/requirements.txt python scri
 python3 -m http.server 8000 --bind 127.0.0.1 --directory _site
 ```
 
-Open **<http://localhost:8000/>** or open `_site/index.html` directly in a browser. Use **Print this page** at the bottom, or the browser's print menu, to export the current topic. Choose **Read as one page** in the site map to read or print the complete report. Content, navigation, and images require neither JavaScript nor an external CDN.
+Open **<http://localhost:8000/>** or open `_site/index.html` directly in a browser. Use **Print this page** at the bottom, or the browser's print menu, to export the current topic. The complete document remains available at `_site/report.html` for full-document printing and existing links; it has no entry in the site map. Content, navigation, and images require neither JavaScript nor an external CDN.
 
 The site build installs only two pinned Markdown parser dependencies. It does not start the verifier or invoke models. The default output directory, `_site/`, is ignored by Git.
 
@@ -47,7 +47,7 @@ Write for technical readers who are new to GV:
 - Explain why a component exists before describing how it works. Choose implementation details that affect correctness, reproducibility, or cost, and explain the problem each mechanism solves.
 - Reuse the same example when developing a concept. Keep code snippets focused and link to the complete implementation at a fixed revision.
 - Distinguish measured results, explanatory examples, and proposed experiments. When discussing a semantic limitation, say which conclusion it limits.
-- Keep the layout plain: a white background, normal-weight headings, site navigation, and a separate page contents list. Avoid numbered chapter headings, a report-style cover, subtitles, and metadata strips.
+- Keep the layout plain: a white background, normal-weight headings, site navigation, and a separate page contents list. Show the section links without a visible heading on wide screens; hide that list on smaller screens. Do not add a single-page reading link to the site map. Avoid numbered chapter headings, a report-style cover, subtitles, and metadata strips.
 - The overview's browser title is General Verifier. Topic tabs use the topic name followed by General Verifier. Keep commit IDs, dates, regression counts, and validation records out of the published prose; retain the implementation pin internally for source links.
 
 The main layout reference is [AFL++ documentation](https://aflplus.plus/docs/): an overview introduces the workflow, actions link to detailed explanations, and site navigation is separate from the current page's contents. Its [in-depth guide](https://aflplus.plus/docs/fuzzing_in_depth/) connects operational steps to their reasons. The [Rust Book](https://doc.rust-lang.org/stable/book/ch04-01-what-is-ownership.html) and [Tradingflow](https://bridgekat.github.io/tradingflow/tradingflow/index.html) also show how to build explanations around concrete examples. Claims about GV itself must come from its implementation.
