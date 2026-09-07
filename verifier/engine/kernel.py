@@ -38,6 +38,12 @@ from ..core.model import (
 from ..llm import prompts
 from ..llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
 from ..core.store import ClaimStore
+from .authority_view import (
+    AuthorityViewUnavailable, build_authority_compilation_view,
+)
+from .contract_cache import (
+    CompiledFinalContract, contract_cache_key,
+)
 
 # attack rounds on a decomposition before the claim fails closed: each round
 # is one critic attempt; an `insufficient` verdict sends the decomposition
@@ -101,6 +107,7 @@ class Kernel:
         critic_rounds: Optional[int] = None,
         parallel_obligations: int = 1,
         parallel_claims: int = 1,
+        contract_cache=None,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -132,6 +139,7 @@ class Kernel:
             live_world=live_world, store=store)
         self.binder = binder      # binding game; None -> direct discharge (tests)
         self.memory = memory      # advisory stores; None -> static hints
+        self.contract_cache = contract_cache
         store.on_trigger(self.verify)  # the single rule wires straight in
 
     # locks and pools
@@ -439,6 +447,10 @@ class Kernel:
         return set(self.store.backward_slice(row["id"])[1:])
 
     def _compile_obligations(self, row: Dict):
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        handled, payload = self._authority_final_contract(row, state)
+        if handled:
+            return self._materialize_obligations(row, payload)
         memory_hits = (
             self.memory.hits_for_obligations(row["text"])
             if self.memory is not None else self.memory_hits
@@ -451,7 +463,6 @@ class Kernel:
         # compiler residualize an authoritative task requirement out of the
         # contract.  Exact obligation dedup/inheritance still happens after
         # compilation, so sound reuse remains available.
-        state = os.path.dirname(os.path.abspath(self.log.path))
         task_context = authoritative_task_context(state)
         independent_final = row["kind"] == CLAIM_FINAL
         # graph context: EVERY premise (dep) is assumable — the claim's
@@ -525,8 +536,119 @@ class Kernel:
         }
         payload = self.obligations_role.call(self.backend, variables)
         payload = self._critique(row, payload, variables)
+        return self._materialize_obligations(row, payload)
+
+    def _authority_final_contract(self, row: Dict, state: str):
+        """Try a candidate-independent contract; unsupported inputs use legacy.
+
+        No candidate-derived variables are even constructed on this path.
+        Compilation failures remain failures; only a passing Critic can fill
+        the cache. The Oracle and all candidate verification run afterwards.
+        """
+        if self.contract_cache is None or row["kind"] != CLAIM_FINAL:
+            return False, None
+        if self.critic_role is None or self.critic_rounds < 1:
+            self.log.append("contract_cache_bypass", {
+                "claim": row["id"], "reason": "independent Critic required"})
+            return False, None
+        from ..llm.authority_backend import (
+            AuthorityBackendUnavailable, authority_compilation_backend,
+        )
+        from ..llm.schema import validate
+
+        try:
+            view = build_authority_compilation_view(state)
+            with authority_compilation_backend(
+                    self.backend, self.obligations_role,
+                    self.critic_role) as session:
+                variables = self._authority_contract_variables(view)
+                key = contract_cache_key(
+                    view=view, variables=variables,
+                    backend_identity=session.identity,
+                    obligations_role=session.obligations_role,
+                    critic_role=session.critic_role,
+                    critic_rounds=self.critic_rounds)
+                lease = self.contract_cache.acquire(key)
+                try:
+                    # The lookup/single-flight wait may outlive an online task
+                    # revision. Never attach a previous contract to that task.
+                    view.revalidate(state)
+                    session.revalidate()
+                    if lease.entry is not None:
+                        validate(session.obligations_role.schema,
+                                 lease.entry.payload)
+                        self.log.append("contract_cache_hit", {
+                            "claim": row["id"], "key": key,
+                            "authority": view.identity,
+                            "source_digest": lease.entry.source_digest,
+                            "waited": lease.waited})
+                        return True, lease.entry.payload
+                    self.log.append("contract_cache_miss", {
+                        "claim": row["id"], "key": key,
+                        "authority": view.identity,
+                        "leader": lease.leader, "waited": lease.waited})
+                    payload = session.obligations_role.call(
+                        session.backend, variables)
+                    payload = self._critique(
+                        row, payload, variables, backend=session.backend,
+                        obligations_role=session.obligations_role,
+                        critic_role=session.critic_role)
+                    view.revalidate(state)
+                    session.revalidate()
+                    if payload is None:
+                        return True, None
+                    validate(session.obligations_role.schema, payload)
+                    # Empty decompositions never certify a contract.
+                    if not payload["obligations"]:
+                        return True, payload
+                    entry = CompiledFinalContract.from_payload(payload)
+                    published = True
+                    if lease.leader:
+                        lease.finish(entry)
+                    else:
+                        entry, published = self.contract_cache.publish_if_absent(key, entry)
+                        payload = entry.payload
+                    self.log.append("contract_cache_published" if published
+                                    else "contract_cache_hit", {
+                        "claim": row["id"], "key": key,
+                        "authority": view.identity,
+                        "waited": lease.waited,
+                        "after_duplicate_fill": not published,
+                        "source_digest": entry.source_digest})
+                    return True, payload
+                finally:
+                    lease.finish()
+        except (AuthorityViewUnavailable, AuthorityBackendUnavailable) as error:
+            self.log.append("contract_cache_bypass", {
+                "claim": row["id"], "reason": str(error)[:300]})
+            return False, None
+
+    @staticmethod
+    def _authority_contract_variables(view):
+        withheld = "withheld: authority-only contract compilation"
+        return {
+            "claim_text": (
+                "The fixed current candidate satisfies the complete "
+                "authoritative task contract. Its response, delivered "
+                "artifacts, and execution history are opaque subjects, not "
+                "available facts. Compile requirements about that candidate "
+                "without substituting another candidate or inventing values."),
+            "claim_kind": CLAIM_FINAL,
+            "contract_locus": prompts.CONTRACT_LOCUS_FINAL,
+            "task_context": view.context_json,
+            "ledger_path": withheld,
+            "world_mode": "authority-only",
+            "world_path": withheld,
+            "world_map": withheld,
+            "verified_deps": "[]", "pending_deps": "[]",
+            "dependency_referent_context": json.dumps({"withheld": withheld}),
+            "graph": "[]", "memory_hits": "[]", "critic_feedback": "",
+        }
+
+    def _materialize_obligations(self, row: Dict, payload):
         if payload is None:
             return None
+        independent_final = row["kind"] == CLAIM_FINAL
         obligations = [
             Obligation(row["id"], o["text"],
                        o.get("required_basis", BASIS_RECORD),
@@ -580,7 +702,8 @@ class Kernel:
         )
         return obligations
 
-    def _critique(self, row: Dict, payload: Dict, variables: Dict):
+    def _critique(self, row: Dict, payload: Dict, variables: Dict, *,
+                  backend=None, obligations_role=None, critic_role=None):
         """
         Adversarial second signature on the decomposition: the critic
         tries to construct a world where every obligation and every verified
@@ -591,7 +714,10 @@ class Kernel:
         one still standing after critic_rounds fails closed (returns
         None, claim stays unverified).
         """
-        if self.critic_role is None:
+        backend = self.backend if backend is None else backend
+        obligations_role = obligations_role or self.obligations_role
+        critic_role = critic_role or self.critic_role
+        if critic_role is None:
             return payload
         # The compiler and critic receive the same inlined harness truth.
         # A path-only pointer let a model skip the Read and then infer task
@@ -605,11 +731,11 @@ class Kernel:
         repair_calls = 0          # (memoryless rounds oscillated: a demand
         while critic_calls < self.critic_rounds:  # overruled in round n was
             round_no = critic_calls               # re-issued verbatim in n+2)
-            verdict = self.critic_role.call(
-                self.backend,
+            verdict = critic_role.call(
+                backend,
                 {
-                    "claim_text": row["text"],
-                    "claim_kind": row["kind"],
+                    "claim_text": variables["claim_text"],
+                    "claim_kind": variables["claim_kind"],
                     "contract_locus": variables["contract_locus"],
                     "task_context": task_context,
                     "ledger_path": variables["ledger_path"],
@@ -664,8 +790,7 @@ class Kernel:
                     variables,
                     critic_feedback=semantic_feedback + guard_feedback,
                 )
-                candidate = self.obligations_role.call(
-                    self.backend, repair_variables)
+                candidate = obligations_role.call(backend, repair_variables)
                 repair_calls += 1
                 violation = None
                 if verdict["missing_condition"].lstrip().startswith(

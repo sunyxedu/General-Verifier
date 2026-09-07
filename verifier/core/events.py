@@ -30,6 +30,10 @@ EVENT_TYPES = (
     "obligations_compiled",
     "obligations_residualized",
     "decomposition_attacked",
+    "contract_cache_miss",
+    "contract_cache_hit",
+    "contract_cache_published",
+    "contract_cache_bypass",
     
     # binding game
     "methods_enumerated",

@@ -269,7 +269,7 @@ def _default_kernel(sc: Service, model, backend=None,
     from .llm.agents import (
         ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
     )
-    from .execution.config import typed_adapters_enabled
+    from .execution.config import typed_adapters_enabled, contract_cache_enabled
     from .execution.discharge import AgentDischarger
     from .engine.game import BindingGame
 
@@ -326,11 +326,16 @@ def _default_kernel(sc: Service, model, backend=None,
         # online (live world): one claim at a time as commits arrive
         parallel_claims = (1 if sc.live_world
                            else _parallel_default("GV_PARALLEL_CLAIMS", 4))
+    contract_cache = None
+    if contract_cache_enabled():
+        from .engine.contract_cache import default_compiled_final_contract_cache
+        contract_cache = default_compiled_final_contract_cache()
     return Kernel(sc.store, sc.log, backend, sc.artifacts,
                   obligations_role=obligations,
                   discharger=discharger, binder=binder,
                   memory=sc.memory, live_world=sc.live_world,
                   critic_rounds=critic_rounds,
+                  contract_cache=contract_cache,
                   parallel_obligations=parallel_obligations,
                   parallel_claims=parallel_claims)
 

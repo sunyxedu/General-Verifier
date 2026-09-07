@@ -1,6 +1,7 @@
-# Stable Final Contract Cache (Proposal)
+# Stable Final Contract Cache
 
-Status: proposal only; not implemented.
+Status: implemented experimentally; `GV_CONTRACT_CACHE=1` opts in. Default is
+off until paired multi-candidate evaluation passes. No 10x or no-loss claim yet.
 
 ## Scope
 
@@ -36,11 +37,29 @@ artifacts, or candidate-local absolute paths. If `Read`, `Grep`, and `Glob` rema
 realpath-checked, read-only allowlist limited to task and baseline authority; symlink escapes fail
 closed. Inlining bounded authority material with no filesystem tools is also valid.
 
-This isolation must be implemented and tested before reuse is enabled.
+`authority_view.py` reads bounded, stable, no-link task/baseline files and
+inlines a canonical logical view. Solver text, memory hits, world paths and
+ledger content are withheld from both seats and every repair round. Baseline
+absence is explicit; its presence does not expose delivered files.
 
-## Proposed cache
+The built-in SDK uses an empty hard tool palette and a fresh scratch cwd.
+Codex uses the same model settings, a fresh scratch cwd, root-deny/read-only
+permissions, disabled tool/connector/skill surfaces, and an allowlisted
+single-turn JSON event stream. Unexpected tool activity rejects the generation.
+An exact capability-disabled startup notice is allowed; arbitrary errors are
+not. Unknown backends and custom role subclasses bypass this path. Local and
+UTC calendar identity are rechecked after waits and fills.
 
-Add a bounded, process-local, single-flight `CompiledFinalContractCache`. Store only the complete
+Permission profiles and non-shell tool controls are separate boundaries; see
+[OpenAI permissions](https://learn.chatgpt.com/docs/permissions) and the
+[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+The installed CLI is checked as well: 0.153.4 rejects the documented legacy
+`tools.view_image` under strict config, so the implementation uses its supported
+`features.view_image=false`. Unknown configuration fails closed.
+
+## Implemented cache
+
+The bounded, process-local, single-flight `CompiledFinalContractCache` stores only the complete
 obligation payload after the Critic passes it, never candidate verdicts or evidence. Do not cache
 failures, rejected or malformed payloads, exceptions, or interrupted calls.
 
@@ -75,6 +94,8 @@ candidate metadata. Exclude a free-form input only after removing it from the se
 - Bound entries with LRU eviction; return detached deep copies.
 - Keep entries in trusted process memory; disk reuse needs separate authentication.
 - Log hits, misses, bypass reasons, source digest, and single-flight waits.
+- A losing concurrent fill returns the already-stored approved contract and
+  logs a hit, not a publication of a payload it never stored.
 
 ## Accepted-method direction safety
 
