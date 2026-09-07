@@ -162,8 +162,14 @@ class BindingGame:
             return self._run_uncached(row, obligation)
         if not lease.leader:
             # The concurrent leader found no eligible accepted method.  Do
-            # not serialize another cold fill; proceed independently.
-            return self._run_uncached(row, obligation)
+            # not serialize another cold fill; proceed independently.  A
+            # successful follower may still seed later candidates.
+            result = self._run_uncached(row, obligation)
+            if self._method_cache_key(row, obligation) == key:
+                accepted = self._accepted_method(row, obligation, result)
+                if accepted is not None:
+                    self.method_cache.publish_if_absent(key, accepted)
+            return result
 
         accepted = None
         try:

@@ -289,6 +289,20 @@ class AcceptedMethodCache:
             if flight is not None:
                 flight.done.set()
 
+    def publish_if_absent(self, key: str, entry: AcceptedMethod) -> None:
+        """Publish a valid result produced after a failed cold-key flight.
+
+        Followers deliberately stop waiting when the original leader cannot
+        fill.  They may then run independently; the first successful one
+        should still benefit later candidates.
+        """
+        with self._lock:
+            if key not in self._entries:
+                self._entries[key] = entry.detached()
+                self._entries.move_to_end(key)
+                while len(self._entries) > self.max_entries:
+                    self._entries.popitem(last=False)
+
     def clear(self) -> None:
         """Test/administrative reset; never interrupts an active fill."""
         with self._lock:
