@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from experiments.terminal_bench import profile_typed_adapter_eval as profile
 
 
@@ -189,3 +191,35 @@ def test_missing_usage_file_is_not_a_zero_cost_success(tmp_path):
     assert group["usage_files"] == {"declared": 1, "readable": 0}
     assert group["roles"] == []
     assert any("usage unavailable" in issue for issue in report["issues"])
+
+
+def test_first_running_process_does_not_require_a_terminal_ledger(tmp_path):
+    marker = tmp_path / "runs" / "first" / "run-state.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({
+        "schema": profile.RUN_SCHEMA, "run_id": "first", "status": "running",
+    }), encoding="utf-8")
+
+    report = profile.profile(tmp_path / "eval-runs.jsonl")
+
+    assert report["cost_complete"] is False
+    assert report["runs"]["complete"] == 0
+    assert report["runs"]["orphan_run_states"] == {"running": 1}
+    assert "INCOMPLETE" in profile.render_summary(report)
+
+
+def test_missing_ledger_without_a_real_run_still_errors(tmp_path):
+    with pytest.raises(profile.ProfileError):
+        profile.profile(tmp_path / "eval-runs.jsonl")
+
+
+def test_existing_malformed_ledger_is_not_hidden_by_a_running_marker(tmp_path):
+    marker = tmp_path / "runs" / "first" / "run-state.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text('{"run_id":"first","status":"running"}',
+                      encoding="utf-8")
+    ledger = tmp_path / "eval-runs.jsonl"
+    ledger.write_text("not JSON\n", encoding="utf-8")
+
+    with pytest.raises(profile.ProfileError):
+        profile.profile(ledger)

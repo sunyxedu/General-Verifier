@@ -409,7 +409,15 @@ def profile(run_ledger: Path | str) -> dict[str, Any]:
     try:
         runs = _read_jsonl(ledger)
     except ProfileError:
-        raise
+        # The wrapper appends its first ledger row only after the first
+        # scoring process finishes. A real in-flight run is not an invalid
+        # input path, but it is necessarily incomplete; retain the orphan
+        # state audit below without inventing a successful zero-cost row.
+        if ledger.exists() or not any(
+                path.is_file()
+                for path in (base / "runs").glob("*/run-state.json")):
+            raise
+        runs = []
     issues: list[str] = []
     groups: dict[tuple[str, str], _GroupProfile] = defaultdict(_GroupProfile)
     seen_run_ids: set[str] = set()
