@@ -430,6 +430,19 @@ def test_config_separates_adapter_control_and_treatment(monkeypatch):
     assert control["config"] != treatment["config"]
 
 
+def test_codex_config_identity_stamps_canonical_runtime_roots(
+        tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv(
+        "GV_OFFLINE_RUNTIME_READ_ROOTS", json.dumps([os.fspath(runtime)]))
+
+    configured = offline.config_fields(model="same", seats="codex")
+
+    assert configured["offline_runtime_read_roots"] == [os.fspath(runtime)]
+    assert offline.config_fields()["offline_runtime_read_roots"] == []
+
+
 def test_config_identity_separates_models_and_seats():
     luna = offline.config_fields(model="gpt-5.6-luna", seats="codex")
     terra = offline.config_fields(model="gpt-5.6-terra", seats="codex")

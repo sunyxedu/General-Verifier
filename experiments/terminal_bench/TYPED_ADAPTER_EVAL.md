@@ -131,7 +131,12 @@ Candidates repeat across cold/warm/batch only because these are different
 state regimes. They are never pooled as 60 independent quality samples, and a
 candidate is never repeated inside one phase to manufacture an exact hit.
 Every phase also pins `GV_MAX_CONCURRENT_SEATS=12`; ambient process settings
-cannot silently change model-call concurrency between arms.
+cannot silently change model-call concurrency between arms. The base `PATH`
+is pinned to `/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`; the verifier
+prepends its own run-private toolchain directory when a warm instrument needs
+one. Offline seats receive read-only access to the manifest-owned public
+runtime trees `/opt/homebrew/bin`, `/opt/homebrew/Cellar`, and
+`/opt/homebrew/opt`; no task or candidate field can extend that allowlist.
 
 ## Run ledger and complete cost
 
@@ -193,6 +198,11 @@ jobs root; the verifier fingerprint is checked before and after every process.
 `warm` keeps all selected candidates for one task in one `score.py` process,
 which is required for process-local caches. `all` runs all three regimes into
 one fresh output root.
+
+Do not place the source archive or run output under `/private/tmp`, `/tmp`, or
+the process temp directory: the native `:minimal` policy can read siblings in
+those host temp trees. Use two independent directories under `~/Documents`.
+The runner rejects a paid output root under the known temp trees.
 
 The offline seat policy must deny the host filesystem root and grant reads only
 to the current sealed state plus a minimal trusted runtime (and exact writable

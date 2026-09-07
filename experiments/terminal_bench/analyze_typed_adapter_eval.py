@@ -240,6 +240,8 @@ def _run_metadata_errors(
         "mode": verifier["mode"],
         "browser_observer": verifier["browser_observer"],
         "max_concurrent_seats": verifier["max_concurrent_seats"],
+        "runtime_path": verifier["runtime_path"],
+        "offline_runtime_read_roots": verifier["offline_runtime_read_roots"],
     }
     phase, arm = run.get("phase"), run.get("arm")
     if phase in PHASES:
@@ -900,6 +902,8 @@ def analyze(manifest_path: Path, runs_path: Path, tier: str,
                 "typed_adapters": expected_typed,
                 "contract_cache": expected_contract,
                 "browser_observer": None,
+                "offline_runtime_read_roots":
+                    manifest["verifier"]["offline_runtime_read_roots"],
             }
             features = result.get("features") or {}
             for field, expected in exact.items():

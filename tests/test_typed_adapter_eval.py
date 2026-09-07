@@ -1,5 +1,8 @@
 import json
+import tempfile
 from pathlib import Path
+
+import pytest
 
 from experiments.terminal_bench import analyze_typed_adapter_eval as analyze
 from experiments.terminal_bench import run_typed_adapter_eval as runner
@@ -100,6 +103,14 @@ def test_source_fingerprint_includes_score_local_dependencies(tmp_path):
         "changed", encoding="utf-8")
 
     assert runner._source_fingerprint(tmp_path) != before
+
+
+def test_paid_output_rejects_host_temp_trees():
+    with pytest.raises(runner.PlanError, match="host temporary tree"):
+        runner._validate_execute_output_root(
+            Path(tempfile.gettempdir()) / "gv-eval")
+    with pytest.raises(runner.PlanError, match="host temporary tree"):
+        runner._validate_execute_output_root(Path("/private/tmp/gv-eval"))
 
 
 def test_wrapper_attempt_audit_rejects_unknown_or_inconsistent_cost(tmp_path):

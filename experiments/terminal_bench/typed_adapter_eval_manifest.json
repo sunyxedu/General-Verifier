@@ -23,7 +23,13 @@
     "browser_observer": null,
     "parallel_obligations": 4,
     "parallel_claims": 4,
-    "max_concurrent_seats": 12
+    "max_concurrent_seats": 12,
+    "runtime_path": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "offline_runtime_read_roots": [
+      "/opt/homebrew/bin",
+      "/opt/homebrew/Cellar",
+      "/opt/homebrew/opt"
+    ]
   },
   "comparisons": {
     "full-e2e": {

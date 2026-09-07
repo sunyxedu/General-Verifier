@@ -339,9 +339,15 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
     # machine state.  Stamp the pinned public identity (never its host path)
     # so score resumption cannot mix runs with different browser observers.
     from .execution.browser import configured_browser_observer
-    from .execution.config import typed_adapters_enabled, contract_cache_enabled
+    from .execution.config import (
+        contract_cache_enabled,
+        offline_runtime_read_roots,
+        typed_adapters_enabled,
+    )
     fields["typed_adapters"] = typed_adapters_enabled()
     fields["contract_cache"] = contract_cache_enabled()
+    fields["offline_runtime_read_roots"] = (
+        list(offline_runtime_read_roots()) if fields["seats"] == "codex" else [])
     browser_observer = (configured_browser_observer()
                         if fields["typed_adapters"] else None)
     fields["browser_observer"] = (

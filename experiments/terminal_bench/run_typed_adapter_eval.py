@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections import defaultdict
@@ -27,6 +28,7 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_SOURCE_ROOT = HERE.parent.parent
 DEFAULT_MANIFEST = HERE / "typed_adapter_eval_manifest.json"
 DEFAULT_JOBS_ROOT = HERE / "results" / "jobs"
+DEFAULT_OUTPUT_ROOT = HERE / "results" / "gv-typed-adapter-eval"
 RUN_SCHEMA = "gv-terminal-bench-eval-run/v1"
 ATTEMPT_RECORD = "codex_cli_attempt"
 PHASES = ("cold", "warm", "batch")
@@ -43,7 +45,9 @@ _BROWSER_ENV = (
     "GV_BROWSER_OBSERVER", "GV_BROWSER_OBSERVER_SHA256",
     "GV_BROWSER_EXECUTABLE", "GV_BROWSER_EXECUTABLE_SHA256",
 )
-_CLEARED_ENV = (*_BROWSER_ENV, "GV_SHARED_DIR")
+_CLEARED_ENV = (
+    *_BROWSER_ENV, "GV_SHARED_DIR", "GV_OFFLINE_RUNTIME_READ_ROOTS",
+)
 
 
 class PlanError(ValueError):
@@ -139,6 +143,24 @@ def _source_fingerprint(source_root: Path) -> str:
 
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _validate_execute_output_root(output: Path) -> None:
+    """Keep offline states out of host temp trees readable under :minimal."""
+    resolved = output.resolve()
+    unsafe_roots = {
+        Path(tempfile.gettempdir()).resolve(),
+        Path("/private/tmp").resolve(),
+    }
+    for root in unsafe_roots:
+        try:
+            inside = os.path.commonpath((root, resolved)) == os.fspath(root)
+        except ValueError:
+            inside = False
+        if inside:
+            raise PlanError(
+                "paid output root must not be inside a host temporary tree; "
+                "use an independent directory under ~/Documents")
 
 
 def _validate_source_root(source_root: Path) -> None:
@@ -370,8 +392,13 @@ def _run_one(
     env["GV_SCORING_ROOT"] = os.fspath(scoring_root)
     for name in _CLEARED_ENV:
         env.pop(name, None)
+    env["PATH"] = manifest["verifier"]["runtime_path"]
     env["GV_MAX_CONCURRENT_SEATS"] = str(
         manifest["verifier"]["max_concurrent_seats"])
+    env["GV_OFFLINE_RUNTIME_READ_ROOTS"] = json.dumps(
+        manifest["verifier"]["offline_runtime_read_roots"],
+        separators=(",", ":"),
+    )
     start_wall = time.time_ns()
     start_mono = time.monotonic_ns()
     state_path = run_dir / "run-state.json"
@@ -424,6 +451,9 @@ def _run_one(
         "service_tier": manifest["verifier"]["service_tier"],
         "mode": manifest["verifier"]["mode"],
         "max_concurrent_seats": manifest["verifier"]["max_concurrent_seats"],
+        "runtime_path": manifest["verifier"]["runtime_path"],
+        "offline_runtime_read_roots":
+            manifest["verifier"]["offline_runtime_read_roots"],
         "browser_observer": None,
         "workers": manifest["phases"][phase]["workers"],
         "fresh_scoring_root": True, "fresh_process_cache": True,
@@ -480,7 +510,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--arm", choices=("control", "treatment", "both"),
                         default="both")
     parser.add_argument("--output-root", type=Path,
-                        default=Path("/private/tmp/gv-typed-adapter-eval"))
+                        default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--source-root", type=Path,
                         default=DEFAULT_SOURCE_ROOT,
                         help="frozen verifier source/archive root")
@@ -512,6 +542,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             raise PlanError(
                 "adapter-isolation execution requires shared sealed-contract "
                 "charge/export support; separate processes are invalid")
+        _validate_execute_output_root(output)
         if output.exists() and any(output.iterdir()):
             raise PlanError(f"output root must be new or empty: {output}")
         output.mkdir(parents=True, exist_ok=True)
