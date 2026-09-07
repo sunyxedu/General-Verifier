@@ -40,6 +40,7 @@ from ..core.model import (
     WITNESS_WORLD_STATE,
     Obligation,
     canonical,
+    content_hash,
 )
 from ..core.world import (
     MODE_CAPTURED,
@@ -764,6 +765,90 @@ class AdapterRegistry:
             inputs=invocation.inputs,
         )
 
+    def validate_evidence(
+        self,
+        method: Mapping[str, Any],
+        row: Mapping[str, Any],
+        obligation: Obligation,
+        result: DischargeResult,
+        artifacts: ArtifactStore,
+    ) -> Tuple[bool, str]:
+        """Authenticate the narrow evidence envelope without an LLM.
+
+        This is intentionally stricter than the ordinary Judger path.  It is
+        used only when reusing a previously Judger-approved MethodIR, so every
+        semantic field must match the fresh call and the artifact filename
+        must still match its content.  A mismatch merely disables reuse; the
+        full Oracle/executor/Judger path remains available.
+        """
+        try:
+            invocation = AdapterInvocation.from_method(method)
+            if invocation is None:
+                return False, "method has no typed adapter binding"
+            adapter = self._adapters.get((invocation.name, invocation.version))
+            if adapter is None:
+                return False, "typed adapter is no longer registered"
+            adapter.validate(invocation, method)
+            expected_instrument = f"adapter:{adapter.identity}"
+            if result.instrument != expected_instrument:
+                return False, "result instrument does not match MethodIR"
+            if tuple(result.inputs) != invocation.inputs:
+                return False, "result inputs do not match MethodIR"
+            if result.assumed_premises:
+                return False, "adapter evidence unexpectedly assumes premises"
+
+            payload = artifacts.get(result.artifact)
+            if content_hash(payload) != result.artifact:
+                return False, "adapter artifact digest does not match content"
+            if set(payload) != {
+                    "schema", "instrument", "claim", "obligation", "method",
+                    "execution"}:
+                return False, "adapter evidence envelope has the wrong shape"
+            if payload.get("schema") != EVIDENCE_SCHEMA \
+                    or payload.get("instrument") != expected_instrument \
+                    or payload.get("claim") != row.get("id", ""):
+                return False, "adapter evidence identity mismatch"
+            if payload.get("obligation") != {
+                "id": obligation.id,
+                "text": obligation.text,
+                "required_basis": obligation.required_basis,
+                "refutable_by_absence": obligation.refutable_by_absence,
+            }:
+                return False, "adapter evidence obligation mismatch"
+            if payload.get("method") != {
+                "procedure": method.get("procedure", ""),
+                "artifact": method.get("artifact", ""),
+                "basis": method.get("basis", ""),
+                "strength": method.get("strength", ""),
+                "bridges": method.get("bridges", []),
+                "adapter": invocation.public(),
+            }:
+                return False, "adapter evidence method mismatch"
+
+            execution = payload.get("execution")
+            if not isinstance(execution, dict) or set(execution) != {
+                    "outcome", "witness", "witness_kind", "declared_inputs",
+                    "consumed", "observation"}:
+                return False, "adapter execution record has the wrong shape"
+            if (execution.get("outcome") != result.outcome
+                    or execution.get("witness") != result.witness
+                    or execution.get("witness_kind") != result.witness_kind
+                    or execution.get("declared_inputs")
+                    != list(invocation.inputs)):
+                return False, "adapter execution record does not match result"
+            consumed = execution.get("consumed")
+            if not isinstance(consumed, list) or not all(
+                    isinstance(item, dict) for item in consumed):
+                return False, "adapter consumed-input record is invalid"
+            declared_refs = {item["ref"] for item in invocation.inputs}
+            if any(item.get("ref") not in declared_refs for item in consumed):
+                return False, "adapter consumed an undeclared input"
+            if not isinstance(execution.get("observation"), dict):
+                return False, "adapter observation is not an object"
+        except Exception as error:
+            return False, f"adapter evidence validation failed: {error}"
+        return True, "mechanically authenticated adapter evidence"
+
 
 def default_adapter_registry() -> AdapterRegistry:
     return AdapterRegistry((
@@ -788,6 +873,33 @@ class AdapterRoutingDischarger:
 
     def adapter_catalog(self) -> str:
         return self.registry.catalog()
+
+    def discharge_adapter_only(self, row, obligation, method):
+        """Run only the typed fast path for an accepted-method cache hit.
+
+        Returning ``(None, reason)`` tells BindingGame to use its complete old
+        path.  In particular this never turns an inapplicable cached method
+        into an agent execution that could accidentally inherit the cached
+        sufficiency signature.
+        """
+        try:
+            result = self.registry.execute(
+                method, row, obligation, self.context, self.artifacts)
+        except Exception as error:
+            return None, str(error)
+        if result is None:
+            return None, "cached method has no typed adapter binding"
+        valid, reason = self.registry.validate_evidence(
+            method, row, obligation, result, self.artifacts)
+        if not valid:
+            return None, reason
+        self.log.append("adapter_discharge", {
+            "claim": row["id"], "obligation": obligation.id,
+            "adapter": result.instrument.removeprefix("adapter:"),
+            "outcome": result.outcome, "artifact": result.artifact,
+            "accepted_method_reuse": True,
+        })
+        return result, ""
 
     def discharge(self, row, obligation, method=None, tag=""):
         method = method or {}

@@ -3,6 +3,11 @@ Binding game: per obligation, bind one sufficient method to real evidence.
 
 Per obligation:
 
+0. For an equivalent final obligation, a process-local cache may supply a
+   decisive typed method whose sufficiency a Judger already accepted.  Only
+   the method is reused: its adapter runs against the current candidate and
+   the new evidence envelope is mechanically authenticated.  Any mismatch
+   falls through to the complete game below.
 1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
    oracle's own guarantee, researched first when the domain is
    unfamiliar), each with a signed strength declaration — decisive
@@ -49,19 +54,23 @@ from typing import Dict, List, Optional
 
 from ..llm.agents import ENUMERATE_ORACLES_AGENT, JUDGER_AGENT
 from ..execution.discharge import DischargeResult
-from ..execution.adapters import adapter_method_view
+from ..execution.adapters import (
+    AdapterInvocation, AdapterNotApplicable, adapter_method_view,
+)
 from ..core.events import EventLog
 from ..execution.instruments import (
     ArtifactStore, authoritative_task_context, world_evidence_context,
     world_map,
 )
 from ..core.model import (
-    BASIS_RECORD, BASIS_WORLD, Obligation, basis_satisfies,
-    OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
+    BASIS_RECORD, BASIS_WORLD, Obligation, basis_satisfies, content_hash,
+    OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
+    PROVENANCE_DELIVERED, ROLE_SUBJECT,
     STRENGTH_ANALYTIC, STRENGTH_DECISIVE, STRENGTHS, strength_rank,
     WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm.schema import RoleError
+from .method_cache import AcceptedMethod, build_method_cache_key
 
 
 def _method_strength(method: Dict[str, str]) -> str:
@@ -108,6 +117,7 @@ class BindingGame:
         memory=None,
         live_world: bool = True,
         judger_error_retries: int = 1,
+        method_cache=None,
     ):
         self.backend = backend
         self.artifacts = artifacts
@@ -126,9 +136,193 @@ class BindingGame:
         self.registry = registry
         self.memory = memory  # advisory; feeds the oracle's registry slot
         self.live_world = live_world
+        # Optional because custom/test BindingGames historically have no
+        # cross-candidate sharing.  The shipped online/offline kernel injects
+        # the process-local cache explicitly.
+        self.method_cache = method_cache
 
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
+        if self.method_cache is None:
+            return self._run_uncached(row, obligation)
+        key = self._method_cache_key(row, obligation)
+        if key is None:
+            return self._run_uncached(row, obligation)
+
+        lease = self.method_cache.acquire(key)
+        if lease.entry is not None:
+            result, reason = self._run_cached(
+                row, obligation, lease.entry, key=key, waited=lease.waited)
+            if result is not None:
+                return result
+            self.log.append("method_cache_bypass", {
+                "claim": row["id"], "obligation": obligation.id,
+                "key": key[:16], "reason": reason[:500],
+            })
+            return self._run_uncached(row, obligation)
+        if not lease.leader:
+            # The concurrent leader found no eligible accepted method.  Do
+            # not serialize another cold fill; proceed independently.
+            return self._run_uncached(row, obligation)
+
+        accepted = None
+        try:
+            result = self._run_uncached(row, obligation)
+            # The authority files are normally immutable.  Re-key anyway so
+            # a live edit during the cold fill can never publish under the
+            # earlier task identity.
+            if self._method_cache_key(row, obligation) == key:
+                accepted = self._accepted_method(row, obligation, result)
+            return result
+        finally:
+            lease.finish(accepted)
+
+    def _method_cache_key(self, row, obligation):
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
+        return build_method_cache_key(
+            state_dir=state,
+            row=row,
+            obligation=obligation,
+            backend=self.backend,
+            oracles_role=self.oracles_role,
+            judger_role=self.judger_role,
+            live_world=self.live_world,
+            adapter_catalog=catalog,
+        )
+
+    def _run_cached(self, row, obligation, accepted, *, key, waited=False):
+        adapter_only = getattr(
+            self.discharger, "discharge_adapter_only", None)
+        if adapter_only is None:
+            return None, "discharger has no authenticated adapter-only path"
+        method = accepted.method
+        if not self._cacheable_signature(method, {
+                "sufficient": "yes", "faithful": "yes",
+                "degradation": "n/a"}):
+            return None, "cached MethodIR no longer meets reuse policy"
+        result, reason = adapter_only(row, obligation, method)
+        if result is None:
+            return None, reason
+        if result.outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
+            return None, "fresh adapter execution was not substantive"
+        if not basis_satisfies(method.get("basis", BASIS_RECORD),
+                               obligation.required_basis):
+            return None, "cached method is below the current evidence floor"
+        structural = self._structural_defect(result, obligation)
+        if structural:
+            return None, structural
+        if self._method_cache_key(row, obligation) != key:
+            return None, "task authority changed during adapter execution"
+
+        audit = {
+            "sufficient": "yes",
+            "faithful": "yes",
+            "degradation": "n/a",
+            "reason": (
+                "reused an independent Judger sufficiency signature; the "
+                "typed adapter was re-executed and its new evidence envelope "
+                "was mechanically authenticated"
+            ),
+            "cache": {
+                "schema": "gv-accepted-method-reuse-v1",
+                "source_binding_artifact": accepted.source_binding_artifact,
+                "source_discharge_artifact": accepted.source_discharge_artifact,
+                "source_audit": accepted.audit,
+                "cache_key": key,
+            },
+        }
+        attempt = Attempt(
+            method=method,
+            discharge_artifact=result.artifact,
+            discharge_outcome=result.outcome,
+            audit=audit,
+        )
+        self.log.append("method_cache_hit", {
+            "claim": row["id"], "obligation": obligation.id,
+            "procedure": method["procedure"][:80],
+            "source_binding_artifact": accepted.source_binding_artifact,
+            "fresh_discharge_artifact": result.artifact,
+            "outcome": result.outcome,
+            "waited_for_single_flight": waited,
+        })
+        return self._settle(
+            row, obligation, [attempt], method, result, audit=audit), ""
+
+    @staticmethod
+    def _cacheable_signature(method, audit) -> bool:
+        required = {"procedure", "artifact", "level", "basis", "strength",
+                    "bridges", "adapter", "adapter_version",
+                    "adapter_arguments", "adapter_inputs"}
+        if set(method) != required:
+            return False
+        if (method.get("basis") != BASIS_WORLD
+                or _method_strength(method) != STRENGTH_DECISIVE
+                or method.get("bridges") != []
+                or audit.get("sufficient") != "yes"
+                or audit.get("faithful") != "yes"
+                or audit.get("degradation") != "n/a"):
+            return False
+        try:
+            invocation = AdapterInvocation.from_method(method)
+        except AdapterNotApplicable:
+            return False
+        return bool(invocation and invocation.inputs) and all(
+            item.get("provenance") == PROVENANCE_DELIVERED
+            and item.get("role") == ROLE_SUBJECT
+            for item in invocation.inputs
+        )
+
+    def _accepted_method(self, row, obligation, settled):
+        """Extract one authenticated, cache-eligible binding artifact."""
+        if settled.outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED) \
+                or settled.assumed_premises:
+            return None
+        try:
+            binding = self.artifacts.get(settled.artifact)
+            if content_hash(binding) != settled.artifact \
+                    or binding.get("instrument") != "binding-game" \
+                    or binding.get("obligation") != obligation.text:
+                return None
+            bound = binding.get("bound")
+            if not isinstance(bound, dict):
+                return None
+            method, audit = bound.get("method"), bound.get("audit")
+            if not isinstance(method, dict) or not isinstance(audit, dict) \
+                    or not self._cacheable_signature(method, audit):
+                return None
+            discharge_digest = bound.get("discharge_artifact")
+            evidence = self.artifacts.get(discharge_digest)
+            execution = evidence.get("execution")
+            if not isinstance(execution, dict):
+                return None
+            inner = DischargeResult(
+                outcome=execution.get("outcome"),
+                witness=execution.get("witness"),
+                artifact=discharge_digest,
+                instrument=evidence.get("instrument", ""),
+                witness_kind=execution.get("witness_kind"),
+                inputs=tuple(execution.get("declared_inputs") or ()),
+            )
+            validator = getattr(
+                getattr(self.discharger, "registry", None),
+                "validate_evidence", None)
+            if validator is None:
+                return None
+            valid, _reason = validator(
+                method, row, obligation, inner, self.artifacts)
+            if not valid or inner.outcome != settled.outcome:
+                return None
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return None
+        return AcceptedMethod(
+            method=method,
+            source_binding_artifact=settled.artifact,
+            source_discharge_artifact=discharge_digest,
+            audit=audit,
+        )
+
+    def _run_uncached(self, row: Dict, obligation: Obligation) -> DischargeResult:
         attempts: List[Attempt] = []
         try:
             methods = self._enumerate(row, obligation)

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -18,6 +20,7 @@ from verifier.core.model import (
     Obligation,
 )
 from verifier.engine.game import BindingGame
+from verifier.engine.method_cache import AcceptedMethodCache
 from verifier.execution.adapters import (
     EVIDENCE_SCHEMA,
     AdapterInvocation,
@@ -81,6 +84,27 @@ def captured(tmp_path):
         "scheme": "filesystem",
         "captured_roots": ["/app"],
     }))
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    log = EventLog(str(state / "events.jsonl"))
+    fallback = FallbackDischarger(artifacts)
+    routing = AdapterRoutingDischarger(
+        fallback, default_adapter_registry(), artifacts, log, str(state),
+        live_world=False,
+    )
+    return state, world, artifacts, log, fallback, routing
+
+
+def captured_candidate(tmp_path, name, *, status=None):
+    state = tmp_path / name
+    world = state / "world" / "app"
+    world.mkdir(parents=True)
+    (state / "task.md").write_text("Produce result.json with completed status")
+    (state / "world_manifest.json").write_text(json.dumps({
+        "scheme": "filesystem",
+        "captured_roots": ["/app"],
+    }))
+    if status is not None:
+        (world / "result.json").write_text(json.dumps({"status": status}))
     artifacts = ArtifactStore(str(state / "artifacts"))
     log = EventLog(str(state / "events.jsonl"))
     fallback = FallbackDischarger(artifacts)
@@ -391,3 +415,256 @@ def test_default_online_and_offline_kernel_path_installs_adapter_router(
     assert isinstance(kernel.discharger, AdapterRoutingDischarger)
     assert kernel.binder.discharger is kernel.discharger
     assert "filesystem.exists" in kernel.discharger.adapter_catalog()
+    assert kernel.binder.method_cache is not None
+
+
+def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
+        tmp_path):
+    cache = AcceptedMethodCache()
+    typed = method(
+        "document.json-value", {
+            "address": "/app/result.json", "pointer": "/status",
+            "expected": "completed",
+        }, inputs=[subject("/app/result.json")])
+
+    _, _, artifacts1, log1, fallback1, routing1 = captured_candidate(
+        tmp_path, "candidate-1", status="completed")
+    backend1 = FixtureBackend({
+        "oracles": {"methods": [typed]}, "judger": JUDGE_YES})
+    game1 = BindingGame(
+        backend1, artifacts1, log1, routing1, live_world=False,
+        method_cache=cache)
+    first = game1.run(
+        ROW, Obligation("candidate-1", "status equals completed", BASIS_WORLD))
+
+    row2 = {**ROW, "id": "c2", "text": "delivery finished successfully"}
+    _, _, artifacts2, log2, fallback2, routing2 = captured_candidate(
+        tmp_path, "candidate-2", status="wrong")
+    backend2 = FixtureBackend({})
+    game2 = BindingGame(
+        backend2, artifacts2, log2, routing2, live_world=False,
+        method_cache=cache)
+    second = game2.run(
+        row2, Obligation("candidate-2", "status equals completed", BASIS_WORLD))
+
+    assert first.outcome == OUTCOME_HOLDS
+    assert second.outcome == OUTCOME_REFUTED
+    assert len(cache) == 1
+    assert [call["role"] for call in backend1.calls] == ["oracles", "judger"]
+    assert backend2.calls == []
+    assert fallback1.calls == fallback2.calls == []
+    first_bound = artifacts1.get(first.artifact)["bound"]
+    second_bound = artifacts2.get(second.artifact)["bound"]
+    assert first_bound["discharge_artifact"] \
+        != second_bound["discharge_artifact"]
+    assert artifacts2.get(second_bound["discharge_artifact"])["execution"][
+        "observation"]["actual"] == "wrong"
+    assert any(event["type"] == "method_cache_hit"
+               for event in log2.replay())
+
+    # Ten equivalent candidates would otherwise pay Oracle + Judger ten
+    # times.  The cold candidate pays those two calls once; every candidate
+    # still executes its own adapter.
+    backends = [backend1, backend2]
+    outcomes = [first.outcome, second.outcome]
+    for index in range(3, 11):
+        status = "completed" if index % 2 else "wrong"
+        _, _, artifacts, log, fallback, routing = captured_candidate(
+            tmp_path, f"candidate-{index}", status=status)
+        backend = FixtureBackend({})
+        game = BindingGame(
+            backend, artifacts, log, routing, live_world=False,
+            method_cache=cache)
+        result = game.run(
+            {**ROW, "id": f"c{index}", "text": f"candidate {index} done"},
+            Obligation(f"candidate-{index}", "status equals completed",
+                       BASIS_WORLD))
+        backends.append(backend)
+        outcomes.append(result.outcome)
+        assert fallback.calls == []
+    assert sum(len(backend.calls) for backend in backends) == 2
+    assert outcomes.count(OUTCOME_HOLDS) == 5
+    assert outcomes.count(OUTCOME_REFUTED) == 5
+
+
+def test_inapplicable_cached_method_falls_back_to_full_binding_game(tmp_path):
+    cache = AcceptedMethodCache()
+    typed = method(
+        "document.json-value", {
+            "address": "/app/result.json", "pointer": "/status",
+            "expected": "completed",
+        }, inputs=[subject("/app/result.json")])
+    obligation1 = Obligation(
+        "candidate-1", "status equals completed", BASIS_WORLD)
+    _, _, artifacts1, log1, _, routing1 = captured_candidate(
+        tmp_path, "candidate-1", status="completed")
+    game1 = BindingGame(
+        FixtureBackend({"oracles": {"methods": [typed]},
+                        "judger": JUDGE_YES}),
+        artifacts1, log1, routing1, live_world=False, method_cache=cache)
+    assert game1.run(ROW, obligation1).outcome == OUTCOME_HOLDS
+
+    legacy = {
+        "procedure": "perform the existing agent check",
+        "artifact": "existing evidence", "level": "existing",
+        "basis": BASIS_WORLD, "strength": "decisive", "bridges": [],
+    }
+    _, _, artifacts2, log2, fallback2, routing2 = captured_candidate(
+        tmp_path, "candidate-2")
+    backend2 = FixtureBackend({
+        "oracles": {"methods": [legacy]}, "judger": JUDGE_YES})
+    game2 = BindingGame(
+        backend2, artifacts2, log2, routing2, live_world=False,
+        method_cache=cache)
+
+    result = game2.run(
+        {**ROW, "id": "c2"},
+        Obligation("candidate-2", "status equals completed", BASIS_WORLD))
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert [call["role"] for call in backend2.calls] == ["oracles", "judger"]
+    assert len(fallback2.calls) == 1
+    assert any(event["type"] == "method_cache_bypass"
+               for event in log2.replay())
+
+
+def test_accepted_method_cache_single_flights_parallel_candidates(tmp_path):
+    cache = AcceptedMethodCache()
+    typed = method(
+        "document.json-value", {
+            "address": "/app/result.json", "pointer": "/status",
+            "expected": "completed",
+        }, inputs=[subject("/app/result.json")])
+    entered = threading.Event()
+    release = threading.Event()
+
+    def delayed_judger(_variables):
+        entered.set()
+        assert release.wait(5)
+        return JUDGE_YES
+
+    games = []
+    for index in (1, 2):
+        _, _, artifacts, log, _, routing = captured_candidate(
+            tmp_path, f"candidate-{index}", status="completed")
+        backend = FixtureBackend(
+            {"oracles": {"methods": [typed]}, "judger": delayed_judger}
+            if index == 1 else {})
+        game = BindingGame(
+            backend, artifacts, log, routing, live_world=False,
+            method_cache=cache)
+        games.append((game, backend))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(
+            games[0][0].run, ROW,
+            Obligation("candidate-1", "status equals completed", BASIS_WORLD))
+        assert entered.wait(5)
+        second = pool.submit(
+            games[1][0].run, {**ROW, "id": "c2"},
+            Obligation("candidate-2", "status equals completed", BASIS_WORLD))
+        release.set()
+        assert first.result(timeout=5).outcome == OUTCOME_HOLDS
+        assert second.result(timeout=5).outcome == OUTCOME_HOLDS
+
+    assert [call["role"] for call in games[0][1].calls] == [
+        "oracles", "judger"]
+    assert games[1][1].calls == []
+
+
+def test_method_cache_key_keeps_different_task_authority_separate(tmp_path):
+    cache = AcceptedMethodCache()
+    typed = method(
+        "document.json-value", {
+            "address": "/app/result.json", "pointer": "/status",
+            "expected": "completed",
+        }, inputs=[subject("/app/result.json")])
+    _, _, artifacts1, log1, _, routing1 = captured_candidate(
+        tmp_path, "candidate-1", status="completed")
+    first_backend = FixtureBackend({
+        "oracles": {"methods": [typed]}, "judger": JUDGE_YES})
+    first_game = BindingGame(
+        first_backend, artifacts1, log1, routing1, live_world=False,
+        method_cache=cache)
+    first_game.run(
+        ROW, Obligation("candidate-1", "status equals completed", BASIS_WORLD))
+
+    state2, _, artifacts2, log2, _, routing2 = captured_candidate(
+        tmp_path, "candidate-2", status="completed")
+    (state2 / "task.md").write_text("A different task with different authority")
+    second_backend = FixtureBackend({
+        "oracles": {"methods": [typed]}, "judger": JUDGE_YES})
+    second_game = BindingGame(
+        second_backend, artifacts2, log2, routing2, live_world=False,
+        method_cache=cache)
+
+    second_game.run(
+        {**ROW, "id": "c2"},
+        Obligation("candidate-2", "status equals completed", BASIS_WORLD))
+
+    assert [call["role"] for call in second_backend.calls] == [
+        "oracles", "judger"]
+    assert not any(event["type"] == "method_cache_hit"
+                   for event in log2.replay())
+
+
+def test_mechanical_adapter_audit_rejects_tampered_artifact(tmp_path):
+    _, world, artifacts, _, _, routing = captured(tmp_path)
+    (world / "result.json").write_text('{"status":"completed"}')
+    typed = method(
+        "document.json-value", {
+            "address": "/app/result.json", "pointer": "/status",
+            "expected": "completed",
+        }, inputs=[subject("/app/result.json")])
+    obligation = Obligation(
+        "c1", "status equals completed", BASIS_WORLD)
+    result = routing.discharge(ROW, obligation, typed)
+    path = tmp_path / "gv" / "artifacts" / f"{result.artifact}.json"
+    payload = json.loads(path.read_text())
+    payload["claim"] = "tampered"
+    path.write_text(json.dumps(payload))
+
+    valid, reason = routing.registry.validate_evidence(
+        typed, ROW, obligation, result, artifacts)
+
+    assert valid is False
+    assert "digest" in reason
+
+
+def test_online_method_reuse_is_state_scoped_and_reads_live_bytes(tmp_path):
+    cache = AcceptedMethodCache()
+    state = tmp_path / "gv"
+    state.mkdir()
+    (state / "task.md").write_text("Keep live result status completed")
+    target = tmp_path / "delivery" / "result.json"
+    target.parent.mkdir()
+    target.write_text('{"status":"completed"}')
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    log = EventLog(str(state / "events.jsonl"))
+    fallback = FallbackDischarger(artifacts)
+    routing = AdapterRoutingDischarger(
+        fallback, default_adapter_registry(), artifacts, log, str(state),
+        live_world=True)
+    typed = method(
+        "document.json-value", {
+            "address": str(target), "pointer": "/status",
+            "expected": "completed",
+        }, inputs=[subject(str(target))])
+    first_backend = FixtureBackend({
+        "oracles": {"methods": [typed]}, "judger": JUDGE_YES})
+    first_game = BindingGame(
+        first_backend, artifacts, log, routing, live_world=True,
+        method_cache=cache)
+    obligation = Obligation("c1", "status equals completed", BASIS_WORLD)
+    assert first_game.run(ROW, obligation).outcome == OUTCOME_HOLDS
+
+    target.write_text('{"status":"wrong"}')
+    second_backend = FixtureBackend({})
+    second_game = BindingGame(
+        second_backend, artifacts, log, routing, live_world=True,
+        method_cache=cache)
+    result = second_game.run({**ROW, "id": "c2"}, obligation)
+
+    assert result.outcome == OUTCOME_REFUTED
+    assert second_backend.calls == []
+    assert fallback.calls == []
