@@ -33,6 +33,7 @@ import json
 import os
 import posixpath
 import re
+import signal
 import stat
 import subprocess
 import tempfile
@@ -169,6 +170,72 @@ class TransientBackendError(RoleError):
     """Provider-side transient failure (capacity, rate limit, transport):
     the request never got a completed turn, so retrying with backoff is
     sound — nothing semantic was produced to second-guess."""
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """Kill processes in the dedicated POSIX group led by ``proc``.
+
+    ``start_new_session=True`` makes the child's pid the process-group id.
+    Calling killpg after the leader has exited is intentional: detached
+    same-group descendants may still be alive. This does not contain a child
+    that deliberately creates another session or process group.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError:
+        # Non-conforming platforms are handled by the direct-process fallback.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
+def _run_codex_process(cmd, *, cwd, stdin, timeout):
+    """Run one CLI attempt and clean its dedicated POSIX process group."""
+    run_kwargs = {
+        "cwd": cwd,
+        "stdin": stdin,
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+    }
+    if os.name != "posix" or not hasattr(os, "killpg"):
+        return subprocess.run(cmd, **run_kwargs)
+
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, stdin=stdin,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, start_new_session=True,
+    )
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            _kill_process_group(proc)
+            stdout, stderr = proc.communicate()
+            # Match subprocess.run's useful TimeoutExpired payload.
+            error.output = stdout
+            error.stdout = stdout
+            error.stderr = stderr
+            raise
+        return subprocess.CompletedProcess(
+            cmd, proc.returncode, stdout=stdout, stderr=stderr)
+    finally:
+        # A successful wrapper may leave a same-group child after closing its
+        # inherited pipes. This finally also covers interruption and errors
+        # raised by communicate(), not just normal completion and timeout.
+        _kill_process_group(proc)
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
 
 
 # Bounded backoff for provider capacity flaps ("Selected model is at
@@ -830,10 +897,9 @@ class CodexBackend:
                     # stdin MUST be closed: codex otherwise waits on it forever
                     started_at_unix_ns = time.time_ns()
                     started_at_monotonic_ns = time.monotonic_ns()
-                    proc = subprocess.run(
+                    proc = _run_codex_process(
                         cmd, cwd=execution_cwd, stdin=devnull,
-                        capture_output=True,
-                        text=True, timeout=self.timeout)
+                        timeout=self.timeout)
                     finished_at_unix_ns = time.time_ns()
                     duration_ns = (time.monotonic_ns()
                                    - started_at_monotonic_ns)

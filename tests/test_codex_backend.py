@@ -1,15 +1,22 @@
-"""CodexBackend: the pure parts (JSON recovery, role lookup, sandbox
-split). The subprocess round-trip is exercised by live smokes, not here."""
+"""CodexBackend contracts, JSON recovery, and local process-group cleanup.
+
+Real model calls are kept out of this unit suite.
+"""
 import hashlib
 import json
 import os
+import signal
 import shutil
+import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from verifier.llm.codex_backend import (
     CodexBackend,
+    _run_codex_process,
     codex_usage_ledger,
     extract_json,
     service_tier_cli_args,
@@ -19,6 +26,115 @@ from verifier.llm.schema import RoleError
 
 PNG_A = b"\x89PNG\r\n\x1a\nfirst-fixed-image"
 PNG_B = b"\x89PNG\r\n\x1a\nmutated-image"
+
+
+def _process_group_exists(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_process_group_exit(pgid, timeout=3):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _process_group_exists(pgid):
+            return True
+        time.sleep(0.02)
+    return not _process_group_exists(pgid)
+
+
+def _sleeper_tree_command(marker, parent_sleep):
+    child_code = "import time; time.sleep(30)"
+    wrapper_code = (
+        "import os,pathlib,subprocess,sys,time\n"
+        "child=subprocess.Popen([sys.executable,'-c',sys.argv[2]],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,"
+        "stderr=subprocess.DEVNULL)\n"
+        "pathlib.Path(sys.argv[1]).write_text("
+        "f'{os.getpid()} {child.pid}')\n"
+        "time.sleep(float(sys.argv[3]))\n"
+    )
+    return [
+        sys.executable, "-c", wrapper_code,
+        str(marker), child_code, str(parent_sleep),
+    ]
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "killpg"),
+    reason="POSIX process-group containment",
+)
+@pytest.mark.parametrize(
+    ("parent_sleep", "timeout", "times_out"),
+    [(30, 0.3, True), (0, 2, False)],
+)
+def test_codex_runner_leaves_no_same_group_child(
+        tmp_path, parent_sleep, timeout, times_out):
+    marker = tmp_path / "process-tree.txt"
+    command = _sleeper_tree_command(marker, parent_sleep)
+    pgid = None
+    try:
+        with open(os.devnull) as devnull:
+            if times_out:
+                with pytest.raises(subprocess.TimeoutExpired):
+                    _run_codex_process(
+                        command, cwd=str(tmp_path), stdin=devnull,
+                        timeout=timeout)
+            else:
+                completed = _run_codex_process(
+                    command, cwd=str(tmp_path), stdin=devnull,
+                    timeout=timeout)
+                assert completed.returncode == 0
+        pgid, child_pid = map(int, marker.read_text().split())
+        assert child_pid != pgid
+        assert _wait_for_process_group_exit(pgid), (
+            f"process group {pgid} survived its Codex invocation")
+    finally:
+        if pgid is not None and _process_group_exists(pgid):
+            os.killpg(pgid, signal.SIGKILL)
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "killpg"),
+    reason="POSIX process-group containment",
+)
+def test_codex_runner_cleans_group_when_communicate_is_interrupted(
+        tmp_path, monkeypatch):
+    marker = tmp_path / "interrupted-tree.txt"
+    command = _sleeper_tree_command(marker, 30)
+    real_popen = subprocess.Popen
+
+    def interrupted_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+
+        def interrupt(*_args, **_kwargs):
+            deadline = time.monotonic() + 2
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert marker.exists()
+            raise KeyboardInterrupt
+
+        proc.communicate = interrupt
+        return proc
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend.subprocess.Popen", interrupted_popen)
+    pgid = None
+    try:
+        with open(os.devnull) as devnull:
+            with pytest.raises(KeyboardInterrupt):
+                _run_codex_process(
+                    command, cwd=str(tmp_path), stdin=devnull, timeout=2)
+        pgid, _child_pid = map(int, marker.read_text().split())
+        assert _wait_for_process_group_exit(pgid), (
+            f"process group {pgid} survived interrupted communicate")
+    finally:
+        if pgid is not None and _process_group_exists(pgid):
+            os.killpg(pgid, signal.SIGKILL)
 
 
 def _captured_state(tmp_path, files):
@@ -77,7 +193,8 @@ def test_failed_process_cannot_return_a_valid_seat_answer(tmp_path, monkeypatch)
         return SimpleNamespace(returncode=1, stderr="execution failed",
                                stdout='{"type":"thread.started","thread_id":"t1"}\n')
 
-    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.run", fail_after_output)
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fail_after_output)
     with pytest.raises(RoleError, match="codex exec failed"):
         backend.complete("critic", "prompt", {})
 
@@ -97,7 +214,8 @@ def test_retry_cannot_reuse_an_earlier_attempts_output(tmp_path, monkeypatch):
                 '{"type":"turn.failed","error":{"message":"at capacity"}}\n'))
         return SimpleNamespace(returncode=0, stderr="", stdout="")
 
-    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.run", retry_without_output)
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", retry_without_output)
     monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _: None)
     with pytest.raises(RoleError, match="produced no output"):
         backend.complete("critic", "prompt", {})
@@ -142,7 +260,7 @@ def test_usage_ledger_records_exact_repeated_seat_calls(
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.subprocess.run", fake_run)
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
     context = {
         "job": "rec-codex-terra",
         "task": "task-a",
@@ -225,7 +343,7 @@ def test_usage_ledger_counts_schema_failed_call_once(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.subprocess.run", fake_run)
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-bad-json"}},
     ):
@@ -285,7 +403,7 @@ def test_usage_ledger_rejects_missing_or_partial_usage(
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.subprocess.run", fake_run)
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-a"}},
     ):
@@ -410,7 +528,7 @@ def test_offline_execution_keeps_state_cwd_but_only_work_is_writable(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.subprocess.run", fake_run)
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
     assert backend.complete(
         "critic", "return ok", {"world_mode": "captured"},
     ) == {"ok": True}
@@ -489,7 +607,7 @@ def test_world_image_bytes_are_shared_by_discharge_and_judger(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.subprocess.run", fake_run)
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
     common = _image_variables(
         world, manifest, reference="decide /app/board.png exactly")
     backend.complete("discharge", "executor prompt", common)
