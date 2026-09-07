@@ -54,6 +54,7 @@ from .codex_service import (
     service_tier_cli_args,
 )
 from .schema import RoleError, validate
+from ..execution.config import offline_runtime_read_roots
 
 DEFAULT_MODEL = "gpt-5.6-luna"
 
@@ -938,6 +939,16 @@ class CodexBackend:
         # fail closed rather than place an allegedly isolated HOME in an
         # unrelated process directory.
         state_dir = self._offline_state_dir(variables)
+        try:
+            runtime_read_roots = offline_runtime_read_roots()
+        except ValueError as error:
+            raise RoleError(str(error)) from error
+        for root in runtime_read_roots:
+            if (_path_is_within(root, state_dir)
+                    or _path_is_within(state_dir, root)):
+                raise RoleError(
+                    "offline runtime read root overlaps the isolated state: "
+                    f"{root}")
 
         work = os.path.join(state_dir, "work")
         home = os.path.join(work, "_offline_home")
@@ -968,6 +979,7 @@ class CodexBackend:
         # exact-root grant. In particular, no caller-provided parent of the
         # state can turn the root-deny profile back into sibling visibility.
         writable_roots: list[str] = []
+        toolchain_root: Optional[str] = None
         workspace_base = os.path.join(state_dir, "workspace")
         for key in ("workdir", "workspace_dir", "toolchain_dir", "shared_cache_dir"):
             candidate = variables.get(key)
@@ -976,6 +988,8 @@ class CodexBackend:
             candidate = _canonical_policy_path(candidate, key)
             if _path_is_within(work, candidate):
                 _ensure_verifier_owned_chain(work, candidate)
+                if key == "toolchain_dir":
+                    toolchain_root = candidate
                 continue
             if key == "workdir":
                 raise RoleError(
@@ -994,6 +1008,15 @@ class CodexBackend:
                     f"offline {key} overlaps the isolated state: {candidate}")
             _ensure_verifier_owned_chain(candidate, candidate)
             writable_roots.append(candidate)
+            if key == "toolchain_dir":
+                toolchain_root = candidate
+        for runtime_root in runtime_read_roots:
+            for writable_root in (work, *writable_roots):
+                if (_path_is_within(runtime_root, writable_root)
+                        or _path_is_within(writable_root, runtime_root)):
+                    raise RoleError(
+                        "offline runtime read root overlaps a writable root: "
+                        f"{runtime_root}")
         cache_root = variables.get("shared_cache_dir")
         if cache_root:
             cache_root = _canonical_policy_path(
@@ -1009,6 +1032,15 @@ class CodexBackend:
                 "CARGO_HOME": os.path.join(cache_root, "cargo"),
                 "GOMODCACHE": os.path.join(cache_root, "gomod"),
             })
+        path_parts = []
+        if toolchain_root is not None:
+            path_parts.append(os.path.join(toolchain_root, "bin"))
+        path_parts.extend(
+            root for root in runtime_read_roots
+            if os.path.basename(root) == "bin"
+        )
+        path_parts.extend(("/usr/bin", "/bin", "/usr/sbin", "/sbin"))
+        env["PATH"] = os.pathsep.join(dict.fromkeys(path_parts))
         env_table = "{" + ",".join(
             f"{key}={_toml_string(value)}" for key, value in env.items()
         ) + "}"
@@ -1017,6 +1049,8 @@ class CodexBackend:
             '":minimal"="read"',
             f"{_toml_string(state_dir)}=\"read\"",
             f"{_toml_string(work)}=\"write\"",
+            *(f"{_toml_string(root)}=\"read\""
+              for root in runtime_read_roots),
             *(f"{_toml_string(root)}=\"write\""
               for root in dict.fromkeys(writable_roots)),
             # Keep explicit host-cache denies even under :root=deny. They
