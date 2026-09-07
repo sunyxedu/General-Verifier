@@ -149,11 +149,32 @@ The excluded legacy scoring test module cannot collect because its separate
 in source. Full-suite success is not claimed. Failed-attempt usage telemetry
 also remains incomplete and must be addressed before making complete cost claims.
 
-## Next gate
+## Subsequent work (2026-09-08)
 
-Before another paid batch, complete failed-attempt usage telemetry and evaluate the
-[authority-only stable contract proposal](contract-cache-proposal.md) before
-implementing it. It preserves both compilers, requires a candidate-independent
-authority boundary, and forbids fuzzy matching. A later acceptance batch needs
-multiple tasks, multiple candidates per task, positive as well as negative
-examples, repetitions, and checks of verdicts and ranking—not just call counts.
+The historical figures above are unchanged. The branch now additionally has:
+
+- terminal usage rows for successful, failed, timed-out and retried CLI attempts;
+  unknown usage remains unknown, and does not count as zero cost;
+- an experimental, default-off [authority-only contract cache](contract-cache-proposal.md),
+  retaining separate Compiler and Critic stages;
+- separate, independently audited positive and negative method-cache slots,
+  with fresh adapter execution on every candidate; and
+- a [paired evaluation driver](../experiments/terminal_bench/TYPED_ADAPTER_EVAL.md)
+  that charges cold fills and compares complete wall time, with exact contract
+  text retained to expose changed requirements.
+
+These changes still need new real pipeline measurements. The successful
+single-role Luna protocol smoke is not a performance benchmark. A six-candidate
+warm canary is a regression screen, not an acceptance result; the larger gate
+contains 20 distinct candidates across four ordinary tasks.
+
+### Optimization direction
+
+OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
+emphasizes fewer generated tokens, fewer requests, independent parallel work,
+and using conventional computation where it suffices. It cautions that cutting
+input length alone usually gives a much smaller latency gain. Applied here,
+this supports measuring eliminated repeated role calls and the critical path,
+not presenting prompt shortening or accumulated parallel model seconds as a
+10x end-to-end improvement. The guide's suggestion to combine dependent model
+steps is deliberately not applied across this project's independent auditors.
