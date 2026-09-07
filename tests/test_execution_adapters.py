@@ -28,6 +28,10 @@ from verifier.execution.adapters import (
     AdapterRoutingDischarger,
     default_adapter_registry,
 )
+from verifier.execution.browser import (
+    BROWSER_DOCUMENT_POLICY, BROWSER_NETWORK_POLICY,
+    BROWSER_OBSERVATION_PROFILE, BROWSER_RESPONSE_SCHEMA,
+)
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.schema import FixtureBackend
@@ -76,7 +80,7 @@ class FallbackDischarger:
             instrument="fallback", witness_kind="execution")
 
 
-def captured(tmp_path):
+def captured(tmp_path, browser_observer=None):
     state = tmp_path / "gv"
     world = state / "world" / "app"
     world.mkdir(parents=True)
@@ -88,7 +92,8 @@ def captured(tmp_path):
     log = EventLog(str(state / "events.jsonl"))
     fallback = FallbackDischarger(artifacts)
     routing = AdapterRoutingDischarger(
-        fallback, default_adapter_registry(), artifacts, log, str(state),
+        fallback, default_adapter_registry(browser_observer), artifacts, log,
+        str(state),
         live_world=False,
     )
     return state, world, artifacts, log, fallback, routing
@@ -126,15 +131,22 @@ def test_method_ir_is_optional_but_never_partially_accepted():
         ) | {"adapter_arguments": '{"address":"/app/x","address":"/app/y"}'})
 
 
-def test_catalog_is_versioned_narrow_and_has_no_command_executor():
+def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
     catalog = json.loads(default_adapter_registry().catalog())
     assert {(item["name"], item["version"]) for item in catalog} == {
         ("filesystem.exists", 1),
         ("filesystem.sha256", 1),
         ("document.json-value", 1),
         ("ledger.event", 1),
+        ("ledger.tool-call-string", 1),
     }
-    assert not any("command" in item["name"] for item in catalog)
+    command = next(item for item in catalog
+                   if item["name"] == "ledger.tool-call-string")
+    assert command["basis"] == BASIS_RECORD
+    assert "never parses or executes" in command["summary"]
+    assert not any(item["basis"] == BASIS_WORLD
+                   and "command" in item["name"] for item in catalog)
+    assert not any(item["name"] == "browser.html" for item in catalog)
 
 
 def test_file_exists_adapter_emits_auditable_world_evidence(tmp_path):
@@ -326,6 +338,307 @@ def test_ledger_adapter_matches_an_immutable_event_subset(tmp_path):
     assert refuted.outcome == OUTCOME_REFUTED
     assert refuted.witness_kind == WITNESS_RECORD_CONTRADICTION
     assert fallback.calls == []
+
+
+@pytest.mark.parametrize("selector,expected,outcome", [
+    ("first", "alpha --one", OUTCOME_HOLDS),
+    ("last", "alpha --two", OUTCOME_HOLDS),
+    ("any", "alpha --two", OUTCOME_HOLDS),
+    ("all", "alpha --one", OUTCOME_REFUTED),
+])
+def test_ledger_string_uses_declared_dialect_and_exact_selection(
+        tmp_path, selector, expected, outcome):
+    state = tmp_path / "gv"
+    state.mkdir()
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    log = EventLog(str(state / "events.jsonl"))
+    log.append("tool_call", {
+        "tool": "arbitrary-runner",
+        "input": {"request": {"line": "alpha --one"}},
+    })
+    log.append("tool_call", {
+        "tool": "ignored-runner",
+        "input": {"request": {"line": "not selected"}},
+    })
+    log.append("tool_call", {
+        "tool": "arbitrary-runner",
+        "input": {"request": {"line": "alpha --two"}},
+    })
+    fallback = FallbackDischarger(artifacts)
+    routing = AdapterRoutingDischarger(
+        fallback, default_adapter_registry(), artifacts, log, str(state),
+        live_world=False)
+    typed = method(
+        "ledger.tool-call-string", {
+            "selector": selector,
+            "value_pointer": "/input/request/line",
+            "through_seq": 3,
+            "tool_names": ["arbitrary-runner"],
+            "expected": expected,
+        }, basis=BASIS_RECORD, inputs=[subject("ledger:events", "ledger")])
+
+    result = routing.discharge(
+        ROW, Obligation("c1", "the selected command matches", BASIS_RECORD),
+        typed)
+
+    assert result.outcome == outcome
+    assert fallback.calls == []
+    evidence = artifacts.get(result.artifact)
+    execution = evidence["execution"]
+    assert execution["consumed"][0]["ref"] == "ledger:events"
+    assert execution["observation"]["snapshot"]["candidate_string_count"] == 2
+    if outcome == OUTCOME_REFUTED:
+        assert result.witness_kind == WITNESS_RECORD_CONTRADICTION
+
+
+def test_ledger_string_absence_only_refutes_a_presence_requirement(tmp_path):
+    state = tmp_path / "gv"
+    state.mkdir()
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    log = EventLog(str(state / "events.jsonl"))
+    log.append("message", {"text": "no tool call"})
+    fallback = FallbackDischarger(artifacts)
+    routing = AdapterRoutingDischarger(
+        fallback, default_adapter_registry(), artifacts, log, str(state),
+        live_world=False)
+    typed = method(
+        "ledger.tool-call-string", {
+            "selector": "any", "value_pointer": "/input/command",
+            "through_seq": 1,
+        }, basis=BASIS_RECORD, inputs=[subject("ledger:events", "ledger")])
+
+    refuted = routing.discharge(
+        ROW, Obligation("c1", "at least one command exists", BASIS_RECORD,
+                        refutable_by_absence=True), typed)
+    deferred = routing.discharge(
+        ROW, Obligation("c2", "a command has some effect", BASIS_RECORD),
+        typed)
+
+    assert refuted.outcome == OUTCOME_REFUTED
+    assert refuted.witness_kind == WITNESS_ABSENCE
+    assert deferred.instrument == "fallback"
+    assert len(fallback.calls) == 1
+
+
+class FakeBrowserObserver:
+    identity = {
+        "kind": "fixture",
+        "protocol": "gv-browser-observer-request-v1",
+        "sha256": "f" * 64,
+        "browser_sha256": "e" * 64,
+        "observation_profile": BROWSER_OBSERVATION_PROFILE,
+    }
+
+    def __init__(self):
+        self.calls = []
+
+    def observe(self, document, request):
+        import hashlib
+        self.calls.append((document, dict(request)))
+        return {
+            "schema": BROWSER_RESPONSE_SCHEMA,
+            "document_sha256": hashlib.sha256(document).hexdigest(),
+            "network_policy": BROWSER_NETWORK_POLICY,
+            "document_policy": BROWSER_DOCUMENT_POLICY,
+            "browser_sha256": self.identity["browser_sha256"],
+            "observation_profile": BROWSER_OBSERVATION_PROFILE,
+            "observation_window": {"start": "navigation",
+                                   "end": "page-frozen-after-load+wait",
+                                   "wait_ms": request["wait_ms"]},
+            "engine": "fixture-browser",
+            "engine_version": "1",
+            "dialogs": [{"type": "alert", "message": "hello"}],
+            "console": [{"type": "log", "text": "ready"}],
+            "page_errors": [],
+            "blocked_requests": [],
+            "selectors": {
+                selector: {"count": 2, "texts": ["one", "two"],
+                           "texts_complete": True}
+                for selector in request["selectors"]
+            },
+        }
+
+
+def test_browser_adapter_is_injected_and_has_no_oracle_script_surface(tmp_path):
+    observer = FakeBrowserObserver()
+    _, world, artifacts, _, fallback, routing = captured(
+        tmp_path, browser_observer=observer)
+    (world / "page.data").write_text(
+        "<!doctype html><script>alert('hello')</script>")
+    obligation = Obligation("c1", "the page has the expected observations",
+                            BASIS_WORLD)
+    assertions = [
+        {"kind": "dialog.messages", "expected": ["hello"]},
+        {"kind": "console.messages", "level": "log",
+         "expected": ["ready"]},
+        {"kind": "selector.count", "selector": ".item", "expected": 2},
+        {"kind": "selector.texts", "selector": ".item",
+         "expected": ["one", "two"]},
+    ]
+    typed = method(
+        "browser.html", {"address": "/app/page.data",
+                         "assertions": assertions, "wait_ms": 25},
+        inputs=[subject("/app/page.data")])
+
+    result = routing.discharge(ROW, obligation, typed)
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert fallback.calls == []
+    assert observer.calls[0][1] == {"wait_ms": 25,
+                                    "selectors": [".item"]}
+    catalog = json.loads(routing.adapter_catalog())
+    browser = next(item for item in catalog if item["name"] == "browser.html")
+    assert browser["backend"] == observer.identity
+    assert "script" not in browser["arguments"]
+    assert "command" not in browser["arguments"]
+    evidence = artifacts.get(result.artifact)
+    assert evidence["execution"]["observation"]["browser"]["engine"] \
+        == "fixture-browser"
+
+
+def test_browser_adapter_refutes_only_from_a_complete_bound_observation(
+        tmp_path):
+    observer = FakeBrowserObserver()
+    _, world, _, _, fallback, routing = captured(
+        tmp_path, browser_observer=observer)
+    (world / "page.html").write_text("<!doctype html>")
+    typed = method(
+        "browser.html", {
+            "address": "/app/page.html",
+            "assertions": [{"kind": "dialog.messages", "expected": []}],
+        }, inputs=[subject("/app/page.html")])
+
+    result = routing.discharge(
+        ROW, Obligation("c1", "the page opens no dialog", BASIS_WORLD), typed)
+
+    assert result.outcome == OUTCOME_REFUTED
+    assert result.witness_kind == "execution"
+    assert fallback.calls == []
+
+
+def test_browser_adapter_rejects_arbitrary_evaluation_arguments(tmp_path):
+    observer = FakeBrowserObserver()
+    _, world, _, _, fallback, routing = captured(
+        tmp_path, browser_observer=observer)
+    (world / "page.html").write_text("<!doctype html>")
+    typed = method(
+        "browser.html", {
+            "address": "/app/page.html", "assertions": [
+                {"kind": "dialog.messages", "expected": []}],
+            "script": "globalThis.secret",
+        }, inputs=[subject("/app/page.html")])
+
+    result = routing.discharge(
+        ROW, Obligation("c1", "an observation", BASIS_WORLD), typed)
+
+    assert result.instrument == "fallback"
+    assert observer.calls == []
+    assert "unknown=script" in fallback.calls[0]["method"][
+        "adapter_fallback_reason"]
+
+
+@pytest.mark.parametrize("defect", [
+    "resources", "document", "runtime", "profile", "window", "counts", "schema",
+])
+def test_browser_incomplete_or_misbound_observations_fall_back(tmp_path, defect):
+    class DamagedObserver(FakeBrowserObserver):
+        def observe(self, document, request):
+            result = super().observe(document, request)
+            if defect == "resources":
+                result["blocked_requests"] = [
+                    {"url": "https://assets.invalid/module.js",
+                     "resource_type": "Script"}]
+            elif defect == "document":
+                result["document_sha256"] = "0" * 64
+            elif defect == "runtime":
+                result["browser_sha256"] = "0" * 64
+            elif defect == "profile":
+                result["observation_profile"] = {}
+            elif defect == "window":
+                result["observation_window"] = {
+                    **result["observation_window"], "wait_ms": 1234}
+            elif defect == "counts":
+                result["selectors"]["p"]["count"] = 0
+            else:
+                result["extra"] = "unversioned extension"
+            return result
+
+    _, world, _, _, fallback, routing = captured(
+        tmp_path, browser_observer=DamagedObserver())
+    (world / "page.html").write_text("<p>one</p><p>two</p>")
+    result = routing.discharge(
+        ROW, Obligation("c1", "the snapshot contains two paragraphs", BASIS_WORLD),
+        method("browser.html", {
+            "address": "/app/page.html", "assertions": [
+                {"kind": "selector.count", "selector": "p", "expected": 2}],
+        }, inputs=[subject("/app/page.html")]))
+
+    assert result.instrument == "fallback"
+    assert len(fallback.calls) == 1
+
+
+def test_non_reusable_adapter_keeps_fresh_judger_audits(tmp_path):
+    observer = FakeBrowserObserver()
+    state, world, artifacts, log, fallback, routing = captured(
+        tmp_path, browser_observer=observer)
+    (state / "task.md").write_text("Inspect the current document snapshot")
+    (world / "page.html").write_text("<p>one</p><p>two</p>")
+    typed = method("browser.html", {
+        "address": "/app/page.html", "assertions": [
+            {"kind": "selector.count", "selector": "p", "expected": 2}],
+    }, inputs=[subject("/app/page.html")])
+    cache = AcceptedMethodCache()
+    backend = FixtureBackend({"oracles": {"methods": [typed]},
+                              "judger": JUDGE_YES})
+    game = BindingGame(backend, artifacts, log, routing, live_world=False,
+                       method_cache=cache)
+    obligation = Obligation("c1", "the snapshot contains two paragraphs", BASIS_WORLD)
+
+    for _ in range(2):
+        assert game.run(ROW, obligation).outcome == OUTCOME_HOLDS
+
+    assert [call["role"] for call in backend.calls] == [
+        "oracles", "judger", "oracles", "judger"]
+    assert len(observer.calls) == 2
+    assert len(cache) == 0
+    assert fallback.calls == []
+
+
+@pytest.mark.parametrize("assertion", [
+    {"kind": "dialog.messages", "expected": ["hello", "later"]},
+    {"kind": "console.messages", "expected": ["ready", "later"]},
+    {"kind": "selector.count", "selector": "p", "expected": 3},
+    {"kind": "selector.texts", "selector": "p", "expected": ["one", "two", "three"]},
+])
+@pytest.mark.parametrize("empty", [False, True])
+def test_browser_missing_suffix_or_nodes_obey_absence_gate(tmp_path, assertion, empty):
+    class Observer(FakeBrowserObserver):
+        def observe(self, document, request):
+            result = super().observe(document, request)
+            if empty:
+                result["dialogs"] = []
+                result["console"] = []
+                result["selectors"] = {
+                    selector: {"count": 0, "texts": [], "texts_complete": True}
+                    for selector in request["selectors"]}
+            return result
+
+    _, world, _, _, fallback, routing = captured(
+        tmp_path, browser_observer=Observer())
+    (world / "page.html").write_text("<p>one</p><p>two</p>")
+    typed = method("browser.html", {
+        "address": "/app/page.html", "assertions": [assertion],
+    }, inputs=[subject("/app/page.html")])
+    for allowed in (False, True):
+        result = routing.discharge(
+            ROW, Obligation("c1", "required observations exist", BASIS_WORLD,
+                            refutable_by_absence=allowed), typed)
+        if allowed:
+            assert result.outcome == OUTCOME_REFUTED
+            assert result.witness_kind == WITNESS_ABSENCE
+        else:
+            assert result.instrument == "fallback"
+    assert len(fallback.calls) == 1
 
 
 def test_binding_game_keeps_oracle_and_judger_but_skips_agent_discharge(

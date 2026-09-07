@@ -1,0 +1,94 @@
+# Typed execution adapters
+
+Adapters replace one execution step with a versioned, mechanically checked
+operation. The obligation compiler still establishes the requirement; the
+Oracle compiler selects a method and its inputs; the Judger checks sufficiency
+and fidelity. An unsupported operation, incomplete observation, or invalid
+input goes through the existing agent executor.
+
+## Generality contract
+
+An adapter implements an operation on declared evidence. It never receives a
+benchmark score, selects behavior from a task name, or contains task answers.
+Addresses, expected values, selectors, and record scopes are method arguments.
+Their relevance to the task remains the Judger's responsibility. Catalogs
+describe available operations; the model prompts remain domain independent.
+
+| Adapter | Mechanical observation | Limitation |
+| --- | --- | --- |
+| `filesystem.exists@1` | Address presence and artifact kind | Absence requires an explicit presence obligation |
+| `filesystem.sha256@1` | File bytes compared with a declared digest | The digest's authority is audited independently |
+| `document.json-value@1` | Exact, type-sensitive JSON Pointer comparison | Strict UTF-8 JSON only |
+| `ledger.event@1` | One retained event's type and payload subset | Establishes record facts only |
+| `ledger.tool-call-string@1` | Exact string selection within an explicit ledger interval | Cannot interpret or execute command text |
+| `browser.html@1` | Dialog, console and DOM observations within a finite time window | Optional pinned backend; standalone documents only |
+
+`ledger.tool-call-string` requires `selector`, `value_pointer`, and
+`through_seq`; optional arguments are `expected`, `tool_names`, `after_seq`,
+and `payload_equals` (exact predicates indexed by payload JSON Pointers).
+The scope is `(after_seq, through_seq]`. Its subject declaration is
+`{"ref":"ledger:events","provenance":"ledger","role":"subject"}`.
+A matching tool call with an unreadable value invalidates the fast path.
+Failure to find an existential match is absence, not a positive contradiction.
+
+For example, `/input/cmd` and `/input/keystrokes` are different explicit
+record dialects. A raw program containing a nested tool invocation needs the
+agent executor; this adapter does not infer what the program executes.
+
+## Optional browser observer
+
+The browser adapter accepts an address, `wait_ms` (0–5000), and exact assertions:
+
+```json
+{
+  "address": "/site/document.html",
+  "wait_ms": 100,
+  "assertions": [
+    {"kind": "selector.count", "selector": "main", "expected": 1},
+    {"kind": "dialog.messages", "expected": []}
+  ]
+}
+```
+
+Other kinds are `selector.texts` (ordered text-content list) and
+`console.messages` (ordered message list, optionally filtered by level).
+The evidence records navigation through page freeze after `load + wait_ms`.
+It makes no statement about subsequent behavior or other browser environments.
+The backend records its browser digest, version, fixed display/locale/timezone
+profile, dialog policy, and observed input digest.
+
+Enable it only with verifier-owned configuration:
+
+```bash
+export GV_BROWSER_OBSERVER="/absolute/repo/scripts/gv_browser_observer.py"
+export GV_BROWSER_OBSERVER_SHA256="<SHA-256 of that observer>"
+export GV_BROWSER_EXECUTABLE="/absolute/path/to/chromium"
+export GV_BROWSER_EXECUTABLE_SHA256="<SHA-256 of that browser binary>"
+```
+
+All four values are required. They cannot be supplied through MethodIR. No
+runtime is downloaded or discovered automatically. The bundled POSIX observer
+uses a fresh profile and blocks requests beyond its single document. Any
+blocked resource request makes the adapter inapplicable, because the observed
+page would have an incomplete environment. This request policy is not an OS
+security sandbox; run untrusted active content only inside an independently
+isolated verifier deployment.
+
+## Reuse and experiments
+
+Each adapter explicitly declares whether it supports accepted-method reuse.
+The current opt-ins are the three pure world-file adapters. Reuse also requires
+an exact obligation, task authority, backend/catalog identity, decisive method,
+delivered subject inputs, and a previously successful Judger audit. Execution
+always runs again on the current candidate. Browser and ledger methods retain
+a fresh Judger audit on every binding.
+
+`GV_TYPED_ADAPTERS=0` selects the original agent execution path and disables
+accepted-method reuse. `1` enables adapters. Both modes use the same compilers
+and Judger. The setting and optional observer identity are included in offline
+configuration fingerprints, so resume cannot mix the two configurations.
+
+For performance comparisons, run paired candidates at the same code revision,
+model, effort, service tier, and parallelism, with separate scoring roots.
+Measure verdict changes, calls, uncached input/output tokens, and wall time.
+Synthetic speedups do not establish a whole-pipeline speedup on real tasks.

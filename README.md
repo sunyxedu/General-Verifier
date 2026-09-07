@@ -31,6 +31,9 @@ Follow one run through the figure above. The agent was asked to sum the integers
 
 Two rules make this hold up. **Models judge meaning; code enforces types.** A model decides whether a method is sufficient, but code decides that a refutation from a weak method cannot count, that absence is not proof, and that record-level evidence cannot settle a claim about the world. **The final verdict does not trust the agent.** Intermediate claims are verified conditionally on their premises and reported that way, while the final contract is compiled with those premises withheld and checked against captured inputs. Every rule, gate, and budget is described in the [documentation](https://hemlix.me/General-Verifier/).
 
+The [adapter contract](docs/adapters.md) describes the available operations,
+their evidence boundaries, optional browser configuration, and the A/B switch.
+
 ## Installation
 
 GV needs Python 3.12 or newer, [uv](https://docs.astral.sh/uv/), and a model backend.

@@ -335,6 +335,18 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         "max_rounds": max_rounds,
         "critic_rounds": critic_rounds,
     }
+    # Optional verifier instruments are part of the experiment, not ambient
+    # machine state.  Stamp the pinned public identity (never its host path)
+    # so score resumption cannot mix runs with different browser observers.
+    from .execution.browser import configured_browser_observer
+    from .execution.config import typed_adapters_enabled
+    fields["typed_adapters"] = typed_adapters_enabled()
+    browser_observer = (configured_browser_observer()
+                        if fields["typed_adapters"] else None)
+    fields["browser_observer"] = (
+        dict(browser_observer.identity) if browser_observer is not None
+        else None
+    )
     if fields["seats"] == "sdk":
         from .llm import provider
 

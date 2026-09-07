@@ -203,6 +203,9 @@ class BindingGame:
         if adapter_only is None:
             return None, "discharger has no authenticated adapter-only path"
         method = accepted.method
+        if not getattr(self.discharger, "supports_method_reuse",
+                       lambda _method: False)(method):
+            return None, "adapter requires a fresh independent Judger audit"
         if not self._cacheable_signature(method, {
                 "sufficient": "yes", "faithful": "yes",
                 "degradation": "n/a"}):
@@ -296,6 +299,9 @@ class BindingGame:
             method, audit = bound.get("method"), bound.get("audit")
             if not isinstance(method, dict) or not isinstance(audit, dict) \
                     or not self._cacheable_signature(method, audit):
+                return None
+            if not getattr(self.discharger, "supports_method_reuse",
+                           lambda _method: False)(method):
                 return None
             discharge_digest = bound.get("discharge_artifact")
             evidence = self.artifacts.get(discharge_digest)

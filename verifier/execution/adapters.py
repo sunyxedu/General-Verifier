@@ -6,7 +6,7 @@ procedure to one of the adapters in this module.  The adapter then replaces
 only the executor seat; the independent judger continues to audit method
 sufficiency and execution fidelity.
 
-Adapters are deliberately narrow.  There is no arbitrary-command adapter:
+Adapters are deliberately narrow.  There is no arbitrary-command executor:
 unknown methods, malformed MethodIR, unsupported world mappings, and adapter
 failures all fall back to the existing agent executor.  That makes the fast
 path an optimization rather than a new source of verifier verdicts.
@@ -34,6 +34,7 @@ from ..core.model import (
     PROVENANCE_PUBLIC,
     PROVENANCE_TASK_GIVEN,
     ROLE_SUBJECT,
+    WITNESS_EXECUTION,
     WITNESS_ABSENCE,
     WITNESS_NONE,
     WITNESS_RECORD_CONTRADICTION,
@@ -50,6 +51,14 @@ from ..core.world import (
     load_world_view,
 )
 from .discharge import DischargeResult
+from .browser import (
+    BROWSER_DOCUMENT_POLICY,
+    BROWSER_NETWORK_POLICY,
+    BROWSER_OBSERVATION_PROFILE,
+    BROWSER_RESPONSE_SCHEMA,
+    BrowserObserver,
+    configured_browser_observer,
+)
 from .instruments import ArtifactStore
 
 
@@ -64,6 +73,16 @@ MAX_ARGUMENT_CHARS = 65_536
 MAX_DECLARED_INPUTS = 32
 MAX_INPUT_REF_CHARS = 4_096
 MAX_RETAINED_VALUE_CHARS = 16_384
+MAX_LEDGER_EVENTS = 20_000
+MAX_LEDGER_BYTES = 32 * 1024 * 1024
+MAX_LEDGER_VALUE_BYTES = 1024 * 1024
+MAX_LEDGER_VALUE_BYTES_TOTAL = 8 * 1024 * 1024
+MAX_LEDGER_SCOPE_PREDICATES = 16
+MAX_LEDGER_TOOL_NAMES = 32
+MAX_LEDGER_TOOL_NAME_CHARS = 256
+MAX_RETAINED_LEDGER_VALUES = 64
+MAX_BROWSER_ASSERTIONS = 16
+MAX_BROWSER_WAIT_MS = 5_000
 WORLD_FILE_PROVENANCES = frozenset((
     PROVENANCE_DELIVERED, PROVENANCE_TASK_GIVEN, PROVENANCE_PUBLIC,
 ))
@@ -255,6 +274,9 @@ class MethodAdapter:
     basis = BASIS_WORLD
     summary = ""
     arguments: Dict[str, str] = {}
+    # New instruments opt in only after their whole execution contract is
+    # reproducible from MethodIR and the current declared inputs.
+    accepted_method_reuse = False
 
     @property
     def identity(self) -> str:
@@ -266,6 +288,7 @@ class MethodAdapter:
             "version": self.version,
             "basis": self.basis,
             "read_only": True,
+            "accepted_method_reuse": self.accepted_method_reuse,
             "summary": self.summary,
             "arguments": self.arguments,
             "input_contract": (
@@ -364,6 +387,7 @@ def _open_regular(resolved: ResolvedAddress):
 
 
 class FileExistsAdapter(MethodAdapter):
+    accepted_method_reuse = True
     name = "filesystem.exists"
     basis = BASIS_WORLD
     summary = "Decide whether one world address exists with the requested kind."
@@ -414,6 +438,7 @@ class FileExistsAdapter(MethodAdapter):
 
 
 class FileSha256Adapter(MethodAdapter):
+    accepted_method_reuse = True
     name = "filesystem.sha256"
     basis = BASIS_WORLD
     summary = "Compare a regular world file's bytes with an expected SHA-256."
@@ -538,6 +563,7 @@ def _json_pointer(value: Any, pointer: str) -> Any:
 
 
 class JsonValueAdapter(MethodAdapter):
+    accepted_method_reuse = True
     name = "document.json-value"
     basis = BASIS_WORLD
     summary = "Parse one world file and compare a JSON Pointer value exactly."
@@ -697,6 +723,623 @@ class LedgerEventAdapter(MethodAdapter):
             WITNESS_RECORD_CONTRADICTION, observation, consumed)
 
 
+def _validate_ledger_pointer(pointer: Any, field: str) -> str:
+    """Validate every RFC 6901 segment without dereferencing any value."""
+    if not isinstance(pointer, str) or (pointer and not pointer.startswith("/")):
+        raise AdapterNotApplicable(f"{field} must be an RFC 6901 pointer")
+    if pointer:
+        for raw in pointer[1:].split("/"):
+            if re.search(r"~(?:[^01]|$)", raw):
+                raise AdapterNotApplicable(
+                    f"{field} contains an invalid RFC 6901 escape")
+    return pointer
+
+
+def _bounded_ledger_prefix(log: EventLog, through_seq: int):
+    """Yield a validated ledger prefix without reading beyond its byte cap."""
+    if through_seq == 0:
+        return
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(log.path, flags)
+    except OSError as error:
+        raise AdapterNotApplicable(
+            f"cannot open the declared ledger prefix: {error}") from error
+    stream = None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise AdapterNotApplicable("ledger must be a regular file")
+        stream = os.fdopen(fd, "rb")
+        fd = -1
+        expected_seq = 0
+        bytes_read = 0
+        while expected_seq < through_seq:
+            remaining = MAX_LEDGER_BYTES - bytes_read
+            raw = stream.readline(remaining + 1)
+            if not raw:
+                raise AdapterNotApplicable(
+                    f"ledger ends before through_seq={through_seq}")
+            bytes_read += len(raw)
+            if bytes_read > MAX_LEDGER_BYTES:
+                raise AdapterNotApplicable(
+                    f"ledger prefix exceeds {MAX_LEDGER_BYTES} bytes")
+            if not raw.strip():
+                continue
+            try:
+                event = json.loads(
+                    raw.decode("utf-8"),
+                    object_pairs_hook=_object_without_duplicates,
+                    parse_constant=_no_json_constants,
+                )
+            except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+                raise AdapterNotApplicable(
+                    f"ledger prefix is not strict JSONL: {error}") from error
+            if not isinstance(event, dict):
+                raise AdapterNotApplicable("ledger event must be an object")
+            expected_seq += 1
+            seq = event.get("seq")
+            if isinstance(seq, bool) or not isinstance(seq, int) \
+                    or seq != expected_seq:
+                raise AdapterNotApplicable(
+                    f"ledger sequence is invalid at event {expected_seq}")
+            if not isinstance(event.get("type"), str) or "payload" not in event:
+                raise AdapterNotApplicable("ledger event has an invalid shape")
+            yield event, bytes_read
+    finally:
+        if stream is not None:
+            stream.close()
+        elif fd >= 0:
+            os.close(fd)
+
+
+class LedgerToolCallStringAdapter(MethodAdapter):
+    """Select exact string fields from scoped, immutable tool-call records."""
+
+    name = "ledger.tool-call-string"
+    basis = BASIS_RECORD
+    summary = (
+        "Within an explicit ledger sequence boundary, select a string at an "
+        "RFC 6901 payload pointer from exactly scoped tool_call records and "
+        "compare retained values exactly; never parses or executes the string."
+    )
+    arguments = {
+        "selector": (
+            "first|last|any|all over a non-empty selection of in-scope "
+            "string values"
+        ),
+        "value_pointer": "RFC 6901 pointer applied to each event payload",
+        "through_seq": "required inclusive ledger watermark, integer >= 0",
+        "after_seq": "optional exclusive lower watermark, default 0",
+        "expected": (
+            "optional exact string; omission means existence and requires "
+            "selector=any"
+        ),
+        "tool_names": "optional non-empty list of exact tool-name strings",
+        "payload_equals": (
+            "optional object from RFC 6901 payload pointers to exact JSON values"
+        ),
+    }
+
+    def catalog_entry(self) -> Dict[str, Any]:
+        entry = super().catalog_entry()
+        entry["input_contract"] = (
+            "declare ref=ledger:events, provenance=ledger, role=subject; "
+            "the adapter consumes only (after_seq, through_seq]"
+        )
+        return entry
+
+    @staticmethod
+    def _retained(items: Sequence[Mapping[str, Any]]) -> Sequence[Dict[str, Any]]:
+        return [
+            {**item, "value": _bounded_json(item["value"])}
+            for item in items[:MAX_RETAINED_LEDGER_VALUES]
+        ]
+
+    def execute(self, invocation, obligation, context):
+        self.exact_arguments(
+            invocation.arguments,
+            ("selector", "value_pointer", "through_seq"),
+            ("after_seq", "expected", "tool_names", "payload_equals"),
+        )
+        arguments = invocation.arguments
+        selector = arguments["selector"]
+        pointer = _validate_ledger_pointer(
+            arguments["value_pointer"], "value_pointer")
+        through_seq = arguments["through_seq"]
+        after_seq = arguments.get("after_seq", 0)
+        expected_present = "expected" in arguments
+        expected = arguments.get("expected")
+        tool_names = arguments.get("tool_names")
+        payload_equals = arguments.get("payload_equals", {})
+
+        if selector not in {"first", "last", "any", "all"}:
+            raise AdapterNotApplicable(
+                "invalid ledger.tool-call-string selector")
+        if not expected_present and selector != "any":
+            raise AdapterNotApplicable(
+                "existence queries require selector=any")
+        if expected_present and not isinstance(expected, str):
+            raise AdapterNotApplicable(
+                "ledger.tool-call-string expected must be a string")
+        for field, value in (("through_seq", through_seq),
+                             ("after_seq", after_seq)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise AdapterNotApplicable(
+                    f"{field} must be a non-negative integer")
+        if after_seq > through_seq:
+            raise AdapterNotApplicable("after_seq must not exceed through_seq")
+        if through_seq > MAX_LEDGER_EVENTS:
+            raise AdapterNotApplicable(
+                f"through_seq exceeds {MAX_LEDGER_EVENTS} events")
+
+        if tool_names is not None:
+            if not isinstance(tool_names, list) or not tool_names \
+                    or len(tool_names) > MAX_LEDGER_TOOL_NAMES \
+                    or any(not isinstance(item, str) or not item
+                           or len(item) > MAX_LEDGER_TOOL_NAME_CHARS
+                           for item in tool_names) \
+                    or len(set(tool_names)) != len(tool_names):
+                raise AdapterNotApplicable(
+                    "tool_names must be a bounded, non-empty unique string list")
+            allowed_tools = frozenset(tool_names)
+        else:
+            allowed_tools = None
+
+        if not isinstance(payload_equals, dict) \
+                or len(payload_equals) > MAX_LEDGER_SCOPE_PREDICATES:
+            raise AdapterNotApplicable(
+                "payload_equals must be a bounded object")
+        checked_scope = tuple(
+            (_validate_ledger_pointer(scope_pointer, "payload_equals pointer"),
+             canonical(scope_expected))
+            for scope_pointer, scope_expected in payload_equals.items()
+        )
+
+        ref = "ledger:events"
+        self.require_subject(invocation, ref, (PROVENANCE_LEDGER,))
+        prefix_digests = []
+        range_digests = []
+        candidate_digests = []
+        prefix_bytes = 0
+        candidate_count = 0
+        candidate_value_bytes = 0
+        match_count = 0
+        first_item = None
+        last_item = None
+        first_items = []
+        matching_items = []
+        differing_items = []
+
+        for event, prefix_bytes in _bounded_ledger_prefix(
+                context.log, through_seq):
+            event_digest = EventLog.event_digest(event)
+            prefix_digests.append(event_digest)
+            if event["seq"] <= after_seq:
+                continue
+            range_digests.append(event_digest)
+            if event["type"] != "tool_call":
+                continue
+            payload = event["payload"]
+            if not isinstance(payload, dict):
+                raise AdapterNotApplicable(
+                    "in-range tool_call payload must be an object")
+            tool = payload.get("tool")
+            if not isinstance(tool, str) or not tool \
+                    or len(tool) > MAX_LEDGER_TOOL_NAME_CHARS:
+                raise AdapterNotApplicable(
+                    "in-range tool_call must retain a bounded tool name")
+            if allowed_tools is not None and tool not in allowed_tools:
+                continue
+
+            in_scope = True
+            for scope_pointer, canonical_expected in checked_scope:
+                try:
+                    scope_actual = _json_pointer(payload, scope_pointer)
+                except LookupError:
+                    in_scope = False
+                    break
+                if canonical(scope_actual) != canonical_expected:
+                    in_scope = False
+                    break
+            if not in_scope:
+                continue
+
+            candidate_digests.append(event_digest)
+            try:
+                value = _json_pointer(payload, pointer)
+            except LookupError as error:
+                raise AdapterNotApplicable(
+                    "an in-scope tool_call lacks value_pointer") from error
+            if not isinstance(value, str):
+                raise AdapterNotApplicable(
+                    "an in-scope tool_call value is not a string")
+            value_bytes = len(value.encode("utf-8"))
+            if value_bytes > MAX_LEDGER_VALUE_BYTES:
+                raise AdapterNotApplicable(
+                    f"in-scope string exceeds {MAX_LEDGER_VALUE_BYTES} bytes")
+            candidate_value_bytes += value_bytes
+            if candidate_value_bytes > MAX_LEDGER_VALUE_BYTES_TOTAL:
+                raise AdapterNotApplicable(
+                    "in-scope strings exceed the cumulative byte limit")
+
+            item = {
+                "seq": event["seq"],
+                "tool": tool,
+                "value": value,
+                "event_digest": event_digest,
+            }
+            candidate_count += 1
+            if first_item is None:
+                first_item = item
+            last_item = item
+            if len(first_items) < MAX_RETAINED_LEDGER_VALUES:
+                first_items.append(item)
+            if expected_present and value == expected:
+                match_count += 1
+                if len(matching_items) < MAX_RETAINED_LEDGER_VALUES:
+                    matching_items.append(item)
+            elif expected_present \
+                    and len(differing_items) < MAX_RETAINED_LEDGER_VALUES:
+                differing_items.append(item)
+
+        snapshot = {
+            "ref": ref,
+            "after_seq": after_seq,
+            "through_seq": through_seq,
+            "prefix_bytes": prefix_bytes,
+            "prefix_event_count": len(prefix_digests),
+            "prefix_events_digest": content_hash(prefix_digests),
+            "range_event_count": len(range_digests),
+            "range_events_digest": content_hash(range_digests),
+            "candidate_event_count": len(candidate_digests),
+            "candidate_events_digest": content_hash(candidate_digests),
+            "candidate_string_count": candidate_count,
+            "candidate_string_bytes": candidate_value_bytes,
+        }
+
+        if selector == "first":
+            selected_count = min(candidate_count, 1)
+            selected_source = [first_item] if first_item is not None else []
+        elif selector == "last":
+            selected_count = min(candidate_count, 1)
+            selected_source = [last_item] if last_item is not None else []
+        elif selector == "any" and expected_present and match_count:
+            selected_count = candidate_count
+            selected_source = matching_items
+        elif selector == "all" and expected_present \
+                and match_count != candidate_count:
+            selected_count = candidate_count
+            selected_source = differing_items
+        else:
+            selected_count = candidate_count
+            selected_source = first_items
+        retained = self._retained(selected_source)
+        observation = {
+            "selector": selector,
+            "value_pointer": pointer,
+            "tool_names": tool_names,
+            "payload_equals": payload_equals,
+            "expected_present": expected_present,
+            "expected": _bounded_json(expected) if expected_present else None,
+            "selected": retained,
+            "selected_count": selected_count,
+            "selected_truncated": selected_count > len(retained),
+            "snapshot": snapshot,
+        }
+
+        if candidate_count == 0:
+            if obligation.refutable_by_absence:
+                observation["matches"] = False
+                return AdapterExecution(
+                    OUTCOME_REFUTED,
+                    {"reason": "no in-scope string record exists",
+                     "selector": selector, "through_seq": through_seq},
+                    WITNESS_ABSENCE, observation, (snapshot,))
+            raise AdapterNotApplicable(
+                "absence cannot settle this obligation; the agent executor "
+                "must interpret the empty string selection")
+
+        if not expected_present:
+            matches = True
+        elif selector == "first":
+            matches = first_item["value"] == expected
+        elif selector == "last":
+            matches = last_item["value"] == expected
+        elif selector == "any":
+            matches = match_count > 0
+        else:
+            matches = match_count == candidate_count
+        observation["matches"] = matches
+        if matches:
+            return AdapterExecution(
+                OUTCOME_HOLDS, None, WITNESS_NONE,
+                observation, (snapshot,))
+        if selector == "any":
+            if obligation.refutable_by_absence:
+                return AdapterExecution(
+                    OUTCOME_REFUTED,
+                    {"reason": "no in-scope string has the exact value",
+                     "expected": _bounded_json(expected),
+                     "through_seq": through_seq},
+                    WITNESS_ABSENCE, observation, (snapshot,))
+            raise AdapterNotApplicable(
+                "failure of an existential exact match is absence evidence; "
+                "the obligation does not permit absence refutation")
+        return AdapterExecution(
+            OUTCOME_REFUTED,
+            {"reason": "retained string selection contradicts the exact value",
+             "selector": selector, "expected": _bounded_json(expected),
+             "selected": retained},
+            WITNESS_RECORD_CONTRADICTION, observation, (snapshot,))
+
+
+class BrowserHtmlAdapter(MethodAdapter):
+    """Evaluate a closed assertion algebra using a verifier-owned browser."""
+
+    name = "browser.html"
+    basis = BASIS_WORLD
+    summary = (
+        "Compare observations of one standalone HTML document during "
+        "navigation through page freeze after load+wait_ms in a fixed profile. "
+        "External resource requests make the method inapplicable. "
+        "The finite observation window proves no behavior outside that window."
+    )
+    arguments = {
+        "address": "string",
+        "assertions": (
+            "1..16 objects: {kind:dialog.messages,expected:string[]}; "
+            "{kind:console.messages,expected:string[],level?:string}; "
+            "{kind:selector.count,selector:CSS string,expected:integer>=0}; "
+            "{kind:selector.texts,selector:CSS string,expected:string[]}. "
+            "Lists are exact ordered values observed within the window."
+        ),
+        "wait_ms": f"optional integer 0..{MAX_BROWSER_WAIT_MS}",
+    }
+    max_bytes = 8 * 1024 * 1024
+
+    def __init__(self, observer: BrowserObserver):
+        self.observer = observer
+
+    def catalog_entry(self) -> Dict[str, Any]:
+        entry = super().catalog_entry()
+        entry["backend"] = dict(self.observer.identity)
+        return entry
+
+    @staticmethod
+    def _assertion(item: Any) -> Dict[str, Any]:
+        if not isinstance(item, dict) or not isinstance(item.get("kind"), str):
+            raise AdapterNotApplicable("each browser assertion must be an object")
+        kind = item["kind"]
+        if kind == "dialog.messages":
+            required, optional = {"kind", "expected"}, set()
+        elif kind == "console.messages":
+            required, optional = {"kind", "expected"}, {"level"}
+        elif kind in {"selector.count", "selector.texts"}:
+            required, optional = {"kind", "selector", "expected"}, set()
+        else:
+            raise AdapterNotApplicable(f"unknown browser assertion kind {kind!r}")
+        if not required <= set(item) or not set(item) <= required | optional:
+            raise AdapterNotApplicable("browser assertion has the wrong shape")
+        expected = item["expected"]
+        if kind in {"dialog.messages", "console.messages", "selector.texts"}:
+            if not isinstance(expected, list) or any(
+                    not isinstance(value, str) for value in expected):
+                raise AdapterNotApplicable(
+                    f"{kind} expected must be a string list")
+        elif isinstance(expected, bool) or not isinstance(expected, int) \
+                or expected < 0:
+            raise AdapterNotApplicable(
+                "selector.count expected must be a non-negative integer")
+        if "selector" in item and (not isinstance(item["selector"], str)
+                                   or not 1 <= len(item["selector"]) <= 4096):
+            raise AdapterNotApplicable("browser selector must have 1..4096 characters")
+        if "level" in item and (not isinstance(item["level"], str)
+                                or not item["level"]):
+            raise AdapterNotApplicable("console level must be non-empty")
+        return dict(item)
+
+    @staticmethod
+    def _validated_observation(raw: Mapping[str, Any], digest: str,
+                               selectors: Sequence[str], wait_ms: int,
+                               backend: Mapping[str, Any]) -> Dict[str, Any]:
+        response_fields = {
+            "schema", "document_sha256", "network_policy", "engine",
+            "engine_version", "dialogs", "console", "page_errors",
+            "selectors", "document_policy", "blocked_requests",
+            "browser_sha256", "observation_profile", "observation_window",
+        }
+        if not isinstance(raw, Mapping) or set(raw) != response_fields \
+                or raw.get("schema") \
+                != BROWSER_RESPONSE_SCHEMA:
+            raise AdapterNotApplicable("browser observer returned the wrong schema")
+        if raw.get("document_sha256") != digest:
+            raise AdapterNotApplicable(
+                "browser observer did not bind the observed document digest")
+        if raw.get("network_policy") != BROWSER_NETWORK_POLICY:
+            raise AdapterNotApplicable(
+                "browser observer used a different request-blocking policy")
+        if raw.get("document_policy") != BROWSER_DOCUMENT_POLICY:
+            raise AdapterNotApplicable(
+                "browser observer used a different document boundary")
+        if raw.get("browser_sha256") != backend.get("browser_sha256") \
+                or not isinstance(raw.get("browser_sha256"), str) \
+                or not _SHA256.fullmatch(raw["browser_sha256"]):
+            raise AdapterNotApplicable("browser runtime identity mismatch")
+        if canonical(raw.get("observation_profile")) \
+                != canonical(BROWSER_OBSERVATION_PROFILE):
+            raise AdapterNotApplicable("browser observation profile mismatch")
+        if raw.get("observation_window") != {
+                "start": "navigation", "end": "page-frozen-after-load+wait",
+                "wait_ms": wait_ms}:
+            raise AdapterNotApplicable("browser observation window mismatch")
+        if not isinstance(raw.get("engine"), str) \
+                or not raw["engine"] \
+                or not isinstance(raw.get("engine_version"), str) \
+                or not raw["engine_version"]:
+            raise AdapterNotApplicable("browser observer omitted engine identity")
+        dialogs, console = raw.get("dialogs"), raw.get("console")
+        page_errors, selected = raw.get("page_errors"), raw.get("selectors")
+        blocked_requests = raw.get("blocked_requests")
+        if not isinstance(dialogs, list) or any(
+                not isinstance(item, dict) or set(item) != {"type", "message"}
+                or not all(isinstance(item[key], str)
+                           for key in ("type", "message"))
+                for item in dialogs):
+            raise AdapterNotApplicable("browser dialog observations are invalid")
+        if not isinstance(console, list) or any(
+                not isinstance(item, dict) or set(item) != {"type", "text"}
+                or not all(isinstance(item[key], str)
+                           for key in ("type", "text"))
+                for item in console):
+            raise AdapterNotApplicable("browser console observations are invalid")
+        if not isinstance(page_errors, list) or any(
+                not isinstance(item, str) for item in page_errors):
+            raise AdapterNotApplicable("browser page errors are invalid")
+        if not isinstance(blocked_requests, list) or any(
+                not isinstance(item, dict)
+                or set(item) != {"url", "resource_type"}
+                or not isinstance(item["url"], str)
+                or not isinstance(item["resource_type"], str)
+                for item in blocked_requests):
+            raise AdapterNotApplicable("browser blocked-request records are invalid")
+        if blocked_requests:
+            raise AdapterNotApplicable(
+                "browser document requested undeclared external resources")
+        if not isinstance(selected, dict) or set(selected) != set(selectors):
+            raise AdapterNotApplicable("browser selector observations are incomplete")
+        for value in selected.values():
+            if not isinstance(value, dict) or set(value) != {
+                    "count", "texts", "texts_complete"}:
+                raise AdapterNotApplicable("browser selector result is invalid")
+            if isinstance(value["count"], bool) \
+                    or not isinstance(value["count"], int) \
+                    or value["count"] < 0 \
+                    or not isinstance(value["texts_complete"], bool) \
+                    or not isinstance(value["texts"], list) \
+                    or any(not isinstance(item, str) for item in value["texts"]):
+                raise AdapterNotApplicable("browser selector result is invalid")
+            if (len(value["texts"]) > value["count"]
+                    or (value["texts_complete"]
+                        and len(value["texts"]) != value["count"])):
+                raise AdapterNotApplicable("browser selector count/text inconsistency")
+        normalized = dict(raw)
+        if len(canonical(normalized)) > MAX_RETAINED_VALUE_CHARS:
+            raise AdapterNotApplicable("browser observation exceeds evidence limit")
+        return normalized
+
+    def execute(self, invocation, obligation, context):
+        self.exact_arguments(invocation.arguments, ("address", "assertions"),
+                             ("wait_ms",))
+        address = invocation.arguments["address"]
+        assertions = invocation.arguments["assertions"]
+        wait_ms = invocation.arguments.get("wait_ms", 500)
+        if not isinstance(address, str) or not address:
+            raise AdapterNotApplicable("browser address must be non-empty")
+        if not isinstance(assertions, list) or not assertions \
+                or len(assertions) > MAX_BROWSER_ASSERTIONS:
+            raise AdapterNotApplicable(
+                f"browser assertions must contain 1..{MAX_BROWSER_ASSERTIONS} items")
+        if isinstance(wait_ms, bool) or not isinstance(wait_ms, int) \
+                or not 0 <= wait_ms <= MAX_BROWSER_WAIT_MS:
+            raise AdapterNotApplicable(
+                f"wait_ms must be an integer from 0 to {MAX_BROWSER_WAIT_MS}")
+        checked = [self._assertion(item) for item in assertions]
+        selectors = sorted({item["selector"] for item in checked
+                            if "selector" in item})
+        self.require_subject(invocation, address, WORLD_FILE_PROVENANCES)
+        resolved = context.resolve(address)
+        try:
+            data, identity = _read_bounded_file(resolved, self.max_bytes)
+        except AdapterNotApplicable:
+            if not os.path.lexists(resolved.host_path) \
+                    and obligation.refutable_by_absence:
+                observation = {"address": address, "exists": False,
+                               "world_mode": resolved.mode}
+                return AdapterExecution(
+                    OUTCOME_REFUTED,
+                    {"reason": "required HTML document is absent",
+                     "address": address},
+                    WITNESS_ABSENCE, observation, ())
+            raise
+
+        request = {"wait_ms": wait_ms, "selectors": selectors}
+        try:
+            raw = self.observer.observe(data, request)
+        except Exception as error:
+            raise AdapterNotApplicable(
+                f"browser observer could not execute: {error}") from error
+        browser = self._validated_observation(
+            raw, identity["sha256"], selectors, wait_ms,
+            self.observer.identity)
+        results = []
+        for assertion in checked:
+            kind = assertion["kind"]
+            if kind == "dialog.messages":
+                actual = [item["message"] for item in browser["dialogs"]]
+            elif kind == "console.messages":
+                level = assertion.get("level")
+                actual = [item["text"] for item in browser["console"]
+                          if level is None or item["type"] == level]
+            elif kind == "selector.count":
+                actual = browser["selectors"][assertion["selector"]]["count"]
+            else:
+                value = browser["selectors"][assertion["selector"]]
+                if not value["texts_complete"]:
+                    raise AdapterNotApplicable(
+                        "browser selector text observation was truncated")
+                actual = value["texts"]
+            results.append({
+                "assertion": assertion,
+                "actual": actual,
+                "matches": canonical(actual) == canonical(assertion["expected"]),
+            })
+        matches = all(item["matches"] for item in results)
+        observation = {
+            "address": address,
+            "identity": identity,
+            "backend": dict(self.observer.identity),
+            "browser": browser,
+            "assertions": results,
+            "matches": matches,
+        }
+        if matches:
+            return AdapterExecution(
+                OUTCOME_HOLDS, None, WITNESS_NONE,
+                observation, (identity,))
+        failed = [item for item in results if not item["matches"]]
+        positive = []
+        for item in failed:
+            actual, expected = item["actual"], item["assertion"]["expected"]
+            if isinstance(actual, int):
+                # Extra observed nodes are a positive counter-observation;
+                # fewer nodes prove only the absence of a required member.
+                is_positive = actual > expected
+            else:
+                # A proper prefix is silence about the missing suffix. A
+                # different observed member or extra event is positive.
+                is_positive = len(actual) > len(expected) or any(
+                    found != required for found, required in zip(actual, expected))
+            if is_positive:
+                positive.append(item)
+        if not positive:
+            if not obligation.refutable_by_absence:
+                raise AdapterNotApplicable(
+                    "missing browser observations cannot refute this obligation")
+            return AdapterExecution(
+                OUTCOME_REFUTED,
+                {"reason": "required browser observations are absent within the window",
+                 "failed": failed},
+                WITNESS_ABSENCE, observation, (identity,))
+        return AdapterExecution(
+            OUTCOME_REFUTED,
+            {"reason": "browser observations contradict an exact assertion",
+             "failed": positive},
+            WITNESS_EXECUTION, observation, (identity,))
+
+
 class AdapterRegistry:
     """Versioned registry and evidence-envelope builder."""
 
@@ -715,6 +1358,16 @@ class AdapterRegistry:
                    for _, adapter in sorted(self._adapters.items())]
         return json.dumps(entries, ensure_ascii=False, sort_keys=True,
                           separators=(",", ":"))
+
+    def supports_method_reuse(self, method: Mapping[str, Any]) -> bool:
+        try:
+            invocation = AdapterInvocation.from_method(method)
+            if invocation is None:
+                return False
+            adapter = self._adapters.get((invocation.name, invocation.version))
+            return bool(adapter and adapter.accepted_method_reuse)
+        except (AdapterNotApplicable, TypeError, ValueError):
+            return False
 
     def execute(self, method: Mapping[str, Any], row: Mapping[str, Any],
                 obligation: Obligation, context: AdapterContext,
@@ -850,13 +1503,21 @@ class AdapterRegistry:
         return True, "mechanically authenticated adapter evidence"
 
 
-def default_adapter_registry() -> AdapterRegistry:
-    return AdapterRegistry((
+def default_adapter_registry(
+    browser_observer: Optional[BrowserObserver] = None,
+) -> AdapterRegistry:
+    if browser_observer is None:
+        browser_observer = configured_browser_observer()
+    adapters = [
         FileExistsAdapter(),
         FileSha256Adapter(),
         JsonValueAdapter(),
         LedgerEventAdapter(),
-    ))
+        LedgerToolCallStringAdapter(),
+    ]
+    if browser_observer is not None:
+        adapters.append(BrowserHtmlAdapter(browser_observer))
+    return AdapterRegistry(adapters)
 
 
 class AdapterRoutingDischarger:
@@ -873,6 +1534,9 @@ class AdapterRoutingDischarger:
 
     def adapter_catalog(self) -> str:
         return self.registry.catalog()
+
+    def supports_method_reuse(self, method) -> bool:
+        return self.registry.supports_method_reuse(method)
 
     def discharge_adapter_only(self, row, obligation, method):
         """Run only the typed fast path for an accepted-method cache hit.

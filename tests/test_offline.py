@@ -6,6 +6,7 @@ extractor is a FixtureBackend role, the kernel seats are fixtures/stubs.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -299,6 +300,45 @@ def test_score_resumes_from_an_extracted_graph(tmp_path):
 
 def test_pipeline_fingerprint_is_deterministic():
     assert offline.pipeline_fingerprint() == offline.pipeline_fingerprint()
+
+
+def test_config_identity_tracks_pinned_browser_observer_without_host_path(
+        tmp_path, monkeypatch):
+    monkeypatch.delenv("GV_BROWSER_OBSERVER", raising=False)
+    monkeypatch.delenv("GV_BROWSER_OBSERVER_SHA256", raising=False)
+    monkeypatch.delenv("GV_BROWSER_EXECUTABLE", raising=False)
+    monkeypatch.delenv("GV_BROWSER_EXECUTABLE_SHA256", raising=False)
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
+    baseline = offline.config_fields(model="same", seats="codex")
+    runner = tmp_path / "observer"
+    runner.write_text("#!/bin/sh\nprintf '{\"ok\":true}'\n")
+    runner.chmod(0o700)
+    digest = hashlib.sha256(runner.read_bytes()).hexdigest()
+    monkeypatch.setenv("GV_BROWSER_OBSERVER", os.fspath(runner))
+    monkeypatch.setenv("GV_BROWSER_OBSERVER_SHA256", digest)
+    monkeypatch.setenv("GV_BROWSER_EXECUTABLE", os.fspath(runner))
+    monkeypatch.setenv("GV_BROWSER_EXECUTABLE_SHA256", digest)
+
+    configured = offline.config_fields(model="same", seats="codex")
+
+    assert configured["config"] != baseline["config"]
+    assert configured["browser_observer"]["observer_sha256"] == digest
+    assert configured["browser_observer"]["browser_sha256"] == digest
+    assert os.fspath(runner) not in json.dumps(configured)
+
+
+def test_config_separates_adapter_control_and_treatment(monkeypatch):
+    for variable in ("GV_BROWSER_OBSERVER", "GV_BROWSER_OBSERVER_SHA256",
+                     "GV_BROWSER_EXECUTABLE", "GV_BROWSER_EXECUTABLE_SHA256"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "0")
+    control = offline.config_fields(model="same", seats="codex")
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
+    treatment = offline.config_fields(model="same", seats="codex")
+
+    assert control["typed_adapters"] is False
+    assert treatment["typed_adapters"] is True
+    assert control["config"] != treatment["config"]
 
 
 def test_config_identity_separates_models_and_seats():
