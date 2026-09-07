@@ -1,10 +1,12 @@
 """Process-local reuse of independently accepted typed methods.
 
 The cache never reuses a candidate verdict or evidence as the current result.
-A hit supplies the MethodIR and the outcome direction for which an independent
-Judger accepted its sufficiency.  The current candidate must run that adapter
-again and produce a new, mechanically validated evidence envelope with the
-same outcome direction before BindingGame can settle anything.
+A hit supplies MethodIRs and the outcome directions for which an independent
+Judger accepted their sufficiency.  Holds and refuted signatures are stored
+separately; neither direction is inferred from the other.  The current
+candidate must run an adapter again and produce a new, mechanically validated
+evidence envelope matching the exact method and one accepted direction before
+BindingGame can settle anything.
 
 Keeping this cache in memory is a security boundary: executor workspaces can
 write shared package caches, so a disk cache would need a separate trusted
@@ -23,7 +25,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from ..core.model import content_hash
+from ..core.model import OUTCOME_HOLDS, OUTCOME_REFUTED, content_hash
 from ..core.world import MODE_LIVE, load_world_view
 
 
@@ -231,26 +233,34 @@ class _Flight:
 
 @dataclass
 class MethodCacheLease:
-    """Result of one lookup, including ownership of a cold-key flight."""
+    """One key/direction lookup and any cold-fill flight it owns.
+
+    ``entry`` preserves the old single-entry API.  ``entries`` is the complete
+    detached direction set for a key-wide lookup and contains at most one
+    independently accepted signature for each substantive outcome.
+    """
 
     cache: "AcceptedMethodCache"
     key: str
     entry: Optional[AcceptedMethod] = None
+    entries: tuple[AcceptedMethod, ...] = ()
+    direction: Optional[str] = None
     leader: bool = False
     waited: bool = False
 
     def finish(self, entry: Optional[AcceptedMethod] = None) -> None:
         if self.leader:
-            self.cache._finish(self.key, entry)
+            self.cache._finish(self.key, self.direction, entry)
             self.leader = False
 
 
 class AcceptedMethodCache:
-    """Thread-safe bounded LRU with single-flight cold fills.
+    """Bounded LRU of two independently certified outcome directions.
 
-    Followers wait for the one game already paying Oracle/Judger cost.  If
-    that game cannot publish an eligible method, followers bypass the flight
-    and run normally; they do not serialize a chain of failed fills.
+    The LRU limit counts semantic keys, not direction slots.  Empty keys and a
+    missing direction each single-flight independently.  If a leader cannot
+    publish an eligible signature, followers bypass the flight and run
+    normally; they do not serialize a chain of failed fills.
     """
 
     def __init__(self, max_entries: int = 2048):
@@ -258,53 +268,107 @@ class AcceptedMethodCache:
             raise ValueError("max_entries must be positive")
         self.max_entries = max_entries
         self._lock = threading.Lock()
-        self._entries: OrderedDict[str, AcceptedMethod] = OrderedDict()
-        self._flights: Dict[str, _Flight] = {}
+        self._entries: OrderedDict[
+            str, Dict[str, AcceptedMethod]
+        ] = OrderedDict()
+        self._flights: Dict[tuple[str, Optional[str]], _Flight] = {}
 
-    def acquire(self, key: str) -> MethodCacheLease:
+    @staticmethod
+    def _detached_entries(bucket) -> tuple[AcceptedMethod, ...]:
+        return tuple(entry.detached() for entry in bucket.values())
+
+    def acquire(
+        self, key: str, direction: Optional[str] = None,
+    ) -> MethodCacheLease:
+        """Acquire the whole key, or one missing outcome-direction slot.
+
+        A key-wide lookup starts the original cold-key flight only when no
+        direction exists.  A direction lookup starts a separate flight only
+        when that exact independently approved direction is absent.
+        """
+        if direction is not None and direction not in (
+                OUTCOME_HOLDS, OUTCOME_REFUTED):
+            raise ValueError("direction must be holds or refuted")
+        flight_key = (key, direction)
         with self._lock:
-            entry = self._entries.get(key)
-            if entry is not None:
+            bucket = self._entries.get(key)
+            if bucket and (direction is None or direction in bucket):
                 self._entries.move_to_end(key)
-                return MethodCacheLease(self, key, entry.detached())
-            flight = self._flights.get(key)
+                entries = self._detached_entries(bucket)
+                entry = (entries[0] if direction is None
+                         else bucket[direction].detached())
+                return MethodCacheLease(
+                    self, key, entry=entry, entries=entries,
+                    direction=direction)
+            flight = self._flights.get(flight_key)
             if flight is None:
-                self._flights[key] = _Flight(threading.Event())
-                return MethodCacheLease(self, key, leader=True)
+                self._flights[flight_key] = _Flight(threading.Event())
+                return MethodCacheLease(
+                    self, key, direction=direction, leader=True)
 
         flight.done.wait()
         with self._lock:
-            entry = self._entries.get(key)
-            if entry is not None:
+            bucket = self._entries.get(key)
+            if bucket and (direction is None or direction in bucket):
                 self._entries.move_to_end(key)
+                entries = self._detached_entries(bucket)
+                entry = (entries[0] if direction is None
+                         else bucket[direction].detached())
                 return MethodCacheLease(
-                    self, key, entry.detached(), waited=True)
-        return MethodCacheLease(self, key, waited=True)
+                    self, key, entry=entry, entries=entries,
+                    direction=direction, waited=True)
+        return MethodCacheLease(
+            self, key, direction=direction, waited=True)
 
-    def _finish(self, key: str, entry: Optional[AcceptedMethod]) -> None:
+    def _touch_and_bound(self, key: str) -> None:
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.max_entries:
+            self._entries.popitem(last=False)
+
+    def _publish_direction(
+        self, key: str, entry: AcceptedMethod,
+    ) -> tuple[AcceptedMethod, bool]:
+        direction = entry.source_outcome
+        if direction not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
+            raise ValueError("accepted method has no substantive direction")
+        bucket = self._entries.setdefault(key, {})
+        stored = bucket.get(direction)
+        published = stored is None
+        if stored is None:
+            stored = bucket[direction] = entry.detached()
+        self._touch_and_bound(key)
+        return stored.detached(), published
+
+    def _finish(
+        self, key: str, direction: Optional[str],
+        entry: Optional[AcceptedMethod],
+    ) -> None:
+        flight_key = (key, direction)
         with self._lock:
-            flight = self._flights.pop(key, None)
-            if entry is not None:
-                self._entries[key] = entry.detached()
-                self._entries.move_to_end(key)
-                while len(self._entries) > self.max_entries:
-                    self._entries.popitem(last=False)
-            if flight is not None:
-                flight.done.set()
+            flight = self._flights.pop(flight_key, None)
+            try:
+                if entry is not None and (
+                        direction is None
+                        or entry.source_outcome == direction):
+                    self._publish_direction(key, entry)
+            finally:
+                # Even a malformed direct caller must not strand followers.
+                # BindingGame only supplies schema-derived builtin values,
+                # but the cache owns its own concurrency invariant.
+                if flight is not None:
+                    flight.done.set()
 
-    def publish_if_absent(self, key: str, entry: AcceptedMethod) -> None:
-        """Publish a valid result produced after a failed cold-key flight.
+    def publish_if_absent(
+        self, key: str, entry: AcceptedMethod,
+    ) -> tuple[AcceptedMethod, bool]:
+        """Publish only when this independently audited direction is absent.
 
         Followers deliberately stop waiting when the original leader cannot
-        fill.  They may then run independently; the first successful one
-        should still benefit later candidates.
+        fill. They may then run independently; the first successful signature
+        in each direction should still benefit later candidates.
         """
         with self._lock:
-            if key not in self._entries:
-                self._entries[key] = entry.detached()
-                self._entries.move_to_end(key)
-                while len(self._entries) > self.max_entries:
-                    self._entries.popitem(last=False)
+            return self._publish_direction(key, entry)
 
     def clear(self) -> None:
         """Test/administrative reset; never interrupts an active fill."""

@@ -3,12 +3,14 @@ Binding game: per obligation, bind one sufficient method to real evidence.
 
 Per obligation:
 
-0. For an equivalent final obligation, a process-local cache may supply a
-   decisive typed method whose sufficiency a Judger already accepted.  Only
-   the method is reused: its adapter runs against the current candidate and
-   the new evidence envelope is mechanically authenticated.  The accepted
-   audit is scoped to its original outcome direction; a fresh direction
-   change or any other mismatch falls through to the complete game below.
+0. For an equivalent final obligation, a process-local cache may supply
+   decisive typed methods whose sufficiency a Judger already accepted. Only
+   methods are reused: an adapter runs against the current candidate and its
+   new evidence envelope is mechanically authenticated. Holds and refuted
+   audits occupy separate slots and each must have been independently
+   accepted; no adapter property implies the missing direction. The first
+   candidate observed in a missing direction runs the complete game below,
+   then may seed that direction for later candidates.
 1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
    oracle's own guarantee, researched first when the domain is
    unfamiliar), each with a signed strength declaration — decisive
@@ -151,28 +153,60 @@ class BindingGame:
             return self._run_uncached(row, obligation)
 
         lease = self.method_cache.acquire(key)
-        if lease.entry is not None:
-            result, reason = self._run_cached(
-                row, obligation, lease.entry, key=key, waited=lease.waited)
+        if lease.entries:
+            result, missing, reason = self._run_cached_entries(
+                row, obligation, lease.entries,
+                key=key, waited=lease.waited)
             if result is not None:
                 return result
             self.log.append("method_cache_bypass", {
                 "claim": row["id"], "obligation": obligation.id,
                 "key": key[:16], "reason": reason[:500],
             })
-            return self._run_uncached(row, obligation)
+            if missing is not None:
+                method, fresh = missing
+                direction_lease = self.method_cache.acquire(
+                    key, direction=fresh.outcome)
+                if direction_lease.entry is not None:
+                    accepted = direction_lease.entry
+                    if accepted.method == method:
+                        reused, reuse_reason = self._settle_cached_result(
+                            row, obligation, accepted, fresh, key=key,
+                            waited=(lease.waited or direction_lease.waited))
+                    else:
+                        reused, reuse_reason = self._run_cached(
+                            row, obligation, accepted, key=key,
+                            waited=(lease.waited or direction_lease.waited))
+                    if reused is not None:
+                        return reused
+                    self.log.append("method_cache_bypass", {
+                        "claim": row["id"], "obligation": obligation.id,
+                        "key": key[:16], "reason": reuse_reason[:500],
+                    })
+                return self._run_uncached_and_cache(
+                    row, obligation, key, lease=direction_lease,
+                    direction=fresh.outcome)
+            return self._run_uncached_and_cache(row, obligation, key)
         if not lease.leader:
             # The concurrent leader found no eligible accepted method.  Do
             # not serialize another cold fill; proceed independently.  A
             # successful follower may still seed later candidates.
-            result = self._run_uncached(row, obligation)
-            if self._method_cache_key(row, obligation) == key:
-                accepted = self._accepted_method(row, obligation, result)
-                if accepted is not None:
-                    self.method_cache.publish_if_absent(key, accepted)
-            return result
+            return self._run_uncached_and_cache(row, obligation, key)
 
-        accepted = None
+        return self._run_uncached_and_cache(
+            row, obligation, key, lease=lease)
+
+    def _run_uncached_and_cache(
+        self, row, obligation, key, *, lease=None, direction=None,
+    ):
+        """Run the complete game and publish only its authenticated direction.
+
+        ``direction`` scopes an opposite-outcome single flight. A full game
+        that unexpectedly settles the other direction may still seed that
+        actual direction, but it never fills or wakes the requested slot as
+        if the missing certificate had been obtained.
+        """
+        accepted = fill = None
         try:
             result = self._run_uncached(row, obligation)
             # The authority files are normally immutable.  Re-key anyway so
@@ -180,9 +214,17 @@ class BindingGame:
             # earlier task identity.
             if self._method_cache_key(row, obligation) == key:
                 accepted = self._accepted_method(row, obligation, result)
+                if accepted is not None:
+                    if lease is not None and lease.leader and (
+                            direction is None
+                            or accepted.source_outcome == direction):
+                        fill = accepted
+                    else:
+                        self.method_cache.publish_if_absent(key, accepted)
             return result
         finally:
-            lease.finish(accepted)
+            if lease is not None:
+                lease.finish(fill)
 
     def _method_cache_key(self, row, obligation):
         state = os.path.dirname(os.path.abspath(self.log.path))
@@ -198,7 +240,57 @@ class BindingGame:
             adapter_catalog=catalog,
         )
 
+    def _run_cached_entries(
+        self, row, obligation, entries, *, key, waited=False,
+    ):
+        """Try each distinct cached MethodIR without crossing signatures.
+
+        Returns ``(settled, missing_observation, reason)``. The observation is
+        ``(method, fresh_result)`` only when its substantive direction has no
+        independently accepted slot. If two direction slots contain the same
+        exact MethodIR, one fresh adapter execution can select the matching
+        certificate without running that adapter twice.
+        """
+        directions = {entry.source_outcome for entry in entries}
+        attempted_methods = []
+        reasons = []
+        missing = None
+        for accepted in entries:
+            if any(accepted.method == method for method in attempted_methods):
+                continue
+            attempted_methods.append(accepted.method)
+            fresh, reason = self._execute_cached_method(
+                row, obligation, accepted, key=key)
+            if fresh is None:
+                reasons.append(reason)
+                continue
+            matching = next((entry for entry in entries
+                             if entry.source_outcome == fresh.outcome
+                             and entry.method == accepted.method), None)
+            if matching is not None:
+                result, reason = self._settle_cached_result(
+                    row, obligation, matching, fresh,
+                    key=key, waited=waited)
+                if result is not None:
+                    return result, None, ""
+                reasons.append(reason)
+                continue
+            reasons.append(
+                "fresh adapter outcome has no independently accepted "
+                f"signature for this MethodIR: fresh={fresh.outcome}")
+            if fresh.outcome not in directions and missing is None:
+                missing = (accepted.method, fresh)
+        return None, missing, "; ".join(reasons) or "no reusable MethodIR"
+
     def _run_cached(self, row, obligation, accepted, *, key, waited=False):
+        fresh, reason = self._execute_cached_method(
+            row, obligation, accepted, key=key)
+        if fresh is None:
+            return None, reason
+        return self._settle_cached_result(
+            row, obligation, accepted, fresh, key=key, waited=waited)
+
+    def _execute_cached_method(self, row, obligation, accepted, *, key):
         adapter_only = getattr(
             self.discharger, "discharge_adapter_only", None)
         if adapter_only is None:
@@ -218,11 +310,6 @@ class BindingGame:
             return None, "fresh adapter execution was not substantive"
         if accepted.source_outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
             return None, "cached method has no valid source outcome"
-        if result.outcome != accepted.source_outcome:
-            return None, (
-                "fresh adapter outcome changed direction: "
-                f"source={accepted.source_outcome}, fresh={result.outcome}"
-            )
         if not basis_satisfies(method.get("basis", BASIS_RECORD),
                                obligation.required_basis):
             return None, "cached method is below the current evidence floor"
@@ -231,6 +318,36 @@ class BindingGame:
             return None, structural
         if self._method_cache_key(row, obligation) != key:
             return None, "task authority changed during adapter execution"
+
+        return result, ""
+
+    def _settle_cached_result(
+        self, row, obligation, accepted, result, *, key, waited=False,
+    ):
+        """Bind fresh evidence only to its exact method/direction signature."""
+        method = accepted.method
+        if accepted.source_outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
+            return None, "cached method has no valid source outcome"
+        if result.outcome != accepted.source_outcome:
+            return None, (
+                "fresh adapter outcome changed direction: "
+                f"source={accepted.source_outcome}, fresh={result.outcome}"
+            )
+        if not getattr(self.discharger, "supports_method_reuse",
+                       lambda _method: False)(method):
+            return None, "adapter requires a fresh independent Judger audit"
+        if not self._cacheable_signature(method, {
+                "sufficient": "yes", "faithful": "yes",
+                "degradation": "n/a"}):
+            return None, "cached MethodIR no longer meets reuse policy"
+        if not basis_satisfies(method.get("basis", BASIS_RECORD),
+                               obligation.required_basis):
+            return None, "cached method is below the current evidence floor"
+        structural = self._structural_defect(result, obligation)
+        if structural:
+            return None, structural
+        if self._method_cache_key(row, obligation) != key:
+            return None, "task authority changed while awaiting direction"
 
         audit = {
             "sufficient": "yes",

@@ -810,18 +810,15 @@ def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
     assert not any(event["type"] == "method_cache_hit"
                    for event in second_events)
 
-    # Same-direction candidates reuse the accepted audit; opposite-direction
-    # candidates pay for a fresh Oracle and Judger before settling.
+    # Each direction pays for one independent Judger signature. Once both
+    # exist, every later candidate only re-executes the typed adapter.
     backends = [backend1, backend2]
     outcomes = [first.outcome, second.outcome]
     for index in range(3, 11):
         status = "completed" if index % 2 else "wrong"
         _, _, artifacts, log, fallback, routing = captured_candidate(
             tmp_path, f"candidate-{index}", status=status)
-        backend = FixtureBackend(
-            {} if status == "completed" else {
-                "oracles": {"methods": [typed]}, "judger": JUDGE_YES,
-            })
+        backend = FixtureBackend({})
         game = BindingGame(
             backend, artifacts, log, routing, live_world=False,
             method_cache=cache)
@@ -832,7 +829,7 @@ def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
         backends.append(backend)
         outcomes.append(result.outcome)
         assert fallback.calls == []
-    assert sum(len(backend.calls) for backend in backends) == 12
+    assert sum(len(backend.calls) for backend in backends) == 4
     assert outcomes.count(OUTCOME_HOLDS) == 5
     assert outcomes.count(OUTCOME_REFUTED) == 5
 
