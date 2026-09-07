@@ -1,0 +1,202 @@
+# Typed-adapter Terminal-Bench gate
+
+This gate answers two separate questions without changing the verifier's
+architecture. It records them as separate comparisons:
+
+1. `adapter-isolation`: with the authority contract cache enabled in both
+   arms, does changing only the executor preserve the exact contract outcome?
+2. `full-e2e`: does `(typed adapters=1, contract cache=1)` beat the unchanged
+   `(0, 0)` pipeline by 10x without a verdict, rank, task-scope, or
+   per-obligation outcome regression?
+
+The machine-readable candidate set is
+`typed_adapter_eval_manifest.json`. It contains no reward or historical
+verdict. Those labels are joined only after every verifier seat has stopped.
+
+## Candidate set
+
+The acceptance tier has 20 distinct archived candidates, five for each of four
+ordinary, non-security tasks. The archive is already local; no solver or paid
+verifier run is needed to establish the inventory.
+
+| Task | Archive job | reward=1 / reward=0 | historical Luna `verified` |
+| --- | --- | ---: | ---: |
+| `gcode-to-text` | `lav-official-g2-k5` | 2 / 3 | 0 |
+| `write-compressor` | `lav-official-g6-k5` | 3 / 2 | 1 |
+| `extract-moves-from-video` | `lav-official-g2-k5` | 1 / 4 | 0 |
+| `sqlite-db-truncate` | `rec-codex-terra-medium-tb21-strat20-k5-r1` | 4 / 1 | 4 |
+
+Thus the full gate is balanced at ten positive and ten negative rewards and
+contains five historical `verified` results. The three-task, 15-candidate core
+and six-candidate canary are early-stop screens only; neither may establish the
+10x/no-loss claim. Security, exploit reproduction, vulnerability repair,
+sanitizer bypass, password recovery, cracking, and cryptanalysis tasks are
+outside this suite.
+
+The canary has only one historically positive and one historically negative
+candidate per task. It can catch a regression cheaply, but it cannot measure
+both-direction warm reuse or support a general cost/quality claim.
+
+## Freeze the obligation contract, not the oracle method
+
+An ordinary independent adapter-only A/B run is confounded: the obligation
+compiler and critic sample different decompositions, so fewer calls in one arm
+need not come from adapters. A valid adapter-isolation experiment needs a
+sealed obligation-contract replay seam with these properties:
+
+- The task contract is built from `task.md`, logical task-address metadata,
+  and compiler/critic identities only. It never receives reward, historical
+  verdicts/certificates, official verifier output, final answer bytes, world
+  bytes, or the solver transcript.
+- Candidate-specific claim contracts are built from sealed claim statements,
+  the task contract, premise ids/statuses, and logical world mapping. This
+  preserves the current answer-blind boundary: the proposition is visible,
+  while the solver's argument and raw candidate are not.
+- The bundle binds the task hash, claim ids/text hashes, ordered obligations
+  including clause/modality/evidence floor, compiler and critic prompts,
+  model/effort, and schema. Both arms must report the same bundle hash.
+- The oracle compiler is intentionally **not** frozen. Adapter selection is
+  the treatment being tested; both arms start from the same obligations and
+  independently bind methods.
+- A replayed contract never carries a verdict, method, evidence, or candidate
+  artifact. Candidate evidence is freshly obtained in each arm.
+
+Cold contract-build calls are not free setup. Record their attempts in a
+process-private usage file and add the identical measured build cost and wall
+time to each arm. Warm and batch runs build once per task and include that cost
+in the task/batch total. If the shared compiler floor alone exceeds 10% of the
+control, the 10x target correctly fails by Amdahl's law.
+
+The current result record must expose these fields before any paid eval:
+
+- `obligation_contract_bundle_sha256`
+- `task_contract_sha256`
+- `compiler_fingerprint`
+- `final_obligation_outcomes_sha256` (ordered obligation id/status pairs)
+
+`analyze_typed_adapter_eval.py` fails closed if any is absent or differs
+between the adapter-isolation arms. Full-E2E intentionally allows different
+contract bundle bytes, but requires equal `task_contract_scope_sha256` and
+`final_scope_outcomes_sha256`; these are canonical digests over task clauses
+and their per-clause outcomes, not model wording.
+
+## Three latency measurements
+
+Every phase uses GPT-5.6-Luna, medium effort, standard tier, offline mode,
+browser observer disabled, and the same source commit.
+
+### Cold
+
+Run one fresh process for one candidate and one arm, with a fresh scoring root,
+fresh process cache, and `--no-shared-toolchain`. Use `--workers 1`. Measure
+from contract-build start through `score.py` exit. Alternate arm order by a
+precommitted hash of the trial id. The primary cold metric is the sum over all
+unique candidates; treatment must also avoid a wall regression on every
+candidate.
+
+### Warm
+
+Run one fresh process per task and arm with `--workers 1` and all five distinct
+candidates. The lexical first trial named by `warm_seed_trial` is the seed;
+the other four are held out. Nothing from the cold run is reusable. Report the
+whole invocation wall time including contract build, seed, misses, fallbacks,
+failed calls, and all held-out candidates. A hit-only suffix is diagnostic,
+never an acceptance metric. The cache must rerun the adapter and produce a
+fresh evidence artifact; reusing a candidate verdict or evidence fails the
+quality gate.
+
+### Batch
+
+Use fresh roots again. Run one process per archive job with `--workers 4`, in a
+fixed sequential job order for both arms. The metric is first process start to
+last process finish, not accumulated parallel model seconds. All candidates,
+contract builds, fallbacks, failures, and retries are included.
+
+Candidates repeat across cold/warm/batch only because these are different
+state regimes. They are never pooled as 60 independent quality samples, and a
+candidate is never repeated inside one phase to manufacture an exact hit.
+
+## Run ledger and complete cost
+
+Wrap each `score.py` process and append one
+`gv-terminal-bench-eval-run/v1` row to a run JSONL. The required shape is in
+the analyzer's module docstring. Each result and usage path must be private to
+that process. `wall_includes_contract_build=true` is an assertion made by the
+wrapper from its actual timing boundary, not added by hand later.
+
+The Codex usage ledger must have one terminal row for every real CLI attempt.
+The accepted additive attempt schema includes `call_id`, unique `attempt_id`,
+1-based `attempt_index`, `started`, `attempt_status`, `usage_status`, and
+`usage_complete`. Provider retries share a call id; an outer AgentRole retry
+gets a new call id. Failed calls and timeouts stay in the ledger.
+
+Cost is complete only when the wrapper's telemetry audit says complete and
+every started attempt has `usage_status=complete`, `usage_complete=true`, and
+numeric uncached-input, cached-input, and output token counts. A null or
+missing count makes `cost_gate=incomplete`; the analyzer does not sum known
+rows and call the result a saving.
+
+Without a pinned billing record, the 10x token/call proxy is deliberately a
+Pareto gate: treatment/control must be at most 0.1 separately for started
+attempts, uncached input, cached input, and output. Exact billed cost may be
+reported in addition, but never reconstructed from an uncertain price table.
+
+## Acceptance
+
+For all 20 candidates and for each phase:
+
+- both arms must use the same source fingerprint and immutable candidate seal;
+- adapter-isolation requires the same contract bundle and ordered obligation
+  outcomes; full-E2E requires the same task-clause scope and scope outcomes;
+- verdict, verdict strength, and final-obligation status histogram must match;
+- there may be no unscoreable result and no reward-direction/ranking loss;
+- cost must be complete and all four cost ratios must be at most 0.1;
+- cold, warm, and batch end-to-end wall ratios must each be at most 0.1, with
+  no individual cold regression.
+
+Run the analyzer only after all scoring processes finish:
+
+```bash
+.venv/bin/python experiments/terminal_bench/analyze_typed_adapter_eval.py \
+      --manifest experiments/terminal_bench/typed_adapter_eval_manifest.json \
+  --runs /absolute/path/to/eval-runs.jsonl \
+  --tier acceptance \
+  --comparison full-e2e \
+  --output /absolute/path/to/eval-report.json
+```
+
+The driver is plan-only unless the paid confirmation string is present. Point
+it at a frozen `git archive` extraction and at the existing absolute Harbor
+jobs root; the verifier fingerprint is checked before and after every process.
+`warm` keeps all selected candidates for one task in one `score.py` process,
+which is required for process-local caches. `all` runs all three regimes into
+one fresh output root.
+
+The offline seat policy must deny the host filesystem root and grant reads only
+to the current sealed state plus a minimal trusted runtime (and exact writable
+instrument/toolchain roots). A merely read-only host is not isolated: it would
+let a seat inspect Harbor reward files, wrapper outputs, or sibling candidates.
+The source manifest's omission of rewards is not a substitute for this runtime
+boundary.
+
+```bash
+.venv/bin/python experiments/terminal_bench/run_typed_adapter_eval.py \
+  --manifest experiments/terminal_bench/typed_adapter_eval_manifest.json \
+  --source-root /absolute/path/to/frozen-source \
+  --source-commit FULL_40_HEX_COMMIT \
+  --jobs-root /absolute/path/to/experiments/terminal_bench/results/jobs \
+  --comparison full-e2e --tier canary --phase warm --arm both
+
+# Add only after inspecting the plan:
+#   --execute --confirm-paid GPT-5.6-Luna
+```
+
+The runner refuses adapter-isolation execution for now. The existing contract
+cache is process-local; two ordinary subprocesses cannot prove they consumed
+the same sealed contract or charge the common compile wall time accurately to
+both arms. This diagnostic stays unavailable until that replay/accounting seam
+exists.
+
+A zero mismatch on 20 candidates has a 95% rule-of-three-style upper bound of
+about 13.9% on an unconstrained disagreement rate. Passing therefore means
+"no loss on this pinned suite," not a proof of universal no loss.
