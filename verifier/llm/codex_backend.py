@@ -11,11 +11,12 @@ and retries through AgentRole.call exactly like the SDK path.
 
 Capability boundaries: live-world execution retains the user-requested YOLO
 mode (--dangerously-bypass-approvals-and-sandbox), so exec-mode runs never
-stall on a permission stop. Every offline seat instead runs from the state's
-work/ tree in a read-only profile with only that work tree writable, command
-network disabled, host caches denied, and a fresh state-local HOME/cache/tmp.
-The captured world, task, solver ledger, and artifact store therefore remain
-read-only while checks can still build tools and durable evidence in work/.
+stall on a permission stop. Every offline seat instead uses a root-deny
+profile: the current state is readable, verifier-owned work/workspace and
+explicit shared toolchain/cache roots are writable, host caches are denied,
+and shell commands receive a fresh state-local HOME/cache/tmp. Ambient apps,
+plugins, browser/computer-use, memory, and host-skill discovery are disabled.
+Command network remains available for installing pinned verification tools.
 
 The SDK path enforces the non-executing seats' no-execution palette as a hard
 boundary; for the Codex backend it holds only at the prompt level ("you cannot
@@ -58,6 +59,24 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 
 _OFFLINE_WORLD_MODES = frozenset({"captured", "unavailable"})
 _OFFLINE_PROFILE = "gv-offline"
+
+# Offline seats keep the shell/code-mode path needed to build arbitrary
+# verification instruments. Ambient host integrations are different: they
+# are neither represented in the captured world nor confined by the command
+# sandbox, so remove them from the seat entirely. ``view_image`` remains
+# enabled because evidence seats inspect renderings they create below their
+# writable roots. Codex does not document that this native handler is governed
+# by filesystem permission profiles, so this policy alone must not be treated
+# as a confinement guarantee for that channel.
+_OFFLINE_DISABLED_FEATURES = (
+    "apps", "enable_mcp_apps", "plugins", "remote_plugin",
+    "plugin_sharing", "tool_call_mcp_elicitation", "multi_agent",
+    "memories", "browser_use", "browser_use_external",
+    "browser_use_full_cdp_access", "computer_use", "in_app_browser",
+    "in_app_local_automation", "workspace_dependencies", "hooks",
+    "skill_search", "skill_mcp_dependency_install", "image_generation",
+    "recommended_plugins", "goals", "shell_snapshot",
+)
 
 _IMAGE_ROLES = frozenset({"discharge", "judger"})
 # Web search is a KNOWLEDGE channel for the contract/method seats only.
@@ -617,6 +636,24 @@ def _ensure_verifier_owned_chain(root: str, target: str) -> None:
         _ensure_verifier_owned_dir(current)
 
 
+def _path_is_within(root: str, target: str) -> bool:
+    """Whether an absolute target is root itself or a descendant."""
+    try:
+        return os.path.commonpath((root, target)) == root
+    except ValueError:
+        return False
+
+
+def _canonical_policy_path(value: Any, label: str) -> str:
+    """Normalize a policy root and reject symlinks in any component."""
+    path = os.path.abspath(os.fspath(value))
+    if os.path.realpath(path) != path:
+        raise RoleError(
+            f"offline {label} must not contain symlink path components: "
+            f"{path}")
+    return path
+
+
 def extract_json(text: str) -> Any:
     """First JSON object in `text` (fences and prose tolerated)."""
     decoder = json.JSONDecoder()
@@ -876,7 +913,7 @@ class CodexBackend:
         if not state_dir:
             raise RoleError(
                 "offline execution needs a state cwd or ledger path")
-        state_dir = os.path.abspath(state_dir)
+        state_dir = _canonical_policy_path(state_dir, "state directory")
         try:
             st = os.lstat(state_dir)
         except OSError as err:
@@ -925,32 +962,42 @@ class CodexBackend:
         # follow a candidate-planted ``work``/HOME/cache symlink.
         for path in dict.fromkeys((work, *env.values())):
             _ensure_verifier_owned_chain(work, path)
-        # Additional verifier-owned roots (the durable evidence workspace,
-        # per-task toolchain and install caches) widen the writable set explicitly.
-        # Each must be a real, process-owned directory; it is never
-        # derived from candidate-controlled content. Sharing trades the
-        # per-trial isolation of instruments for latency (one install per
-        # task instead of one per trial) — the immutable-input seal still
-        # guards the evidence, and the artifact chain remains the trust
-        # anchor.
-        shared_roots: list[str] = []
+        # Additional writable roots have distinct meanings. A scratch workdir
+        # cannot escape state/work; the durable workspace cannot escape
+        # state/workspace; and an external toolchain/cache receives only an
+        # exact-root grant. In particular, no caller-provided parent of the
+        # state can turn the root-deny profile back into sibling visibility.
+        writable_roots: list[str] = []
+        workspace_base = os.path.join(state_dir, "workspace")
         for key in ("workdir", "workspace_dir", "toolchain_dir", "shared_cache_dir"):
             candidate = variables.get(key)
             if not candidate:
                 continue
-            candidate = os.path.abspath(os.fspath(candidate))
-            try:
-                inside = os.path.commonpath((work, candidate)) == work
-            except ValueError:
-                inside = False
-            if inside:
+            candidate = _canonical_policy_path(candidate, key)
+            if _path_is_within(work, candidate):
                 _ensure_verifier_owned_chain(work, candidate)
-            else:
-                _ensure_verifier_owned_chain(candidate, candidate)
-                shared_roots.append(candidate)
+                continue
+            if key == "workdir":
+                raise RoleError(
+                    f"offline workdir escapes verifier work tree: {candidate}")
+            if key == "workspace_dir":
+                if not _path_is_within(workspace_base, candidate):
+                    raise RoleError(
+                        "offline workspace_dir escapes the state workspace: "
+                        f"{candidate}")
+                _ensure_verifier_owned_chain(workspace_base, candidate)
+                writable_roots.append(candidate)
+                continue
+            if _path_is_within(state_dir, candidate) \
+                    or _path_is_within(candidate, state_dir):
+                raise RoleError(
+                    f"offline {key} overlaps the isolated state: {candidate}")
+            _ensure_verifier_owned_chain(candidate, candidate)
+            writable_roots.append(candidate)
         cache_root = variables.get("shared_cache_dir")
         if cache_root:
-            cache_root = os.path.abspath(os.fspath(cache_root))
+            cache_root = _canonical_policy_path(
+                cache_root, "shared_cache_dir")
             # package-manager caches shared across trials: downloads and
             # unpacked wheels are reused, installs into a fresh toolchain
             # become hardlinks instead of fetches
@@ -966,9 +1013,15 @@ class CodexBackend:
             f"{key}={_toml_string(value)}" for key, value in env.items()
         ) + "}"
         filesystem = "{" + ",".join((
+            '":root"="deny"',
+            '":minimal"="read"',
+            f"{_toml_string(state_dir)}=\"read\"",
             f"{_toml_string(work)}=\"write\"",
             *(f"{_toml_string(root)}=\"write\""
-              for root in dict.fromkeys(shared_roots)),
+              for root in dict.fromkeys(writable_roots)),
+            # Keep explicit host-cache denies even under :root=deny. They
+            # override any matching :minimal exception in this or a future
+            # runtime and protect auth/session-bearing Codex state.
             '"~/.cache"="deny"',
             '"~/Library/Caches"="deny"',
             '"~/.huggingface"="deny"',
@@ -981,6 +1034,9 @@ class CodexBackend:
         # shell_environment_policy applies to commands launched by the seat.
         return [
             "--ignore-user-config",
+            "--ignore-rules",
+            "--strict-config",
+            "--ephemeral",
             "-c", f'default_permissions="{_OFFLINE_PROFILE}"',
             "-c", 'approval_policy="never"',
             "-c", f'permissions.{_OFFLINE_PROFILE}.extends=":read-only"',
@@ -994,6 +1050,17 @@ class CodexBackend:
             # integrity is still guarded by the immutable-input seal; results
             # that depend on a fetched toolchain must pin exact versions.
             "-c", f"permissions.{_OFFLINE_PROFILE}.network.enabled=true",
+            "-c", ("tools.web_search=true" if self._search_enabled(role_name)
+                   else "tools.web_search=false"),
+            "-c", "features.skip_host_skill_discovery=true",
+            "-c", "suppress_unstable_features_warning=true",
+            "-c", "project_doc_max_bytes=0",
+            "-c", "mcp_servers={}",
+            *[
+                item
+                for feature in _OFFLINE_DISABLED_FEATURES
+                for item in ("-c", f"features.{feature}=false")
+            ],
             "-c", 'shell_environment_policy.inherit="core"',
             "-c", f"shell_environment_policy.set={env_table}",
         ]

@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,12 @@ PNG_B = b"\x89PNG\r\n\x1a\nmutated-image"
 
 def _usage_rows(path):
     return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def _cli_config(args):
+    values = [args[index + 1] for index, arg in enumerate(args)
+              if arg == "-c"]
+    return tomllib.loads("\n".join(values))
 
 
 def _complete_usage_stream(thread_id="thread-1"):
@@ -882,7 +889,8 @@ def test_all_offline_seats_get_isolated_execution(
 
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
     assert "--sandbox" not in args  # a permission profile replaces it
-    assert "--ignore-user-config" in args
+    assert {"--ignore-user-config", "--ignore-rules", "--strict-config",
+            "--ephemeral"} <= set(args)
     assert 'default_permissions="gv-offline"' in args
     assert 'approval_policy="never"' in args
     assert 'permissions.gv-offline.extends=":read-only"' in args
@@ -892,16 +900,35 @@ def test_all_offline_seats_get_isolated_execution(
     assert "permissions.gv-offline.network.enabled=true" in args
     assert 'shell_environment_policy.inherit="core"' in args
 
-    filesystem = next(
-        arg for arg in args
-        if arg.startswith("permissions.gv-offline.filesystem=")
-    )
+    config = _cli_config(args)
+    policy = config["permissions"]["gv-offline"]
+    filesystem = policy["filesystem"]
     work = os.path.join(str(tmp_path), "work")
-    assert f'{json.dumps(work)}="write"' in filesystem
+    assert filesystem[":root"] == "deny"
+    assert filesystem[":minimal"] == "read"
+    assert filesystem[str(tmp_path)] == "read"
+    assert filesystem[work] == "write"
     for denied in (
         "~/.cache", "~/Library/Caches", "~/.huggingface", "~/.codex",
     ):
-        assert f'"{denied}"="deny"' in filesystem
+        assert filesystem[denied] == "deny"
+
+    assert config["project_doc_max_bytes"] == 0
+    assert config["mcp_servers"] == {}
+    assert config["features"]["skip_host_skill_discovery"] is True
+    for feature in (
+        "apps", "plugins", "multi_agent", "memories", "browser_use",
+        "computer_use", "in_app_browser", "workspace_dependencies",
+        "hooks", "skill_search", "image_generation", "shell_snapshot",
+    ):
+        assert config["features"][feature] is False
+    # Offline evidence still needs no-Node code-mode orchestration and native
+    # inspection of generated renderings. Neither is disabled by this policy.
+    assert config["features"].get("code_mode_host") is not False
+    assert config["features"].get("view_image") is not False
+    assert config["tools"]["web_search"] is (role in {
+        "obligations", "critic", "oracles",
+    })
 
     home = os.path.join(work, "_offline_home")
     env = next(
@@ -947,17 +974,17 @@ def test_offline_extract_gets_isolated_execution(tmp_path):
 
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
     assert 'permissions.gv-offline.extends=":read-only"' in args
+    assert _cli_config(args)["tools"]["web_search"] is True
 
 
 def test_offline_execution_can_build_in_the_durable_workspace(tmp_path):
     workspace = tmp_path / "workspace"
     args = CodexBackend(cwd=str(tmp_path))._execution_policy_args(
         "discharge", {"world_mode": "captured", "workspace_dir": str(workspace)})
-    filesystem = next(arg for arg in args
-                      if arg.startswith("permissions.gv-offline.filesystem="))
-    assert f'{json.dumps(str(workspace))}="write"' in filesystem
+    filesystem = _cli_config(args)["permissions"]["gv-offline"]["filesystem"]
+    assert filesystem[str(workspace)] == "write"
     assert workspace.is_dir()
-    assert f'{json.dumps(str(tmp_path))}="write"' not in filesystem
+    assert filesystem[str(tmp_path)] == "read"
 
 
 def test_offline_execution_rejects_a_symlinked_workspace(tmp_path):
@@ -965,9 +992,54 @@ def test_offline_execution_rejects_a_symlinked_workspace(tmp_path):
     outside.mkdir()
     workspace = tmp_path / "workspace"
     workspace.symlink_to(outside, target_is_directory=True)
-    with pytest.raises(RoleError, match="real directory"):
+    with pytest.raises(RoleError, match="symlink path components"):
         CodexBackend(cwd=str(tmp_path))._execution_policy_args(
             "discharge", {"world_mode": "captured", "workspace_dir": str(workspace)})
+
+
+def test_offline_execution_rejects_workspace_outside_state(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    workspace = tmp_path / "other" / "workspace"
+    workspace.mkdir(parents=True)
+    with pytest.raises(RoleError, match="escapes the state workspace"):
+        CodexBackend(cwd=str(state))._execution_policy_args(
+            "discharge", {
+                "world_mode": "captured", "workspace_dir": str(workspace),
+            })
+
+
+def test_offline_execution_rejects_workdir_outside_work(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    outside = tmp_path / "other"
+    outside.mkdir()
+    with pytest.raises(RoleError, match="workdir escapes"):
+        CodexBackend(cwd=str(state))._execution_policy_args(
+            "discharge", {
+                "world_mode": "captured", "workdir": str(outside),
+            })
+
+
+@pytest.mark.parametrize("key", ["toolchain_dir", "shared_cache_dir"])
+def test_offline_execution_rejects_shared_root_containing_state(tmp_path, key):
+    state = tmp_path / "scoring" / "candidate" / "gv"
+    state.mkdir(parents=True)
+    with pytest.raises(RoleError, match="overlaps the isolated state"):
+        CodexBackend(cwd=str(state))._execution_policy_args(
+            "discharge", {
+                "world_mode": "captured", key: str(tmp_path / "scoring"),
+            })
+
+
+def test_offline_execution_rejects_symlink_in_state_path(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    with pytest.raises(RoleError, match="symlink path components"):
+        CodexBackend(cwd=str(alias))._execution_policy_args(
+            "critic", {"world_mode": "captured"})
 
 
 def test_offline_execution_keeps_state_cwd_but_only_work_is_writable(
