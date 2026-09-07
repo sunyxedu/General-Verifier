@@ -192,6 +192,37 @@ def test_absence_refutes_only_an_explicit_presence_requirement(tmp_path):
     assert len(fallback.calls) == 1
 
 
+@pytest.mark.parametrize("actual_kind", ["file", "directory", "symlink", "absent"])
+@pytest.mark.parametrize("expected_kind", ["any", "file", "directory"])
+def test_file_exists_observation_has_the_same_kind_contract_for_every_outcome(
+        tmp_path, actual_kind, expected_kind):
+    _, world, artifacts, _, fallback, routing = captured(tmp_path)
+    target = world / "subject"
+    if actual_kind == "file":
+        target.write_text("synthetic document")
+    elif actual_kind == "directory":
+        target.mkdir()
+    elif actual_kind == "symlink":
+        destination = world / "destination"
+        destination.write_text("synthetic document")
+        target.symlink_to(destination)
+    result = routing.discharge(
+        ROW,
+        Obligation("c1", "the declared artifact is present", BASIS_WORLD,
+                   refutable_by_absence=True),
+        method("filesystem.exists", {"address": "/app/subject",
+                                      "kind": expected_kind},
+               inputs=[subject("/app/subject")]),
+    )
+
+    assert fallback.calls == []
+    observation = artifacts.get(result.artifact)["execution"]["observation"]
+    assert observation["exists"] is (actual_kind != "absent")
+    assert observation["actual_kind"] == actual_kind
+    assert observation["expected_kind"] == expected_kind
+    assert observation["world_mode"] == "captured"
+
+
 def test_captured_path_escape_and_wrong_basis_fall_back(tmp_path):
     _, _, _, log, fallback, routing = captured(tmp_path)
     escape = method(
@@ -753,7 +784,8 @@ def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
     row2 = {**ROW, "id": "c2", "text": "delivery finished successfully"}
     _, _, artifacts2, log2, fallback2, routing2 = captured_candidate(
         tmp_path, "candidate-2", status="wrong")
-    backend2 = FixtureBackend({})
+    backend2 = FixtureBackend({
+        "oracles": {"methods": [typed]}, "judger": JUDGE_YES})
     game2 = BindingGame(
         backend2, artifacts2, log2, routing2, live_world=False,
         method_cache=cache)
@@ -764,7 +796,7 @@ def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
     assert second.outcome == OUTCOME_REFUTED
     assert len(cache) == 1
     assert [call["role"] for call in backend1.calls] == ["oracles", "judger"]
-    assert backend2.calls == []
+    assert [call["role"] for call in backend2.calls] == ["oracles", "judger"]
     assert fallback1.calls == fallback2.calls == []
     first_bound = artifacts1.get(first.artifact)["bound"]
     second_bound = artifacts2.get(second.artifact)["bound"]
@@ -772,19 +804,24 @@ def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
         != second_bound["discharge_artifact"]
     assert artifacts2.get(second_bound["discharge_artifact"])["execution"][
         "observation"]["actual"] == "wrong"
-    assert any(event["type"] == "method_cache_hit"
-               for event in log2.replay())
+    second_events = list(log2.replay())
+    assert any(event["type"] == "method_cache_bypass"
+               for event in second_events)
+    assert not any(event["type"] == "method_cache_hit"
+                   for event in second_events)
 
-    # Ten equivalent candidates would otherwise pay Oracle + Judger ten
-    # times.  The cold candidate pays those two calls once; every candidate
-    # still executes its own adapter.
+    # Same-direction candidates reuse the accepted audit; opposite-direction
+    # candidates pay for a fresh Oracle and Judger before settling.
     backends = [backend1, backend2]
     outcomes = [first.outcome, second.outcome]
     for index in range(3, 11):
         status = "completed" if index % 2 else "wrong"
         _, _, artifacts, log, fallback, routing = captured_candidate(
             tmp_path, f"candidate-{index}", status=status)
-        backend = FixtureBackend({})
+        backend = FixtureBackend(
+            {} if status == "completed" else {
+                "oracles": {"methods": [typed]}, "judger": JUDGE_YES,
+            })
         game = BindingGame(
             backend, artifacts, log, routing, live_world=False,
             method_cache=cache)
@@ -795,7 +832,7 @@ def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
         backends.append(backend)
         outcomes.append(result.outcome)
         assert fallback.calls == []
-    assert sum(len(backend.calls) for backend in backends) == 2
+    assert sum(len(backend.calls) for backend in backends) == 12
     assert outcomes.count(OUTCOME_HOLDS) == 5
     assert outcomes.count(OUTCOME_REFUTED) == 5
 
@@ -972,12 +1009,17 @@ def test_online_method_reuse_is_state_scoped_and_reads_live_bytes(tmp_path):
     assert first_game.run(ROW, obligation).outcome == OUTCOME_HOLDS
 
     target.write_text('{"status":"wrong"}')
-    second_backend = FixtureBackend({})
+    second_backend = FixtureBackend({
+        "oracles": {"methods": [typed]}, "judger": JUDGE_YES})
     second_game = BindingGame(
         second_backend, artifacts, log, routing, live_world=True,
         method_cache=cache)
     result = second_game.run({**ROW, "id": "c2"}, obligation)
 
     assert result.outcome == OUTCOME_REFUTED
-    assert second_backend.calls == []
+    assert [call["role"] for call in second_backend.calls] == [
+        "oracles", "judger"]
     assert fallback.calls == []
+    events = list(log.replay())
+    assert any(event["type"] == "method_cache_bypass" for event in events)
+    assert not any(event["type"] == "method_cache_hit" for event in events)

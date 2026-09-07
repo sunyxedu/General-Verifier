@@ -1,9 +1,10 @@
 """Process-local reuse of independently accepted typed methods.
 
-The cache stores no verdict and no candidate evidence.  A hit supplies only
-the MethodIR whose sufficiency an independent Judger already accepted.  The
-current candidate must run that adapter again and produce a new, mechanically
-validated evidence envelope before BindingGame can settle anything.
+The cache never reuses a candidate verdict or evidence as the current result.
+A hit supplies the MethodIR and the outcome direction for which an independent
+Judger accepted its sufficiency.  The current candidate must run that adapter
+again and produce a new, mechanically validated evidence envelope with the
+same outcome direction before BindingGame can settle anything.
 
 Keeping this cache in memory is a security boundary: executor workspaces can
 write shared package caches, so a disk cache would need a separate trusted
@@ -203,11 +204,12 @@ def build_method_cache_key(
 
 @dataclass(frozen=True)
 class AcceptedMethod:
-    """A sufficiency signature, never an answer about a candidate."""
+    """A direction-scoped sufficiency signature, never a candidate answer."""
 
     method: Dict[str, Any]
     source_binding_artifact: str
     source_discharge_artifact: str
+    source_outcome: str
     audit: Dict[str, Any]
 
     def detached(self) -> "AcceptedMethod":
@@ -217,6 +219,7 @@ class AcceptedMethod:
             method=copy.deepcopy(self.method),
             source_binding_artifact=self.source_binding_artifact,
             source_discharge_artifact=self.source_discharge_artifact,
+            source_outcome=self.source_outcome,
             audit=copy.deepcopy(self.audit),
         )
 

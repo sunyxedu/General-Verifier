@@ -11,6 +11,7 @@ import pytest
 from verifier.core.events import EventLog
 from verifier.core.model import (
     BASIS_WORLD,
+    OUTCOME_FAILED,
     OUTCOME_HOLDS,
     OUTCOME_REFUTED,
     Obligation,
@@ -127,7 +128,7 @@ def game_for(tmp_path, name, backend, cache, *, status="completed",
     return state, game, artifacts, log, fallback
 
 
-def test_default_offline_services_share_method_but_not_verdict(tmp_path):
+def test_default_offline_services_reaudit_when_fresh_outcome_changes(tmp_path):
     cache = default_accepted_method_cache()
     cache.clear()
     method = typed_method()
@@ -152,7 +153,8 @@ def test_default_offline_services_share_method_but_not_verdict(tmp_path):
 
     first, backend1 = build("service-1", "completed", {
         "oracles": {"methods": [method]}, "judger": JUDGE_YES})
-    second, backend2 = build("service-2", "wrong", {})
+    second, backend2 = build("service-2", "wrong", {
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES})
 
     assert first.commit("F1", "final", "candidate one is done", [])["status"] \
         == "verified"
@@ -161,9 +163,10 @@ def test_default_offline_services_share_method_but_not_verdict(tmp_path):
     assert [call["role"] for call in backend1.calls] == [
         "obligations", "critic", "oracles", "judger"]
     assert [call["role"] for call in backend2.calls] == [
-        "obligations", "critic"]
-    assert any(event["type"] == "method_cache_hit"
-               for event in second.log.replay())
+        "obligations", "critic", "oracles", "judger"]
+    events = list(second.log.replay())
+    assert any(event["type"] == "method_cache_bypass" for event in events)
+    assert not any(event["type"] == "method_cache_hit" for event in events)
 
 
 def test_default_online_service_uses_adapter_without_executor_seat(tmp_path):
@@ -287,7 +290,10 @@ def test_single_flight_stress_reexecutes_24_independent_candidates(tmp_path):
 
     jobs = []
     for index in range(24):
-        status = "completed" if index % 2 == 0 else "wrong"
+        # Single-flight reuse remains valuable for candidates whose freshly
+        # executed adapter result has the same direction as the accepted
+        # source result.
+        status = "completed"
         fixtures = ({"oracles": {"methods": [method]},
                      "judger": delayed_judger} if index == 0 else {})
         backend = FixtureBackend(fixtures)
@@ -309,15 +315,190 @@ def test_single_flight_stress_reexecutes_24_independent_candidates(tmp_path):
         release.set()
         results = [future.result(timeout=10) for future in futures]
 
-    for job, result in zip(jobs, results):
-        expected = OUTCOME_HOLDS if job[0] == "completed" else OUTCOME_REFUTED
-        assert result.outcome == expected
+    for index, (job, result) in enumerate(zip(jobs, results)):
+        assert result.outcome == OUTCOME_HOLDS
         assert job[7].calls == []
         bound = job[5].get(result.artifact)["bound"]
         assert job[5].get(bound["discharge_artifact"])["claim"] == job[3]["id"]
+        if index:
+            assert bound["audit"]["cache"]["source_outcome"] \
+                == OUTCOME_HOLDS
     assert sum(len(job[1].calls) for job in jobs) == 2
     assert sum(any(event["type"] == "method_cache_hit"
                    for event in job[6].replay()) for job in jobs) == 23
+
+
+@pytest.mark.parametrize(
+    "source_status,source_outcome,fresh_status,fresh_outcome",
+    [
+        ("completed", OUTCOME_HOLDS, "wrong", OUTCOME_REFUTED),
+        ("wrong", OUTCOME_REFUTED, "completed", OUTCOME_HOLDS),
+    ],
+)
+def test_outcome_direction_change_bypasses_cached_judgment(
+        tmp_path, source_status, source_outcome, fresh_status, fresh_outcome):
+    cache = AcceptedMethodCache()
+    method = typed_method()
+    obligation = Obligation(
+        "source", "status equals completed", BASIS_WORLD)
+    source_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES})
+    _, source_game, _, _, _ = game_for(
+        tmp_path, "direction-source", source_backend, cache,
+        status=source_status)
+
+    assert source_game.run(
+        {"id": "source", "kind": "final", "text": "source candidate"},
+        obligation).outcome == source_outcome
+    assert len(cache) == 1
+
+    fresh_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES})
+    _, fresh_game, _, fresh_log, fresh_fallback = game_for(
+        tmp_path, "direction-fresh", fresh_backend, cache,
+        status=fresh_status)
+    fresh = fresh_game.run(
+        {"id": "fresh", "kind": "final", "text": "fresh candidate"},
+        Obligation("fresh", "status equals completed", BASIS_WORLD))
+
+    assert fresh.outcome == fresh_outcome
+    assert [call["role"] for call in fresh_backend.calls] == [
+        "oracles", "judger"]
+    assert fresh_fallback.calls == []
+    events = list(fresh_log.replay())
+    reuse_attempts = [
+        event for event in events
+        if event["type"] == "adapter_discharge"
+        and event["payload"].get("accepted_method_reuse_attempt") is True
+    ]
+    assert len(reuse_attempts) == 1
+    assert any(event["type"] == "method_cache_bypass" for event in events)
+    assert not any(event["type"] == "method_cache_hit" for event in events)
+
+
+def test_opposite_fresh_outcome_is_controlled_by_a_fresh_judger(tmp_path):
+    cache = AcceptedMethodCache()
+    method = typed_method()
+    source_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES})
+    _, source_game, _, _, _ = game_for(
+        tmp_path, "conservative-source", source_backend, cache,
+        status="wrong")
+    obligation = Obligation(
+        "source", "status equals completed", BASIS_WORLD)
+
+    assert source_game.run(
+        {"id": "source", "kind": "final", "text": "source candidate"},
+        obligation).outcome == OUTCOME_REFUTED
+
+    fresh_backend = FixtureBackend({
+        # The duplicate repair response is rejected mechanically after the
+        # fresh Judger rejects the method, leaving the game failed closed.
+        "oracles": {"methods": [method]},
+        "judger": {
+            "sufficient": "no",
+            "faithful": "yes",
+            "degradation": "n/a",
+            "reason": "this certificate does not cover the holds direction",
+        },
+    })
+    _, fresh_game, _, fresh_log, _ = game_for(
+        tmp_path, "conservative-fresh", fresh_backend, cache,
+        status="completed")
+    fresh = fresh_game.run(
+        {"id": "fresh", "kind": "final", "text": "fresh candidate"},
+        Obligation("fresh", "status equals completed", BASIS_WORLD))
+
+    assert fresh.outcome == OUTCOME_FAILED
+    assert [call["role"] for call in fresh_backend.calls] == [
+        "oracles", "judger", "oracles"]
+    events = list(fresh_log.replay())
+    assert any(event["type"] == "method_cache_bypass" for event in events)
+    assert not any(event["type"] == "method_cache_hit" for event in events)
+
+
+def test_negative_direction_reuses_only_while_fresh_outcome_stays_refuted(
+        tmp_path):
+    cache = AcceptedMethodCache()
+    address = "/app/report.txt"
+    method = {
+        "procedure": "check whether the exact report path is a file",
+        "artifact": "content-addressed typed evidence",
+        "level": "deterministic",
+        "basis": BASIS_WORLD,
+        "strength": "decisive",
+        "bridges": [],
+        "adapter": "filesystem.exists",
+        "adapter_version": 1,
+        "adapter_arguments": json.dumps({
+            "address": address, "kind": "file",
+        }, sort_keys=True),
+        "adapter_inputs": [{
+            "ref": address, "provenance": "delivered", "role": "subject",
+        }],
+    }
+    task = "Create report.txt containing approved"
+
+    def compound_obligation(claim):
+        return Obligation(
+            claim, "report.txt exists and its exact content is approved",
+            BASIS_WORLD, clause=task, refutable_by_absence=True)
+
+    source_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES})
+    _, source_game, _, _, _ = game_for(
+        tmp_path, "negative-source", source_backend, cache, task=task)
+    source = source_game.run(
+        {"id": "source", "kind": "final", "text": "source candidate"},
+        compound_obligation("source"))
+
+    assert source.outcome == OUTCOME_REFUTED
+    assert len(cache) == 1
+
+    same_backend = FixtureBackend({})
+    _, same_game, same_artifacts, same_log, same_fallback = game_for(
+        tmp_path, "negative-same", same_backend, cache, task=task)
+    same = same_game.run(
+        {"id": "same", "kind": "final", "text": "same candidate"},
+        compound_obligation("same"))
+
+    assert same.outcome == OUTCOME_REFUTED
+    assert same_backend.calls == []
+    assert same_fallback.calls == []
+    same_bound = same_artifacts.get(same.artifact)["bound"]
+    assert same_bound["audit"]["cache"]["source_outcome"] \
+        == OUTCOME_REFUTED
+    assert any(event["type"] == "method_cache_hit"
+               for event in same_log.replay())
+
+    fresh_backend = FixtureBackend({
+        "oracles": {"methods": [method]},
+        "judger": {
+            "sufficient": "no",
+            "faithful": "yes",
+            "degradation": "n/a",
+            "reason": "existence alone does not establish exact content",
+        },
+    })
+    fresh_state, fresh_game, _, fresh_log, fresh_fallback = game_for(
+        tmp_path, "negative-opposite", fresh_backend, cache, task=task)
+    (fresh_state / "world" / "app" / "report.txt").write_text("wrong")
+    fresh = fresh_game.run(
+        {"id": "fresh", "kind": "final", "text": "fresh candidate"},
+        compound_obligation("fresh"))
+
+    assert fresh.outcome == OUTCOME_FAILED
+    assert [call["role"] for call in fresh_backend.calls] == [
+        "oracles", "judger", "oracles"]
+    assert fresh_fallback.calls == []
+    events = list(fresh_log.replay())
+    assert sum(
+        event["type"] == "adapter_discharge"
+        and event["payload"].get("accepted_method_reuse_attempt") is True
+        for event in events
+    ) == 1
+    assert any(event["type"] == "method_cache_bypass" for event in events)
+    assert not any(event["type"] == "method_cache_hit" for event in events)
 
 
 def test_authority_change_during_hit_forces_full_game(tmp_path):
@@ -368,6 +549,7 @@ def test_cache_lru_and_detached_entries():
             method={"number": number},
             source_binding_artifact=str(number),
             source_discharge_artifact=str(number),
+            source_outcome=OUTCOME_HOLDS,
             audit={"sufficient": "yes"},
         )
 
@@ -381,6 +563,7 @@ def test_cache_lru_and_detached_entries():
     lease.finish(entry(3))
 
     assert cache.acquire("a").entry.method["number"] == 1
+    assert cache.acquire("a").entry.source_outcome == OUTCOME_HOLDS
     evicted = cache.acquire("b")
     assert evicted.leader is True
     evicted.finish()

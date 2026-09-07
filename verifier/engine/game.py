@@ -6,8 +6,9 @@ Per obligation:
 0. For an equivalent final obligation, a process-local cache may supply a
    decisive typed method whose sufficiency a Judger already accepted.  Only
    the method is reused: its adapter runs against the current candidate and
-   the new evidence envelope is mechanically authenticated.  Any mismatch
-   falls through to the complete game below.
+   the new evidence envelope is mechanically authenticated.  The accepted
+   audit is scoped to its original outcome direction; a fresh direction
+   change or any other mismatch falls through to the complete game below.
 1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
    oracle's own guarantee, researched first when the domain is
    unfamiliar), each with a signed strength declaration — decisive
@@ -215,6 +216,13 @@ class BindingGame:
             return None, reason
         if result.outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
             return None, "fresh adapter execution was not substantive"
+        if accepted.source_outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
+            return None, "cached method has no valid source outcome"
+        if result.outcome != accepted.source_outcome:
+            return None, (
+                "fresh adapter outcome changed direction: "
+                f"source={accepted.source_outcome}, fresh={result.outcome}"
+            )
         if not basis_satisfies(method.get("basis", BASIS_RECORD),
                                obligation.required_basis):
             return None, "cached method is below the current evidence floor"
@@ -237,6 +245,7 @@ class BindingGame:
                 "schema": "gv-accepted-method-reuse-v1",
                 "source_binding_artifact": accepted.source_binding_artifact,
                 "source_discharge_artifact": accepted.source_discharge_artifact,
+                "source_outcome": accepted.source_outcome,
                 "source_audit": accepted.audit,
                 "cache_key": key,
             },
@@ -252,6 +261,7 @@ class BindingGame:
             "procedure": method["procedure"][:80],
             "source_binding_artifact": accepted.source_binding_artifact,
             "fresh_discharge_artifact": result.artifact,
+            "source_outcome": accepted.source_outcome,
             "outcome": result.outcome,
             "waited_for_single_flight": waited,
         })
@@ -331,6 +341,7 @@ class BindingGame:
             method=method,
             source_binding_artifact=settled.artifact,
             source_discharge_artifact=discharge_digest,
+            source_outcome=inner.outcome,
             audit=audit,
         )
 

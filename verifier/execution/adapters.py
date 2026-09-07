@@ -390,7 +390,11 @@ class FileExistsAdapter(MethodAdapter):
     accepted_method_reuse = True
     name = "filesystem.exists"
     basis = BASIS_WORLD
-    summary = "Decide whether one world address exists with the requested kind."
+    summary = (
+        "Decide whether one world address exists with the requested kind. "
+        "Reports address, exists, actual_kind (absent when missing), "
+        "expected_kind, and world_mode; does not inspect file contents."
+    )
     arguments = {"address": "string", "kind": "any|file|directory"}
 
     def execute(self, invocation, obligation, context):
@@ -406,6 +410,8 @@ class FileExistsAdapter(MethodAdapter):
             info = os.lstat(resolved.host_path)
         except FileNotFoundError:
             observation = {"address": address, "exists": False,
+                           "actual_kind": "absent",
+                           "expected_kind": expected_kind,
                            "world_mode": resolved.mode}
             if not obligation.refutable_by_absence:
                 raise AdapterNotApplicable(
@@ -423,6 +429,7 @@ class FileExistsAdapter(MethodAdapter):
         observation = {"address": address, "exists": True,
                        "actual_kind": actual_kind,
                        "expected_kind": expected_kind,
+                       "world_mode": resolved.mode,
                        "identity": _file_identity(resolved, info)}
         consumed = (_file_identity(resolved, info),)
         if expected_kind == "any" or actual_kind == expected_kind:
@@ -1561,7 +1568,7 @@ class AdapterRoutingDischarger:
             "claim": row["id"], "obligation": obligation.id,
             "adapter": result.instrument.removeprefix("adapter:"),
             "outcome": result.outcome, "artifact": result.artifact,
-            "accepted_method_reuse": True,
+            "accepted_method_reuse_attempt": True,
         })
         return result, ""
 

@@ -31,6 +31,11 @@ The scope is `(after_seq, through_seq]`. Its subject declaration is
 A matching tool call with an unreadable value invalidates the fast path.
 Failure to find an existential match is absence, not a positive contradiction.
 
+`filesystem.exists` reports `address`, `exists`, `actual_kind`,
+`expected_kind`, and `world_mode` for every substantive result. A missing
+target has `actual_kind="absent"`; an existing target also carries its file
+identity. This operation does not inspect file contents.
+
 For example, `/input/cmd` and `/input/keystrokes` are different explicit
 record dialects. A raw program containing a nested tool invocation needs the
 agent executor; this adapter does not infer what the program executes.
@@ -80,8 +85,16 @@ Each adapter explicitly declares whether it supports accepted-method reuse.
 The current opt-ins are the three pure world-file adapters. Reuse also requires
 an exact obligation, task authority, backend/catalog identity, decisive method,
 delivered subject inputs, and a previously successful Judger audit. Execution
-always runs again on the current candidate. Browser and ledger methods retain
-a fresh Judger audit on every binding.
+always runs again on the current candidate. The accepted signature applies
+only to its recorded `source_outcome`: a fresh result in the opposite direction
+goes through the full game again. A decisive one-direction certificate is not
+automatically a two-direction decision procedure. Browser and ledger methods
+retain a fresh Judger audit on every binding.
+
+For telemetry, `adapter_discharge.accepted_method_reuse_attempt` records only
+an attempted cache execution; `method_cache_hit` records actual audit reuse.
+Existing published-claim invalidation semantics are unchanged: adapter freshness
+applies when a new binding executes, not as a background watch on live files.
 
 `GV_TYPED_ADAPTERS=0` selects the original agent execution path and disables
 accepted-method reuse. `1` enables adapters. Both modes use the same compilers
