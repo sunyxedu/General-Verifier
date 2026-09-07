@@ -67,6 +67,17 @@ SANITIZE_MARKER = ".sanitized"
 SANITIZE_FILES = ("hook_feed.jsonl", "task.md", "final.txt")
 
 
+def _usage_contexts(jobs):
+    """Map state directories to ledger context for 2- or 3-item jobs."""
+    return {
+        os.path.realpath(job[1]): {
+            key: job[0][key]
+            for key in ("job", "task", "trial", "config", "rep")
+        }
+        for job in jobs
+    }
+
+
 def find_state(trial_dir):
     """The pulled /gv-state artifact inside a trial dir (source only —
     scoring itself runs in the sanitized copy)."""
@@ -371,13 +382,7 @@ def main():
         if args.seats == "codex":
             from verifier.llm.codex_backend import codex_usage_ledger
 
-            usage_contexts = {
-                os.path.realpath(state): {
-                    key: record[key]
-                    for key in ("job", "task", "trial", "config", "rep")
-                }
-                for record, state in all_jobs
-            }
+            usage_contexts = _usage_contexts(all_jobs)
             usage_capture = codex_usage_ledger(
                 usage_path, context_by_cwd=usage_contexts)
         print(f"[tb:score] scoring {len(all_jobs)} traces across "
