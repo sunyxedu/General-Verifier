@@ -269,6 +269,9 @@ def _default_kernel(sc: Service, model, backend=None,
     from .llm.agents import (
         ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
     )
+    from .execution.adapters import (
+        AdapterRoutingDischarger, default_adapter_registry,
+    )
     from .execution.discharge import AgentDischarger
     from .engine.game import BindingGame
 
@@ -290,7 +293,7 @@ def _default_kernel(sc: Service, model, backend=None,
         # an injected backend (e.g. CodexBackend) still needs the
         # harness-swapped role registry — same double-registration rule
         backend.roles = roles
-    discharger = AgentDischarger(
+    agent_discharger = AgentDischarger(
         backend, sc.artifacts,
         workdir_base=os.path.join(sc.state_dir, "work"),
         cleanup=True,   # snapshots are the evidence; workdirs are scratch
@@ -299,6 +302,9 @@ def _default_kernel(sc: Service, model, backend=None,
         state_dir=sc.state_dir,
         live_world=sc.live_world,
         store=sc.store)   # evidence-workspace index over the claim graph
+    discharger = AdapterRoutingDischarger(
+        agent_discharger, default_adapter_registry(), sc.artifacts, sc.log,
+        sc.state_dir, live_world=sc.live_world)
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                          memory=sc.memory, live_world=sc.live_world)
     if parallel_obligations is None:

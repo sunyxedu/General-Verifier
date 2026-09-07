@@ -395,6 +395,20 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
                 # method's positive verdict to the obligation; [] for
                 # decisive (the mini-DSL has no optional keys)
                 "bridges": [str],
+                # Optional typed executor binding.  The oracle still owns
+                # method choice; these fields merely let a registered,
+                # versioned adapter execute that exact method without an
+                # executor seat.  Partial/unknown bindings fall back to the
+                # agent executor rather than affecting the verdict.
+                "adapter?": str,
+                "adapter_version?": int,
+                "adapter_arguments?": str,
+                "adapter_inputs?": [{
+                    "ref": str,
+                    "provenance": ("task_given", "delivered", "ledger",
+                                   "verifier", "public"),
+                    "role": ("subject", "input", "authority"),
+                }],
             }
         ]
     },

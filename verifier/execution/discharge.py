@@ -217,6 +217,7 @@ class AgentDischarger:
             "claim_text": row["text"],
             "obligation_text": obligation.text,
             "procedure": method["procedure"],
+            "adapter_method": self._adapter_method(method),
             # A redo diagnostic is not part of the bound contract. Keeping it
             # separate prevents feedback from silently becoming a new method
             # or an authority for the proposition under test.
@@ -276,6 +277,17 @@ class AgentDischarger:
             witness_kind=payload.get("witness_kind"),
             inputs=tuple(payload.get("inputs") or ()),
         )
+
+    @staticmethod
+    def _adapter_method(method: Dict[str, Any]) -> str:
+        # Lazy import keeps the legacy executor usable on its own without a
+        # module cycle at import time (adapters imports DischargeResult).
+        from .adapters import adapter_method_view
+        rendered = adapter_method_view(method)
+        reason = method.get("adapter_fallback_reason")
+        if reason:
+            rendered += "\nfast-path unavailable; execute normally: " + str(reason)
+        return rendered
 
     def _maybe_cleanup(self, workdir: str) -> None:
         if self.cleanup:

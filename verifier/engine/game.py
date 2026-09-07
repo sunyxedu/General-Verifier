@@ -49,6 +49,7 @@ from typing import Dict, List, Optional
 
 from ..llm.agents import ENUMERATE_ORACLES_AGENT, JUDGER_AGENT
 from ..execution.discharge import DischargeResult
+from ..execution.adapters import adapter_method_view
 from ..core.events import EventLog
 from ..execution.instruments import (
     ArtifactStore, authoritative_task_context, world_evidence_context,
@@ -681,6 +682,7 @@ class BindingGame:
     ) -> List[Dict[str, str]]:
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
+        catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
         state = os.path.dirname(os.path.abspath(self.log.path))
         world_mode, world, manifest = world_evidence_context(
             state, live_world=self.live_world)
@@ -696,6 +698,7 @@ class BindingGame:
                 "task_context": authoritative_task_context(state),
                 "features": _features(row),
                 "registry": registry,
+                "adapter_catalog": catalog,
                 "method_feedback": method_feedback,
                 "ledger_path": os.path.abspath(self.log.path),
                 "artifact_root": os.path.abspath(self.artifacts.root),
@@ -713,7 +716,10 @@ class BindingGame:
             "methods": [{"procedure": m["procedure"][:80],
                          "level": m.get("level", ""),
                          "basis": m.get("basis", ""),
-                         "strength": _method_strength(m)}
+                         "strength": _method_strength(m),
+                         **({"adapter": m["adapter"],
+                             "adapter_version": m.get("adapter_version")}
+                            if "adapter" in m else {})}
                         for m in methods],
         }
         if method_feedback != "(none)":
@@ -764,6 +770,7 @@ class BindingGame:
             "clause": obligation.clause,
             "refutable_by_absence": obligation.refutable_by_absence,
             "procedure": method["procedure"],
+            "adapter_method": adapter_method_view(method),
             "promised_artifact": method.get("artifact", ""),
             # the oracle's declared evidence basis — the judger audits it as
             # part of fidelity, and it is what the settled verdict will carry

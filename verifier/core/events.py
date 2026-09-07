@@ -39,6 +39,8 @@ EVENT_TYPES = (
     "method_deferred",
     "method_redo",
     "method_bound",
+    "adapter_discharge",
+    "adapter_fallback",
     "discharge",
 
     # search support

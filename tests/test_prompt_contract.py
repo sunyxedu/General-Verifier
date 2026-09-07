@@ -50,17 +50,17 @@ def test_templates_render_exactly_the_variables_the_engine_supplies():
     assert _vars(prompts.ORACLES_TEMPLATE) >= {
         "obligation_text", "required_basis", "severity", "clause",
         "refutable_by_absence", "task_context", "method_feedback",
-        "world_map"}
+        "world_map", "adapter_catalog"}
     assert _vars(prompts.DISCHARGE_TEMPLATE) >= {
         "obligation_text", "procedure", "promised_artifact",
         "declared_basis", "required_basis", "severity", "clause",
         "refutable_by_absence", "workdir", "toolchain_dir",
         "workspace_dir", "workspace_index", "world_map",
-        "snapshot_per_file_cap", "redo_feedback"}
+        "snapshot_per_file_cap", "redo_feedback", "adapter_method"}
     assert _vars(prompts.JUDGER_TEMPLATE) >= {
         "obligation_text", "severity", "clause", "refutable_by_absence",
         "procedure", "basis", "declared_strength", "bridges",
-        "degradation_record", "evidence", "world_map"}
+        "degradation_record", "evidence", "world_map", "adapter_method"}
     assert "{claim_text}" not in prompts.JUDGER_TEMPLATE   # blind judger
     assert _vars(prompts.EXTRACT_TEMPLATE) == {
         "task", "final_answer", "events_index", "ledger_path", "feedback"}
@@ -91,6 +91,10 @@ def test_mechanism_fields_are_asked_for_by_name():
     # oracle: refutation methods promise a positive witness
     assert "REFUTATION METHODS PROMISE A WITNESS" in prompts.ORACLES_SYSTEM
     assert "INPUT PROVENANCE IS PART OF THE METHOD" in prompts.ORACLES_SYSTEM
+    method_schema = agents.ENUMERATE_ORACLES_AGENT.schema["methods"][0]
+    assert {"adapter?", "adapter_version?", "adapter_arguments?",
+            "adapter_inputs?"} <= set(method_schema)
+    assert "adapter_catalog" in _vars(prompts.ORACLES_TEMPLATE)
 
 
 def test_game_and_locus_contract_survive():
