@@ -25,8 +25,7 @@ from verifier.execution.adapters import (
 )
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm.schema import FixtureBackend
-from verifier.llm.schema import RoleError
+from verifier.llm.schema import FixtureBackend, RoleError
 
 
 JUDGE_YES = {
@@ -449,6 +448,104 @@ def test_failed_direction_leader_wakes_follower_that_can_seed_it(tmp_path):
     assert {entry.source_outcome for entry in entries} == {
         OUTCOME_HOLDS, OUTCOME_REFUTED,
     }
+
+
+def test_authority_mutation_before_direction_acquire_never_seeds_old_key(
+        tmp_path):
+    method = _method("document.json-value", {
+        "address": "/app/result.json", "pointer": "/status",
+        "expected": "accepted",
+    })
+
+    def prepare(value):
+        def write(world):
+            (world / "result.json").write_text(json.dumps({"status": value}))
+        return write
+
+    cache = AcceptedMethodCache()
+    seed_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES,
+    })
+    seed, _, _, _ = _game(
+        tmp_path, "mutation-seed", seed_backend, cache, prepare("accepted"))
+    assert seed.run(_row("seed"), _obligation("seed")).outcome \
+        == OUTCOME_HOLDS
+
+    backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES,
+    })
+    game, _, log, _ = _game(
+        tmp_path, "mutation-opposite", backend, cache, prepare("wrong"))
+    row, obligation = _row("opposite"), _obligation("opposite")
+    old_key = game._method_cache_key(row, obligation)
+    original = game.discharger.discharge_adapter_only
+
+    def execute_then_mutate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        (tmp_path / "mutation-opposite" / "task.md").write_text(
+            "The authoritative requirement changed during observation.",
+            encoding="utf-8",
+        )
+        return result
+
+    game.discharger.discharge_adapter_only = execute_then_mutate
+    assert game.run(row, obligation).outcome == OUTCOME_REFUTED
+
+    assert game._method_cache_key(row, obligation) != old_key
+    assert len(cache) == 1
+    assert [entry.source_outcome
+            for entry in cache.acquire(old_key).entries] == [OUTCOME_HOLDS]
+    assert not cache._flights
+    bypass = _events(log, "method_cache_bypass")
+    assert "authority changed" in bypass[-1]["payload"]["reason"]
+
+
+def test_keyboard_interrupt_releases_missing_direction_flight(tmp_path):
+    method = _method("document.json-value", {
+        "address": "/app/result.json", "pointer": "/status",
+        "expected": "accepted",
+    })
+
+    def prepare(value):
+        def write(world):
+            (world / "result.json").write_text(json.dumps({"status": value}))
+        return write
+
+    cache = AcceptedMethodCache()
+    seed_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES,
+    })
+    seed, _, _, _ = _game(
+        tmp_path, "interrupt-seed", seed_backend, cache, prepare("accepted"))
+    assert seed.run(_row("seed"), _obligation("seed")).outcome \
+        == OUTCOME_HOLDS
+
+    def interrupt(_variables):
+        raise KeyboardInterrupt
+
+    interrupted, _, _, _ = _game(
+        tmp_path,
+        "interrupt-direction",
+        FixtureBackend({"oracles": interrupt}),
+        cache,
+        prepare("wrong"),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        interrupted.run(_row("interrupt"), _obligation("interrupt"))
+    assert not cache._flights
+    key = next(iter(cache._entries))
+    assert [entry.source_outcome for entry in cache.acquire(key).entries] \
+        == [OUTCOME_HOLDS]
+
+    recovery_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES,
+    })
+    recovery, _, _, _ = _game(
+        tmp_path, "interrupt-recovery", recovery_backend, cache,
+        prepare("wrong"))
+    assert recovery.run(_row("recovery"), _obligation("recovery")).outcome \
+        == OUTCOME_REFUTED
+    assert not cache._flights
 
 
 def test_direction_slots_are_detached_first_wins_and_count_as_one_lru_key():

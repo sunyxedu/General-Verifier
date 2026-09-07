@@ -86,9 +86,11 @@ The current opt-ins are the three pure world-file adapters. Reuse also requires
 an exact obligation, task authority, backend/catalog identity, decisive method,
 delivered subject inputs, and a previously successful Judger audit. Execution
 always runs again on the current candidate. The accepted signature applies
-only to its recorded `source_outcome`: a fresh result in the opposite direction
-goes through the full game again. A decisive one-direction certificate is not
-automatically a two-direction decision procedure. Browser and ledger methods
+only to its recorded `source_outcome`. The cache keeps at most one separately
+approved signature per direction. The first opposite-direction result goes
+through the full game; later candidates may use that direction's signature
+only for the exact same MethodIR, with fresh evidence. A decisive one-direction
+certificate never implies the other direction. Browser and ledger methods
 retain a fresh Judger audit on every binding.
 
 For telemetry, `adapter_discharge.accepted_method_reuse_attempt` records only

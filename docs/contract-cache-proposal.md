@@ -103,10 +103,11 @@ Oracle and Judger allow verdict-direction certificates: one realized direction m
 obligation while the opposite should fail or be unobtainable. `decisive` therefore does not imply
 bidirectional sufficiency.
 
-Reuse an accepted method only in a direction independently accepted by the Judger. The minimum
-fail-closed rule stores `source_outcome` and bypasses on a different fresh outcome. A future structured
-`valid_outcomes` signature may explicitly authorize both directions; missing or legacy values default
-to the source outcome. Adapter purity alone never proves bidirectional sufficiency.
+Reuse an accepted method only in a direction independently accepted by the Judger. The cache stores
+separate `holds` and `refuted` slots, each carrying its own `source_outcome`, exact MethodIR, and source
+audit. The first missing direction still runs the full game. Concurrent followers single-flight that
+direction and may bind only their own fresh evidence to an exact matching method. No `valid_outcomes`
+inference is made: adapter purity alone never proves bidirectional sufficiency.
 
 ## Evaluation
 
