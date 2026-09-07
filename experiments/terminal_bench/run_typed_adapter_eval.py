@@ -114,7 +114,14 @@ def _groups(phase: str, selected: dict[str, dict[str, Any]]) -> list[Group]:
 
 
 def _source_fingerprint(source_root: Path) -> str:
-    paths = [source_root / "experiments" / "terminal_bench" / "score.py"]
+    paths = [
+        source_root / "experiments" / "terminal_bench" / "score.py",
+        source_root / "experiments" / "terminal_bench" / "harborjobs.py",
+        source_root / "pyproject.toml",
+        source_root / "uv.lock",
+    ]
+    paths.extend(sorted(
+        (source_root / "experiments" / "common").rglob("*.py")))
     paths.extend(sorted((source_root / "verifier").rglob("*.py")))
     paths.extend(sorted((source_root / "protocol").rglob("*")))
     digest = hashlib.sha256()
@@ -139,6 +146,10 @@ def _validate_source_root(source_root: Path) -> None:
         source_root / "verifier" / "offline.py",
         source_root / "protocol" / "solver-protocol.md",
         source_root / "experiments" / "terminal_bench" / "score.py",
+        source_root / "experiments" / "terminal_bench" / "harborjobs.py",
+        source_root / "experiments" / "common" / "scoring.py",
+        source_root / "pyproject.toml",
+        source_root / "uv.lock",
     )
     missing = [os.fspath(path) for path in required if not path.is_file()]
     if missing:
@@ -292,11 +303,33 @@ def _result_audit(path: Path, trials: tuple[str, ...]) -> list[str]:
     except (OSError, json.JSONDecodeError) as exc:
         return [f"cannot audit results: {exc}"]
     counts = defaultdict(int)
+    errors: list[str] = []
     for row in rows:
-        if row.get("trial") in trials and row.get("features") is not None:
-            counts[row["trial"]] += 1
-    return [f"expected one result for {trial}, got {counts[trial]}"
-            for trial in trials if counts[trial] != 1]
+        trial = row.get("trial")
+        features = row.get("features")
+        if trial in trials and features is not None:
+            counts[trial] += 1
+            audit_status = features.get("contract_audit_status")
+            contract = features.get("final_obligation_contract")
+            outcomes = features.get("final_obligation_outcomes_ordered")
+            known_statuses = {
+                "available", "missing", "empty", "malformed",
+                "outcomes_malformed", "unavailable_unscoreable",
+            }
+            if (audit_status not in known_statuses
+                    or not isinstance(contract, list)
+                    or not isinstance(outcomes, list)):
+                errors.append(
+                    f"{trial} has an invalid raw contract audit envelope")
+            elif audit_status == "available" and (
+                    not contract or len(outcomes) != len(contract)):
+                errors.append(
+                    f"{trial} has a misaligned available raw contract audit")
+    errors.extend(
+        f"expected one result for {trial}, got {counts[trial]}"
+        for trial in trials if counts[trial] != 1
+    )
+    return errors
 
 
 def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
@@ -337,6 +370,8 @@ def _run_one(
     env["GV_SCORING_ROOT"] = os.fspath(scoring_root)
     for name in _CLEARED_ENV:
         env.pop(name, None)
+    env["GV_MAX_CONCURRENT_SEATS"] = str(
+        manifest["verifier"]["max_concurrent_seats"])
     start_wall = time.time_ns()
     start_mono = time.monotonic_ns()
     state_path = run_dir / "run-state.json"
@@ -388,6 +423,7 @@ def _run_one(
         "effort": manifest["verifier"]["effort"],
         "service_tier": manifest["verifier"]["service_tier"],
         "mode": manifest["verifier"]["mode"],
+        "max_concurrent_seats": manifest["verifier"]["max_concurrent_seats"],
         "browser_observer": None,
         "workers": manifest["phases"][phase]["workers"],
         "fresh_scoring_root": True, "fresh_process_cache": True,

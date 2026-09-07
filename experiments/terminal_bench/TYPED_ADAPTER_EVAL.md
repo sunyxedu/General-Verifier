@@ -6,8 +6,8 @@ architecture. It records them as separate comparisons:
 1. `adapter-isolation`: with the authority contract cache enabled in both
    arms, does changing only the executor preserve the exact contract outcome?
 2. `full-e2e`: does `(typed adapters=1, contract cache=1)` beat the unchanged
-   `(0, 0)` pipeline by 10x without a verdict, rank, task-scope, or
-   per-obligation outcome regression?
+   `(0, 0)` pipeline by 10x, and what paired output and contract drift does it
+   actually exhibit?
 
 The machine-readable candidate set is
 `typed_adapter_eval_manifest.json`. It contains no reward or historical
@@ -37,7 +37,7 @@ The canary has only one historically positive and one historically negative
 candidate per task. It can catch a regression cheaply, but it cannot measure
 both-direction warm reuse or support a general cost/quality claim.
 
-## Freeze the obligation contract, not the oracle method
+## Retain contract text; freeze it only for adapter isolation
 
 An ordinary independent adapter-only A/B run is confounded: the obligation
 compiler and critic sample different decompositions, so fewer calls in one arm
@@ -67,18 +67,33 @@ time to each arm. Warm and batch runs build once per task and include that cost
 in the task/batch total. If the shared compiler floor alone exceeds 10% of the
 control, the 10x target correctly fails by Amdahl's law.
 
-The current result record must expose these fields before any paid eval:
+Every current result retains these fields verbatim, in compiler order:
+
+- `contract_audit_status` — `available` only when the compiler event and its
+  certificate alignment are both valid; missing/empty/malformed audit data
+  remains diagnostic and does not change the underlying score;
+- `final_obligation_contract` — id, exact obligation text, exact source
+  clause, modality, evidence floor, absence rule, and premise scope;
+- `final_obligation_outcomes_ordered` — the aligned evaluated flag, status,
+  basis, strength, and reason.
+
+No normalized task-scope digest is used. Two differently worded LLM contracts
+can change a quantifier while producing the same digest scheme or status
+histogram; the analyzer flags any exact contract drift and includes both raw
+arms for review. Matching verdict/rank/histogram with contract drift is
+reported as observed agreement with unproven contract equivalence, never as a
+zero-loss result.
+
+A future adapter-isolation run additionally needs the shared-bundle fields:
 
 - `obligation_contract_bundle_sha256`
 - `task_contract_sha256`
 - `compiler_fingerprint`
 - `final_obligation_outcomes_sha256` (ordered obligation id/status pairs)
 
-`analyze_typed_adapter_eval.py` fails closed if any is absent or differs
-between the adapter-isolation arms. Full-E2E intentionally allows different
-contract bundle bytes, but requires equal `task_contract_scope_sha256` and
-`final_scope_outcomes_sha256`; these are canonical digests over task clauses
-and their per-clause outcomes, not model wording.
+`analyze_typed_adapter_eval.py` fails closed if any shared-bundle field is
+absent or differs between adapter-isolation arms. The runner keeps that mode
+unavailable until a real sealed replay seam exists.
 
 ## Three latency measurements
 
@@ -115,6 +130,8 @@ contract builds, fallbacks, failures, and retries are included.
 Candidates repeat across cold/warm/batch only because these are different
 state regimes. They are never pooled as 60 independent quality samples, and a
 candidate is never repeated inside one phase to manufacture an exact hit.
+Every phase also pins `GV_MAX_CONCURRENT_SEATS=12`; ambient process settings
+cannot silently change model-call concurrency between arms.
 
 ## Run ledger and complete cost
 
@@ -141,18 +158,23 @@ Pareto gate: treatment/control must be at most 0.1 separately for started
 attempts, uncached input, cached input, and output. Exact billed cost may be
 reported in addition, but never reconstructed from an uncertain price table.
 
-## Acceptance
+## Acceptance and limits
 
 For all 20 candidates and for each phase:
 
 - both arms must use the same source fingerprint and immutable candidate seal;
 - adapter-isolation requires the same contract bundle and ordered obligation
-  outcomes; full-E2E requires the same task-clause scope and scope outcomes;
+  outcomes; full-E2E retains both raw contracts and flags exact drift;
 - verdict, verdict strength, and final-obligation status histogram must match;
 - there may be no unscoreable result and no reward-direction/ranking loss;
 - cost must be complete and all four cost ratios must be at most 0.1;
 - cold, warm, and batch end-to-end wall ratios must each be at most 0.1, with
   no individual cold regression.
+
+A full-E2E contract drift makes the zero-loss conclusion `inconclusive`, even
+when every observed verdict and rank matches and the 10x resource gates pass.
+Only an exact-contract comparison can isolate executor result preservation;
+that is why adapter-isolation remains a separate, currently unavailable gate.
 
 Run the analyzer only after all scoring processes finish:
 
@@ -197,6 +219,7 @@ the same sealed contract or charge the common compile wall time accurately to
 both arms. This diagnostic stays unavailable until that replay/accounting seam
 exists.
 
-A zero mismatch on 20 candidates has a 95% rule-of-three-style upper bound of
-about 13.9% on an unconstrained disagreement rate. Passing therefore means
-"no loss on this pinned suite," not a proof of universal no loss.
+A zero observed verdict/rank mismatch on 20 candidates has a 95%
+rule-of-three-style upper bound of about 13.9% on an unconstrained disagreement
+rate. That bound describes observed outputs only; it neither resolves contract
+drift nor proves universal zero loss.

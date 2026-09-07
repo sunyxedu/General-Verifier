@@ -22,7 +22,8 @@
     "mode": "offline",
     "browser_observer": null,
     "parallel_obligations": 4,
-    "parallel_claims": 4
+    "parallel_claims": 4,
+    "max_concurrent_seats": 12
   },
   "comparisons": {
     "full-e2e": {
@@ -36,7 +37,8 @@
         "GV_CONTRACT_CACHE": "1"
       },
       "require_same_contract_bundle": false,
-      "require_same_task_scope_and_scope_outcomes": true
+      "retain_exact_ordered_contracts_and_outcomes": true,
+      "contract_drift_policy": "inconclusive_for_zero_loss"
     },
     "adapter-isolation": {
       "acceptance_eligible": false,
@@ -71,7 +73,12 @@
     "same_bundle_both_arms_for": "adapter-isolation",
     "oracle_methods_frozen": false,
     "cold_compile_is_charged_to_both_arms": true,
-    "required_result_fields": [
+    "required_raw_audit_fields": [
+      "contract_audit_status",
+      "final_obligation_contract",
+      "final_obligation_outcomes_ordered"
+    ],
+    "future_adapter_isolation_seal_fields": [
       "obligation_contract_bundle_sha256",
       "task_contract_sha256",
       "compiler_fingerprint",
@@ -260,10 +267,8 @@
       "paired_unscoreable": 0,
       "require_equal_final_obligation_statuses": true,
       "adapter_isolation_require_equal_contract_bundle": true,
-      "full_e2e_required_result_fields": [
-        "task_contract_scope_sha256",
-        "final_scope_outcomes_sha256"
-      ],
+      "full_e2e_retain_exact_ordered_contracts_and_outcomes": true,
+      "full_e2e_contract_drift_policy": "inconclusive_for_zero_loss",
       "require_no_tb_rank_or_reward_direction_regression": true
     },
     "cost": {

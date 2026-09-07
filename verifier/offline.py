@@ -542,8 +542,120 @@ def _unscoreable(error: str, extract_rounds: int,
         "final_obligations": {},
         "final_obligations_total": 0,
         "final_contrary_signals": 0,
+        "contract_audit_status": "unavailable_unscoreable",
+        "final_obligation_contract": [],
+        "final_obligation_outcomes_ordered": [],
         "extract_rounds": extract_rounds,
         "fingerprint": fingerprint,
+    }
+
+
+def _compiled_final_contract(
+    log: EventLog, final_id: str,
+) -> tuple[str, List[Dict[str, Any]]]:
+    """Return the exact, ordered compiler output attached to the final claim.
+
+    The certificate intentionally summarizes settled graph nodes and SQLite
+    does not preserve compiler order or the required evidence floor.  The
+    append-only event is therefore the audit source.  Keep wording and source
+    clauses verbatim: hashing or normalizing them would hide quantifier drift.
+    """
+    absent = object()
+    compiled: Any = absent
+    for event in log.replay():
+        if event.get("type") != "obligations_compiled":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("claim") == final_id:
+            compiled = payload.get("obligations")
+    if compiled is absent:
+        return "missing", []
+    if compiled == []:
+        return "empty", []
+    if not isinstance(compiled, list):
+        return "malformed", []
+    fields = (
+        "id", "text", "premise_scope", "required_basis", "severity",
+        "clause", "refutable_by_absence",
+    )
+    out: List[Dict[str, Any]] = []
+    ids: set[str] = set()
+    for ordinal, obligation in enumerate(compiled):
+        if (not isinstance(obligation, dict)
+                or any(field not in obligation for field in fields)
+                or not isinstance(obligation.get("id"), str)
+                or not obligation["id"] or obligation["id"] in ids
+                or not isinstance(obligation.get("text"), str)
+                or not obligation["text"]
+                or not isinstance(obligation.get("premise_scope"), list)
+                or any(not isinstance(value, str)
+                       for value in obligation["premise_scope"])
+                or obligation.get("required_basis") not in {"record", "world"}
+                or obligation.get("severity") not in {"must", "should"}
+                or not isinstance(obligation.get("clause"), str)
+                or not isinstance(obligation.get("refutable_by_absence"), bool)):
+            return "malformed", []
+        ids.add(obligation["id"])
+        out.append({
+            "ordinal": ordinal,
+            **{field: obligation[field] for field in fields},
+        })
+    return "available", out
+
+
+def _ordered_final_outcomes(
+    cert: Dict[str, Any], contract: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Align certificate outcomes to compiler order without dropping text."""
+    final_entry = next(
+        (entry for entry in cert["slice"] if entry["id"] == cert["final"]),
+        None,
+    )
+    if final_entry is None:
+        raise ValueError("certificate slice is missing its final claim")
+    outcomes = {}
+    for item in final_entry.get("obligations", []):
+        oid = item.get("id")
+        if not isinstance(oid, str) or not oid or oid in outcomes:
+            raise ValueError("certificate final obligation outcomes are malformed")
+        outcomes[oid] = item
+    contract_ids = {item["id"] for item in contract}
+    unexpected = sorted(set(outcomes) - contract_ids)
+    if unexpected:
+        raise ValueError(
+            f"certificate contains obligations outside compiled contract: {unexpected}")
+    ordered = []
+    for item in contract:
+        outcome = outcomes.get(item["id"])
+        ordered.append({
+            "ordinal": item["ordinal"],
+            "obligation_id": item["id"],
+            "evaluated": outcome is not None,
+            "status": outcome.get("status") if outcome is not None else None,
+            "reason": outcome.get("reason") if outcome is not None else None,
+            "basis": outcome.get("basis") if outcome is not None else None,
+            "strength": outcome.get("strength") if outcome is not None else None,
+        })
+    return ordered
+
+
+def _final_contract_audit(
+    log: EventLog, cert: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Best-effort audit enrichment which never changes score semantics."""
+    status, contract = _compiled_final_contract(log, cert["final"])
+    outcomes: List[Dict[str, Any]] = []
+    if status == "available":
+        try:
+            outcomes = _ordered_final_outcomes(cert, contract)
+        except (KeyError, TypeError, ValueError):
+            status = "outcomes_malformed"
+    return {
+        "contract_audit_status": status,
+        "final_obligation_contract": contract,
+        "final_obligation_outcomes_ordered": outcomes,
     }
 
 
@@ -577,15 +689,6 @@ def _features(cert: Dict[str, Any], extract_rounds: int,
     final_obligations = {
         o["id"]: o["status"] for o in final_entry.get("obligations", [])
     }
-    if not final_obligations:
-        # The compiler always owes the final claim a non-empty contract; an
-        # empty set means compilation died mid-run (capacity flap), not that
-        # the task demands nothing. Folding it as 0/0-unverified silently
-        # discards a possibly fully-verified graph — surface it as
-        # unscoreable so the retry sweep re-runs the trace instead.
-        raise ValueError(
-            "final claim carries no compiled obligations; "
-            "treat as incomplete verification, not a verdict")
     final_ob_counts: Dict[str, int] = {}
     for status in final_obligations.values():
         final_ob_counts[status] = final_ob_counts.get(status, 0) + 1
@@ -810,6 +913,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             sc.store, sc.kernel, sc.log, sc.artifacts,
             sc.builder.finals[-1])
         features = dict(_features(cert, extract_rounds, fingerprint), **cfg)
+        features.update(_final_contract_audit(sc.log, cert))
         features["execution"] = {
             "parallel_obligations": parallel_obligations,
             "parallel_claims": parallel_claims,

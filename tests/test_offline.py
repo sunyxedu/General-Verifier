@@ -18,6 +18,7 @@ from verifier.core.store import ClaimStore
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.llm.schema import FixtureBackend
+from verifier.llm.agents import CRITIC_AGENT
 from verifier.stream.builder import Builder
 
 COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}", "required_basis": "record"}]}  # noqa: E731
@@ -168,6 +169,27 @@ def test_score_certifies_the_extracted_graph(tmp_path):
     assert features["feature_schema_version"] == offline.FEATURE_SCHEMA_VERSION
     assert features["final_obligations"] == {"verified": 1}
     assert features["final_obligations_total"] == 1
+    assert features["contract_audit_status"] == "available"
+    assert features["final_obligation_contract"] == [{
+        "ordinal": 0,
+        "id": features["final_obligation_outcomes_ordered"][0][
+            "obligation_id"],
+        "text": "O of: the answer is 42",
+        "premise_scope": [],
+        "required_basis": "record",
+        "severity": "must",
+        "clause": "",
+        "refutable_by_absence": False,
+    }]
+    assert features["final_obligation_outcomes_ordered"] == [{
+        "ordinal": 0,
+        "obligation_id": features["final_obligation_contract"][0]["id"],
+        "evaluated": True,
+        "status": "verified",
+        "reason": None,
+        "basis": "world",
+        "strength": None,
+    }]
     assert features["extract_rounds"] == 1
     # persisted for the experiment drivers
     on_disk = json.load(open(os.path.join(state, "score.json")))
@@ -284,6 +306,73 @@ def test_feature_fold_keeps_final_contract_separate_from_slice_diagnostics():
     assert features["final_obligations_total"] == 2
     assert features["final_contrary_signals"] == 0
     assert offline.rank_key(features) == (2, 0)
+
+
+def test_ordered_final_outcomes_retain_unevaluated_contract_items():
+    cert = {
+        "final": "F",
+        "slice": [{
+            "id": "F",
+            "obligations": [{
+                "id": "O1", "status": "refuted", "reason": "witness",
+                "basis": "world", "strength": "decisive",
+            }],
+        }],
+    }
+    contract = [
+        {"ordinal": 0, "id": "O1"},
+        {"ordinal": 1, "id": "O2"},
+    ]
+
+    outcomes = offline._ordered_final_outcomes(cert, contract)
+
+    assert outcomes[0] == {
+        "ordinal": 0, "obligation_id": "O1", "evaluated": True,
+        "status": "refuted", "reason": "witness", "basis": "world",
+        "strength": "decisive",
+    }
+    assert outcomes[1] == {
+        "ordinal": 1, "obligation_id": "O2", "evaluated": False,
+        "status": None, "reason": None, "basis": None, "strength": None,
+    }
+
+
+@pytest.mark.parametrize("audit_case", ["critic_failed", "empty"])
+def test_contract_audit_unavailable_does_not_change_unverified_score(
+        tmp_path, audit_case):
+    state = state_dir(tmp_path)
+    final_only = {"commits": [{
+        "label": "F", "kind": "final", "text": "the answer is 42",
+        "deps": [], "revises": "",
+    }]}
+    attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "the condition can fail",
+        "missing_condition": "add a complete condition",
+    }
+
+    def factory(sc):
+        roles = ({"obligations": COMPILE, "critic": attack}
+                 if audit_case == "critic_failed"
+                 else {"obligations": {"obligations": []}})
+        return Kernel(
+            sc.store, sc.log, FixtureBackend(roles), sc.artifacts,
+            critic_role=(CRITIC_AGENT if audit_case == "critic_failed" else None),
+            critic_rounds=1, discharger=StubDischarger(),
+        )
+
+    features = offline.score(
+        state, backend=FixtureBackend({"extract": final_only}),
+        kernel_factory=factory,
+    )
+
+    assert features["unscoreable"] is False
+    assert features["verdict"] == "unverified"
+    assert features["final_obligations_total"] == 0
+    assert features["contract_audit_status"] == (
+        "missing" if audit_case == "critic_failed" else "empty")
+    assert features["final_obligation_contract"] == []
+    assert features["final_obligation_outcomes_ordered"] == []
 
 
 def test_score_resumes_from_an_extracted_graph(tmp_path):

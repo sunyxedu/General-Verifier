@@ -53,7 +53,13 @@ CONTRACT_FIELDS = (
     "compiler_fingerprint",
 )
 OUTCOME_FIELD = "final_obligation_outcomes_sha256"
-SCOPE_FIELDS = ("task_contract_scope_sha256", "final_scope_outcomes_sha256")
+RAW_CONTRACT_FIELD = "final_obligation_contract"
+RAW_OUTCOMES_FIELD = "final_obligation_outcomes_ordered"
+CONTRACT_AUDIT_FIELD = "contract_audit_status"
+VERDICT_RANK = {
+    "verified": 4, "supported": 3, "partial": 2,
+    "unverified": 1, "refuted": 0,
+}
 
 
 class EvalError(ValueError):
@@ -233,6 +239,7 @@ def _run_metadata_errors(
         "service_tier": verifier["service_tier"],
         "mode": verifier["mode"],
         "browser_observer": verifier["browser_observer"],
+        "max_concurrent_seats": verifier["max_concurrent_seats"],
     }
     phase, arm = run.get("phase"), run.get("arm")
     if phase in PHASES:
@@ -289,6 +296,97 @@ def _private_path(
     return path, None if inside else f"{rid}: {label} escapes private run root"
 
 
+def _rank_view(features: dict[str, Any]) -> dict[str, Any]:
+    verdict = features.get("verdict")
+    contrary = features.get("final_contrary_signals", 0)
+    rank = VERDICT_RANK.get(verdict)
+    return {
+        "verdict_band": rank,
+        "negative_contrary_signals": -contrary
+        if isinstance(contrary, int) and not isinstance(contrary, bool)
+        else None,
+    }
+
+
+def _audit_raw_contract(row: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    audit_status = _feature(row, CONTRACT_AUDIT_FIELD)
+    if audit_status != "available":
+        errors.append(f"{CONTRACT_AUDIT_FIELD} is {audit_status!r}")
+    contract = _feature(row, RAW_CONTRACT_FIELD)
+    outcomes = _feature(row, RAW_OUTCOMES_FIELD)
+    if not isinstance(contract, list) or not contract:
+        errors.append(f"missing/non-list {RAW_CONTRACT_FIELD}")
+        return errors
+    if not isinstance(outcomes, list) or len(outcomes) != len(contract):
+        errors.append(f"missing/misaligned {RAW_OUTCOMES_FIELD}")
+        return errors
+    contract_fields = {
+        "ordinal", "id", "text", "premise_scope", "required_basis",
+        "severity", "clause", "refutable_by_absence",
+    }
+    outcome_fields = {
+        "ordinal", "obligation_id", "evaluated", "status", "reason",
+        "basis", "strength",
+    }
+    for ordinal, (obligation, outcome) in enumerate(zip(contract, outcomes)):
+        if not isinstance(obligation, dict) or set(obligation) != contract_fields:
+            errors.append(f"contract item {ordinal} has the wrong fields")
+            continue
+        if (obligation.get("ordinal") != ordinal
+                or not isinstance(obligation.get("id"), str)
+                or not obligation["id"]
+                or not isinstance(obligation.get("text"), str)
+                or not obligation["text"]
+                or not isinstance(obligation.get("premise_scope"), list)
+                or any(not isinstance(value, str)
+                       for value in obligation["premise_scope"])
+                or obligation.get("required_basis") not in {"record", "world"}
+                or obligation.get("severity") not in {"must", "should"}
+                or not isinstance(obligation.get("clause"), str)
+                or not isinstance(obligation.get("refutable_by_absence"), bool)):
+            errors.append(f"contract item {ordinal} is malformed")
+        if not isinstance(outcome, dict) or set(outcome) != outcome_fields:
+            errors.append(f"outcome item {ordinal} has the wrong fields")
+            continue
+        evaluated = outcome.get("evaluated")
+        if (outcome.get("ordinal") != ordinal
+                or outcome.get("obligation_id") != obligation.get("id")
+                or not isinstance(evaluated, bool)):
+            errors.append(f"outcome item {ordinal} is misaligned")
+        elif not evaluated and any(outcome.get(field) is not None for field in (
+                "status", "reason", "basis", "strength")):
+            errors.append(f"unevaluated outcome {ordinal} carries a verdict")
+        elif evaluated and outcome.get("status") not in {
+                "verified", "refuted", "partial", "unverified", "stale"}:
+            errors.append(f"evaluated outcome {ordinal} has invalid status")
+    return errors
+
+
+def _outcome_decisions(row: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{key: item.get(key) for key in (
+        "ordinal", "obligation_id", "evaluated", "status", "basis",
+        "strength",
+    )} for item in (_feature(row, RAW_OUTCOMES_FIELD) or [])]
+
+
+def _arm_review(row: dict[str, Any]) -> dict[str, Any]:
+    features = row.get("features") or {}
+    return {
+        "verdict": features.get("verdict"),
+        "verdict_strength": features.get("verdict_strength"),
+        "rank": _rank_view(features),
+        "final_obligation_histogram": features.get("final_obligations"),
+        "final_obligations_total": features.get("final_obligations_total"),
+        "final_contrary_signals": features.get("final_contrary_signals", 0),
+        "contract_audit_status": features.get(CONTRACT_AUDIT_FIELD),
+        # Exact text and clauses are deliberately retained. A digest-only
+        # report would make quantifier drift invisible to review.
+        "ordered_contract": _feature(row, RAW_CONTRACT_FIELD),
+        "ordered_outcomes": _feature(row, RAW_OUTCOMES_FIELD),
+    }
+
+
 def _quality(
     results: dict[tuple[str, str, str], dict[str, Any]],
     trials: dict[str, dict[str, Any]],
@@ -296,7 +394,23 @@ def _quality(
 ) -> dict[str, Any]:
     errors: list[str] = []
     mismatches: list[dict[str, Any]] = []
+    contract_drifts: list[dict[str, Any]] = []
+    candidate_reviews: list[dict[str, Any]] = []
     rewards: dict[str, float] = {}
+    comparable = {
+        "feature_schema_version": lambda row: (
+            row.get("features") or {}).get("feature_schema_version"),
+        "verdict": lambda row: (row.get("features") or {}).get("verdict"),
+        "verdict_strength": lambda row: (
+            row.get("features") or {}).get("verdict_strength"),
+        "rank": lambda row: _rank_view(row.get("features") or {}),
+        "final_obligations": lambda row: (
+            row.get("features") or {}).get("final_obligations"),
+        "final_obligations_total": lambda row: (
+            row.get("features") or {}).get("final_obligations_total"),
+        "final_contrary_signals": lambda row: (
+            row.get("features") or {}).get("final_contrary_signals", 0),
+    }
     for phase in phases:
         for trial, expected in trials.items():
             pair = []
@@ -312,9 +426,11 @@ def _quality(
                 features = row.get("features") or {}
                 if features.get("unscoreable"):
                     errors.append(f"unscoreable: {phase}/{arm}/{trial}")
-                seal = features.get("immutable_input_seal")
-                if seal != expected.get("immutable_input_seal"):
+                if features.get("immutable_input_seal") \
+                        != expected.get("immutable_input_seal"):
                     errors.append(f"wrong immutable input seal: {phase}/{arm}/{trial}")
+                for error in _audit_raw_contract(row):
+                    errors.append(f"{phase}/{arm}/{trial}: {error}")
                 if comparison == "adapter-isolation":
                     missing = [field for field, value in zip(
                         CONTRACT_FIELDS, _contract_signature(row)) if not value]
@@ -325,60 +441,53 @@ def _quality(
                     if not _feature(row, OUTCOME_FIELD):
                         errors.append(
                             f"missing {OUTCOME_FIELD}: {phase}/{arm}/{trial}")
-                else:
-                    missing = [field for field in SCOPE_FIELDS
-                               if not _feature(row, field)]
-                    if missing:
-                        errors.append(
-                            f"missing scope audit fields {missing}: "
-                            f"{phase}/{arm}/{trial}")
-            if comparison == "adapter-isolation":
-                if _contract_signature(control) != _contract_signature(treatment):
-                    errors.append(
-                        f"contract differs between arms: {phase}/{trial}")
-                if _feature(control, OUTCOME_FIELD) != _feature(treatment, OUTCOME_FIELD):
-                    mismatches.append({
-                        "phase": phase, "trial": trial,
-                        "fields": [OUTCOME_FIELD],
-                        "control_verdict": (
-                            control.get("features") or {}).get("verdict"),
-                        "treatment_verdict": (
-                            treatment.get("features") or {}).get("verdict"),
-                    })
-            else:
-                differing_scope = [field for field in SCOPE_FIELDS
-                                   if _feature(control, field)
-                                   != _feature(treatment, field)]
-                if differing_scope:
-                    mismatches.append({
-                        "phase": phase, "trial": trial,
-                        "fields": differing_scope,
-                        "control_verdict": (
-                            control.get("features") or {}).get("verdict"),
-                        "treatment_verdict": (
-                            treatment.get("features") or {}).get("verdict"),
-                    })
-            comparable = {
-                "feature_schema_version": lambda row: (
-                    row.get("features") or {}).get("feature_schema_version"),
-                "verdict": lambda row: (row.get("features") or {}).get("verdict"),
-                "verdict_strength": lambda row: (
-                    row.get("features") or {}).get("verdict_strength"),
-                "final_obligations": lambda row: (
-                    row.get("features") or {}).get("final_obligations"),
-                "final_obligations_total": lambda row: (
-                    row.get("features") or {}).get("final_obligations_total"),
-                "final_contrary_signals": lambda row: (
-                    row.get("features") or {}).get("final_contrary_signals", 0),
-            }
+
+            contract_exact = (
+                _feature(control, RAW_CONTRACT_FIELD)
+                == _feature(treatment, RAW_CONTRACT_FIELD))
+            outcomes_exact = (
+                _outcome_decisions(control) == _outcome_decisions(treatment))
             differing = [name for name, getter in comparable.items()
                          if getter(control) != getter(treatment)]
+            if contract_exact and not outcomes_exact:
+                differing.append("ordered_obligation_outcomes")
             if differing:
                 mismatches.append({
                     "phase": phase, "trial": trial, "fields": differing,
                     "control_verdict": comparable["verdict"](control),
                     "treatment_verdict": comparable["verdict"](treatment),
                 })
+            if not contract_exact:
+                contract_drifts.append({
+                    "phase": phase,
+                    "trial": trial,
+                    "review_index": len(candidate_reviews),
+                })
+            if comparison == "adapter-isolation":
+                if not contract_exact:
+                    errors.append(
+                        f"raw frozen contract differs between arms: {phase}/{trial}")
+                if _contract_signature(control) != _contract_signature(treatment):
+                    errors.append(
+                        f"frozen contract differs between arms: {phase}/{trial}")
+                if _feature(control, OUTCOME_FIELD) \
+                        != _feature(treatment, OUTCOME_FIELD):
+                    mismatches.append({
+                        "phase": phase, "trial": trial,
+                        "fields": [OUTCOME_FIELD],
+                        "control_verdict": comparable["verdict"](control),
+                        "treatment_verdict": comparable["verdict"](treatment),
+                    })
+            candidate_reviews.append({
+                "phase": phase,
+                "trial": trial,
+                "observed_fields_equal": not differing,
+                "ordered_contract_exact": contract_exact,
+                "ordered_outcome_decisions_exact": (
+                    outcomes_exact if contract_exact else None),
+                "control": _arm_review(control),
+                "treatment": _arm_review(treatment),
+            })
             reward_values = {row.get("reward") for row in pair}
             if len(reward_values) != 1 or not all(
                     _is_number(value) for value in reward_values):
@@ -388,21 +497,41 @@ def _quality(
                 if trial in rewards and rewards[trial] != reward:
                     errors.append(f"reward changes across phases: {trial}")
                 rewards[trial] = reward
-    # Zero observed disagreements is a suite gate, not a universal proof.
+
     n = len(trials)
     upper_95 = 1.0 - math.pow(0.05, 1.0 / n) if n else 1.0
-    status = "pass" if not errors and not mismatches else "fail"
+    observed_status = (
+        "incomplete" if errors else ("fail" if mismatches else "pass"))
+    contract_status = (
+        "unavailable" if errors
+        else ("drift" if contract_drifts else "exact"))
     return {
-        "status": status,
+        "status": observed_status,
+        "claim_scope": "observed paired outputs on this pinned suite only",
         "errors": errors,
-        "mismatches": mismatches,
+        "observed_mismatches": mismatches,
+        "contract_review": {
+            "status": contract_status,
+            "drift_count": len(contract_drifts),
+            "drifts": contract_drifts,
+            "exact_contract_identity_observed": contract_status == "exact",
+            "semantic_equivalence_inferred_from_digest": False,
+            "note": (
+                "Different LLM contract wording is retained for review and "
+                "is never treated as semantically equivalent by a digest."
+            ),
+        },
+        "candidate_reviews": candidate_reviews,
         "unique_candidates": n,
         "reward_counts": {
             "positive": sum(value > 0 for value in rewards.values()),
             "zero": sum(value == 0 for value in rewards.values()),
         },
-        "zero_mismatch_95pct_disagreement_upper_bound": upper_95,
-        "scope_note": "Passing applies only to these unique archived candidates.",
+        "zero_observed_mismatch_95pct_disagreement_upper_bound": upper_95,
+        "scope_note": (
+            "Even a clean report supports only observed agreement on these "
+            "unique archived candidates, never universal zero loss."
+        ),
     }
 
 
@@ -715,9 +844,9 @@ def analyze(manifest_path: Path, runs_path: Path, tier: str,
                 tasks[trials[trial]["task"]]["archive_job"]
                 for trial in selected
             }
-            if run.get("tasks") != expected_tasks:
+            if row.get("tasks") != expected_tasks:
                 errors.append(f"{row.get('run_id')}: task list mismatch")
-            if len(expected_jobs) != 1 or run.get("job") not in expected_jobs:
+            if len(expected_jobs) != 1 or row.get("job") not in expected_jobs:
                 errors.append(f"{row.get('run_id')}: archive job mismatch")
         errors.extend(_run_metadata_errors(
             row, manifest, comparison, manifest_digest))
@@ -817,10 +946,20 @@ def analyze(manifest_path: Path, runs_path: Path, tier: str,
             comparisons[comparison].get("acceptance_eligible"))
     failed = (bool(errors) or quality["status"] != "pass"
               or cost["status"] != "pass" or latency["status"] != "pass")
+    contract_inconclusive = (
+        comparison == "full-e2e"
+        and quality["contract_review"]["status"] != "exact")
     if not eligible or phases != PHASES:
-        overall = "preliminary_fail" if failed else "preliminary_pass"
+        if failed:
+            overall = "preliminary_fail"
+        elif contract_inconclusive:
+            overall = "preliminary_inconclusive_contract_drift"
+        else:
+            overall = "preliminary_pass"
     elif failed:
         overall = "fail"
+    elif contract_inconclusive:
+        overall = "inconclusive_contract_drift"
     else:
         overall = "pass"
     return {
