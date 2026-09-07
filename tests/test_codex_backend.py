@@ -28,6 +28,35 @@ PNG_A = b"\x89PNG\r\n\x1a\nfirst-fixed-image"
 PNG_B = b"\x89PNG\r\n\x1a\nmutated-image"
 
 
+def _usage_rows(path):
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def _complete_usage_stream(thread_id="thread-1"):
+    events = [
+        {"type": "thread.started", "thread_id": thread_id},
+        {"type": "item.completed", "item": {
+            "type": "agent_message", "text": '{"ok": true}',
+        }},
+        {"type": "turn.completed", "usage": {
+            "input_tokens": 100,
+            "cached_input_tokens": 60,
+            "output_tokens": 12,
+            "reasoning_output_tokens": 7,
+        }},
+    ]
+    return "\n".join(json.dumps(event) for event in events) + "\n"
+
+
+def _assert_unknown_usage(row):
+    assert row["usage_complete"] is False
+    for field in (
+        "input_tokens", "cached_input_tokens", "uncached_input_tokens",
+        "cache_write_input_tokens", "output_tokens", "reasoning_tokens",
+    ):
+        assert row[field] is None
+
+
 def _process_group_exists(pgid):
     try:
         os.killpg(pgid, 0)
@@ -222,6 +251,97 @@ def test_retry_cannot_reuse_an_earlier_attempts_output(tmp_path, monkeypatch):
     assert len(attempts) == 2
 
 
+def test_unknown_or_config_no_thread_failure_does_not_backoff(
+    tmp_path, monkeypatch,
+):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    backend = CodexBackend(
+        roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
+        cwd=str(tmp_path),
+    )
+    calls = []
+    sleeps = []
+
+    def config_failure(_cmd, **_kwargs):
+        calls.append(1)
+        return SimpleNamespace(
+            returncode=1, stdout="", stderr=(
+                "Error loading config.toml: unknown configuration field "
+                "tools.view_image in -c/--config override"),
+        )
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", config_failure)
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend.time.sleep", sleeps.append)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-config"}},
+    ):
+        with pytest.raises(RoleError, match="codex exec failed"):
+            backend.complete("critic", "prompt", {})
+
+    assert len(calls) == 1
+    assert sleeps == []
+    row, = _usage_rows(usage_path)
+    assert row["attempt_status"] == "nonzero_exit"
+    assert row["usage_status"] == "unknown"
+    _assert_unknown_usage(row)
+
+
+@pytest.mark.parametrize("stderr", [
+    "HTTP status 503 from provider",
+    "upstream service temporarily unavailable",
+])
+def test_explicit_no_thread_provider_failure_retries(
+    tmp_path, monkeypatch, stderr,
+):
+    backend = CodexBackend(
+        roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
+        cwd=str(tmp_path),
+    )
+    calls = []
+
+    def transient_then_success(cmd, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=1, stdout="", stderr=stderr)
+        with open(cmd[cmd.index("-o") + 1], "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process",
+        transient_then_success)
+    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _: None)
+
+    assert backend.complete("critic", "prompt", {}) == {"ok": True}
+    assert len(calls) == 2
+
+
+def test_auth_failure_saying_try_again_does_not_retry(tmp_path, monkeypatch):
+    backend = CodexBackend(
+        roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
+        cwd=str(tmp_path),
+    )
+    calls = []
+
+    def auth_failure(_cmd, **_kwargs):
+        calls.append(1)
+        return SimpleNamespace(
+            returncode=1, stderr="", stdout=json.dumps({
+                "type": "error",
+                "message": "Authentication failed; login and try again",
+            }),
+        )
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", auth_failure)
+    with pytest.raises(RoleError, match="codex exec failed"):
+        backend.complete("critic", "prompt", {})
+
+    assert len(calls) == 1
+
+
 def test_usage_ledger_records_exact_repeated_seat_calls(
     tmp_path, monkeypatch,
 ):
@@ -278,10 +398,11 @@ def test_usage_ledger_records_exact_repeated_seat_calls(
     for command in invocations:
         assert 'service_tier="fast"' in command
         assert command[command.index("--enable") + 1] == "fast_mode"
-    rows = [json.loads(line) for line in usage_path.read_text().splitlines()]
+    rows = _usage_rows(usage_path)
     assert len(rows) == 2
     assert [row["thread_id"] for row in rows] == ["thread-1", "thread-2"]
     assert len({row["call_id"] for row in rows}) == 2
+    assert len({row["attempt_id"] for row in rows}) == 2
     assert [row["input_tokens"] for row in rows] == [101, 102]
     assert [row["uncached_input_tokens"] for row in rows] == [41, 42]
     for row in rows:
@@ -293,6 +414,17 @@ def test_usage_ledger_records_exact_repeated_seat_calls(
         assert row["cached_input_tokens"] == 60
         assert row["output_tokens"] == 12
         assert row["reasoning_tokens"] == 7
+        assert row["record_type"] == "codex_cli_attempt"
+        assert row["attempt_schema_version"] == 1
+        assert row["attempt_index"] == 1
+        assert row["started"] is True
+        assert row["attempt_status"] == "succeeded"
+        assert row["returncode"] == 0
+        assert row["usage_status"] == "complete"
+        assert row["usage_complete"] is True
+        assert row["usage_error"] is None
+        assert row["error_kind"] is None
+        assert row["error"] is None
         assert row["duration_ns"] >= 0
         assert row["duration_seconds"] == row["duration_ns"] / 1_000_000_000
         assert "secret prompt" not in json.dumps(row)
@@ -350,18 +482,21 @@ def test_usage_ledger_counts_schema_failed_call_once(tmp_path, monkeypatch):
         with pytest.raises(RoleError, match="no JSON object"):
             backend.complete("judger", "prompt", {})
 
-    rows = [json.loads(line) for line in usage_path.read_text().splitlines()]
+    rows = _usage_rows(usage_path)
     assert len(rows) == 1
     assert rows[0]["thread_id"] == "thread-bad-json"
     assert rows[0]["role"] == "judger"
+    assert rows[0]["attempt_status"] == "schema_error"
+    assert rows[0]["usage_status"] == "complete"
+    assert rows[0]["usage_complete"] is True
     assert rows[0]["input_tokens"] == 321
     assert rows[0]["output_tokens"] == 17
 
 
 @pytest.mark.parametrize(
-    ("terminal_event", "message"),
+    ("terminal_event", "message", "usage_status"),
     [
-        (None, "turn.completed usage"),
+        (None, "turn.completed usage", "partial"),
         ({
             "type": "turn.completed",
             "usage": {
@@ -370,7 +505,7 @@ def test_usage_ledger_counts_schema_failed_call_once(tmp_path, monkeypatch):
                 "output_tokens": 12,
                 # reasoning_output_tokens is required for exact accounting.
             },
-        }, "invalid reasoning_output_tokens"),
+        }, "invalid reasoning_output_tokens", "invalid"),
         ({
             "type": "turn.completed",
             "usage": {
@@ -379,11 +514,20 @@ def test_usage_ledger_counts_schema_failed_call_once(tmp_path, monkeypatch):
                 "output_tokens": 12,
                 "reasoning_output_tokens": 7,
             },
-        }, "cached_input_tokens greater than input_tokens"),
+        }, "cached_input_tokens greater than input_tokens", "invalid"),
+        ({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "cached_input_tokens": 60,
+                "output_tokens": 12,
+                "reasoning_output_tokens": "usage-secret",
+            },
+        }, "invalid reasoning_output_tokens", "invalid"),
     ],
 )
 def test_usage_ledger_rejects_missing_or_partial_usage(
-    tmp_path, monkeypatch, terminal_event, message,
+    tmp_path, monkeypatch, terminal_event, message, usage_status,
 ):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
@@ -410,7 +554,320 @@ def test_usage_ledger_rejects_missing_or_partial_usage(
         with pytest.raises(RoleError, match=message):
             backend.complete("critic", "prompt", {})
 
-    assert not usage_path.exists()
+    rows = _usage_rows(usage_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["attempt_status"] == "telemetry_error"
+    assert row["usage_status"] == usage_status
+    assert row["usage_error"] == {
+        "partial": "usage telemetry was incomplete",
+        "invalid": "usage telemetry failed validation",
+    }[usage_status]
+    assert row["started"] is True
+    assert row["returncode"] == 0
+    assert row["thread_id"] == "thread-1"
+    _assert_unknown_usage(row)
+    assert "usage-secret" not in json.dumps(row)
+
+
+def test_usage_ledger_records_internal_provider_retry(tmp_path, monkeypatch):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    attempts = []
+
+    def fake_run(cmd, **_kwargs):
+        attempts.append(cmd)
+        if len(attempts) == 1:
+            events = [
+                {"type": "thread.started", "thread_id": "thread-retry"},
+                {"type": "turn.failed", "error": {
+                    "message": "service temporarily unavailable",
+                }},
+            ]
+            return SimpleNamespace(
+                returncode=1, stderr="sensitive provider detail",
+                stdout="\n".join(json.dumps(event) for event in events),
+            )
+        with open(cmd[cmd.index("-o") + 1], "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        return SimpleNamespace(
+            returncode=0, stderr="",
+            stdout=_complete_usage_stream("thread-success"),
+        )
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _: None)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-retry"}},
+    ):
+        assert backend.complete("critic", "secret prompt", {}) == {"ok": True}
+
+    rows = _usage_rows(usage_path)
+    assert len(rows) == 2
+    assert [row["attempt_index"] for row in rows] == [1, 2]
+    assert [row["attempt_status"] for row in rows] == [
+        "provider_retry", "succeeded"]
+    assert len({row["attempt_id"] for row in rows}) == 2
+    assert len({row["call_id"] for row in rows}) == 1
+    assert rows[0]["usage_status"] == "partial"
+    _assert_unknown_usage(rows[0])
+    assert rows[1]["usage_complete"] is True
+    serialized = json.dumps(rows)
+    assert "secret prompt" not in serialized
+    assert "sensitive provider detail" not in serialized
+
+
+def test_usage_ledger_records_exhausted_provider_retry(tmp_path, monkeypatch):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+
+    def fake_run(_cmd, **_kwargs):
+        return SimpleNamespace(
+            returncode=1, stderr="", stdout=(
+                '{"type":"thread.started","thread_id":"retry"}\n'
+                '{"type":"turn.failed","error":'
+                '{"message":"at capacity"}}\n'),
+        )
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    monkeypatch.setattr("verifier.llm.codex_backend.TRANSIENT_RETRIES", 1)
+    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _: None)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-exhausted"}},
+    ):
+        with pytest.raises(RoleError, match="transient codex failure persisted"):
+            backend.complete("critic", "prompt", {})
+
+    rows = _usage_rows(usage_path)
+    assert [row["attempt_status"] for row in rows] == [
+        "provider_retry", "provider_exhausted"]
+    assert [row["attempt_index"] for row in rows] == [1, 2]
+    assert len({row["call_id"] for row in rows}) == 1
+    for row in rows:
+        _assert_unknown_usage(row)
+
+
+def test_usage_ledger_records_nonzero_exit_without_fake_tokens(
+    tmp_path, monkeypatch,
+):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+
+    def fake_run(_cmd, **_kwargs):
+        return SimpleNamespace(
+            returncode=2, stderr="sensitive stderr",
+            stdout='{"type":"thread.started","thread_id":"failed"}\n',
+        )
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-nonzero"}},
+    ):
+        with pytest.raises(RoleError, match="codex exec failed"):
+            backend.complete("critic", "prompt", {})
+
+    row, = _usage_rows(usage_path)
+    assert row["attempt_status"] == "nonzero_exit"
+    assert row["started"] is True
+    assert row["returncode"] == 2
+    assert row["usage_status"] == "partial"
+    _assert_unknown_usage(row)
+    assert "sensitive stderr" not in json.dumps(row)
+
+
+def test_usage_ledger_timeout_never_trusts_partial_terminal_usage(
+    tmp_path, monkeypatch,
+):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+
+    def fake_run(cmd, **_kwargs):
+        error = subprocess.TimeoutExpired(
+            cmd, 1, output=_complete_usage_stream("thread-timeout"))
+        error.stdout = error.output
+        error._gv_process_started = True
+        raise error
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-timeout"}},
+    ):
+        with pytest.raises(RoleError, match="timed out"):
+            backend.complete("critic", "prompt", {})
+
+    row, = _usage_rows(usage_path)
+    assert row["attempt_status"] == "timeout"
+    assert row["started"] is True
+    assert row["returncode"] is None
+    assert row["thread_id"] == "thread-timeout"
+    assert row["usage_status"] == "partial"
+    _assert_unknown_usage(row)
+
+
+def test_usage_ledger_distinguishes_launch_failure(tmp_path, monkeypatch):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+
+    def fake_run(_cmd, **_kwargs):
+        raise FileNotFoundError("sensitive executable path")
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-launch"}},
+    ):
+        with pytest.raises(FileNotFoundError):
+            backend.complete("critic", "prompt", {})
+
+    row, = _usage_rows(usage_path)
+    assert row["attempt_status"] == "launch_error"
+    assert row["started"] is False
+    assert row["returncode"] is None
+    assert row["usage_status"] == "unknown"
+    _assert_unknown_usage(row)
+    assert "sensitive executable path" not in json.dumps(row)
+
+
+def test_usage_ledger_records_started_process_interruption(
+    tmp_path, monkeypatch,
+):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+
+    def fake_run(_cmd, **_kwargs):
+        error = KeyboardInterrupt()
+        error._gv_process_started = True
+        raise error
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-interrupt"}},
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            backend.complete("critic", "prompt", {})
+
+    row, = _usage_rows(usage_path)
+    assert row["attempt_status"] == "interrupted"
+    assert row["started"] is True
+    assert row["usage_status"] == "unknown"
+    _assert_unknown_usage(row)
+
+
+def test_usage_ledger_records_output_processing_interruption(
+    tmp_path, monkeypatch,
+):
+    usage_path = tmp_path / "seat-usage.jsonl"
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+
+    def fake_run(cmd, **_kwargs):
+        with open(cmd[cmd.index("-o") + 1], "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        return SimpleNamespace(
+            returncode=0, stderr="", stdout=_complete_usage_stream())
+
+    def interrupt_extract(_text):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend.extract_json", interrupt_extract)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-postprocess"}},
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            backend.complete("critic", "prompt", {})
+
+    row, = _usage_rows(usage_path)
+    assert row["attempt_status"] == "interrupted"
+    assert row["started"] is True
+    assert row["usage_status"] == "complete"
+    assert row["usage_complete"] is True
+    assert row["input_tokens"] == 100
+
+
+def test_capability_hooks_force_json_and_validate_before_return(
+    tmp_path, monkeypatch,
+):
+    class RestrictedBackend(CodexBackend):
+        def _execution_cwd(self, role_name, variables):
+            return str(tmp_path / "empty-scratch")
+
+        def _search_enabled(self, role_name):
+            return False
+
+        def _requires_json(self):
+            return True
+
+        def _validate_attempt_stream(self, stdout):
+            raise RoleError("stream policy rejected tool activity")
+
+    (tmp_path / "empty-scratch").mkdir()
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = RestrictedBackend(roles={"critic": role}, cwd=str(tmp_path))
+    observed = {}
+
+    def fake_run(cmd, **kwargs):
+        observed["cmd"] = cmd
+        observed["cwd"] = kwargs["cwd"]
+        with open(cmd[cmd.index("-o") + 1], "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        return SimpleNamespace(
+            returncode=0, stderr="", stdout=_complete_usage_stream())
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    with pytest.raises(RoleError, match="stream policy rejected"):
+        backend.complete("critic", "prompt", {})
+
+    assert "--json" in observed["cmd"]
+    assert "tools.web_search=true" not in observed["cmd"]
+    assert observed["cwd"] == str(tmp_path / "empty-scratch")
+
+
+def test_stream_policy_failure_has_one_output_error_attempt(
+    tmp_path, monkeypatch,
+):
+    usage_path = tmp_path / "seat-usage.jsonl"
+
+    class RestrictedBackend(CodexBackend):
+        def _validate_attempt_stream(self, stdout):
+            raise RoleError("sensitive stream contents")
+
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = RestrictedBackend(roles={"critic": role}, cwd=str(tmp_path))
+
+    def fake_run(cmd, **_kwargs):
+        with open(cmd[cmd.index("-o") + 1], "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        return SimpleNamespace(
+            returncode=0, stderr="", stdout=_complete_usage_stream())
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    with codex_usage_ledger(
+        str(usage_path), {str(tmp_path): {"trial": "trial-policy"}},
+    ):
+        with pytest.raises(RoleError, match="sensitive stream contents"):
+            backend.complete("critic", "prompt", {})
+
+    row, = _usage_rows(usage_path)
+    assert row["attempt_status"] == "output_error"
+    assert row["error_kind"] == "attempt_stream_policy"
+    assert row["usage_complete"] is True
+    assert "sensitive stream contents" not in json.dumps(row)
 
 
 @pytest.mark.parametrize(

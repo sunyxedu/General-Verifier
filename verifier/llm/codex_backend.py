@@ -110,6 +110,14 @@ class _ExecTelemetry:
     last_message: str
 
 
+@dataclass(frozen=True)
+class _AttemptUsage:
+    telemetry: Optional[_ExecTelemetry]
+    thread_id: Optional[str]
+    status: str
+    error: Optional[str]
+
+
 @contextmanager
 def codex_usage_ledger(
     path: str,
@@ -211,31 +219,40 @@ def _run_codex_process(cmd, *, cwd, stdin, timeout):
     )
     try:
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as error:
-            _kill_process_group(proc)
-            stdout, stderr = proc.communicate()
-            # Match subprocess.run's useful TimeoutExpired payload.
-            error.output = stdout
-            error.stdout = stdout
-            error.stderr = stderr
-            raise
-        return subprocess.CompletedProcess(
-            cmd, proc.returncode, stdout=stdout, stderr=stderr)
-    finally:
-        # A successful wrapper may leave a same-group child after closing its
-        # inherited pipes. This finally also covers interruption and errors
-        # raised by communicate(), not just normal completion and timeout.
-        _kill_process_group(proc)
-        if proc.poll() is None:
             try:
-                proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-        for stream in (proc.stdout, proc.stderr):
-            if stream is not None:
-                stream.close()
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                _kill_process_group(proc)
+                stdout, stderr = proc.communicate()
+                # Match subprocess.run's useful TimeoutExpired payload.
+                error.output = stdout
+                error.stdout = stdout
+                error.stderr = stderr
+                raise
+            return subprocess.CompletedProcess(
+                cmd, proc.returncode, stdout=stdout, stderr=stderr)
+        finally:
+            # A successful wrapper may leave a same-group child after closing
+            # inherited pipes. This finally also covers interruption and
+            # communicate() errors, not just normal completion and timeout.
+            _kill_process_group(proc)
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+    except BaseException as error:
+        # The backend uses this private marker to distinguish a launched call
+        # interrupted by its caller from a failure before Popen returned.
+        try:
+            setattr(error, "_gv_process_started", True)
+        except (AttributeError, TypeError):
+            pass
+        raise
 
 
 # Bounded backoff for provider capacity flaps ("Selected model is at
@@ -245,20 +262,37 @@ def _run_codex_process(cmd, *, cwd, stdin, timeout):
 TRANSIENT_RETRIES = 5
 TRANSIENT_BACKOFF_SECONDS = (15, 45, 90, 180, 300)
 
-_TRANSIENT_PATTERNS = (
+_TRANSIENT_EVENT_PATTERNS = (
     "at capacity", "rate limit", "rate-limit", "overload",
     "try again", "temporarily unavailable", "connection reset",
-    "timed out", "timeout", "502", "503", "429",
+    "timed out", "timeout", "bad gateway", "service unavailable",
 )
+_TRANSIENT_STDERR_PATTERNS = (
+    "at capacity", "rate limit", "rate-limit", "overloaded",
+    "temporarily unavailable", "connection reset", "bad gateway",
+    "service unavailable", "gateway timeout", "upstream timed out",
+)
+_PERMANENT_CLI_PATTERNS = (
+    "usage limit", "purchase more credits", "authentication",
+    "unauthorized", "not logged in", "invalid api key",
+    "config.toml", "configuration field", "unknown configuration",
+    "invalid configuration", "failed to parse", "toml parse",
+    "unrecognized option", "unexpected argument", "invalid value",
+    "permission denied", "no such file", "command not found",
+)
+_TRANSIENT_HTTP_STATUS = re.compile(
+    r"(?:\bhttp(?:\s+status)?|\bstatus(?:\s+code)?)\D{0,8}"
+    r"(?:429|502|503|504)\b|(?:^|\s)(?:429|502|503|504)(?:\s|$)")
 
 
-def _transient_failure_reason(stdout: str, returncode: int) -> str:
+def _transient_failure_reason(
+    stdout: str, returncode: int, stderr: str = "",
+) -> str:
     """A transient-failure description, or "" when the stream looks like a
     real (retryable-by-nobody) protocol/semantic failure. Detection is
     deliberately narrow: an explicit error/turn.failed event whose message
-    matches a known transient pattern, or a process that died before even
-    starting a thread."""
-    saw_thread = False
+    matches a known transient pattern, or an explicit provider/HTTP status in
+    stderr. An unknown nonzero exit is not evidence of a provider outage."""
     messages = []
     for raw in (stdout or "").splitlines():
         raw = raw.strip()
@@ -270,27 +304,32 @@ def _transient_failure_reason(stdout: str, returncode: int) -> str:
             continue
         if not isinstance(event, dict):
             continue
-        if event.get("type") == "thread.started":
-            saw_thread = True
-        elif event.get("type") == "error":
+        if event.get("type") == "error":
             messages.append(str(event.get("message") or ""))
         elif event.get("type") == "turn.failed":
             error = event.get("error")
             if isinstance(error, dict):
                 messages.append(str(error.get("message") or ""))
+    stderr_text = _stream_text(stderr).lower()
+    all_text = "\n".join(
+        [message.lower() for message in messages] + [stderr_text])
+    # Permanent account, configuration, and local-launch failures often also
+    # say "try again". They must fail fast rather than masquerade as provider
+    # capacity and sleep through the retry schedule.
+    if any(pattern in all_text for pattern in _PERMANENT_CLI_PATTERNS):
+        return ""
+    if re.search(r"\b(?:401|403)\b", all_text):
+        return ""
     for message in messages:
         lowered = message.lower()
-        # Quota exhaustion is permanent until the account resets: it must
-        # fail fast, never spin in backoff (its text also says "try again",
-        # which would otherwise match the transient patterns below).
-        if "usage limit" in lowered or "purchase more credits" in lowered:
-            return ""
-    for message in messages:
-        lowered = message.lower()
-        if any(pattern in lowered for pattern in _TRANSIENT_PATTERNS):
-            return message[:200]
-    if not saw_thread and returncode != 0:
-        return f"codex exec died before thread.started (rc={returncode})"
+        if any(pattern in lowered for pattern in _TRANSIENT_EVENT_PATTERNS):
+            return "provider event reported a transient failure"
+    if returncode != 0 and not messages:
+        if any(pattern in stderr_text
+               for pattern in _TRANSIENT_STDERR_PATTERNS):
+            return "provider stderr reported a transient failure"
+        if _TRANSIENT_HTTP_STATUS.search(stderr_text):
+            return "provider stderr reported a transient HTTP status"
     return ""
 
 
@@ -367,6 +406,149 @@ def _append_usage_record(path: str, record: Mapping[str, Any]) -> None:
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
+
+
+def _stream_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _attempt_usage(stdout: Any, *, force_incomplete: bool = False,
+                   incomplete_reason: Optional[str] = None) -> _AttemptUsage:
+    """Classify usage without ever turning missing counters into zero."""
+    text = _stream_text(stdout)
+    thread_ids = []
+    thread_events = 0
+    completions = 0
+    malformed = False
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            malformed = True
+            continue
+        if not isinstance(event, dict):
+            malformed = True
+            continue
+        if event.get("type") == "thread.started":
+            thread_events += 1
+            thread_id = event.get("thread_id")
+            if isinstance(thread_id, str) and thread_id:
+                thread_ids.append(thread_id)
+        elif event.get("type") == "turn.completed":
+            completions += 1
+    unique_threads = set(thread_ids)
+    thread_id = next(iter(unique_threads)) if len(unique_threads) == 1 else None
+
+    if force_incomplete:
+        status = "partial" if text.strip() else "unknown"
+        return _AttemptUsage(
+            telemetry=None,
+            thread_id=thread_id,
+            status=status,
+            error=(incomplete_reason or
+                   "CLI completion was not observed as trustworthy"),
+        )
+    try:
+        telemetry = _parse_exec_telemetry(text)
+    except RoleError as error:
+        if not text.strip():
+            status = "unknown"
+        elif (malformed or thread_events > 1 or completions > 1
+              or (thread_events == 1 and not thread_ids)
+              or (thread_events == 1 and completions == 1)):
+            status = "invalid"
+        else:
+            status = "partial"
+        return _AttemptUsage(
+            telemetry=None,
+            thread_id=thread_id,
+            status=status,
+            error=str(error)[:300],
+        )
+    return _AttemptUsage(
+        telemetry=telemetry,
+        thread_id=telemetry.thread_id,
+        status="complete",
+        error=None,
+    )
+
+
+def _record_codex_attempt(
+    usage_target,
+    *,
+    base: Mapping[str, Any],
+    attempt_id: str,
+    attempt_index: int,
+    started: bool,
+    attempt_status: str,
+    returncode: Optional[int],
+    started_at_unix_ns: int,
+    finished_at_unix_ns: int,
+    duration_ns: int,
+    stdout: Any = "",
+    force_usage_incomplete: bool = False,
+    usage_incomplete_reason: Optional[str] = None,
+    error_kind: Optional[str] = None,
+    error: Optional[str] = None,
+) -> _AttemptUsage:
+    """Append one terminal attempt row when usage capture is active."""
+    usage = _attempt_usage(
+        stdout,
+        force_incomplete=force_usage_incomplete,
+        incomplete_reason=usage_incomplete_reason,
+    )
+    if usage_target is None:
+        return usage
+    usage_path, usage_context = usage_target
+    counts = usage.telemetry.usage if usage.telemetry is not None else {}
+    input_tokens = counts.get("input_tokens")
+    cached_tokens = counts.get("cached_input_tokens")
+    uncached_tokens = (
+        input_tokens - cached_tokens
+        if input_tokens is not None and cached_tokens is not None else None
+    )
+    _append_usage_record(usage_path, {
+        **usage_context,
+        **base,
+        # Preserve the legacy successful-row schema and fields while adding
+        # an explicit attempt contract for complete failure accounting.
+        "schema_version": 1,
+        "record_type": "codex_cli_attempt",
+        "attempt_schema_version": 1,
+        "attempt_id": attempt_id,
+        "attempt_index": attempt_index,
+        "started": started,
+        "attempt_status": attempt_status,
+        "usage_status": usage.status,
+        "usage_complete": usage.telemetry is not None,
+        "usage_error": ({
+            "unknown": "usage telemetry was not observed",
+            "partial": "usage telemetry was incomplete",
+            "invalid": "usage telemetry failed validation",
+        }.get(usage.status) if usage.error is not None else None),
+        "thread_id": usage.thread_id,
+        "started_at_unix_ns": started_at_unix_ns,
+        "finished_at_unix_ns": finished_at_unix_ns,
+        "duration_ns": duration_ns,
+        "duration_seconds": duration_ns / 1_000_000_000,
+        "returncode": returncode,
+        "error_kind": error_kind,
+        "error": error[:300] if error else None,
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached_tokens,
+        "uncached_input_tokens": uncached_tokens,
+        # Older CLI streams did not expose cache writes. Unknown remains null.
+        "cache_write_input_tokens": counts.get("cache_write_input_tokens"),
+        "output_tokens": counts.get("output_tokens"),
+        "reasoning_tokens": counts.get("reasoning_output_tokens"),
+    })
+    return usage
 
 
 def _toml_string(value: str) -> str:
@@ -451,6 +633,8 @@ def extract_json(text: str) -> Any:
 class CodexBackend:
     """Runs verifier roles through `codex exec` on a subscription model."""
 
+    AUTHORITY_HOOKS_VERSION = 1
+
     def __init__(self, roles: Optional[Dict[str, Any]] = None,
                  cwd: Optional[str] = None, model: Optional[str] = None,
                  effort: str = "medium", timeout: int = 1800,
@@ -479,6 +663,21 @@ class CodexBackend:
         self._image_cache: Dict[tuple[str, ...], tuple[_CapturedImage, ...]] = {}
         self._image_blobs: Dict[tuple[str, str], _CapturedImage] = {}
         self._image_blob_bytes = 0
+
+    def _execution_cwd(self, role_name: str,
+                       variables: Mapping[str, Any]) -> Optional[str]:
+        if self._is_offline_execution(role_name, variables):
+            return self._offline_state_dir(variables)
+        return self.cwd
+
+    def _search_enabled(self, role_name: str) -> bool:
+        return role_name in _SEARCH_ROLES
+
+    def _requires_json(self) -> bool:
+        return False
+
+    def _validate_attempt_stream(self, stdout: str) -> None:
+        """Optional stricter stream policy for capability-limited subclasses."""
 
     @staticmethod
     def _image_mime(data: bytes) -> Optional[str]:
@@ -846,19 +1045,30 @@ class CodexBackend:
         instruction = (
             (role.system + "\n\n" if role.system else "")
             + prompt
-            + (_SEARCH_NOTE if role_name in _SEARCH_ROLES else "")
+            + (_SEARCH_NOTE if self._search_enabled(role_name) else "")
             + image_note
             + "\n\nYour FINAL message must be exactly one JSON object "
               "matching this JSON Schema, with no other prose around it:\n"
             + schema)
+        attempt_base = {
+            "backend": "codex-cli",
+            "call_id": call_id,
+            "role": role_name,
+            "model": role_model,
+            "effort": self.effort,
+            "service_tier": self.service_tier,
+            "state_dir": (
+                os.path.realpath(os.path.abspath(self.cwd))
+                if self.cwd else None
+            ),
+            "prompt_sha256": hashlib.sha256(
+                instruction.encode("utf-8")).hexdigest(),
+        }
         policy_args = self._execution_policy_args(role_name, variables)
-        execution_cwd = self.cwd
-        if self._is_offline_execution(role_name, variables):
-            # Keep the state root as cwd: the harness contract deliberately
-            # exposes ./task.md and ./baseline/ as read-only authoritative
-            # inputs.  The custom profile below still grants writes only to
-            # state/work, so cwd does not widen the mutation boundary.
-            execution_cwd = self._offline_state_dir(variables)
+        # The default offline hook keeps the state root as cwd: the harness
+        # contract deliberately exposes ./task.md and ./baseline/ as read-only
+        # authoritative inputs. Capability-limited subclasses may narrow cwd.
+        execution_cwd = self._execution_cwd(role_name, variables)
         out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
         out.close()
         image_paths = []
@@ -876,9 +1086,9 @@ class CodexBackend:
                 os.chmod(handle.name, 0o400)
             cmd = ["codex", "exec", "--model", role_model,
                    "--skip-git-repo-check"]
-            if role_name in _SEARCH_ROLES:
+            if self._search_enabled(role_name):
                 cmd.extend(["-c", "tools.web_search=true"])
-            if usage_target is not None:
+            if usage_target is not None or self._requires_json():
                 cmd.append("--json")
             cmd.extend(service_tier_cli_args(self.service_tier))
             cmd.extend(policy_args)
@@ -888,95 +1098,270 @@ class CodexBackend:
                 "-c", f"model_reasoning_effort={self.effort}",
                 "-o", out.name, "--", instruction,
             ])
+            completed_attempt = None
             for attempt in range(TRANSIENT_RETRIES + 1):
                 # Each attempt must produce its own final message. A failed
                 # process can leave a valid-looking JSON file behind.
                 with open(out.name, "w", encoding="utf-8"):
                     pass
-                with open(os.devnull) as devnull:
-                    # stdin MUST be closed: codex otherwise waits on it forever
-                    started_at_unix_ns = time.time_ns()
-                    started_at_monotonic_ns = time.monotonic_ns()
-                    proc = _run_codex_process(
-                        cmd, cwd=execution_cwd, stdin=devnull,
-                        timeout=self.timeout)
+                attempt_id = uuid.uuid4().hex
+                started_at_unix_ns = time.time_ns()
+                started_at_monotonic_ns = time.monotonic_ns()
+                try:
+                    with open(os.devnull) as devnull:
+                        # stdin MUST be closed: codex otherwise waits forever.
+                        proc = _run_codex_process(
+                            cmd, cwd=execution_cwd, stdin=devnull,
+                            timeout=self.timeout)
+                except subprocess.TimeoutExpired as error:
                     finished_at_unix_ns = time.time_ns()
                     duration_ns = (time.monotonic_ns()
                                    - started_at_monotonic_ns)
+                    partial = (getattr(error, "stdout", None)
+                               or getattr(error, "output", None) or "")
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=bool(getattr(
+                            error, "_gv_process_started", True)),
+                        attempt_status="timeout", returncode=None,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns, stdout=partial,
+                        force_usage_incomplete=True,
+                        usage_incomplete_reason=(
+                            "process timed out; partial CLI output cannot "
+                            "establish complete usage"),
+                        error_kind="timeout",
+                        error="Codex CLI exceeded the configured timeout",
+                    )
+                    raise RoleError(
+                        f"{role_name}: codex exec timed out after "
+                        f"{self.timeout}s") from error
+                except OSError as error:
+                    finished_at_unix_ns = time.time_ns()
+                    duration_ns = (time.monotonic_ns()
+                                   - started_at_monotonic_ns)
+                    started = bool(getattr(
+                        error, "_gv_process_started", False))
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=started,
+                        attempt_status=("interrupted" if started
+                                        else "launch_error"),
+                        returncode=None,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns,
+                        force_usage_incomplete=True,
+                        usage_incomplete_reason=(
+                            "process did not produce trusted terminal usage"),
+                        error_kind=("process_cleanup" if started
+                                    else "process_launch"),
+                        error=("Codex CLI process cleanup failed" if started
+                               else "Codex CLI process could not be started"),
+                    )
+                    raise
+                except BaseException as error:
+                    finished_at_unix_ns = time.time_ns()
+                    duration_ns = (time.monotonic_ns()
+                                   - started_at_monotonic_ns)
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=bool(getattr(
+                            error, "_gv_process_started", False)),
+                        attempt_status="interrupted", returncode=None,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns,
+                        force_usage_incomplete=True,
+                        usage_incomplete_reason=(
+                            "process was interrupted before trusted terminal "
+                            "usage was recorded"),
+                        error_kind=type(error).__name__,
+                        error="Codex CLI attempt was interrupted",
+                    )
+                    raise
+                finished_at_unix_ns = time.time_ns()
+                duration_ns = (time.monotonic_ns()
+                               - started_at_monotonic_ns)
+                stdout = _stream_text(proc.stdout)
+                attempt_usage = _attempt_usage(stdout)
                 reason = _transient_failure_reason(
-                    proc.stdout or "", proc.returncode)
-                if not reason:
-                    break
-                if attempt >= TRANSIENT_RETRIES:
-                    raise TransientBackendError(
-                        f"{role_name}: transient codex failure persisted "
-                        f"through {TRANSIENT_RETRIES} retries: {reason}")
-                wait = TRANSIENT_BACKOFF_SECONDS[
-                    min(attempt, len(TRANSIENT_BACKOFF_SECONDS) - 1)]
-                print(f"[codex-backend] transient failure ({reason}); "
-                      f"retry {attempt + 1}/{TRANSIENT_RETRIES} "
-                      f"in {wait}s", file=sys.stderr, flush=True)
-                time.sleep(wait)
-            if proc.returncode != 0:
-                raise RoleError(
-                    f"{role_name}: codex exec failed "
-                    f"(rc={proc.returncode}, stderr={proc.stderr[-300:]!r})")
-            telemetry = None
-            if usage_target is not None:
-                telemetry = _parse_exec_telemetry(proc.stdout or "")
-                usage_path, usage_context = usage_target
-                usage = telemetry.usage
-                _append_usage_record(usage_path, {
-                    **usage_context,
-                    "schema_version": 1,
-                    "backend": "codex-cli",
-                    "call_id": call_id,
-                    "thread_id": telemetry.thread_id,
-                    "role": role_name,
-                    "model": role_model,
-                    "effort": self.effort,
-                    "service_tier": self.service_tier,
-                    "state_dir": (
-                        os.path.realpath(os.path.abspath(self.cwd))
-                        if self.cwd else None
-                    ),
+                    stdout, proc.returncode, _stream_text(proc.stderr))
+                if reason:
+                    exhausted = attempt >= TRANSIENT_RETRIES
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=True,
+                        attempt_status=("provider_exhausted" if exhausted
+                                        else "provider_retry"),
+                        returncode=proc.returncode,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns, stdout=stdout,
+                        error_kind="provider_transient",
+                        error="Codex provider reported a transient failure",
+                    )
+                    if exhausted:
+                        raise TransientBackendError(
+                            f"{role_name}: transient codex failure persisted "
+                            f"through {TRANSIENT_RETRIES} retries: {reason}")
+                    wait = TRANSIENT_BACKOFF_SECONDS[
+                        min(attempt, len(TRANSIENT_BACKOFF_SECONDS) - 1)]
+                    print(f"[codex-backend] transient failure ({reason}); "
+                          f"retry {attempt + 1}/{TRANSIENT_RETRIES} "
+                          f"in {wait}s", file=sys.stderr, flush=True)
+                    time.sleep(wait)
+                    continue
+                if proc.returncode != 0:
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=True, attempt_status="nonzero_exit",
+                        returncode=proc.returncode,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns, stdout=stdout,
+                        error_kind="nonzero_exit",
+                        error="Codex CLI exited with a nonzero status",
+                    )
+                    raise RoleError(
+                        f"{role_name}: codex exec failed "
+                        f"(rc={proc.returncode}, "
+                        f"stderr={proc.stderr[-300:]!r})")
+                if usage_target is not None \
+                        and attempt_usage.telemetry is None:
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=True, attempt_status="telemetry_error",
+                        returncode=proc.returncode,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns, stdout=stdout,
+                        error_kind="usage_protocol",
+                        error="Codex CLI usage telemetry was incomplete",
+                    )
+                    raise RoleError(attempt_usage.error or
+                                    "codex exec usage telemetry incomplete")
+                try:
+                    self._validate_attempt_stream(stdout)
+                except RoleError:
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=True, attempt_status="output_error",
+                        returncode=proc.returncode,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns, stdout=stdout,
+                        error_kind="attempt_stream_policy",
+                        error="Codex CLI event stream violated role policy",
+                    )
+                    raise
+                except BaseException as error:
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=True, attempt_status="interrupted",
+                        returncode=proc.returncode,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns, stdout=stdout,
+                        error_kind=type(error).__name__,
+                        error="Codex CLI event-stream validation interrupted",
+                    )
+                    raise
+                completed_attempt = {
+                    "attempt_id": attempt_id,
+                    "attempt_index": attempt + 1,
+                    "returncode": proc.returncode,
                     "started_at_unix_ns": started_at_unix_ns,
                     "finished_at_unix_ns": finished_at_unix_ns,
                     "duration_ns": duration_ns,
-                    "duration_seconds": duration_ns / 1_000_000_000,
-                    "returncode": proc.returncode,
-                    "prompt_sha256": hashlib.sha256(
-                        instruction.encode("utf-8")).hexdigest(),
-                    "input_tokens": usage["input_tokens"],
-                    "cached_input_tokens": usage["cached_input_tokens"],
-                    "uncached_input_tokens": (
-                        usage["input_tokens"]
-                        - usage["cached_input_tokens"]
-                    ),
-                    # Older CLI streams did not expose cache writes. Preserve
-                    # unknown as null rather than fabricating an exact zero.
-                    "cache_write_input_tokens": usage.get(
-                        "cache_write_input_tokens"),
-                    "output_tokens": usage["output_tokens"],
-                    "reasoning_tokens": usage["reasoning_output_tokens"],
-                })
-            text = ""
-            if os.path.exists(out.name):
-                with open(out.name, encoding="utf-8", errors="replace") as f:
-                    text = f.read().strip()
-            if not text:
-                text = (telemetry.last_message if telemetry is not None
-                        else (proc.stdout or "").strip())
-            if not text:
-                raise RoleError(
-                    f"{role_name}: codex exec produced no output "
-                    f"(rc={proc.returncode}, stderr={proc.stderr[-300:]!r})")
-            payload = extract_json(text)
-            validate(role.schema, payload)
+                    "stdout": stdout,
+                    "usage": attempt_usage,
+                }
+                break
+
+            # A capability-limited subclass may require JSON even without a
+            # usage ledger. Preserve its parsed final agent message as the
+            # safe fallback when the CLI's -o file is unexpectedly empty.
+            telemetry = completed_attempt["usage"].telemetry
+            attempt_fields = {
+                key: completed_attempt[key] for key in (
+                    "attempt_id", "attempt_index", "returncode",
+                    "started_at_unix_ns", "finished_at_unix_ns",
+                    "duration_ns", "stdout")
+            }
+            terminal_recorded = False
+            try:
+                text = ""
+                try:
+                    if os.path.exists(out.name):
+                        with open(out.name, encoding="utf-8",
+                                  errors="replace") as f:
+                            text = f.read().strip()
+                except OSError:
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        started=True, attempt_status="output_error",
+                        error_kind="output_read",
+                        error="Codex CLI output file could not be read",
+                        **attempt_fields,
+                    )
+                    terminal_recorded = True
+                    raise
+                if not text:
+                    text = (telemetry.last_message if telemetry is not None
+                            else completed_attempt["stdout"].strip())
+                if not text:
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        started=True, attempt_status="output_error",
+                        error_kind="empty_output",
+                        error="Codex CLI produced no final role output",
+                        **attempt_fields,
+                    )
+                    terminal_recorded = True
+                    raise RoleError(
+                        f"{role_name}: codex exec produced no output "
+                        f"(rc={proc.returncode}, "
+                        f"stderr={proc.stderr[-300:]!r})")
+                payload = extract_json(text)
+                validate(role.schema, payload)
+            except RoleError:
+                if terminal_recorded:
+                    raise
+                _record_codex_attempt(
+                    usage_target, base=attempt_base,
+                    started=True, attempt_status="schema_error",
+                    error_kind="role_schema",
+                    error="Final role output did not match its JSON schema",
+                    **attempt_fields,
+                )
+                terminal_recorded = True
+                raise
+            except BaseException as error:
+                if not terminal_recorded:
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        started=True, attempt_status="interrupted",
+                        error_kind=type(error).__name__,
+                        error="Role output processing was interrupted",
+                        **attempt_fields,
+                    )
+                raise
+            _record_codex_attempt(
+                usage_target, base=attempt_base,
+                started=True, attempt_status="succeeded",
+                **attempt_fields,
+            )
             return payload
-        except subprocess.TimeoutExpired:
-            raise RoleError(
-                f"{role_name}: codex exec timed out after {self.timeout}s")
         finally:
             for path in [out.name, *image_paths]:
                 try:
