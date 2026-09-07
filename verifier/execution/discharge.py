@@ -20,7 +20,9 @@ from .instruments import (
     ArtifactStore, authoritative_task_context, world_evidence_context,
     world_map,
 )
-from ..core.model import BASIS_RECORD, Obligation, OUTCOME_FAILED
+from ..core.model import (
+    BASIS_RECORD, Obligation, OUTCOME_FAILED, STRENGTH_ANALYTIC, STRENGTHS,
+)
 from ..llm.schema import RoleError
 
 
@@ -213,6 +215,12 @@ class AgentDischarger:
             ledger = path if os.path.exists(path) else ""
         world_mode, world, manifest = world_evidence_context(
             self.state_dir, live_world=self.live_world)
+        # Match the binding game's fail-closed interpretation. The executor
+        # must see the same tier and bridging assumptions that the independent
+        # Judger will audit, including on a fidelity redo or adapter fallback.
+        strength = method.get("strength", STRENGTH_ANALYTIC)
+        if strength not in STRENGTHS:
+            strength = STRENGTH_ANALYTIC
         variables = {
             "claim_text": row["text"],
             "obligation_text": obligation.text,
@@ -229,6 +237,9 @@ class AgentDischarger:
             # omissions only after an avoidable redo.
             "promised_artifact": method.get("artifact", ""),
             "declared_basis": method.get("basis", BASIS_RECORD),
+            "declared_strength": strength,
+            "bridges": json.dumps(method.get("bridges", []),
+                                  ensure_ascii=False),
             "required_basis": obligation.required_basis,
             "severity": obligation.severity,
             "clause": obligation.clause,

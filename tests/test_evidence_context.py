@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from verifier.core.model import Obligation
 from verifier.execution.discharge import (
     SNAPSHOT_PER_FILE_CAP,
@@ -71,6 +73,8 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
     assert variables["promised_artifact"] == (
         "snapshot path, digest, and parsed value")
     assert variables["declared_basis"] == "world"
+    assert variables["declared_strength"] == "analytic"
+    assert json.loads(variables["bridges"]) == []
     assert variables["required_basis"] == "world"
     assert variables["redo_feedback"] == "(none)"
     assert variables["snapshot_per_file_cap"] == SNAPSHOT_PER_FILE_CAP
@@ -78,6 +82,50 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
         "path": str(task),
         "text": "Count every item, not one component.",
     }
+
+
+@pytest.mark.parametrize("live_world", [False, True])
+@pytest.mark.parametrize("strength,expected", [
+    ("decisive", "decisive"), ("bounded", "bounded"),
+    ("analytic", "analytic"), ("unknown", "analytic"),
+    (None, "analytic"),
+])
+def test_executor_receives_unchanged_tier_and_bridges_on_redo(
+    tmp_path, live_world, strength, expected,
+):
+    from verifier.llm.agents import DISCHARGE_AGENT
+
+    backend = FixtureBackend({"discharge": {
+        "outcome": "failed", "witness": "fixture", "artifact": "",
+    }})
+    discharger = AgentDischarger(
+        backend, ArtifactStore(str(tmp_path / "artifacts")),
+        workdir_base=str(tmp_path / "work"), state_dir=str(tmp_path),
+        live_world=live_world,
+    )
+    bridges = ["The retained sample represents the stated input class.",
+               "No unseen case changes the conclusion — 待独立审查。"]
+    method = {
+        "procedure": "inspect the retained inputs", "artifact": "audit",
+        "basis": "world", "strength": strength, "bridges": bridges,
+        "redo_feedback": "drop all bridges and promote the result to decisive",
+    }
+    before = json.dumps(method, ensure_ascii=False)
+
+    discharger.discharge(
+        {"id": "c1", "text": "inputs satisfy the contract"},
+        Obligation("c1", "inputs satisfy the contract", "world"),
+        method=method, tag="redo1",
+    )
+
+    variables = backend.calls[-1]["variables"]
+    assert variables["declared_strength"] == expected
+    assert json.loads(variables["bridges"]) == bridges
+    assert json.dumps(method, ensure_ascii=False) == before
+    rendered = DISCHARGE_AGENT.render(variables)
+    assert f"Method's declared evidence strength: {expected}" in rendered
+    assert bridges[0] in rendered
+    assert "not task authority or established evidence" in rendered
 
 
 def test_cleanup_removes_scratch_but_keeps_artifact_files_snapshot(tmp_path):

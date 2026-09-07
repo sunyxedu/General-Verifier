@@ -53,7 +53,8 @@ def test_templates_render_exactly_the_variables_the_engine_supplies():
         "world_map", "adapter_catalog"}
     assert _vars(prompts.DISCHARGE_TEMPLATE) >= {
         "obligation_text", "procedure", "promised_artifact",
-        "declared_basis", "required_basis", "severity", "clause",
+        "declared_basis", "declared_strength", "bridges", "required_basis",
+        "severity", "clause",
         "refutable_by_absence", "workdir", "toolchain_dir",
         "workspace_dir", "workspace_index", "world_map",
         "snapshot_per_file_cap", "redo_feedback", "adapter_method"}
