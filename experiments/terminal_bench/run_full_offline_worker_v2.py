@@ -328,6 +328,35 @@ def _truth_eligible(certificate) -> bool:
                 in {"verified", "supported", "refuted"})
 
 
+def _committed_claim_identities(events) -> dict[int, str]:
+    """Replay durable labels exactly as production does and return commit IDs.
+
+    Commit payload dependencies are labels, not content-addressed claim IDs;
+    effect labels are also created by tool-result events.  Hashing the raw
+    ``deps`` list therefore cannot authenticate a certificate.  A triggerless
+    Builder replay applies the frozen source's real label resolution and Claim
+    identity rules without invoking any verifier stage or model.
+    """
+    from verifier.core.store import ClaimStore
+    from verifier.stream.builder import Builder, TraceError
+
+    builder = Builder(None, ClaimStore())
+    identities = {}
+    try:
+        for event in events:
+            builder.feed(event)
+            if event["type"] != "commit":
+                continue
+            payload = event["payload"]
+            label = payload.get("label")
+            if not isinstance(label, str) or label not in builder.labels:
+                raise ValueError("commit label is malformed")
+            identities[event["seq"]] = builder.labels[label]
+    except (KeyError, TypeError, ValueError, TraceError) as error:
+        raise ValueError("commit graph replay failed") from error
+    return identities
+
+
 def _attempt_in_binding(binding, method, discharge, audit) -> bool:
     for attempt in binding.get("attempts", []):
         if type(attempt) is not dict or attempt.get("method") != method:
@@ -356,12 +385,9 @@ def _audit_architecture(state: Path, certificate: dict,
     if len(finals) != 1 or type(finals[0].get("obligations")) is not list \
             or not finals[0]["obligations"]:
         raise ValueError("certificate has no unique nonempty final contract")
+    commit_identities = _committed_claim_identities(events)
     commits = [event for event in events if event["type"] == "commit"
-               and _content_digest({
-                   "kind": event["payload"].get("kind"),
-                   "text": event["payload"].get("text"),
-                   "deps": event["payload"].get("deps"),
-               }) == final]
+               and commit_identities.get(event["seq"]) == final]
     if (len(commits) != 1 or commits[0]["payload"].get("kind") != "final"
             or finals[0].get("kind") != "final"
             or finals[0].get("text") != commits[0]["payload"].get("text")):

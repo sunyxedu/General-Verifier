@@ -357,6 +357,33 @@ def test_worker_truth_eligibility_accepts_only_settled_verdicts(verdict):
         "certificate": {"verdict": verdict}}) is True
 
 
+def test_worker_commit_identity_replays_labels_and_dependency_order():
+    events = [
+        {"seq": 1, "type": "commit", "payload": {
+            "label": "a", "kind": "assertion", "text": "first", "deps": []}},
+        {"seq": 2, "type": "commit", "payload": {
+            "label": "b", "kind": "assertion", "text": "second", "deps": []}},
+        {"seq": 3, "type": "commit", "payload": {
+            "label": "final", "kind": "final", "text": "complete",
+            "deps": ["b", "a"]}},
+    ]
+    identities = worker._committed_claim_identities(events)
+    expected = worker._content_digest({
+        "kind": "final", "text": "complete",
+        "deps": sorted((identities[1], identities[2])),
+    })
+    assert identities[3] == expected
+
+
+def test_worker_commit_identity_rejects_unknown_dependency_label():
+    with pytest.raises(ValueError, match="graph replay"):
+        worker._committed_claim_identities([{
+            "seq": 1, "type": "commit", "payload": {
+                "label": "final", "kind": "final", "text": "claim",
+                "deps": ["missing"]},
+        }])
+
+
 @pytest.mark.parametrize("arm,flag", [("control", "0"), ("treatment", "1")])
 def test_worker_environment_changes_only_general_optimization_flags(
         arm, flag, tmp_path, monkeypatch):
