@@ -231,6 +231,28 @@ expected for frozen source without spans. Local regression at this revision:
 excluded. The [first paired candidate diagnostic](canary-fad9290-diagnostics.md)
 records a final-contract difference, so no zero-loss result is claimed.
 
+The completed frozen two-candidate video pair now measures **54.6 → 31.0
+minutes (1.76x)**. Treatment/control token ratios are **1.206 uncached input,
+0.846 cached input, and 1.284 output**; attempts increased from 55 to 78.
+Both ledgers are complete, including a treatment schema-error attempt. Exact
+contract drift remains, so neither zero loss nor 10x cost reduction is proven.
+See the [completed pair diagnostic](canary-fad9290-diagnostics.md) for scope
+and raw totals. Gcode/compressor measurements are not inferred from this pair.
+
+An explicit offline-isolation foundation now provides sealed-input cloning,
+complete fresh-graph identity, operator-pinned contracts, kernel-bound replay,
+and separate shared-setup accounting. Only known infrastructure path slots
+are normalized; claim wording, dependencies and effect referent context stay
+intact. Runtime effects, Oracle, execution and Judger remain fresh. Marked
+diagnostic directories are refused by ordinary scoring before model calls,
+with their evidence preserved. This is **not a production scheduling change**
+or a working paid-run orchestrator; `adapter-isolation --execute` still fails
+closed pending compile-only preparation and runner integration.
+
+Regression verification of this foundation: **898 passed, 4 skipped, 4
+subtests passed**, with the same missing optional module excluded. These are
+correctness/boundary tests, not evidence of additional performance gains.
+
 ### Optimization direction
 
 OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)

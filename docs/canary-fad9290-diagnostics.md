@@ -82,7 +82,7 @@ Usage totals were 1,701,698 uncached input tokens, 13,385,984 cached input
 tokens, and 202,604 output tokens. These are token counts, not a dollar price.
 Discharge and Judger together represented approximately 86% of accumulated
 model time. Parallel accumulated time is not wall time or a causal critical
-path. Treatment is still running; **there is no completed A/B ratio yet**.
+path. This was the first completed arm; the completed pair is reported below.
 
 Before this control finished, one trace's final task-contract verdict had
 already settled while auxiliary support-claim verification continued for at
@@ -124,10 +124,9 @@ from this follow-up are not yet measured.
 
 The first video candidate (`extract-moves-from-video__KFN5iFo`) has now
 finished in both arms. Control returned `unverified`; treatment returned
-`refuted`. The whole treatment process is still running, so there is still
-no completed process-level A/B cost or wall-time ratio. Its elapsed time has
-already exceeded one tenth of the completed control's 54.6 minutes; this
-particular pair cannot deliver 10x latency reduction.
+`refuted`. The whole treatment process subsequently finished; its process-level
+cost and wall-time totals appear below. This pair did not deliver 10x latency
+reduction.
 
 The candidate task, final answer, and world-manifest bytes match across arms.
 The control's final decomposition failed Critic after repair oscillation and
@@ -147,3 +146,58 @@ not opposite outcomes on a shared exact obligation. The authority-only
 compilation path and stochastic claim/decomposition differences remain
 confounded in a single full-pipeline pair. Do not call this a proven quality
 regression, a proven improvement, or a successful zero-loss comparison.
+
+## Completed two-candidate video pair
+
+Both process arms exited 0 with no result-audit errors and complete provider
+usage accounting. The source is still the frozen `fad9290` revision, not the
+later repair-context, span-accounting, or diagnostic replay changes.
+
+| Metric | Control | Treatment | Treatment / control |
+| --- | ---: | ---: | ---: |
+| End-to-end wall seconds | 3,274.664 | 1,862.019 | 0.569 |
+| Model attempts | 55 | 78 | 1.418 |
+| Uncached input tokens | 1,701,698 | 2,051,455 | 1.206 |
+| Cached input tokens | 13,385,984 | 11,325,440 | 0.846 |
+| Output tokens | 202,604 | 260,203 | 1.284 |
+
+Latency improved **1.76x**, from 54.6 to 31.0 minutes, including both
+candidates and the cold seed. Treatment includes one schema-error attempt
+with fully retained usage. Reasoning tokens are already a subset of output
+tokens and are not charged a second time. No unverified Luna dollar price is
+assumed. Under any fixed nonnegative linear prices for the three token bins,
+their weighted cost ratio cannot be below 0.846: this pair cannot establish
+a 10x token-cost reduction regardless of those prices.
+
+The second candidate was `refuted` in both arms; the first candidate differs
+as detailed above. One treatment contract-cache hit and one typed adapter
+execution occurred across the pair, both on the second candidate. There were
+no method-cache hits. Full result equivalence is **not established** because
+the exact contracts and coverage differ. The gcode and compressor process
+pairs remain separate pending measurements, not zero-cost completed work.
+
+The next diagnostic fixes the entire post-extraction, pre-verification graph
+and independently Critic-approved obligation contracts. It must count shared
+preparation in full against each arm, and still run fresh effects, Oracle,
+execution, and Judger. This is an explicit offline adapter-isolation test,
+not a change to production scheduling and not a substitute for full-e2e
+acceptance. Compiler/Critic source logs must remain unadjudicated; a completed
+arm's verdicts or certificates cannot be used to manufacture a shared setup.
+
+## Gcode control: still running, one usage gap
+
+A later read-only snapshot of the first gcode control candidate found no
+certificate or completed result row yet. The runner and Codex processes were
+alive, and the discharge script/output files were still changing. The active
+semantic check had progressed from a method that only checked the output file,
+through a rejected hard-coded answer, to an actual rasterization whose
+independent decoder was still insufficient. Existing work artifacts remained
+present; this snapshot did not show a cleanup-loss problem.
+
+One discharge CLI return took 445.47 seconds and exited 0 but produced invalid
+usage telemetry, leaving its token counts unknown. It must remain an
+incomplete paid attempt, not a zero-token success. The frozen run lacks the
+new causal sidecar; cumulative role times and temporal proximity cannot
+establish its dependency critical path or allocate concurrent costs by claim.
+The current observation is progress with an accounting gap, not a completed
+gcode A/B result. Do not extrapolate a cost or latency ratio from it.

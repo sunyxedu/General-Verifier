@@ -52,6 +52,9 @@ INDEX_MAX_EVENTS = 500
 # been published.  It is deliberately not part of the seal it authenticates.
 IMMUTABLE_INPUT_SEAL_FILE = "immutable_input_seal.json"
 IMMUTABLE_INPUT_TAINT_FILE = "immutable_input_tainted.json"
+# Explicit offline experiments retain their artifacts for inspection, but
+# those artifacts must never leak into an ordinary scoring invocation.
+DIAGNOSTIC_ONLY_FILE = ".contract_replay_diagnostic.json"
 IMMUTABLE_INPUT_SEAL_SCHEMA = "gv-immutable-input-seal-v1"
 IMMUTABLE_INPUT_PATHS = (
     "world",
@@ -792,6 +795,14 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     critic_rounds = cfg["critic_rounds"]
     fingerprint = pipeline_fingerprint()
     extract_rounds = 0
+    if os.path.lexists(os.path.join(state_dir, DIAGNOSTIC_ONLY_FILE)):
+        # Do not parse, clear, or overwrite experimental state. Even a broken
+        # marker means this is not an ordinary input boundary. The caller can
+        # create a new state from immutable inputs only; old proof artifacts
+        # cannot be made safe merely by re-running extraction.
+        raise ImmutableInputError(
+            "diagnostic-only offline state cannot be scored normally; "
+            "create a fresh state from sealed immutable inputs")
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
         if backend is None:

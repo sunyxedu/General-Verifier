@@ -109,6 +109,7 @@ class Kernel:
         parallel_obligations: int = 1,
         parallel_claims: int = 1,
         contract_cache=None,
+        contract_replay=None,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -141,6 +142,20 @@ class Kernel:
         self.binder = binder      # binding game; None -> direct discharge (tests)
         self.memory = memory      # advisory stores; None -> static hints
         self.contract_cache = contract_cache
+        # Experimental adapter-isolation diagnostic only.  Ordinary online
+        # and offline verification never inject this provider; it freezes a
+        # Critic-approved contract, not any method, evidence, or verdict.
+        if contract_replay is not None:
+            if live_world:
+                raise ValueError(
+                    "sealed contract replay is an offline diagnostic only")
+            contract_replay.require_replayable()
+            validate_kernel = getattr(contract_replay, "validate_kernel", None)
+            if not callable(validate_kernel):
+                raise ValueError(
+                    "sealed contract replay must be bound to this kernel")
+            validate_kernel(self)
+        self.contract_replay = contract_replay
         store.on_trigger(self.verify)  # the single rule wires straight in
 
     # locks and pools
@@ -452,10 +467,57 @@ class Kernel:
         return set(self.store.backward_slice(row["id"])[1:])
 
     def _compile_obligations(self, row: Dict):
+        if self.contract_replay is not None:
+            if self.live_world:
+                raise ValueError(
+                    "sealed contract replay is an offline diagnostic only")
+            self.contract_replay.require_replayable()
+            validate_kernel = getattr(
+                self.contract_replay, "validate_kernel", None)
+            if not callable(validate_kernel):
+                raise ValueError(
+                    "sealed contract replay must be bound to this kernel")
+            validate_kernel(self)
+            # Lookup is deliberately the first operation.  The bundle's
+            # compile-input identities were checked once against a complete,
+            # fresh pre-execution graph; recomputing them after dependencies
+            # begin to settle would make a valid replay schedule-dependent.
+            entry = self.contract_replay.lookup(row["id"])
+            obligations = self._materialize_obligations(
+                row, entry.payload, record=False)
+            self.contract_replay.validate_materialized(entry, obligations)
+            self._record_compiled_obligations(row, obligations)
+            return obligations
+
+        payload = self._compile_obligation_payload(row)
+        return self._materialize_obligations(row, payload)
+
+    def _compile_obligation_payload(self, row: Dict):
+        """Run the unchanged Compiler/Critic path and return its raw payload.
+
+        This extraction is a seam for the explicit offline isolation setup;
+        default verification still calls it only through
+        :meth:`_compile_obligations` and materializes exactly once afterwards.
+        """
         state = os.path.dirname(os.path.abspath(self.log.path))
         handled, payload = self._authority_final_contract(row, state)
         if handled:
-            return self._materialize_obligations(row, payload)
+            return payload
+        variables = self._obligation_compile_variables(row)
+        with model_scope(stage="contract_compile", round=0):
+            payload = self.obligations_role.call(self.backend, variables)
+        return self._critique(row, payload, variables)
+
+    def _obligation_compile_variables(self, row: Dict) -> Dict:
+        """Build the legacy Compiler inputs without invoking any role.
+
+        The returned values are byte-for-byte the values used by the normal
+        Compiler/Critic path.  Isolation setup may hash this one fresh,
+        complete pre-execution snapshot with the diagnostic coordinator's
+        exact host-slot normalizer; production scheduling and role inputs are
+        otherwise unchanged.
+        """
+        state = os.path.dirname(os.path.abspath(self.log.path))
         memory_hits = (
             self.memory.hits_for_obligations(row["text"])
             if self.memory is not None else self.memory_hits
@@ -517,7 +579,7 @@ class Kernel:
             if independent_final
             else self._dependency_referent_context(row["id"])
         )
-        variables = {
+        return {
             "claim_text": row["text"],
             "claim_kind": row["kind"],
             # division-of-labor fact, shared verbatim with the critic: for a
@@ -539,10 +601,6 @@ class Kernel:
             "memory_hits": memory_hits,
             "critic_feedback": "",
         }
-        with model_scope(stage="contract_compile", round=0):
-            payload = self.obligations_role.call(self.backend, variables)
-        payload = self._critique(row, payload, variables)
-        return self._materialize_obligations(row, payload)
 
     def _authority_final_contract(self, row: Dict, state: str):
         """Try a candidate-independent contract; unsupported inputs use legacy.
@@ -652,7 +710,7 @@ class Kernel:
             "graph": "[]", "memory_hits": "[]", "critic_feedback": "",
         }
 
-    def _materialize_obligations(self, row: Dict, payload):
+    def _materialize_obligations(self, row: Dict, payload, *, record=True):
         if payload is None:
             return None
         independent_final = row["kind"] == CLAIM_FINAL
@@ -690,11 +748,18 @@ class Kernel:
             dropped = [o.text for o in obligations
                        if o.text in premise_texts]
             if dropped and residual:
-                self.log.append(
-                    "obligations_residualized",
-                    {"claim": row["id"], "dropped": dropped},
-                )
+                if record:
+                    self.log.append(
+                        "obligations_residualized",
+                        {"claim": row["id"], "dropped": dropped},
+                    )
                 obligations = residual
+        if record:
+            self._record_compiled_obligations(row, obligations)
+        return obligations
+
+    def _record_compiled_obligations(self, row: Dict,
+                                     obligations: List[Obligation]) -> None:
         self.log.append(
             "obligations_compiled",
             {"claim": row["id"],
@@ -707,7 +772,6 @@ class Kernel:
                                   o.refutable_by_absence}
                              for o in obligations]},
         )
-        return obligations
 
     def _critique(self, row: Dict, payload: Dict, variables: Dict, *,
                   backend=None, obligations_role=None, critic_role=None):

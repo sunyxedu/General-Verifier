@@ -48,10 +48,13 @@ sealed obligation-contract replay seam with these properties:
   and compiler/critic identities only. It never receives reward, historical
   verdicts/certificates, official verifier output, final answer bytes, world
   bytes, or the solver transcript.
-- Candidate-specific claim contracts are built from sealed claim statements,
-  the task contract, premise ids/statuses, and logical world mapping. This
-  preserves the current answer-blind boundary: the proposition is visible,
-  while the solver's argument and raw candidate are not.
+- Candidate-specific claim contracts preserve the original support Compiler's
+  semantic inputs: sealed statements, complete graph context, premise
+  ids/statuses, task context, world mapping, and authenticated effect call/result
+  referent context. The fixed snapshot is after extraction and before any
+  verification. Solver records needed to identify a proposition are not
+  verifier adjudication outcomes; deleting them would change the compiler's
+  task. Prior Judger results, evidence and certificates remain forbidden.
 - The bundle binds the task hash, claim ids/text hashes, ordered obligations
   including clause/modality/evidence floor, compiler and critic prompts,
   model/effort, and schema. Both arms must report the same bundle hash.
@@ -60,6 +63,13 @@ sealed obligation-contract replay seam with these properties:
   independently bind methods.
 - A replayed contract never carries a verdict, method, evidence, or candidate
   artifact. Candidate evidence is freshly obtained in each arm.
+
+This snapshot policy is **diagnostic only**. Production may compile a support
+claim after its premises settle; compiling against an unadjudicated snapshot
+is not asserted to be equivalent to that interleaved scheduling. The ordinary
+online/offline stages, their responsibilities, full support audit and
+verification standard remain unchanged. Isolation can diagnose adapter effects
+but cannot replace the independent full-e2e zero-loss/10x gate.
 
 Cold contract-build calls are not free setup. Record their attempts in a
 process-private usage file and add the identical measured build cost and wall
@@ -223,11 +233,27 @@ boundary.
 #   --execute --confirm-paid GPT-5.6-Luna
 ```
 
-The runner refuses adapter-isolation execution for now. The existing contract
-cache is process-local; two ordinary subprocesses cannot prove they consumed
-the same sealed contract or charge the common compile wall time accurately to
-both arms. This diagnostic stays unavailable until that replay/accounting seam
-exists.
+The runner still refuses adapter-isolation execution. The new
+`verifier.contract_replay` input-cloning/snapshot helpers,
+`verifier.engine.contract_bundle` pinned-contract boundary and
+`shared_setup.py` accounting helpers are foundations, not a working paid-run
+orchestrator. They are not imported by ordinary scoring. Execution stays
+disabled until compile-only preparation, fresh replay, private bundle pinning,
+and complete shared-cost accounting are integrated and independently tested.
+No completed arm's compiled ledger may become a shared source snapshot.
+Each support contract needs its own fresh copy of that input ledger: leaving
+earlier Compiler/Critic events in a shared ledger would change what later
+seats can read. The shared final authority cache may retain its separate,
+operator-attested Critic receipt; it does not authorize sharing support
+verification state.
+
+The loader binds a provider to one kernel/store/log and the entire immutable
+claim structure. Explicit activation rechecks the fresh snapshot; runtime
+lookups allow normal evidence/status growth but reject structural drift.
+An operator-only diagnostic marker makes ordinary `offline.score` refuse the
+directory before any model call, without deleting prior evidence. Re-running
+extraction alone would not remove old artifacts, so returning to normal
+scoring requires a new directory copied from sealed immutable inputs only.
 
 A zero observed verdict/rank mismatch on 20 candidates has a 95%
 rule-of-three-style upper bound of about 13.9% on an unconstrained disagreement
