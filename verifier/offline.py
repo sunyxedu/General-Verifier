@@ -40,6 +40,7 @@ from .core.events import EventLog
 from .core.model import canonical, content_hash
 from .core.store import ClaimStore, TRIGGER_ON_FIRST_DEPENDENT, UnknownDependency
 from .engine.certificate import request_certificate
+from .llm.model_spans import model_scope
 from .llm.schema import RoleError
 from .stream.builder import Builder, TraceError
 
@@ -502,7 +503,10 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             "feedback": feedback,
         }
         try:
-            payload = EXTRACT_CLAIMS_AGENT.call(backend, variables)
+            with model_scope(
+                    locus="candidate_extract", stage="extract",
+                    round=round_no):
+                payload = EXTRACT_CLAIMS_AGENT.call(backend, variables)
         except RoleError as err:
             last_error = feedback = str(err)
             continue

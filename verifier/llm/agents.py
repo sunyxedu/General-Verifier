@@ -33,6 +33,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from . import prompts
+from .model_spans import (
+    role_attempt, role_span, seat_acquired, seat_released,
+    seat_wait_started, submit_with_context,
+)
 from .schema import RoleError, validate, field_name, optional_key
 # The Claude Agent SDK backs the DEFAULT backend only; alternate backends
 # (CodexBackend) never touch it. Imported lazily so that a seats=codex run
@@ -172,16 +176,29 @@ class AgentRole:
         """Two attempts (schema error fed back once), then RoleError."""
         prompt = self.render(variables)
         last_error: Optional[RoleError] = None
-        for _attempt in range(2):
-            try:
-                with SEAT_GATE.slot():
-                    payload = backend.complete(self.name, prompt, variables)
-                validate(self.schema, payload)
-                return payload
-            except RoleError as err:
-                last_error = err
-                prompt = prompt + f"\n\n[previous attempt failed; fix it and retry] {err}"
-        raise RoleError(f"{self.name}: failed twice: {last_error}")
+        # Start before acquiring SEAT_GATE: queueing is part of end-to-end
+        # role latency, while each schema retry remains separately visible.
+        with role_span(self.name):
+            for attempt_index in range(1, 3):
+                try:
+                    with role_attempt(attempt_index):
+                        wait_started = seat_wait_started()
+                        with SEAT_GATE.slot():
+                            acquired = seat_acquired(wait_started)
+                            try:
+                                payload = backend.complete(
+                                    self.name, prompt, variables)
+                            finally:
+                                seat_released(acquired)
+                        validate(self.schema, payload)
+                    return payload
+                except RoleError as err:
+                    last_error = err
+                    prompt = (
+                        prompt
+                        + f"\n\n[previous attempt failed; fix it and retry] {err}"
+                    )
+            raise RoleError(f"{self.name}: failed twice: {last_error}")
 
 
 class AgentBackend:
@@ -226,7 +243,8 @@ class AgentBackend:
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, self.run(role, prompt)).result()
+            return submit_with_context(
+                pool, asyncio.run, self.run(role, prompt)).result()
 
     # statuses worth waiting out (rate limit / overload / gateway); the CLI
     # sometimes reports these only as the opaque "error result: success"

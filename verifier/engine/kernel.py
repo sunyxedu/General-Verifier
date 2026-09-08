@@ -37,6 +37,7 @@ from ..core.model import (
 )
 from ..llm import prompts
 from ..llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
+from ..llm.model_spans import model_scope, submit_with_context
 from ..core.store import ClaimStore
 from .authority_view import (
     AuthorityViewUnavailable, build_authority_compilation_view,
@@ -170,10 +171,14 @@ class Kernel:
             row = self.store.get(claim_id)
             if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
                 return row["status"]
-            if row["kind"] == CLAIM_EFFECT:
-                self._verify_effect(row)
-            else:
-                self._verify_assertion(row)
+            with model_scope(
+                    claim_id=row["id"], claim_kind=row["kind"],
+                    locus=("final_task" if row["kind"] == CLAIM_FINAL
+                           else "support")):
+                if row["kind"] == CLAIM_EFFECT:
+                    self._verify_effect(row)
+                else:
+                    self._verify_assertion(row)
             return self.store.status(claim_id)
 
     # effect: ledger check
@@ -304,7 +309,7 @@ class Kernel:
                         and obligation.severity == SEVERITY_MUST:
                     break
             return out
-        futures = {pool.submit(self._settle_one, row, o): o
+        futures = {submit_with_context(pool, self._settle_one, row, o): o
                    for o in obligations}
         pending = set(futures)
         decided = False
@@ -534,7 +539,8 @@ class Kernel:
             "memory_hits": memory_hits,
             "critic_feedback": "",
         }
-        payload = self.obligations_role.call(self.backend, variables)
+        with model_scope(stage="contract_compile", round=0):
+            payload = self.obligations_role.call(self.backend, variables)
         payload = self._critique(row, payload, variables)
         return self._materialize_obligations(row, payload)
 
@@ -587,8 +593,9 @@ class Kernel:
                         "claim": row["id"], "key": key,
                         "authority": view.identity,
                         "leader": lease.leader, "waited": lease.waited})
-                    payload = session.obligations_role.call(
-                        session.backend, variables)
+                    with model_scope(stage="contract_compile", round=0):
+                        payload = session.obligations_role.call(
+                            session.backend, variables)
                     payload = self._critique(
                         row, payload, variables, backend=session.backend,
                         obligations_role=session.obligations_role,
@@ -731,9 +738,10 @@ class Kernel:
         repair_calls = 0          # (memoryless rounds oscillated: a demand
         while critic_calls < self.critic_rounds:  # overruled in round n was
             round_no = critic_calls               # re-issued verbatim in n+2)
-            verdict = critic_role.call(
-                backend,
-                {
+            with model_scope(stage="contract_critic", round=round_no):
+                verdict = critic_role.call(
+                    backend,
+                    {
                     "claim_text": variables["claim_text"],
                     "claim_kind": variables["claim_kind"],
                     "contract_locus": variables["contract_locus"],
@@ -753,8 +761,8 @@ class Kernel:
                     "dependency_referent_context":
                         variables["dependency_referent_context"],
                     "game_history": json.dumps(history, ensure_ascii=False),
-                },
-            )
+                    },
+                )
             self.log.append(
                 "decomposition_attacked",
                 {"claim": row["id"], "round": round_no,
@@ -790,7 +798,10 @@ class Kernel:
                     variables,
                     critic_feedback=semantic_feedback + guard_feedback,
                 )
-                candidate = obligations_role.call(backend, repair_variables)
+                with model_scope(
+                        stage="contract_compile", round=repair_calls + 1):
+                    candidate = obligations_role.call(
+                        backend, repair_variables)
                 repair_calls += 1
                 violation = None
                 if verdict["missing_condition"].lstrip().startswith(
@@ -1212,10 +1223,12 @@ class Kernel:
         """
 
         oid = obligation.id
-        if self.binder is not None:
-            result = self.binder.run(row, obligation)
-        else:
-            result = self.discharger.discharge(row, obligation)
+        with model_scope(obligation_id=oid):
+            if self.binder is not None:
+                result = self.binder.run(row, obligation)
+            else:
+                with model_scope(stage="discharge", method_attempt=1, redo=0):
+                    result = self.discharger.discharge(row, obligation)
         if result.outcome == OUTCOME_REFUTED \
                 and strength_rank(result.strength) \
                 < strength_rank(STRENGTH_DECISIVE):

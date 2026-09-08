@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from ..llm.agents import ENUMERATE_ORACLES_AGENT, JUDGER_AGENT
+from ..llm.model_spans import model_scope
 from ..execution.discharge import DischargeResult
 from ..execution.adapters import (
     AdapterInvocation, AdapterNotApplicable, adapter_method_view,
@@ -147,6 +148,15 @@ class BindingGame:
 
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
+        with model_scope(
+                claim_id=row.get("id", ""),
+                claim_kind=row.get("kind", ""),
+                locus=("final_task" if row.get("kind") == "final"
+                       else "support"),
+                obligation_id=obligation.id):
+            return self._run(row, obligation)
+
+    def _run(self, row: Dict, obligation: Obligation) -> DischargeResult:
         if self.method_cache is None:
             return self._run_uncached(row, obligation)
         key = self._method_cache_key(row, obligation)
@@ -493,7 +503,8 @@ class BindingGame:
         degradation = self._degradation_record(
             _method_strength(method), [attempt], {_method_strength(method)})
         verdict = self._judge(
-            obligation, method, result, attempt, degradation=degradation)
+            obligation, method, result, attempt, degradation=degradation,
+            method_attempt=1, independent_judger=True)
         if (verdict.get("sufficient") != "yes"
                 or verdict.get("faithful") != "yes"
                 or verdict.get("degradation") != "n/a"):
@@ -583,7 +594,7 @@ class BindingGame:
     def _run_uncached(self, row: Dict, obligation: Obligation) -> DischargeResult:
         attempts: List[Attempt] = []
         try:
-            methods = self._enumerate(row, obligation)
+            methods = self._enumerate(row, obligation, oracle_round=0)
         except RoleError as err:
             # A crashed role or schema-invalid generation is not evidence that
             # no sufficient method exists.  Keep generation failure distinct
@@ -704,7 +715,8 @@ class BindingGame:
                 )
                 try:
                     repaired = self._enumerate(
-                        row, obligation, method_feedback=feedback
+                        row, obligation, method_feedback=feedback,
+                        oracle_round=1,
                     )
                 except RoleError as err:
                     failed_seen = True
@@ -752,6 +764,7 @@ class BindingGame:
                                 row,
                                 obligation,
                                 method_feedback=focused_feedback,
+                                oracle_round=2,
                             )
                         except RoleError as err:
                             # An infrastructure/schema failure is not an
@@ -841,9 +854,12 @@ class BindingGame:
             attempt = Attempt(method=method)
             attempts.append(attempt)
 
-            result = self.discharger.discharge(
-                row, obligation, method=method, tag="bound"
-            )
+            method_attempt = len(attempts)
+            with model_scope(
+                    stage="discharge", method_attempt=method_attempt, redo=0):
+                result = self.discharger.discharge(
+                    row, obligation, method=method, tag="bound"
+                )
             attempt.discharge_artifact = result.artifact
             attempt.discharge_outcome = result.outcome
 
@@ -911,8 +927,9 @@ class BindingGame:
             # accept.
             degradation = self._degradation_record(
                 strength, attempts, tier_listed)
-            verdict = self._judge(obligation, method, result, attempt,
-                                  degradation=degradation)
+            verdict = self._judge(
+                obligation, method, result, attempt,
+                degradation=degradation, method_attempt=method_attempt)
             if strength != STRENGTH_DECISIVE \
                     and verdict.get("degradation") == "unjustified":
                 # the third signature failed: the judger disputes that the
@@ -963,8 +980,9 @@ class BindingGame:
                    and not verdict.get("_infra")
                    and rounds < self.redo_rounds):
                 rounds += 1
-                result = self._redo(row, obligation, method, verdict,
-                                    attempt, rounds)
+                result = self._redo(
+                    row, obligation, method, verdict, attempt, rounds,
+                    method_attempt=method_attempt)
                 if result.outcome == OUTCOME_UNOBTAINABLE:
                     detail = str(result.witness or
                                  "required instrument or evidence unavailable")
@@ -999,8 +1017,10 @@ class BindingGame:
                     structural_feedback.append({
                         "procedure": procedure, "reason": reason})
                     break
-                verdict = self._judge(obligation, method, result, attempt,
-                                      redo=rounds, degradation=degradation)
+                verdict = self._judge(
+                    obligation, method, result, attempt,
+                    redo=rounds, degradation=degradation,
+                    method_attempt=method_attempt)
                 if strength != STRENGTH_DECISIVE \
                         and verdict.get("degradation") == "unjustified":
                     degradation_disputed = True
@@ -1131,6 +1151,7 @@ class BindingGame:
         row: Dict,
         obligation: Obligation,
         method_feedback: str = "(none)",
+        oracle_round: int = 0,
     ) -> List[Dict[str, str]]:
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
@@ -1138,9 +1159,13 @@ class BindingGame:
         state = os.path.dirname(os.path.abspath(self.log.path))
         world_mode, world, manifest = world_evidence_context(
             state, live_world=self.live_world)
-        payload = self.oracles_role.call(
-            self.backend,
-            {
+        with model_scope(
+                stage=("oracle_repair" if oracle_round else
+                       "oracle_enumerate"),
+                round=oracle_round):
+            payload = self.oracles_role.call(
+                self.backend,
+                {
                 "claim_text": row["text"],
                 "obligation_text": obligation.text,
                 "required_basis": obligation.required_basis,
@@ -1158,8 +1183,8 @@ class BindingGame:
                 "world_path": world,
                 "world_manifest": manifest,
                 "world_map": world_map(state, live_world=self.live_world),
-            },
-        )
+                },
+            )
         methods = payload["methods"]
         event = {
             "claim": row["id"],
@@ -1190,7 +1215,9 @@ class BindingGame:
     def _judge(self, obligation, method, result, attempt,
                redo: int = 0,
                degradation: str = "(none — decisive method, no degradation "
-                                  "to audit)") -> Dict[str, str]:
+                                  "to audit)",
+               method_attempt: int = 0,
+               independent_judger: bool = False) -> Dict[str, str]:
         evidence = {
             "outcome": result.outcome,
             "witness": result.witness,
@@ -1247,7 +1274,11 @@ class BindingGame:
         total_calls = self.judger_error_retries + 1
         for call_no in range(1, total_calls + 1):
             try:
-                verdict = self.judger_role.call(self.backend, variables)
+                with model_scope(
+                        stage="judger", method_attempt=method_attempt,
+                        redo=redo, judger_retry_index=call_no,
+                        independent_judger=independent_judger):
+                    verdict = self.judger_role.call(self.backend, variables)
                 break
             except RoleError as err:
                 will_retry = call_no < total_calls
@@ -1295,7 +1326,8 @@ class BindingGame:
         )
         return verdict
 
-    def _redo(self, row, obligation, method, verdict, attempt, round_no: int):
+    def _redo(self, row, obligation, method, verdict, attempt, round_no: int,
+              *, method_attempt: int = 0):
         """
         Re-execute the unchanged bound method with every judger reason supplied
         separately as untrusted diagnostic feedback (latest last); the result
@@ -1317,8 +1349,11 @@ class BindingGame:
             for i, r in enumerate(attempt.redos)
         )
         method_fb = {**method, "redo_feedback": notes}
-        result = self.discharger.discharge(
-            row, obligation, method=method_fb, tag="bound-redo")
+        with model_scope(
+                stage="discharge", method_attempt=method_attempt,
+                redo=round_no):
+            result = self.discharger.discharge(
+                row, obligation, method=method_fb, tag="bound-redo")
         attempt.redos[-1]["outcome"] = result.outcome
         attempt.redos[-1]["artifact"] = result.artifact
         return result

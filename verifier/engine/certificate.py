@@ -32,6 +32,7 @@ from typing import Dict
 
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
+from ..llm.model_spans import submit_with_context
 from .kernel import Kernel
 from ..core.model import (
     CLAIM_FINAL,
@@ -61,7 +62,10 @@ def request_certificate(
         # work is still done once
         with ThreadPoolExecutor(max_workers=parallel,
                                 thread_name_prefix="gv-claim") as pool:
-            list(pool.map(kernel.verify, pending))
+            futures = [submit_with_context(pool, kernel.verify, claim_id)
+                       for claim_id in pending]
+            for future in futures:
+                future.result()
     else:
         for claim_id in pending:
             kernel.verify(claim_id)

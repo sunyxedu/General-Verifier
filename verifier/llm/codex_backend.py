@@ -56,6 +56,7 @@ from .codex_service import (
     service_tier_cli_args,
 )
 from .schema import RoleError, validate
+from .model_spans import model_call_span, model_span_capture
 from ..execution.config import offline_runtime_read_roots
 
 DEFAULT_MODEL = "gpt-5.6-luna"
@@ -166,7 +167,8 @@ def codex_usage_ledger(
             raise RuntimeError("a Codex usage ledger is already active")
         _USAGE_CAPTURE = capture
     try:
-        yield
+        with model_span_capture(capture.path):
+            yield
     finally:
         with _USAGE_CAPTURE_LOCK:
             if _USAGE_CAPTURE is not capture:
@@ -1206,6 +1208,16 @@ class CodexBackend:
         role_model = self._model_for(role_name)
         usage_target = _usage_target(self.cwd)
         call_id = uuid.uuid4().hex
+        with model_call_span(
+                call_id, role=role_name, model=role_model):
+            return self._complete(
+                role_name, prompt, variables,
+                role=role, role_model=role_model,
+                usage_target=usage_target, call_id=call_id)
+
+    def _complete(self, role_name: str, prompt: str,
+                  variables: Dict[str, Any], *, role, role_model: str,
+                  usage_target, call_id: str) -> Any:
         images = self._captured_images(role_name, variables)
         image_note = ""
         if images:
