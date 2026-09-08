@@ -87,14 +87,19 @@ an exact obligation, task authority, backend/catalog identity, decisive method,
 delivered subject inputs, and a previously successful Judger audit. Execution
 always runs again on the current candidate. The accepted signature applies
 only to its recorded `source_outcome`. The cache keeps at most one separately
-approved signature per direction. The first opposite-direction result goes
-through the full game; later candidates may use that direction's signature
-only for the exact same MethodIR, with fresh evidence. A decisive one-direction
+approved signature per direction. The first opposite-direction result receives
+a fresh, independent Judger audit of that exact MethodIR and new evidence;
+only `sufficient=yes`, `faithful=yes`, and `degradation=n/a` may publish it.
+Rejection, infrastructure failure, or changed task authority falls back to the
+full game. Later candidates may use that direction's signature only for the
+exact same MethodIR, with fresh evidence. A decisive one-direction
 certificate never implies the other direction. Browser and ledger methods
 retain a fresh Judger audit on every binding.
 
 For telemetry, `adapter_discharge.accepted_method_reuse_attempt` records only
 an attempted cache execution; `method_cache_hit` records actual audit reuse.
+`method_cache_direction_audit` records a new audit, not a free cache hit;
+the profiler counts it separately while retaining all model-attempt costs.
 Existing published-claim invalidation semantics are unchanged: adapter freshness
 applies when a new binding executes, not as a background watch on live files.
 
@@ -107,3 +112,8 @@ For performance comparisons, run paired candidates at the same code revision,
 model, effort, service tier, and parallelism, with separate scoring roots.
 Measure verdict changes, calls, uncached input/output tokens, and wall time.
 Synthetic speedups do not establish a whole-pipeline speedup on real tasks.
+
+The missing-direction audit removes one redundant Oracle call and adapter
+execution when it succeeds. It does not eliminate the first audit, optimize
+unrelated obligations, or establish identical outputs to independently sampled
+Oracle/Judger runs. Its total cost includes failed fast audits and fallbacks.

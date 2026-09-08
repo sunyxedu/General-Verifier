@@ -79,6 +79,8 @@ def test_profiles_overlapping_intervals_and_event_counts(tmp_path):
         {"type": "contract_cache_miss", "payload": {"secret": "never"}},
         {"type": "contract_cache_published", "payload": {}},
         {"type": "method_cache_hit", "payload": {}},
+        {"type": "method_cache_direction_audit",
+         "payload": {"method_digest": "private", "reason": "never"}},
         {"type": "adapter_discharge", "payload": {"procedure": "private"}},
         {"type": "adapter_fallback", "payload": {}},
         {"type": "method_rejected", "payload": {"reason": "private"}},
@@ -110,13 +112,15 @@ def test_profiles_overlapping_intervals_and_event_counts(tmp_path):
         "hits": 0, "misses": 1, "bypasses": 0, "published": 1}
     assert group["events"]["method_cache"] == {
         "hits": 1, "explicit_miss_events": 0,
-        "misses_observable": False, "bypasses": 0}
+        "misses_observable": False, "bypasses": 0,
+        "direction_audit_events": 1}
     assert group["events"]["adapter"] == {
         "executions": 1, "fallbacks": 1}
     encoded = json.dumps(report)
     assert "never" not in encoded
     assert "private" not in encoded
     assert "not the dependency critical path" in encoded
+    assert "direction audit events=1" in profile.render_summary(report)
 
 
 def test_unknown_usage_and_unfinished_run_remain_incomplete(tmp_path):

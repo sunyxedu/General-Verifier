@@ -105,8 +105,10 @@ bidirectional sufficiency.
 
 Reuse an accepted method only in a direction independently accepted by the Judger. The cache stores
 separate `holds` and `refuted` slots, each carrying its own `source_outcome`, exact MethodIR, and source
-audit. The first missing direction still runs the full game. Concurrent followers single-flight that
-direction and may bind only their own fresh evidence to an exact matching method. No `valid_outcomes`
+audit. The first missing direction receives a fresh independent Judger audit of the exact method and
+new adapter evidence; only a complete yes/yes/n/a audit may publish that direction. Rejection,
+infrastructure failure, or authority change falls back to the full game. Concurrent followers
+single-flight that direction and may bind only their own fresh evidence to an exact matching method. No `valid_outcomes`
 inference is made: adapter purity alone never proves bidirectional sufficiency.
 
 ## Evaluation

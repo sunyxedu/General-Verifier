@@ -48,6 +48,7 @@ EVENT_TYPES = (
     "method_cache_hit",
     "method_cache_miss",
     "method_cache_bypass",
+    "method_cache_direction_audit",
     "adapter_discharge",
     "adapter_fallback",
     "methods_enumerated",
@@ -292,6 +293,11 @@ class _GroupProfile:
                     "explicit_miss_events": event_counts["method_cache_miss"],
                     "misses_observable": False,
                     "bypasses": event_counts["method_cache_bypass"],
+                    # A new independent audit is not a cache hit. One event
+                    # can include multiple real CLI attempts after retries;
+                    # those remain charged separately in the role totals.
+                    "direction_audit_events": event_counts[
+                        "method_cache_direction_audit"],
                 },
                 "adapter": {
                     "executions": event_counts["adapter_discharge"],
@@ -650,7 +656,8 @@ def render_summary(report: dict[str, Any]) -> str:
             f"{contract['bypasses']}/{contract['published']}; "
             "method h/m*/b="
             f"{method['hits']}/{method['explicit_miss_events']}/"
-            f"{method['bypasses']}; adapter exec/fallback="
+            f"{method['bypasses']}; direction audit events="
+            f"{method['direction_audit_events']}; adapter exec/fallback="
             f"{adapter['executions']}/{adapter['fallbacks']}"
         )
     if report["issues"]:

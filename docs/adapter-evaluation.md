@@ -168,6 +168,30 @@ single-role Luna protocol smoke is not a performance benchmark. A six-candidate
 warm canary is a regression screen, not an acceptance result; the larger gate
 contains 20 distinct candidates across four ordinary tasks.
 
+### Follow-up to the frozen canary
+
+The live canary uses frozen source `fad9290`; later branch changes do not alter
+its control or treatment. The [first-control diagnostic](canary-fad9290-diagnostics.md)
+records real method-identity and provenance repairs, not missing artifacts.
+
+Subsequent implementation addresses three general seams:
+
+- The executor receives the method's declared strength and bridging assumptions,
+  which the Judger already audited. Neither becomes additional task authority.
+- Offline toolchain/cache roots are bound by operator construction, not role
+  variables. The executor may write its shared tools; the Judger receives
+  read-only toolchain access, without the external shared package cache. This
+  uses Codex's [specific-path permission overrides](https://learn.chatgpt.com/docs/permissions),
+  including a read-only override inside the otherwise writable cold workdir.
+- A fresh pure-adapter result in a previously unaudited direction can go
+  directly to a new independent Judger. A complete audit may seed that
+  direction; otherwise the full game runs and all attempts count toward cost.
+
+These are not measured 10x improvements. In particular, a substantive fidelity
+failure still needs repair; normalizing metadata cannot make an incorrect
+instrument faithful. Skipping other obligations after a cached refutation was
+not added: it could change exported outcomes and advisory tie-breaking.
+
 ### Optimization direction
 
 OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
