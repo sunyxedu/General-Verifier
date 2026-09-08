@@ -265,6 +265,72 @@ def _exact_nonnegative_int(value: Any, field: str) -> int:
     return value
 
 
+def _usage_event_type(raw: str) -> Optional[str]:
+    """Read the required first ``type`` member without touching its payload.
+
+    Only ``thread.started`` and ``turn.completed`` carry billing identity or
+    counters. Once a different type has been framed as the first object
+    member, its potentially huge, deep, truncated, or malformed payload is
+    irrelevant to billing and is not decoded. Accounting events are decoded
+    strictly in full by ``_strict_usage_event``. Requiring ``type`` first
+    makes a partial or ambiguous prefix fail closed instead of guessing where
+    an accounting discriminator might be hidden.
+    """
+    decoder = json.JSONDecoder(parse_constant=_reject_usage_constant)
+    index = 0
+    while index < len(raw) and raw[index] in " \t\r\n":
+        index += 1
+    if index >= len(raw) or raw[index] != "{":
+        raise ValueError("Codex JSONL event is not an object")
+    index += 1
+    while index < len(raw) and raw[index] in " \t\r\n":
+        index += 1
+    key, index = decoder.raw_decode(raw, index)
+    if key != "type":
+        raise ValueError("Codex JSONL event type is not the first member")
+    while index < len(raw) and raw[index] in " \t\r\n":
+        index += 1
+    if index >= len(raw) or raw[index] != ":":
+        raise ValueError("Codex JSONL event has an ambiguous type prefix")
+    index += 1
+    while index < len(raw) and raw[index] in " \t\r\n":
+        index += 1
+    event_type, index = decoder.raw_decode(raw, index)
+    if not isinstance(event_type, str):
+        raise ValueError("Codex JSONL event type is not a string")
+    while index < len(raw) and raw[index] in " \t\r\n":
+        index += 1
+    if index >= len(raw) or raw[index] not in ",}":
+        raise ValueError("Codex JSONL event has an ambiguous type prefix")
+    if raw[index] == "}" and raw[index + 1:].strip():
+        raise ValueError("Codex JSONL event has trailing prefix data")
+    return event_type
+
+
+def _unique_usage_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate accounting event field")
+        value[key] = item
+    return value
+
+
+def _reject_usage_constant(_value):
+    raise ValueError("non-finite accounting event value")
+
+
+def _strict_usage_event(raw: str) -> Mapping[str, Any]:
+    event = json.loads(
+        raw,
+        object_pairs_hook=_unique_usage_object,
+        parse_constant=_reject_usage_constant,
+    )
+    if not isinstance(event, dict):
+        raise ValueError("accounting event is not an object")
+    return event
+
+
 class TransientBackendError(RoleError):
     """Provider-side transient failure (capacity, rate limit, transport):
     the request never got a completed turn, so retrying with backoff is
@@ -484,6 +550,59 @@ def _parse_exec_telemetry(stdout: str) -> _ExecTelemetry:
             cache_write, "cache_write_input_tokens")
     return _ExecTelemetry(
         thread_id=thread_ids[0], usage=usage, last_message=last_message)
+
+
+def _parse_exec_accounting(stdout: str) -> _ExecTelemetry:
+    """Parse only subprocess-bound accounting events, failing closed.
+
+    Non-accounting event payloads are deliberately not recursively decoded.
+    They remain subject to the existing response/event parser before a role
+    output is accepted.
+    """
+    thread_ids = []
+    completions = []
+    for number, raw in enumerate((stdout or "").splitlines(), 1):
+        if not raw.strip():
+            continue
+        try:
+            event_type = _usage_event_type(raw)
+            if event_type not in {"thread.started", "turn.completed"}:
+                continue
+            event = _strict_usage_event(raw)
+        except (ValueError, TypeError, RecursionError) as error:
+            raise RoleError(
+                f"codex exec --json emitted malformed line {number}") from error
+        if event_type == "thread.started":
+            thread_id = event.get("thread_id")
+            if isinstance(thread_id, str) and thread_id:
+                thread_ids.append(thread_id)
+        else:
+            completions.append(event.get("usage"))
+
+    if len(thread_ids) != 1:
+        raise RoleError(
+            "codex exec --json must emit exactly one thread.started event "
+            f"(got {len(thread_ids)})")
+    if len(completions) != 1 or not isinstance(completions[0], dict):
+        raise RoleError(
+            "codex exec --json must emit exactly one turn.completed usage "
+            f"object (got {len(completions)})")
+
+    raw_usage = completions[0]
+    usage = {
+        field: _exact_nonnegative_int(raw_usage.get(field), field)
+        for field in _USAGE_REQUIRED_FIELDS
+    }
+    cached = usage["cached_input_tokens"]
+    if cached > usage["input_tokens"]:
+        raise RoleError(
+            "codex exec reported cached_input_tokens greater than input_tokens")
+    cache_write = raw_usage.get("cache_write_input_tokens")
+    if cache_write is not None:
+        usage["cache_write_input_tokens"] = _exact_nonnegative_int(
+            cache_write, "cache_write_input_tokens")
+    return _ExecTelemetry(
+        thread_id=thread_ids[0], usage=usage, last_message="")
 
 
 def _completed_response_without_usage(
@@ -967,19 +1086,19 @@ def _attempt_usage(stdout: Any, *, force_incomplete: bool = False,
         if not raw.strip():
             continue
         try:
-            event = json.loads(raw)
-        except (ValueError, RecursionError):
+            event_type = _usage_event_type(raw)
+            if event_type not in {"thread.started", "turn.completed"}:
+                continue
+            event = _strict_usage_event(raw)
+        except (ValueError, TypeError, RecursionError):
             malformed = True
             continue
-        if not isinstance(event, dict):
-            malformed = True
-            continue
-        if event.get("type") == "thread.started":
+        if event_type == "thread.started":
             thread_events += 1
             thread_id = event.get("thread_id")
             if isinstance(thread_id, str) and thread_id:
                 thread_ids.append(thread_id)
-        elif event.get("type") == "turn.completed":
+        else:
             completions += 1
     unique_threads = set(thread_ids)
     thread_id = next(iter(unique_threads)) if len(unique_threads) == 1 else None
@@ -994,7 +1113,7 @@ def _attempt_usage(stdout: Any, *, force_incomplete: bool = False,
                    "CLI completion was not observed as trustworthy"),
         )
     try:
-        telemetry = _parse_exec_telemetry(text)
+        telemetry = _parse_exec_accounting(text)
     except RoleError as error:
         if not text.strip():
             status = "unknown"
@@ -2023,6 +2142,24 @@ class CodexBackend:
                 try:
                     self._validate_attempt_stream(stdout)
                     response_without_usage = None
+                    # Billing extraction deliberately ignores unrelated item
+                    # payloads. Before accepting a role response, retain the
+                    # pre-existing full-stream parse and exact final-message
+                    # recovery semantics.
+                    if attempt_usage.telemetry is not None:
+                        response_telemetry = _parse_exec_telemetry(stdout)
+                        if (response_telemetry.thread_id
+                                != attempt_usage.telemetry.thread_id
+                                or response_telemetry.usage
+                                != attempt_usage.telemetry.usage):
+                            raise RoleError(
+                                "Codex accounting and response streams disagree")
+                        attempt_usage = _AttemptUsage(
+                            telemetry=response_telemetry,
+                            thread_id=response_telemetry.thread_id,
+                            status="complete",
+                            error=None,
+                        )
                     usage_code = _usage_error_code(attempt_usage.error) or ""
                     if (usage_target is not None and attempt_usage.telemetry is None
                             and (usage_code.startswith("invalid_counter:")
