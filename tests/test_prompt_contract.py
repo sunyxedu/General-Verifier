@@ -98,6 +98,17 @@ def test_mechanism_fields_are_asked_for_by_name():
     assert "adapter_catalog" in _vars(prompts.ORACLES_TEMPLATE)
 
 
+def test_adapter_preference_is_conditional_and_preserves_verification_scope():
+    # Prompt contract guard only; model behavior still needs paired evals.
+    text = prompts.ORACLES_TEMPLATE
+    assert "equally sufficient method" in text
+    assert "otherwise use the custom method" in text
+    assert "preserve the obligation's full scope, provenance, absence rules" in text
+    assert "retain every enumeration or observation the obligation actually requires" in text
+    assert "omit all four fields unless" in text
+    assert "never method sufficiency" in text
+
+
 def test_game_and_locus_contract_survive():
     assert "{game_history}" in prompts.CRITIC_TEMPLATE
     assert "GAME CONSISTENCY RULE" in prompts.CRITIC_TEMPLATE
