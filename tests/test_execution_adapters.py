@@ -137,6 +137,7 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         ("filesystem.exists", 1),
         ("filesystem.sha256", 1),
         ("document.json-predicate", 1),
+        ("document.json-predicate", 2),
         ("document.json-value", 1),
         ("document.text", 1),
         ("ledger.event", 1),

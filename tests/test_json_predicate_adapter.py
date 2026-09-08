@@ -78,7 +78,7 @@ def environment(tmp_path):
     return state, world, artifacts, log, fallback, routing
 
 
-def method(predicates, *, address="/app/result.json", raw=None):
+def method(predicates, *, address="/app/result.json", raw=None, version=1):
     return {
         "procedure": "apply the declared closed JSON predicates",
         "artifact": "a bounded content-addressed predicate receipt",
@@ -87,7 +87,7 @@ def method(predicates, *, address="/app/result.json", raw=None):
         "strength": "decisive",
         "bridges": [],
         "adapter": "document.json-predicate",
-        "adapter_version": 1,
+        "adapter_version": version,
         "adapter_arguments": (json.dumps({
             "address": address, "predicates": predicates,
         }, ensure_ascii=True, sort_keys=True) if raw is None else raw),
@@ -105,8 +105,10 @@ def obligation(*, absence=False):
 
 def test_catalog_exposes_a_closed_machine_readable_predicate_union():
     catalog = json.loads(default_adapter_registry().catalog())
-    entry = next(item for item in catalog
-                 if item["name"] == "document.json-predicate")
+    entries = [item for item in catalog
+               if item["name"] == "document.json-predicate"]
+    assert [item["version"] for item in entries] == [1, 2]
+    entry, v2 = entries
 
     assert entry["accepted_method_reuse"] is False
     assert entry["read_only"] is True
@@ -115,9 +117,123 @@ def test_catalog_exposes_a_closed_machine_readable_predicate_union():
         "array.items-object",
     }
     assert entry["resource_limits"]["predicates"] == 16
+    v1_shape = next(item for item in entry["predicate_variants"]
+                    if item["kind"] == "array.items-object")
+    v2_shape = next(item for item in v2["predicate_variants"]
+                    if item["kind"] == "array.items-object")
+    assert v1_shape["required_must_be_typed"] is True
+    assert v2_shape["required_semantics"] == "presence-only"
+    assert v2_shape["properties_semantics"] == "type-if-present"
+    assert v2_shape["allowed_keys_when_closed"] \
+        == "required_union_properties"
+    assert v1_shape["pointer_required"] is v2_shape["pointer_required"] is True
+    assert v1_shape["root_pointer"] == v2_shape["root_pointer"] == ""
     assert "command" not in json.dumps(entry).lower()
     assert default_adapter_registry().supports_method_reuse(
         method([{"kind": "valid"}])) is False
+
+
+def test_v2_root_array_required_members_are_presence_only(tmp_path):
+    _, world, artifacts, _, fallback, routing = environment(tmp_path)
+    document = [
+        {"value": "text"}, {"value": 7}, {"value": {"nested": True}},
+        {"value": [1]}, {"value": False}, {"value": None},
+    ]
+    (world / "result.json").write_text(json.dumps(document), encoding="utf-8")
+    typed = method([{
+        "kind": "array.items-object", "pointer": "",
+        "required": ["value"], "properties": {},
+        "additional_properties": True,
+    }], version=2)
+
+    result = routing.discharge(ROW, obligation(), typed)
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert result.instrument == "adapter:document.json-predicate@2"
+    assert fallback.calls == []
+    observed = artifacts.get(result.artifact)["execution"]["observation"]
+    assert observed["document"] == document
+    assert observed["results"][0]["items_examined"] == len(document)
+
+
+def test_v1_does_not_inherit_v2_presence_only_semantics(tmp_path):
+    _, world, _, _, fallback, routing = environment(tmp_path)
+    (world / "result.json").write_text('[{"value":1}]', encoding="utf-8")
+    predicate = {
+        "kind": "array.items-object", "pointer": "",
+        "required": ["value"], "properties": {},
+        "additional_properties": True,
+    }
+
+    routing.discharge(ROW, obligation(), method([predicate], version=1))
+
+    assert len(fallback.calls) == 1
+
+
+def test_v2_closed_shape_uses_required_union_properties(tmp_path):
+    _, world, _, _, fallback, routing = environment(tmp_path)
+    predicate = {
+        "kind": "array.items-object", "pointer": "",
+        "required": ["required"], "properties": {"optional": "string"},
+        "additional_properties": False,
+    }
+    target = world / "result.json"
+    target.write_text('[{"required":1}]', encoding="utf-8")
+    assert routing.discharge(
+        ROW, obligation(), method([predicate], version=2)).outcome \
+        == OUTCOME_HOLDS
+    target.write_text(
+        '[{"required":1,"optional":"ok"}]', encoding="utf-8")
+    assert routing.discharge(
+        ROW, obligation(), method([predicate], version=2)).outcome \
+        == OUTCOME_HOLDS
+    target.write_text(
+        '[{"required":1,"optional":7}]', encoding="utf-8")
+    assert routing.discharge(
+        ROW, obligation(), method([predicate], version=2)).outcome \
+        == OUTCOME_REFUTED
+    target.write_text(
+        '[{"required":1,"extra":true}]', encoding="utf-8")
+    assert routing.discharge(
+        ROW, obligation(), method([predicate], version=2)).outcome \
+        == OUTCOME_REFUTED
+    assert fallback.calls == []
+
+
+def test_v2_missing_required_member_retains_absence_gate(tmp_path):
+    _, world, _, _, fallback, routing = environment(tmp_path)
+    (world / "result.json").write_text('[{}]', encoding="utf-8")
+    typed = method([{
+        "kind": "array.items-object", "pointer": "",
+        "required": ["value"], "properties": {},
+        "additional_properties": True,
+    }], version=2)
+
+    routing.discharge(ROW, obligation(), typed)
+    assert len(fallback.calls) == 1
+    assert routing.discharge(
+        ROW, obligation(absence=True), typed).outcome == OUTCOME_REFUTED
+
+
+def test_v2_still_requires_explicit_pointer_and_union_cap(tmp_path):
+    _, world, _, _, fallback, routing = environment(tmp_path)
+    (world / "result.json").write_text('[]', encoding="utf-8")
+    missing_pointer = {
+        "kind": "array.items-object", "required": ["value"],
+        "properties": {}, "additional_properties": True,
+    }
+    routing.discharge(
+        ROW, obligation(), method([missing_pointer], version=2))
+    assert len(fallback.calls) == 1
+
+    too_many = {
+        "kind": "array.items-object", "pointer": "",
+        "required": [f"r{i}" for i in range(33)],
+        "properties": {f"p{i}": "string" for i in range(32)},
+        "additional_properties": True,
+    }
+    routing.discharge(ROW, obligation(), method([too_many], version=2))
+    assert len(fallback.calls) == 2
 
 
 def test_conjoined_predicates_emit_replayable_bounded_evidence(tmp_path):
@@ -538,6 +654,29 @@ def test_typed_packet_replays_but_never_replaces_fresh_judger(tmp_path):
     assert [call["role"] for call in backend.calls] == ["oracles", "judger"]
     assert type(backend.calls[1]["variables"][
         "_typed_adapter_judger_packet"]) is TypedAdapterJudgerPacket
+    assert fallback.calls == []
+
+
+def test_v2_typed_packet_replays_with_versioned_identity(tmp_path):
+    _, world, artifacts, _, fallback, routing = environment(tmp_path)
+    target = world / "result.json"
+    target.write_text('[{"word":"hello","value":1}]', encoding="utf-8")
+    typed = method([{
+        "kind": "array.items-object", "pointer": "",
+        "required": ["word", "value"], "properties": {},
+        "additional_properties": True,
+    }], version=2)
+    check = obligation()
+    result = routing.discharge(ROW, check, typed)
+
+    packet = build_typed_adapter_judger_packet(
+        routing, artifacts, check, typed, result, "decisive")
+
+    assert packet.revalidate() is True
+    assert json.loads(packet.render())["adapter_contract"]["identity"] \
+        == "document.json-predicate@2"
+    target.write_text('[]', encoding="utf-8")
+    assert packet.revalidate() is False
     assert fallback.calls == []
 
 

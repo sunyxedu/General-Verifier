@@ -29,7 +29,7 @@ WORKER_SCHEMA = "gv-full-online-worker-plan-v2"
 WORKER_RESULT_SCHEMA = "gv-full-online-worker-result-v2"
 SEMANTIC_SCHEMA = "gv-online-semantic-evidence-v1"
 TYPED_PACKET_PROTOCOL = (
-    "gv-typed-adapter-judger-packet-v3;evidence-cap=16384;"
+    "gv-typed-adapter-judger-packet-v4;evidence-cap=16384;"
     "render-cap=131072;fresh-replay=before+after;transport=no-tools-v1"
 )
 TYPED_BOUNDARY = "gv-typed-judger-no-tools-v1"

@@ -205,6 +205,7 @@ def test_initial_eligibility_is_closed_and_ledger_prefix_receipts_replay(tmp_pat
         ("filesystem.exists", 1),
         ("filesystem.sha256", 1),
         ("document.json-predicate", 1),
+        ("document.json-predicate", 2),
         ("document.json-value", 1),
         ("document.text", 1),
         ("ledger.event", 1),

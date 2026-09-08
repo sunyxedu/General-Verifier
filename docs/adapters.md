@@ -20,6 +20,7 @@ describe available operations; the model prompts remain domain independent.
 | `filesystem.sha256@1` | File bytes compared with a declared digest | The digest's authority is audited independently |
 | `document.json-value@1` | Exact, type-sensitive JSON Pointer comparison | Strict UTF-8 JSON only |
 | `document.json-predicate@1` | Bounded structural equality, array membership/length, and array-item shape/type predicates | Closed algebra over strict UTF-8 JSON only |
+| `document.json-predicate@2` | The same bounded predicates, with object-member presence independent of optional type constraints | Explicit JSON Pointer required, including `""` for the root |
 | `ledger.event@1` | One retained event's type and payload subset | Establishes record facts only |
 | `ledger.tool-call-string@1` | Exact string selection within an explicit ledger interval | Cannot interpret or execute command text |
 | `ledger.tool-call-string@2` | Explicit existence, equality, nonempty or nonblank string predicate | Record facts only; no command-language interpretation |
@@ -70,6 +71,14 @@ which still invokes a fresh independent Judger, but not accepted-method verdict
 reuse. Its receipt retains the complete parsed document when its canonical JSON
 is at most 16,384 characters; larger documents carry the canonical digest,
 size, and an explicit incomplete marker instead.
+
+Version 1 requires every `required` member to also have a type declaration in
+`properties`. Version 2 separates those constraints: `required` means presence
+only, while `properties` constrains a member's type when that member appears.
+With `additional_properties=false`, the allowed names are
+`required ∪ properties`. Their union is capped at 64 names. Both versions
+require an explicit RFC 6901 `pointer`; use `pointer:""` for the document root.
+Neither version silently repairs or defaults a missing pointer.
 
 For example, `/input/cmd` and `/input/keystrokes` are different explicit
 record dialects. A raw program containing a nested tool invocation needs the

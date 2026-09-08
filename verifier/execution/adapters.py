@@ -809,7 +809,9 @@ def _validate_json_property_name(value: Any, field: str) -> str:
     return value
 
 
-def _validate_json_predicate(value: Any) -> Dict[str, Any]:
+def _validate_json_predicate(
+        value: Any, *, allow_presence_only_required: bool = False,
+) -> Dict[str, Any]:
     if not isinstance(value, dict) or not isinstance(value.get("kind"), str):
         raise AdapterNotApplicable(
             "each JSON predicate must be an object with a string kind")
@@ -889,7 +891,14 @@ def _validate_json_predicate(value: Any) -> Dict[str, Any]:
                 raise AdapterNotApplicable(
                     f"unsupported JSON property type {expected_type!r}")
             checked_properties[key] = expected_type
-        if not set(checked_required) <= set(checked_properties):
+        if (allow_presence_only_required
+                and len(set(checked_required) | set(checked_properties))
+                > MAX_JSON_SHAPE_PROPERTIES):
+            raise AdapterNotApplicable(
+                "array.items-object declared property union exceeds the "
+                "shape property boundary")
+        if (not allow_presence_only_required
+                and not set(checked_required) <= set(checked_properties)):
             raise AdapterNotApplicable(
                 "every required property needs a declared type")
     return dict(value)
@@ -903,6 +912,7 @@ class JsonPredicateAdapter(MethodAdapter):
     # This path is eligible for a compact *fresh* Judger transport, but never
     # for a cached prior verdict/signature.
     accepted_method_reuse = False
+    allow_presence_only_required = False
     summary = (
         "Parse one bounded regular world file as strict UTF-8 JSON, rejecting "
         "duplicate keys, invalid Unicode, and non-finite numbers, then apply "
@@ -932,6 +942,22 @@ class JsonPredicateAdapter(MethodAdapter):
         # The base catalog is intentionally simple. This closed union gives
         # the Oracle an exact machine-readable field contract without adding
         # a general schema language for the adapter to interpret.
+        item_shape = {
+            "kind": "array.items-object",
+            "fields": ["kind", "pointer", "required", "properties",
+                       "additional_properties"],
+            "property_types": sorted(_JSON_TYPES),
+            "pointer_required": True,
+            "root_pointer": "",
+        }
+        if self.allow_presence_only_required:
+            item_shape.update({
+                "required_semantics": "presence-only",
+                "properties_semantics": "type-if-present",
+                "allowed_keys_when_closed": "required_union_properties",
+            })
+        else:
+            item_shape["required_must_be_typed"] = True
         entry["predicate_variants"] = [
             {"kind": "valid", "fields": ["kind"]},
             {"kind": "equals",
@@ -941,10 +967,7 @@ class JsonPredicateAdapter(MethodAdapter):
             {"kind": "array.length",
              "fields": ["kind", "pointer", "operator", "expected"],
              "operators": ["eq", "gte", "lte"]},
-            {"kind": "array.items-object",
-             "fields": ["kind", "pointer", "required", "properties",
-                        "additional_properties"],
-             "property_types": sorted(_JSON_TYPES)},
+            item_shape,
         ]
         entry["resource_limits"] = {
             "file_bytes": self.max_bytes,
@@ -966,8 +989,7 @@ class JsonPredicateAdapter(MethodAdapter):
                if "pointer" in predicate else {}),
         }
 
-    @staticmethod
-    def _array_items_result(index: int, predicate: Mapping[str, Any],
+    def _array_items_result(self, index: int, predicate: Mapping[str, Any],
                             actual: Any) -> Dict[str, Any]:
         result = JsonPredicateAdapter._base_result(index, predicate)
         result["actual_type"] = _json_type(actual)
@@ -1000,7 +1022,9 @@ class JsonPredicateAdapter(MethodAdapter):
             if len(failures) < MAX_RETAINED_JSON_FAILURES:
                 failures.append(failure)
 
-        declared_keys = set(properties)
+        # V1 requires required ⊆ properties, so including both leaves its
+        # closed-object behavior unchanged. V2 permits presence-only keys.
+        declared_keys = set(required) | set(properties)
         for item_index, item in enumerate(actual):
             if not isinstance(item, dict):
                 add_failure({
@@ -1144,7 +1168,14 @@ class JsonPredicateAdapter(MethodAdapter):
             raise AdapterNotApplicable(
                 f"document.json-predicate requires 1..{MAX_JSON_PREDICATES} "
                 "predicates")
-        predicates = [_validate_json_predicate(item) for item in raw_predicates]
+        predicates = [
+            _validate_json_predicate(
+                item,
+                allow_presence_only_required=(
+                    self.allow_presence_only_required),
+            )
+            for item in raw_predicates
+        ]
         self.require_subject(invocation, address, WORLD_FILE_PROVENANCES)
         resolved = context.resolve(address)
         try:
@@ -1217,6 +1248,31 @@ class JsonPredicateAdapter(MethodAdapter):
             {"reason": "one or more JSON predicates did not match",
              "address": address, "failed": failed},
             witness_kind, observation, (identity,))
+
+
+class JsonPredicateAdapterV2(JsonPredicateAdapter):
+    """Separate object-member presence from optional type constraints."""
+
+    version = 2
+    allow_presence_only_required = True
+    summary = (
+        "Parse one bounded regular world file as strict UTF-8 JSON, rejecting "
+        "duplicate keys, invalid Unicode, and non-finite numbers, then apply "
+        "1..16 declarative predicates. Array item object predicates express "
+        "required member presence independently from optional member type "
+        "constraints; no code or selector language is executed."
+    )
+    arguments = {
+        **JsonPredicateAdapter.arguments,
+        "predicates": (
+            JsonPredicateAdapter.arguments["predicates"]
+            + " For array.items-object, required means presence only; "
+              "properties constrains a key only when present; with "
+              "additional_properties=false the allowed keys are the union "
+              "of required and properties. pointer is always required and "
+              "the document root is pointer=\"\"."
+        ),
+    }
 
 
 class TextValueAdapter(MethodAdapter):
@@ -2963,6 +3019,7 @@ def default_adapter_registry(
         FileSha256Adapter(),
         JsonValueAdapter(),
         JsonPredicateAdapter(),
+        JsonPredicateAdapterV2(),
         TextValueAdapter(),
         LedgerEventAdapter(),
         LedgerToolCallStringAdapter(),
