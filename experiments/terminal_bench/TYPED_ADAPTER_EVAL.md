@@ -279,14 +279,38 @@ and no candidate entry; the created files and incurred attempts are retained.
 
 This output is still an **untrusted candidate**, not a replay authorization.
 Its payload binding explicitly relies on the pinned Kernel's terminal-pass
-control flow, not a cryptographic signature of a returned role result. An
-independent receipt consumer, parent-owned extraction/all-claims lifecycle,
-warm source-receipt lineage and fresh replay coordinator remain required
+control flow, not a cryptographic signature of a returned role result. The
+parent-owned extraction/all-claims lifecycle, warm source-receipt lineage
+and fresh replay coordinator remain required
 before execution can be enabled. One claim's receipt explicitly excludes
 extraction and replay costs. Local process-stub counters test accounting
 semantics only: they are not paid benchmark data or evidence for 10x gains.
 No ordinary online/offline stage, prompt, scheduler or validation gate is
 changed by this experiment module.
+
+`validate_prepared_contract_entry.py` now supplies the read-only artifact
+consumer and full-graph assembler. The consumer requires independent setup,
+claim, input, identity and receipt pins; it re-reads strict private artifacts,
+rebuilds the declarative graph in memory, checks sealed hook context and the
+read-only preparation store, recomputes costs/lifecycles, and compares the
+candidate against the actual receipt. It does not call models, rewrite state,
+or trust self-reported cost completeness. Candidate input is frozen once,
+so concurrent caller mutation cannot replace the object after validation.
+The lineage parsing code is shared and version-pinned; this is independent
+artifact consumption, not a second implementation or a model-result signature.
+
+Assembly requires the full externally selected graph and non-effect input
+map. Every declared claim must pass; missing, duplicate, extra or failed
+entries cannot become a smaller successful bundle. The complete parser runs
+again against that external map. Existing observed bills are retained for
+failed receipts, but these per-claim reports explicitly exclude extraction
+and replay and are not a replacement for the parent's all-attempts bill.
+Both APIs require absolute operator-pinned preparation roots. The final bundle
+digest must be recorded in an independent run manifest before fresh replay;
+the manifest must also bind the experiment scripts, not only verifier/*.py.
+Local integration covers loading the validated bundle into two distinct fresh
+diagnostic kernels and matching materialization, without re-compilation. It
+does not stand in for Oracle/execution/Judger completion or a paid A/B run.
 
 A zero observed verdict/rank mismatch on 20 candidates has a 95%
 rule-of-three-style upper bound of about 13.9% on an unconstrained disagreement

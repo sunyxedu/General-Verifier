@@ -279,6 +279,18 @@ are still prerequisites to enabling paid isolation. Regression verification:
 excluded. The 35 new cases use synthetic protocol counters, not real model
 measurements. No additional cost or latency improvement is claimed.
 
+Independent artifact consumption and all-claims assembly are now implemented
+and tested. The read-only consumer recomputes observed billing/lifecycle data,
+checks the externally pinned receipt and full source graph, and freezes the
+candidate before validation. Assembly rejects incomplete/duplicate/failed
+claim sets and parses the complete bundle against the external input map.
+Two fresh diagnostic kernels can load it and materialize the same obligations
+without new compilation. This test does not run completed evidence pipelines.
+Regression: **1036 passed, 4 skipped, 4 subtests passed**, with the same
+optional module excluded. The remaining paid-run gate is parent-owned
+extraction/all-attempts accounting, warm lineage and fresh evidence/replay
+coordination. No new real-model A/B or performance improvement is claimed.
+
 ### Optimization direction
 
 OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
