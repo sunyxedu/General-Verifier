@@ -130,7 +130,8 @@ def game_for(tmp_path, name, backend, cache, *, status="completed",
     return state, game, artifacts, log, fallback
 
 
-def test_default_offline_services_reaudit_when_fresh_outcome_changes(tmp_path):
+def test_default_offline_services_rerun_oracle_and_judger_when_outcome_changes(
+        tmp_path):
     cache = default_accepted_method_cache()
     cache.clear()
     method = typed_method()
@@ -165,9 +166,9 @@ def test_default_offline_services_reaudit_when_fresh_outcome_changes(tmp_path):
     assert [call["role"] for call in backend1.calls] == [
         "obligations", "critic", "oracles", "judger"]
     assert [call["role"] for call in backend2.calls] == [
-        "obligations", "critic", "judger"]
+        "obligations", "critic", "oracles", "judger"]
     events = list(second.log.replay())
-    assert any(event["type"] == "method_cache_bypass" for event in events)
+    assert not any(event["type"] == "method_cache_bypass" for event in events)
     assert not any(event["type"] == "method_cache_hit" for event in events)
 
 
