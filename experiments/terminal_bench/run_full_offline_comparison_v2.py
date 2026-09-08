@@ -67,6 +67,24 @@ def _sha(path) -> str:
     return digest.hexdigest()
 
 
+def _source_fingerprint(source_root: Path) -> str:
+    paths = [source_root / "pyproject.toml", source_root / "uv.lock"]
+    paths += sorted((source_root / "experiments" / "terminal_bench").glob(
+        "*.py"))
+    paths += sorted((source_root / "experiments" / "common").rglob("*.py"))
+    paths += sorted((source_root / "verifier").rglob("*.py"))
+    paths += sorted((source_root / "protocol").rglob("*"))
+    digest = hashlib.sha256()
+    for path in paths:
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source_root).as_posix().encode()
+        raw = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big") + relative)
+        digest.update(len(raw).to_bytes(8, "big") + raw)
+    return digest.hexdigest()
+
+
 def _strict_object(pairs):
     result = {}
     for key, value in pairs:
@@ -293,12 +311,23 @@ def validate_plan(plan, *, require_fresh_outputs=True):
             or not isinstance(source["fingerprint"], str)
             or not _HASH.fullmatch(source["fingerprint"])):
         raise ValueError("comparison source must be one frozen exact revision")
+    if _source_fingerprint(source_root) != source["fingerprint"]:
+        raise ValueError("comparison source fingerprint changed")
     if (not isinstance(plan["coordinator_sha256"], str)
             or _sha(__file__) != plan["coordinator_sha256"]
             or not isinstance(plan["accounting_helper_sha256"], str)
             or _sha(_accounting.__file__)
             != plan["accounting_helper_sha256"]):
         raise ValueError("comparison coordinator/support source changed")
+    expected_support = source_root / "experiments" / "terminal_bench"
+    worker_path = _path(plan["worker_path"], existing=True)
+    projection_path = _path(plan["projection_path"], existing=True)
+    if worker_path != (expected_support / "run_full_offline_worker_v2.py") \
+            .resolve(strict=True):
+        raise ValueError("worker must be the canonical frozen-source worker")
+    if projection_path != (expected_support / "project_full_offline_result.py") \
+            .resolve(strict=True):
+        raise ValueError("projection must be the canonical frozen-source helper")
     worker = _load_pinned("worker", plan["worker_path"],
                           plan["worker_sha256"])
     projection = _load_pinned("projection", plan["projection_path"],

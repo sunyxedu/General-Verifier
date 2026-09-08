@@ -22,8 +22,10 @@ def _write(path: Path, value) -> str:
 def _fixture_plan(tmp_path, monkeypatch):
     source = tmp_path / "frozen-source"
     source.mkdir(parents=True)
-    worker_file = tmp_path / "worker.py"
-    projection_file = tmp_path / "projection.py"
+    support = source / "experiments" / "terminal_bench"
+    support.mkdir(parents=True)
+    worker_file = support / "run_full_offline_worker_v2.py"
+    projection_file = support / "project_full_offline_result.py"
     worker_file.write_text("# pinned worker fixture\n")
     projection_file.write_text("# pinned projection fixture\n")
     fake_worker = SimpleNamespace(
@@ -36,7 +38,7 @@ def _fixture_plan(tmp_path, monkeypatch):
             fake_worker if name == "worker" else fake_projection))
     source_identity = {
         "root": str(source.resolve()), "commit": "a" * 40,
-        "fingerprint": "b" * 64,
+        "fingerprint": comparison._source_fingerprint(source),
     }
     pairs = []
     ordinal = 0
@@ -113,6 +115,16 @@ def test_plan_enforces_same_current_source_and_three_balanced_families(
         "documents", "filesystem", "records"}
     assert all(job["worker_plan"]["source_commit"] == "a" * 40
                for pair in pairs for job in pair["jobs"])
+
+
+def test_worker_is_bound_to_frozen_source_before_import(tmp_path, monkeypatch):
+    plan = _fixture_plan(tmp_path, monkeypatch)
+    external = tmp_path / "external-worker.py"
+    external.write_text("raise RuntimeError('must not import')\n")
+    plan["worker_path"] = str(external.resolve())
+    plan["worker_sha256"] = comparison._sha(external)
+    with pytest.raises(ValueError, match="canonical frozen-source worker"):
+        comparison.validate_plan(plan)
 
 
 def test_plan_rejects_source_confounding_and_non_arm_differences(
