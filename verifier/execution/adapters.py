@@ -714,6 +714,7 @@ class TextValueAdapter(MethodAdapter):
     """
 
     name = "document.text"
+    accepted_method_reuse = True
     basis = BASIS_WORLD
     summary = (
         "Decode one bounded regular world file as strict UTF-8 and apply one "

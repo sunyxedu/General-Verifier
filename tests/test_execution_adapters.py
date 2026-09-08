@@ -145,6 +145,8 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
     }
     command = next(item for item in catalog
                    if item["name"] == "ledger.tool-call-string")
+    text = next(item for item in catalog if item["name"] == "document.text")
+    assert text["accepted_method_reuse"] is True
     assert command["basis"] == BASIS_RECORD
     assert "never parses or executes" in command["summary"]
     assert not any(item["basis"] == BASIS_WORLD
@@ -913,6 +915,42 @@ def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
     assert sum(len(backend.calls) for backend in backends) == 3
     assert outcomes.count(OUTCOME_HOLDS) == 5
     assert outcomes.count(OUTCOME_REFUTED) == 5
+
+
+def test_text_method_reuse_rechecks_bytes_and_keeps_direction_signatures(
+        tmp_path):
+    cache = AcceptedMethodCache()
+    typed = method(
+        "document.text", {
+            "address": "/app/result.json", "predicate": "contains",
+            "expected": '"status": "completed"',
+        }, inputs=[subject("/app/result.json")])
+    cases = (("completed", OUTCOME_HOLDS), ("wrong", OUTCOME_REFUTED),
+             ("completed", OUTCOME_HOLDS))
+    observed = []
+    for index, (status, expected) in enumerate(cases, 1):
+        _, _, artifacts, log, fallback, routing = captured_candidate(
+            tmp_path, f"text-candidate-{index}", status=status)
+        backend = FixtureBackend(
+            {"oracles": {"methods": [typed]}, "judger": JUDGE_YES}
+            if index < 3 else {})
+        game = BindingGame(
+            backend, artifacts, log, routing, live_world=False,
+            method_cache=cache)
+        result = game.run(
+            {**ROW, "id": f"text-c{index}"},
+            Obligation(f"text-candidate-{index}",
+                       "status text contains completed", BASIS_WORLD))
+        assert result.outcome == expected
+        assert fallback.calls == []
+        observed.append((backend, list(log.replay())))
+
+    assert [call["role"] for call in observed[0][0].calls] == [
+        "oracles", "judger"]
+    assert [call["role"] for call in observed[1][0].calls] == ["judger"]
+    assert observed[2][0].calls == []
+    assert any(event["type"] == "method_cache_hit"
+               for event in observed[2][1])
 
 
 def test_inapplicable_cached_method_falls_back_to_full_binding_game(tmp_path):
