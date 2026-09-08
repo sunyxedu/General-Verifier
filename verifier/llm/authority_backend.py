@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from .agents import AgentBackend, AgentRole
-from .codex_backend import CodexBackend
+from .codex_backend import CodexBackend, _completed_response_without_usage
 from .schema import FixtureBackend, RoleError
 
 
@@ -157,6 +157,13 @@ class _AuthorityCodexBackend(CodexBackend):
 
     def _validate_attempt_stream(self, stdout):
         validate_authority_stream(stdout)
+
+    def _recover_completed_response(self, stdout):
+        # The existing capability validator runs first. Permit only its exact
+        # known startup notice, not arbitrary errors, tool activity or a new
+        # event dialect. The recovery parser still checks unique item IDs.
+        return _completed_response_without_usage(
+            stdout, permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE)
 
 
 @dataclass(frozen=True)

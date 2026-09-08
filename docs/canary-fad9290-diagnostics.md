@@ -184,9 +184,9 @@ not a change to production scheduling and not a substitute for full-e2e
 acceptance. Compiler/Critic source logs must remain unadjudicated; a completed
 arm's verdicts or certificates cannot be used to manufacture a shared setup.
 
-## Gcode control: still running, one usage gap
+## Gcode control: completed, cost incomplete
 
-A later read-only snapshot of the first gcode control candidate found no
+A read-only snapshot before completion of the first gcode control candidate found no
 certificate or completed result row yet. The runner and Codex processes were
 alive, and the discharge script/output files were still changing. The active
 semantic check had progressed from a method that only checked the output file,
@@ -199,5 +199,15 @@ usage telemetry, leaving its token counts unknown. It must remain an
 incomplete paid attempt, not a zero-token success. The frozen run lacks the
 new causal sidecar; cumulative role times and temporal proximity cannot
 establish its dependency critical path or allocate concurrent costs by claim.
-The current observation is progress with an accounting gap, not a completed
-gcode A/B result. Do not extrapolate a cost or latency ratio from it.
+The control process subsequently completed both candidates in **3,686.011
+seconds (61.4 minutes)**, exit 0, with no result-audit errors. It recorded 70
+started model attempts: 27 discharge, 20 Oracle, 13 Judger, 4 Compiler, 4
+Critic and 2 Extractor calls. One discharge attempt still has unknown usage.
+The outer driver therefore exited 1 at this accounting gate and did not run
+the gcode treatment or either compressor arm. Its session is terminal, not
+merely quiet; it must not be described as continuing in the background.
+
+This is not a completed gcode A/B comparison. Do not extrapolate a cost or
+latency ratio from it. The new
+[counter-only response recovery](usage-response-recovery.md) cannot establish
+what happened in that historical stream or retroactively repair its costs.

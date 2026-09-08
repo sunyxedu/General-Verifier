@@ -253,6 +253,20 @@ Regression verification of this foundation: **898 passed, 4 skipped, 4
 subtests passed**, with the same missing optional module excluded. These are
 correctness/boundary tests, not evidence of additional performance gains.
 
+The next revision adds exact shared-setup Compiler/Critic claim coverage and
+[counter-only response recovery](usage-response-recovery.md). A structurally
+complete, schema-valid response with matching output-file bytes can avoid a
+second generation caused solely by invalid counters, across online/offline
+roles. Its entire usage remains unknown and the cost gate still fails. Model
+stage responsibilities, authority capabilities and schema retry limits are
+unchanged. Local regression: **971 passed, 4 skipped, 4 subtests passed**,
+with the same optional module excluded.
+
+The frozen gcode control has also finished: 61.4 minutes, 70 attempts, one
+unrecoverable usage gap. Its driver stopped at the accounting gate; gcode
+treatment and compressor arms were not executed. No new measured performance
+ratio or zero-loss claim follows from this partial suite.
+
 ### Optimization direction
 
 OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)

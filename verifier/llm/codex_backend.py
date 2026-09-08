@@ -194,7 +194,8 @@ def _usage_target(cwd: Optional[str]) -> Optional[tuple[str, Dict[str, Any]]]:
 def _exact_nonnegative_int(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise RoleError(
-            f"codex exec turn.completed usage has invalid {field}: {value!r}")
+            f"codex exec turn.completed usage has invalid {field}: "
+            "expected a nonnegative integer")
     return value
 
 
@@ -324,7 +325,7 @@ def _transient_failure_reason(
             continue
         try:
             event = json.loads(raw)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             continue
         if not isinstance(event, dict):
             continue
@@ -373,9 +374,9 @@ def _parse_exec_telemetry(stdout: str) -> _ExecTelemetry:
             continue
         try:
             event = json.loads(raw)
-        except json.JSONDecodeError as err:
+        except (ValueError, RecursionError) as err:
             raise RoleError(
-                f"codex exec --json emitted malformed line {number}: {err}")
+                f"codex exec --json emitted malformed line {number}") from err
         if not isinstance(event, dict):
             raise RoleError(
                 f"codex exec --json emitted a non-object on line {number}")
@@ -419,6 +420,120 @@ def _parse_exec_telemetry(stdout: str) -> _ExecTelemetry:
         thread_id=thread_ids[0], usage=usage, last_message=last_message)
 
 
+def _completed_response_without_usage(
+    stdout: str, *, permitted_startup_notice: Optional[str] = None,
+) -> Optional[str]:
+    """Recover only a structurally complete response, never token counters.
+
+    A billing-only gap must not force another paid generation of an already
+    complete answer. This deliberately narrower fallback requires strict,
+    ordered JSONL and a final agent message; malformed, partial, ambiguous or
+    failed streams remain failures. The role's capability policy and output
+    schema are still checked afterwards. Usage remains invalid/unknown.
+    """
+    if not isinstance(stdout, str) or len(stdout) > 32 * 1024 * 1024:
+        return None
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate event key")
+            result[key] = value
+        return result
+
+    def no_constant(_value):
+        raise ValueError("non-finite event value")
+
+    phase, last_message = "new", None
+    active_items, completed_items = {}, set()
+    notice_seen = False
+    try:
+        for number, line in enumerate(stdout.splitlines(), 1):
+            if number > 100_000:
+                return None
+            if not line.strip():
+                continue
+            event = json.loads(line, object_pairs_hook=unique_object,
+                               parse_constant=no_constant)
+            if not isinstance(event, dict):
+                return None
+            kind = event.get("type")
+            if phase == "new" and kind == "thread.started":
+                thread_id = event.get("thread_id")
+                if not isinstance(thread_id, str) or not thread_id.strip():
+                    return None
+                phase = "thread"
+            elif (phase == "thread" and kind == "item.completed"
+                  and permitted_startup_notice is not None):
+                item = event.get("item")
+                if (notice_seen or not isinstance(item, dict) or item.get("type") != "error"
+                        or item.get("message") != permitted_startup_notice
+                        or not set(item) <= {"id", "type", "message"}
+                        or not isinstance(item.get("id"), str) or not item["id"]
+                        or item["id"] in completed_items):
+                    return None
+                completed_items.add(item["id"])
+                notice_seen = True
+            elif phase == "thread" and kind == "turn.started":
+                phase = "turn"
+            elif phase == "turn" and kind in (
+                    "item.started", "item.updated", "item.completed"):
+                item = event.get("item")
+                if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+                    return None
+                item_id = item.get("id")
+                if (item["type"] == "error" or last_message is not None
+                        or not isinstance(item_id, str) or not item_id
+                        or item_id in completed_items):
+                    return None
+                if kind == "item.started":
+                    if item_id in active_items:
+                        return None
+                    active_items[item_id] = item["type"]
+                elif kind == "item.updated":
+                    if active_items.get(item_id) != item["type"]:
+                        return None
+                else:
+                    # Completion-only items are part of the documented JSONL
+                    # shape. A started item must still finish with its type.
+                    if item_id in active_items and active_items[item_id] != item["type"]:
+                        return None
+                    active_items.pop(item_id, None)
+                    completed_items.add(item_id)
+                if kind == "item.completed" and item["type"] == "agent_message":
+                    if not isinstance(item.get("text"), str) or not item["text"].strip():
+                        return None
+                    last_message = item["text"].strip()
+            elif (phase == "turn" and kind == "turn.completed"
+                  and last_message and not active_items):
+                phase = "complete"
+            else:
+                return None
+    except (ValueError, TypeError, RecursionError):
+        return None
+    return last_message if phase == "complete" else None
+
+
+def _usage_error_code(error: Optional[str]) -> Optional[str]:
+    """Persist bounded parser categories, never untrusted field values."""
+    if error is None:
+        return None
+    for field in (*_USAGE_REQUIRED_FIELDS, "cache_write_input_tokens"):
+        if error.startswith(f"codex exec turn.completed usage has invalid {field}:"):
+            return "invalid_counter:" + field
+    for prefix, code in (
+        ("codex exec --json emitted malformed line", "malformed_jsonl"),
+        ("codex exec --json emitted a non-object", "non_object_event"),
+        ("codex exec --json must emit exactly one thread.started", "thread_identity"),
+        ("codex exec --json must emit exactly one turn.completed usage", "completion_or_usage_object"),
+        ("codex exec reported cached_input_tokens greater than input_tokens", "cached_exceeds_input"),
+    ):
+        if error.startswith(prefix):
+            return code
+    return "incomplete_or_unclassified"
+
+
 def _append_usage_record(path: str, record: Mapping[str, Any]) -> None:
     encoded = json.dumps(
         dict(record), ensure_ascii=False, sort_keys=True,
@@ -453,7 +568,7 @@ def _attempt_usage(stdout: Any, *, force_incomplete: bool = False,
             continue
         try:
             event = json.loads(raw)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             malformed = True
             continue
         if not isinstance(event, dict):
@@ -551,6 +666,7 @@ def _record_codex_attempt(
         "attempt_status": attempt_status,
         "usage_status": usage.status,
         "usage_complete": usage.telemetry is not None,
+        "usage_error_code": _usage_error_code(usage.error),
         "usage_error": ({
             "unknown": "usage telemetry was not observed",
             "partial": "usage telemetry was incomplete",
@@ -780,6 +896,10 @@ class CodexBackend:
 
     def _validate_attempt_stream(self, stdout: str) -> None:
         """Optional stricter stream policy for capability-limited subclasses."""
+
+    def _recover_completed_response(self, stdout: str) -> Optional[str]:
+        """Called only after the role's stream policy has passed."""
+        return _completed_response_without_usage(stdout)
 
     @staticmethod
     def _image_mime(data: bytes) -> Optional[str]:
@@ -1442,23 +1562,14 @@ class CodexBackend:
                         f"{role_name}: codex exec failed "
                         f"(rc={proc.returncode}, "
                         f"stderr={proc.stderr[-300:]!r})")
-                if usage_target is not None \
-                        and attempt_usage.telemetry is None:
-                    _record_codex_attempt(
-                        usage_target, base=attempt_base,
-                        attempt_id=attempt_id, attempt_index=attempt + 1,
-                        started=True, attempt_status="telemetry_error",
-                        returncode=proc.returncode,
-                        started_at_unix_ns=started_at_unix_ns,
-                        finished_at_unix_ns=finished_at_unix_ns,
-                        duration_ns=duration_ns, stdout=stdout,
-                        error_kind="usage_protocol",
-                        error="Codex CLI usage telemetry was incomplete",
-                    )
-                    raise RoleError(attempt_usage.error or
-                                    "codex exec usage telemetry incomplete")
                 try:
                     self._validate_attempt_stream(stdout)
+                    response_without_usage = None
+                    usage_code = _usage_error_code(attempt_usage.error) or ""
+                    if (usage_target is not None and attempt_usage.telemetry is None
+                            and (usage_code.startswith("invalid_counter:")
+                                 or usage_code == "cached_exceeds_input")):
+                        response_without_usage = self._recover_completed_response(stdout)
                 except RoleError:
                     _record_codex_attempt(
                         usage_target, base=attempt_base,
@@ -1485,6 +1596,21 @@ class CodexBackend:
                         error="Codex CLI event-stream validation interrupted",
                     )
                     raise
+                if usage_target is not None and attempt_usage.telemetry is None \
+                        and response_without_usage is None:
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=True, attempt_status="telemetry_error",
+                        returncode=proc.returncode,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns, stdout=stdout,
+                        error_kind="usage_protocol",
+                        error="Codex CLI usage telemetry was incomplete",
+                    )
+                    raise RoleError(attempt_usage.error or
+                                    "codex exec usage telemetry incomplete")
                 completed_attempt = {
                     "attempt_id": attempt_id,
                     "attempt_index": attempt + 1,
@@ -1494,6 +1620,7 @@ class CodexBackend:
                     "duration_ns": duration_ns,
                     "stdout": stdout,
                     "usage": attempt_usage,
+                    "response_without_usage": response_without_usage,
                 }
                 break
 
@@ -1525,6 +1652,19 @@ class CodexBackend:
                     )
                     terminal_recorded = True
                     raise
+                response_without_usage = completed_attempt["response_without_usage"]
+                if response_without_usage is not None:
+                    if not text or text != response_without_usage:
+                        _record_codex_attempt(
+                            usage_target, base=attempt_base,
+                            started=True, attempt_status="output_error",
+                            error_kind="output_stream_mismatch",
+                            error="Final output file was absent or disagreed with completed agent message",
+                            **attempt_fields,
+                        )
+                        terminal_recorded = True
+                        raise RoleError("codex final output is missing or disagrees with its completed stream")
+                    text = response_without_usage
                 if not text:
                     text = (telemetry.last_message if telemetry is not None
                             else completed_attempt["stdout"].strip())
