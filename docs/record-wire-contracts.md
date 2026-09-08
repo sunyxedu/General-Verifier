@@ -212,3 +212,30 @@ After the default-off full offline profile plumbing, local regression completed
 with 1,384 passed, 4 skipped and 4 subtests passed, retaining the same optional
 `test_score_llm_verifier.py` exclusion. Unit coverage is not a replacement for
 the failed paid semantic gate.
+
+## Direction-certificate consistency
+
+The original `be3581a9` Judger already accepts either a full decision procedure
+or a certificate entailing the full obligation in its realized direction.
+`AXIOM_STRENGTH` is unchanged. Two later instructions were ambiguous: the
+decisive-tier sentence mentioned only a full decision procedure, and COVERAGE
+could be read as requiring both possible outcomes to be decided. The narrow
+wording repair makes both instructions use the existing direction standard.
+It changes no role, schema, tool permission, stage order, retry budget, witness
+authorization, or mechanical acceptance gate.
+
+| Full obligation | Submitted outcome | Required coverage |
+| --- | --- | --- |
+| Existential | holds | One independently verified in-domain witness suffices |
+| Existential | refuted | A partial no-match prefix is insufficient; absence needs full authorized scope |
+| Universal | holds | A passing sample is insufficient; need full-domain evidence or proof |
+| Universal | refuted | One independently verified in-domain counterexample suffices |
+
+The unchanged `contract_complete=no` rule still requires `sufficient=no`;
+promised evidence omitted in execution still requires `faithful=no`. The
+Judger still independently verifies membership, predicates, provenance, method
+identity and evidence. This is not an automatic acceptance of a matching
+adapter receipt and does not impose a new subject snapshot or online epoch.
+An isolated four-case Judger diagnostic must check both accepted and rejected
+directions before a new full BindingGame/Terminal-Bench evaluation. Prompt
+consistency and fixture tests alone do not prove model-level parity or speedup.
