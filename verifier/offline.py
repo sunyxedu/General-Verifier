@@ -363,7 +363,6 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
     from .execution.config import (
         APPEND_ONLY_DELTA_PROTOCOL,
         append_only_deltas_enabled,
-        contract_cache_enabled,
         offline_runtime_read_roots,
         typed_adapters_enabled,
         typed_judger_packet_enabled,
@@ -379,7 +378,9 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
             TYPED_JUDGER_PACKET_PROTOCOL)
     else:
         fields["typed_adapter_judger_packet_protocol"] = None
-    fields["contract_cache"] = contract_cache_enabled()
+    # The shipped online/offline kernel never injects a contract cache: the
+    # Obligation Compiler and Critic are part of every production run.
+    fields["contract_cache"] = False
     fields["append_only_deltas"] = append_only_deltas_enabled()
     fields["append_only_delta_protocol"] = (
         APPEND_ONLY_DELTA_PROTOCOL

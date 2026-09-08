@@ -86,7 +86,12 @@ def offline_runtime_read_roots(
 
 
 def contract_cache_enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
-    """Experimental authority-only compilation; opt in until evaluated."""
+    """Parse the diagnostic contract-cache flag.
+
+    Production online/offline kernel construction deliberately ignores this
+    flag so Obligation Compiler and Critic stages cannot be bypassed. Tests or
+    research harnesses may inject a cache directly into ``Kernel``.
+    """
     values = os.environ if environ is None else environ
     value = values.get(CONTRACT_CACHE_ENV, "0")
     if value not in ("0", "1"):
