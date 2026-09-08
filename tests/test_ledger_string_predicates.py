@@ -79,7 +79,7 @@ def adapter_method(arguments, *, version=2):
     }
 
 
-def harness(tmp_path, *, default_registry=False):
+def harness(tmp_path, *, default_registry=False, live_world=False):
     state = tmp_path / "gv"
     state.mkdir()
     artifacts = ArtifactStore(str(state / "artifacts"))
@@ -91,7 +91,8 @@ def harness(tmp_path, *, default_registry=False):
                     LedgerToolCallStringAdapterV2(),
                 )))
     routing = AdapterRoutingDischarger(
-        fallback, registry, artifacts, log, str(state), live_world=False)
+        fallback, registry, artifacts, log, str(state),
+        live_world=live_world)
     return state, artifacts, log, fallback, routing
 
 
@@ -520,6 +521,49 @@ def test_compact_v2_receipts_cover_large_selections_without_retaining_them(
     assert legacy_observation["selected_count"] == 80
     assert len(legacy_observation["selected"]) == 64
     assert legacy_observation["selected_truncated"] is True
+
+
+@pytest.mark.parametrize("live_world", [False, True])
+def test_explicit_ledger_prefix_has_online_offline_parity_and_fresh_suffix(
+        tmp_path, live_world):
+    _, artifacts, log, fallback, routing = harness(
+        tmp_path, live_world=live_world)
+    prefix = append_value(
+        log, "retained payload", tool="opaque-runtime.v7", pointer="result")
+    arguments = {
+        "selector": "all",
+        "value_pointer": "/input/result",
+        "through_seq": prefix["seq"],
+        "tool_names": ["opaque-runtime.v7"],
+        "predicate": "nonblank",
+    }
+
+    before = discharge(routing, arguments)
+    before_snapshot = execution(artifacts, before)["observation"]["snapshot"]
+    suffix = append_value(
+        log, "\u2003\t", tool="opaque-runtime.v7", pointer="result")
+    unchanged = discharge(routing, arguments)
+    unchanged_snapshot = execution(
+        artifacts, unchanged)["observation"]["snapshot"]
+    extended = discharge(
+        routing, {**arguments, "through_seq": suffix["seq"]})
+    extended_snapshot = execution(
+        artifacts, extended)["observation"]["snapshot"]
+
+    assert before.outcome == OUTCOME_HOLDS
+    assert unchanged.outcome == OUTCOME_HOLDS
+    assert before.artifact == unchanged.artifact
+    assert before_snapshot == unchanged_snapshot
+    assert before_snapshot["candidate_string_count"] == 1
+    assert extended.outcome == OUTCOME_REFUTED
+    assert extended.witness_kind == WITNESS_RECORD_CONTRADICTION
+    assert extended.artifact != before.artifact
+    assert extended_snapshot["through_seq"] == suffix["seq"]
+    assert extended_snapshot["candidate_string_count"] == 2
+    assert extended_snapshot["prefix_events_digest"] \
+        != before_snapshot["prefix_events_digest"]
+    assert routing.supports_method_reuse(adapter_method(arguments)) is False
+    assert fallback.calls == []
 
 
 def test_through_seq_is_exact_and_corrupt_future_suffix_is_not_parsed(tmp_path):
