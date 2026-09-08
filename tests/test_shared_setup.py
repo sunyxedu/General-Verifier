@@ -73,7 +73,7 @@ def _scope(role):
         "judger": "judger",
     }[role]
     value = {
-        "claim_id": "a" * 64,
+        "claim_id": _FINAL.id,
         "claim_kind": "final",
         "locus": "final_task",
         "stage": stage,
@@ -278,6 +278,18 @@ def test_setup_record_requires_independent_complete_operator_pins(tmp_path):
     assert "operator_identity_not_fully_pinned" in " ".join(
         partial["findings"])
 
+    wrong_identity = _record_identity(record)
+    wrong_identity["setup_id"] = "another-setup"
+    mismatched = shared_setup.validate_setup_record(
+        record, output,
+        expected_bundle_sha256=record["bundle_sha256"],
+        expected_identity=wrong_identity,
+        expected_contract_identity=_CONTRACT_IDENTITY,
+        expected_compile_inputs=_COMPILE_INPUTS,
+    )
+    assert "identity_mismatch:setup_id" in " ".join(
+        mismatched["findings"])
+
 
 def test_self_pinned_arbitrary_bundle_is_not_a_valid_replay_bundle(tmp_path):
     output, record, _usage, _spans_path, bundle = _fixture(tmp_path)
@@ -399,6 +411,60 @@ def test_setup_rejects_replay_role_missing_span_and_missing_attempt(tmp_path):
     assert missing_attempt["complete"] is False
     assert "span_call_without_usage" in " ".join(
         missing_attempt["findings"])
+
+
+def test_bundle_claims_require_exact_compiler_and_critic_span_coverage(
+        tmp_path):
+    output, record, usage, spans, _bundle = _fixture(tmp_path)
+    unrelated = "f" * 64
+    span_rows = [json.loads(line) for line in spans.read_text().splitlines()]
+    for row in span_rows:
+        if row.get("role") == "critic" or (
+                row.get("record_type", "").startswith("role_attempt_")
+                and row.get("stage") == "contract_critic"):
+            row["claim_id"] = unrelated
+    _write_jsonl(spans, span_rows)
+
+    mismatched = _validate(record, output)
+
+    assert mismatched["complete"] is False
+    assert mismatched["claim_scope_validation"] == {
+        "complete": False, "expected": 1, "compiler": 1, "critic": 1,
+    }
+    assert "critic_claim_scope_mismatch" in " ".join(
+        mismatched["findings"])
+
+    # Complete unrelated Compiler+Critic lifecycles are still forbidden.
+    usage_rows = [json.loads(line) for line in usage.read_text().splitlines()]
+    usage_rows.extend([_attempt(4, "obligations"), _attempt(5, "critic")])
+    _write_jsonl(usage, usage_rows)
+    extra_spans = []
+    for call_number, role in ((4, "obligations"), (5, "critic")):
+        rows = _spans(call_number, role)
+        for row in rows:
+            row["claim_id"] = unrelated
+        extra_spans.extend(rows)
+    original = [row for row in span_rows if row.get("stage") != "contract_critic"]
+    original.extend(_spans(3, "critic"))
+    _write_jsonl(spans, [*original, *extra_spans])
+
+    extra = _validate(record, output)
+    assert extra["complete"] is False
+    assert "compiler_claim_scope_mismatch" in " ".join(extra["findings"])
+    assert "critic_claim_scope_mismatch" in " ".join(extra["findings"])
+
+
+def test_cross_candidate_cache_lineage_is_explicitly_unavailable(tmp_path):
+    output, record, _usage, _spans_path, _bundle = _fixture(tmp_path)
+    record = copy.deepcopy(record)
+    record["phase"] = "warm"
+    record["trials"] = ["task__other", "task__trial"]
+
+    audit = _validate(record, output)
+
+    assert audit["complete"] is False
+    assert "cross_candidate_cache_lineage_unavailable" in " ".join(
+        audit["findings"])
 
 
 def test_usage_cap_is_applied_before_any_unbounded_attempt_audit(

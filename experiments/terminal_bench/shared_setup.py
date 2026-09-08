@@ -64,9 +64,10 @@ _RECORD_FIELDS = frozenset({
 })
 _RUNTIME_FIELDS = ("model", "effort", "service_tier")
 EXPECTED_IDENTITY_FIELDS = frozenset({
-    "comparison", "tier", "phase", "rep", "group_key", "job", "tasks",
-    "trials", "source_root", "source_commit", "verifier_fingerprint",
-    "manifest_sha256", "model", "seats", "effort", "service_tier",
+    "setup_id", "comparison", "tier", "phase", "rep", "group_key", "job",
+    "tasks", "trials", "source_root", "source_commit",
+    "verifier_fingerprint", "manifest_sha256", "model", "seats", "effort",
+    "service_tier",
 })
 
 
@@ -323,6 +324,15 @@ def validate_setup_record(
             not isinstance(record.get("tasks"), list)
             or len(record["tasks"]) != 1):
         findings.append("record:invalid_warm_group")
+    if isinstance(record.get("phase"), str) \
+            and record.get("phase") in {"warm", "batch"} \
+            and isinstance(record.get("trials"), list) \
+            and len(record["trials"]) > 1:
+        # A later candidate may consume a task-final contract cache entry
+        # without issuing its own Compiler/Critic calls.  Until the producer
+        # exports a validated source-receipt lineage for that hit, a single
+        # bundle plus group-level calls cannot prove which build it charges.
+        findings.append("record:cross_candidate_cache_lineage_unavailable")
     if not isinstance(record.get("source_commit"), str) \
             or _HEX40.fullmatch(record["source_commit"]) is None:
         findings.append("record:invalid_source_commit")
@@ -459,7 +469,31 @@ def validate_setup_record(
         if record.get("allowed_model_work_only") is not observed_allowed:
             findings.append("record:allowed_work_claim_mismatch")
 
+    claim_scope_complete = False
+    claim_scope = {"expected": 0, "compiler": 0, "critic": 0}
+    if (replay_bundle is not None and model_work is not None
+            and isinstance(expected_compile_inputs, Mapping)):
+        expected_claims = set(expected_compile_inputs)
+        observed = {"obligations": set(), "critic": set()}
+        for group in (model_work.get("span_report") or {}).get("groups") or []:
+            role = group.get("role")
+            if role in observed:
+                observed[role].add(group.get("claim_id"))
+        claim_scope = {
+            "expected": len(expected_claims),
+            "compiler": len(observed["obligations"]),
+            "critic": len(observed["critic"]),
+        }
+        if observed["obligations"] != expected_claims:
+            findings.append("model_work:compiler_claim_scope_mismatch")
+        if observed["critic"] != expected_claims:
+            findings.append("model_work:critic_claim_scope_mismatch")
+        claim_scope_complete = (
+            observed["obligations"] == expected_claims
+            and observed["critic"] == expected_claims)
+
     complete = (not findings and replay_bundle is not None
+                and claim_scope_complete
                 and model_work is not None
                 and model_work["complete"] is True)
     return {
@@ -472,6 +506,10 @@ def validate_setup_record(
             "complete": replay_bundle is not None,
             "bundle_sha256": (replay_bundle.sha256
                               if replay_bundle is not None else None),
+        },
+        "claim_scope_validation": {
+            "complete": claim_scope_complete,
+            **claim_scope,
         },
     }
 

@@ -255,12 +255,16 @@ directory before any model call, without deleting prior evidence. Re-running
 extraction alone would not remove old artifacts, so returning to normal
 scoring requires a new directory copied from sealed immutable inputs only.
 
-One remaining accounting integration gate is claim-to-call lineage: a valid
+Claim-to-call lineage is a required accounting gate: a valid
 bundle and a complete but unrelated setup usage file cannot establish the
 cost of preparing that bundle. Every contract needs its actual Compiler and
 Critic span/receipt linkage, and warm final-cache reuse must link to the
 original shared, charged pass instead of inventing a fresh compilation.
 Generic token addition alone is not proof of this correspondence.
+The standalone validator now requires exact bidirectional Compiler/Critic
+claim coverage and pins `setup_id`. Multi-candidate warm/batch setups remain
+explicitly incomplete until source-receipt lineage is implemented; matching
+claim IDs alone is not a replacement for the producer's real pass receipts.
 
 A zero observed verdict/rank mismatch on 20 candidates has a 95%
 rule-of-three-style upper bound of about 13.9% on an unconstrained disagreement
