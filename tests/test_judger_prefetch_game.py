@@ -14,7 +14,7 @@ from verifier.engine.game import Attempt, BindingGame
 from verifier.engine.judger_prefetch import JudgerEvidencePacket
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm.schema import FixtureBackend
+from verifier.llm.schema import FixtureBackend, RoleError
 
 
 YES = {
@@ -149,7 +149,7 @@ def test_enabled_packet_is_private_typed_and_freshly_revalidated(tmp_path, live_
 
 @pytest.mark.parametrize("changed_source", ["ledger", "artifact"])
 @pytest.mark.parametrize("live_world", [False, True])
-def test_changed_packet_is_discarded_then_original_path_uses_existing_retry(
+def test_changed_packet_is_discarded_then_retry_builds_a_fresh_packet(
     tmp_path, changed_source, live_world,
 ):
     state, log, artifacts, result, obligation = _fixture(tmp_path)
@@ -178,7 +178,8 @@ def test_changed_packet_is_discarded_then_original_path_uses_existing_retry(
     assert verdict == YES and attempt.audit == YES
     assert len(backend.calls) == 2
     assert type(backend.calls[0]["packet"]) is JudgerEvidencePacket
-    assert backend.calls[1]["packet"] is None
+    assert type(backend.calls[1]["packet"]) is JudgerEvidencePacket
+    assert backend.calls[1]["packet"] is not backend.calls[0]["packet"]
     failures = [event for event in log.replay()
                 if event["type"] == "judger_call_failed"]
     assert len(failures) == 1
@@ -237,6 +238,50 @@ def test_build_failure_uses_original_path_without_spending_retry(
 
     assert verdict == YES and len(calls) == 1
     assert len(backend.calls) == 1 and backend.calls[0]["packet"] is None
+
+
+class _FailOneLogicalCallBackend(_CaptureBackend):
+    def complete(self, role_name, prompt, variables):
+        packet = variables.get("_judger_evidence_packet")
+        self.calls.append({
+            "role": role_name,
+            "packet": packet,
+            "ordinary_keys": tuple(sorted(
+                key for key in variables if not key.startswith("_"))),
+        })
+        # AgentRole performs two schema/infrastructure attempts inside one
+        # BindingGame call. Exhaust that call, then let the game retry once.
+        if len(self.calls) <= 2:
+            raise RoleError("fixture transient Judger failure")
+        return dict(YES)
+
+
+def test_each_game_level_judger_retry_builds_and_revalidates_fresh_packet(
+    tmp_path, monkeypatch,
+):
+    backend = _FailOneLogicalCallBackend(enabled=True)
+    original_build = game_module.build_judger_evidence_packet
+    built = []
+
+    def build(*args):
+        packet = original_build(*args)
+        built.append(packet)
+        return packet
+
+    monkeypatch.setattr(game_module, "build_judger_evidence_packet", build)
+    verdict, attempt, log, _artifacts, _result = _judge(
+        tmp_path, backend, retries=1)
+
+    assert verdict == YES and attempt.audit == YES
+    assert len(built) == 2
+    assert all(type(packet) is JudgerEvidencePacket for packet in built)
+    assert built[0] is not built[1]
+    assert [call["packet"] for call in backend.calls] == [
+        built[0], built[0], built[1]]
+    failures = [event for event in log.replay()
+                if event["type"] == "judger_call_failed"]
+    assert len(failures) == 1
+    assert failures[0]["payload"]["will_retry"] is True
 
 
 class _OneShotDischarger:

@@ -73,7 +73,7 @@ def _read_jsonl(path: Path, *, optional: bool = False) \
             data = handle.read(MAX_LEDGER_BYTES + 1)
         if len(data) > MAX_LEDGER_BYTES:
             return [], [f"ledger_too_large:{path.name}"]
-        lines = data.decode("utf-8").splitlines()
+        lines = data.decode("utf-8").split("\n")
     except (OSError, UnicodeError):
         return [], [f"cannot_read:{path.name}"]
     if len(lines) > MAX_LEDGER_ROWS:

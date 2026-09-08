@@ -227,6 +227,30 @@ def test_observed_eof_receipt_binds_complete_point_in_time_bytes(
     assert fallback.calls == []
 
 
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_observed_eof_treats_unicode_string_separators_as_json_content(
+        tmp_path, separator):
+    state, artifacts, log, fallback, routing = _harness(tmp_path)
+    wanted = _append(log, "before" + separator + "after", session="wanted")
+
+    result = _discharge(routing, {
+        "scope": "observed-eof",
+        "selector": "last",
+        "value_pointer": "/input/value",
+        "after_seq": 0,
+        "tool_names": ["runtime.v7"],
+        "payload_equals": {"/session": "wanted"},
+        "predicate": "equals",
+        "expected": "before" + separator + "after",
+    })
+
+    assert result.outcome == OUTCOME_HOLDS
+    snapshot = _execution(artifacts, result)["observation"]["snapshot"][
+        "observed_eof"]
+    assert snapshot["resolved_through_seq"] == wanted["seq"]
+    assert fallback.calls == []
+
+
 def test_observed_eof_uses_only_the_stable_in_memory_event_source(
     tmp_path, monkeypatch,
 ):

@@ -76,6 +76,25 @@ def test_billing_ignores_unrelated_nested_deep_or_large_item_payload(extra_line)
     }
 
 
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_native_jsonl_uses_only_lf_as_record_delimiter(separator):
+    extra_line = json.dumps({
+        "type": "item.completed",
+        "item": {
+            "id": "tool-1",
+            "type": "command_execution",
+            "aggregated_output": "before" + separator + "after",
+        },
+    }, ensure_ascii=False)
+
+    attempt = _attempt_usage(accounting_stream(extra_line))
+
+    assert attempt.status == "complete"
+    assert attempt.thread_id == "exact-current-thread"
+    assert attempt.telemetry is not None
+    assert attempt.telemetry.usage["input_tokens"] == 100
+
+
 @pytest.mark.parametrize("extra_line", [
     '{"type":"turn.completed","type":"item.completed",'
     '"usage":{"input_tokens":1,"cached_input_tokens":0,'
@@ -168,6 +187,35 @@ def test_scoped_billing_does_not_relax_full_response_stream_validation(
     row = json.loads(ledger.read_text())
     assert row["attempt_status"] == "output_error"
     assert row["usage_status"] == "complete"
+    assert row["usage_complete"] is True
+    assert row["input_tokens"] == 100
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_full_response_parser_keeps_unicode_separators_inside_json_strings(
+        tmp_path, monkeypatch, separator):
+    usage = {
+        "input_tokens": 100,
+        "cached_input_tokens": 60,
+        "output_tokens": 12,
+        "reasoning_output_tokens": 7,
+    }
+    rows = events(usage)
+    rows.insert(2, {"type": "item.completed", "item": {
+        "id": "reasoning-1", "type": "reasoning",
+        "text": "before" + separator + "after",
+    }})
+    stream = "\n".join(
+        json.dumps(row, ensure_ascii=False) for row in rows) + "\n"
+    role, backend, calls = setup_call(tmp_path, monkeypatch, stream)
+    ledger = tmp_path / "usage.jsonl"
+
+    with codex_usage_ledger(str(ledger), {str(tmp_path): {}}):
+        assert role.call(backend, {}) == {"ok": True}
+
+    assert len(calls) == 1
+    row = json.loads(ledger.read_text())
+    assert row["attempt_status"] == "succeeded"
     assert row["usage_complete"] is True
     assert row["input_tokens"] == 100
 

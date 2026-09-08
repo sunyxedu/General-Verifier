@@ -52,6 +52,22 @@ def test_valid_tool_free_stream():
     ))
 
 
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_legal_unicode_string_separators_are_not_jsonl_records(separator):
+    rows = (
+        {"type": "thread.started", "thread_id": "synthetic"},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {
+            "type": "reasoning", "text": "before" + separator + "after"}},
+        {"type": "item.completed", "item": {
+            "type": "agent_message", "text": "{}"}},
+        {"type": "turn.completed", "usage": {}},
+    )
+
+    validate_authority_stream("\n".join(
+        json.dumps(row, ensure_ascii=False) for row in rows))
+
+
 def test_exact_capability_disabled_startup_notice_is_not_a_tool_result():
     raw = stream().splitlines()
     notice = json.dumps({"type": "item.completed", "item": {

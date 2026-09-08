@@ -850,6 +850,11 @@ def _reject_constant(_value):
     raise ValueError("non-finite JSON value")
 
 
+def _native_jsonl_lines(text: str):
+    """Split Codex JSONL at LF, not legal JSON string separators."""
+    return text.split("\n")
+
+
 class _ObjectPairs(list):
     """Distinguish a decoded JSON object from an ordinary JSON array."""
 
@@ -891,7 +896,7 @@ def _parse_usage(text: Optional[str]) -> _Usage:
     threads = []
     completions = []
     try:
-        for raw in text.splitlines():
+        for raw in _native_jsonl_lines(text):
             if not raw.strip():
                 continue
             event_type = _usage_event_type(raw)

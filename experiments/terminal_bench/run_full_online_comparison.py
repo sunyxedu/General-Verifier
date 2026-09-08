@@ -689,7 +689,7 @@ def _observer_rows(job, cap=64 * 1024 * 1024):
     complete_prefix = raw[:prefix_end]
     rows = [json.loads(line, object_pairs_hook=_strict_object,
                        parse_constant=_nonfinite)
-            for line in complete_prefix.decode(errors="strict").splitlines()]
+            for line in complete_prefix.decode(errors="strict").split("\n")[:-1]]
     if any(type(row) is not dict for row in rows):
         raise ValueError("observer ledger has non-object rows")
     return raw, rows, complete_tail

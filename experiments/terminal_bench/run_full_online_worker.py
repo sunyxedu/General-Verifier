@@ -520,7 +520,7 @@ def _read_jsonl_identity(path: Path, cap=_EVENT_CAP) -> tuple[list[dict], str]:
         raise ValueError("audit ledger is oversized or incomplete")
     rows = [json.loads(line, object_pairs_hook=_strict_object,
                        parse_constant=_nonfinite)
-            for line in raw.decode("utf-8", errors="strict").splitlines()]
+            for line in raw.decode("utf-8", errors="strict").split("\n")[:-1]]
     if not rows or any(type(row) is not dict for row in rows):
         raise ValueError("audit ledger must contain objects")
     return rows, _sha_bytes(raw)

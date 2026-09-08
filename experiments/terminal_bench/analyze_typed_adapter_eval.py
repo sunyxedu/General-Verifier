@@ -69,7 +69,7 @@ class EvalError(ValueError):
 def _jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").split("\n")
     except OSError as exc:
         raise EvalError(f"cannot read {path}: {exc}") from exc
     for lineno, line in enumerate(lines, 1):

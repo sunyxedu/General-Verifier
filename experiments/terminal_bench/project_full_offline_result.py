@@ -106,7 +106,7 @@ def _read_events(path: str | os.PathLike[str]) -> tuple[list[dict[str, Any]], st
         raise _ProjectionError("events_changed_during_read")
     if not raw or not raw.endswith(b"\n"):
         raise _ProjectionError("events_empty_or_partial")
-    lines = raw.splitlines()
+    lines = raw.split(b"\n")[:-1]
     if len(lines) > MAX_EVENT_ROWS:
         raise _ProjectionError("events_too_many_rows")
     rows = []

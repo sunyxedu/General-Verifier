@@ -341,7 +341,7 @@ def analyze_file(path: str | Path, **kwargs) -> dict[str, Any]:
         raise ValueError("observer ledger has no complete final newline")
     rows = [json.loads(line, object_pairs_hook=_unique_object,
                        parse_constant=_reject_constant)
-            for line in raw.decode("utf-8", errors="strict").splitlines()]
+            for line in raw.decode("utf-8", errors="strict").split("\n")[:-1]]
     report = analyze_rows(rows, **kwargs)
     report["ledger_sha256"] = hashlib.sha256(raw).hexdigest()
     report["ledger_bytes"] = len(raw)

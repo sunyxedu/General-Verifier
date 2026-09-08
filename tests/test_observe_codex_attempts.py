@@ -344,6 +344,35 @@ def test_nested_duplicate_in_non_usage_event_does_not_hide_terminal_usage(
     assert row["input_tokens"] == 100
 
 
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_unicode_string_separators_do_not_split_native_jsonl(
+        tmp_path, separator):
+    state = _state(tmp_path)
+    lines = _stream().split("\n")
+    lines.insert(2, json.dumps({
+        "type": "item.completed",
+        "item": {
+            "id": "tool-1",
+            "type": "command_execution",
+            "aggregated_output": "before" + separator + "after",
+        },
+    }, ensure_ascii=False))
+    proc = subprocess.CompletedProcess(
+        _command(), 0, "\n".join(lines), "")
+    module = _module(state, RUN_CODEX_PROCESS_SEAM,
+                     lambda *args, **kwargs: proc)
+    ledger = tmp_path / "unicode-separator.jsonl"
+
+    with observe_codex_attempts(
+            module, ledger, seam=RUN_CODEX_PROCESS_SEAM,
+            context_by_cwd={str(state): {"trial": "unicode-separator"}}):
+        module.CodexBackend(state).complete("judger", "private", {})
+
+    row = _by_type(ledger, "codex_cli_attempt_finished")[0]
+    assert row["usage_status"] == "complete"
+    assert row["input_tokens"] == 100
+
+
 def test_duplicate_top_level_type_keeps_usage_incomplete(tmp_path):
     state = _state(tmp_path)
     lines = _stream().splitlines()

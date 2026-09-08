@@ -316,7 +316,7 @@ def _attempt_audit(
     errors: list[str] = []
     try:
         rows = [json.loads(line) for line in path.read_text(
-            encoding="utf-8").splitlines() if line.strip()]
+            encoding="utf-8").split("\n") if line.strip()]
     except (OSError, json.JSONDecodeError) as exc:
         return False, [f"cannot audit usage ledger: {exc}"]
     if not rows:
@@ -394,7 +394,7 @@ def _attempt_runtime_identity(path: Path) -> str | None:
     """Return the one observed runtime identity, never derive it from a flag."""
     try:
         rows = [json.loads(line) for line in path.read_text(
-            encoding="utf-8").splitlines() if line.strip()]
+            encoding="utf-8").split("\n") if line.strip()]
     except (OSError, json.JSONDecodeError):
         return None
     identities: set[str] = set()
@@ -422,7 +422,7 @@ def _result_audit(
 ) -> list[str]:
     try:
         rows = [json.loads(line) for line in path.read_text(
-            encoding="utf-8").splitlines() if line.strip()]
+            encoding="utf-8").split("\n") if line.strip()]
     except (OSError, json.JSONDecodeError) as exc:
         return [f"cannot audit results: {exc}"]
     counts = defaultdict(int)

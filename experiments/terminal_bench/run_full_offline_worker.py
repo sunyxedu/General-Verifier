@@ -285,7 +285,7 @@ def _read_jsonl(path, cap=64 * 1024 * 1024):
         raise ValueError("incomplete or oversized worker audit ledger")
     rows = [json.loads(line, object_pairs_hook=_strict_object,
                        parse_constant=_nonfinite)
-            for line in raw.decode("utf-8").splitlines()]
+            for line in raw.decode("utf-8").split("\n")[:-1]]
     if any(type(row) is not dict for row in rows):
         raise ValueError("worker audit ledger contains non-object rows")
     return rows

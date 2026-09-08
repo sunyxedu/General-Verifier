@@ -2273,8 +2273,11 @@ def _read_stable_ledger_eof(log: EventLog) -> Dict[str, Any]:
         events = []
         event_digests = []
         bytes_read = 0
-        for raw_line in raw.splitlines(keepends=True):
-            bytes_read += len(raw_line)
+        # JSONL records are separated by LF only.  bytes.splitlines() also
+        # recognizes byte 0x85, which can occur inside valid UTF-8 JSON as
+        # part of U+0085 and must not create a phantom record boundary.
+        for raw_line in raw.split(b"\n")[:-1]:
+            bytes_read += len(raw_line) + 1
             if not raw_line.strip():
                 raise AdapterNotApplicable(
                     "observed-eof ledger contains a blank JSONL record")

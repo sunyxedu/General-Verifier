@@ -1237,14 +1237,6 @@ class BindingGame:
             "world_map": world_map(state, live_world=self.live_world),
             "evidence": json.dumps(evidence, ensure_ascii=False),
         }
-        packet = None
-        if getattr(self.backend, "judger_prefetch", False) is True:
-            packet = build_judger_evidence_packet(
-                self.artifacts,
-                self.log,
-                method.get("basis", ""),
-                result.artifact,
-            )
         typed_packet = None
         if self.typed_adapter_judger_packet:
             # Codex attaches captured images independently of prompt text.
@@ -1272,8 +1264,20 @@ class BindingGame:
         total_calls = self.judger_error_retries + 1
         for call_no in range(1, total_calls + 1):
             try:
+                # Bind a fresh immutable view for every ordinary Judger call.
+                # A failed call may have overlapped a source change, and a
+                # large-artifact transport failure must not force later calls
+                # back into an avoidable full-artifact dump.
+                packet = None
+                if getattr(self.backend, "judger_prefetch", False) is True:
+                    packet = build_judger_evidence_packet(
+                        self.artifacts,
+                        self.log,
+                        method.get("basis", ""),
+                        result.artifact,
+                    )
                 call_variables = variables
-                if packet is not None and call_no == 1:
+                if packet is not None:
                     call_variables = dict(variables)
                     call_variables["_judger_evidence_packet"] = packet
                 if typed_packet is not None and call_no == 1:
@@ -1296,10 +1300,13 @@ class BindingGame:
                         else nullcontext(self.backend)
                     )
                     with transport as judger_backend:
-                        verdict = self.judger_role.call(
-                            judger_backend, call_variables)
-                    if (packet is not None and call_no == 1
-                            and not packet.revalidate()):
+                        try:
+                            verdict = self.judger_role.call(
+                                judger_backend, call_variables)
+                        finally:
+                            packet_valid = (
+                                packet is None or packet.revalidate())
+                    if not packet_valid:
                         raise RoleError(
                             "judger evidence prefetch changed during audit")
                     if (typed_packet is not None and call_no == 1

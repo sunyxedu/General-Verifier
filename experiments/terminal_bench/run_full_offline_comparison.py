@@ -353,7 +353,7 @@ def _observer_bytes(worker_output, cap=64 * 1024 * 1024):
         raise ValueError("observer ledger is empty or incomplete")
     rows = [json.loads(line, object_pairs_hook=_strict_object,
                        parse_constant=_nonfinite)
-            for line in raw.decode("utf-8", errors="strict").splitlines()]
+            for line in raw.decode("utf-8", errors="strict").split("\n")[:-1]]
     if any(type(row) is not dict for row in rows):
         raise ValueError("observer ledger contains a non-object record")
     return raw, rows

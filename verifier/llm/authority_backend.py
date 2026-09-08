@@ -20,7 +20,11 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from .agents import AgentBackend, AgentRole
-from .codex_backend import CodexBackend, _completed_response_without_usage
+from .codex_backend import (
+    CodexBackend,
+    _completed_response_without_usage,
+    _native_jsonl_lines,
+)
 from .schema import FixtureBackend, RoleError
 
 
@@ -104,7 +108,7 @@ def authority_policy_args(scratch_dir: str) -> list[str]:
 def validate_authority_stream(stdout: str) -> None:
     """Only a complete, tool-free single turn can certify a cached contract."""
     phase = "new"
-    for line in stdout.splitlines():
+    for line in _native_jsonl_lines(stdout):
         if not line.strip():
             continue
         try:
