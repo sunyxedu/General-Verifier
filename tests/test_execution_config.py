@@ -83,7 +83,7 @@ def test_packet_mode_is_stamped_and_cannot_run_without_typed_adapters(
     fields = offline.config_fields(seats="codex")
     assert fields["typed_adapter_judger_packet"] is True
     assert fields["typed_adapter_judger_packet_protocol"].startswith(
-        "gv-typed-adapter-judger-packet-v2;")
+        "gv-typed-adapter-judger-packet-v3;")
     assert "transport=no-tools-v1" in fields[
         "typed_adapter_judger_packet_protocol"]
 

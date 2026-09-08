@@ -122,7 +122,9 @@ def test_packet_binds_complete_inputs_and_replays_without_old_judgment(tmp_path)
     assert document["verifier_execution_receipt"][
         "fresh_exact_replay_digest"] == packet.replay_digest
     assert document["source_slot_coverage"] \
-        ["all_declared_inputs_freshly_read"] is True
+        ["all_execution_inputs_freshly_read"] is True
+    assert document["source_slot_coverage"] \
+        ["semantic_authorities_bound"] is True
     assert document["source_slot_coverage"] \
         ["original_source_bytes_attached"] is False
     assert "verdict" not in document and "audit" not in document
@@ -169,7 +171,7 @@ def test_every_model_visible_packet_section_is_rebuilt_and_tamper_closed(
         document["adapter_contract"]["catalog_entry"]["summary"] = "tampered"
     elif field == "coverage":
         document["source_slot_coverage"][
-            "all_declared_inputs_freshly_read"] = False
+            "all_execution_inputs_freshly_read"] = False
     elif field == "bindings":
         document["bindings"]["obligation"] = "0" * 64
     elif field == "evidence":
@@ -431,6 +433,80 @@ def test_unused_or_duplicate_declared_source_slot_falls_back(
         {"id": obligation.claim_id}, obligation, changed)
     assert packet_module.build_typed_adapter_judger_packet(
         route, artifacts, obligation, changed, result, "none") is None
+
+
+@pytest.mark.parametrize("task_ref", ["task.md", "absolute"])
+def test_packet_binds_declared_task_authority_without_calling_it_consumed(
+        tmp_path, task_ref):
+    fixture = _fixture(tmp_path)
+    state, _target, _log, artifacts, route, obligation, method, _result = fixture
+    changed = dict(method)
+    changed["adapter_inputs"] = [*method["adapter_inputs"], {
+        "ref": (str(state / "task.md") if task_ref == "absolute" else task_ref),
+        "provenance": "task_given",
+        "role": "authority",
+    }]
+    result = route.discharge(
+        {"id": obligation.claim_id}, obligation, changed)
+
+    packet = packet_module.build_typed_adapter_judger_packet(
+        route, artifacts, obligation, changed, result, "none")
+
+    assert type(packet) is packet_module.TypedAdapterJudgerPacket
+    coverage = json.loads(packet.render())["source_slot_coverage"]
+    assert coverage["all_execution_inputs_freshly_read"] is True
+    assert coverage["semantic_authorities_bound"] is True
+    assert len(coverage["declared_inputs"]) == 2
+    assert len(coverage["consumed_identities"]) == 1
+    assert coverage["semantic_authorities"] == [changed["adapter_inputs"][1]]
+
+
+@pytest.mark.parametrize("defect", [
+    "wrong-provenance", "wrong-path", "duplicate-alias",
+])
+def test_packet_rejects_unbound_or_ambiguous_task_authority(tmp_path, defect):
+    fixture = _fixture(tmp_path)
+    state, _target, _log, artifacts, route, obligation, method, _result = fixture
+    authority = {
+        "ref": "task.md", "provenance": "task_given", "role": "authority",
+    }
+    if defect == "wrong-provenance":
+        authority["provenance"] = "delivered"
+    elif defect == "wrong-path":
+        authority["ref"] = str(state / "other-task.md")
+    changed = dict(method)
+    changed["adapter_inputs"] = [*method["adapter_inputs"], authority]
+    if defect == "duplicate-alias":
+        changed["adapter_inputs"].append({
+            "ref": str(state / "task.md"),
+            "provenance": "task_given", "role": "authority",
+        })
+    result = route.discharge(
+        {"id": obligation.claim_id}, obligation, changed)
+
+    assert packet_module.build_typed_adapter_judger_packet(
+        route, artifacts, obligation, changed, result, "none") is None
+
+
+@pytest.mark.parametrize("task_context", [
+    {},
+    {"path": "/wrong/task.md", "text": "task"},
+    {"path": "expected", "text": 1},
+    {"path": "expected", "text": "task", "extra": True},
+])
+def test_packet_rejects_malformed_authoritative_task_context(
+        tmp_path, monkeypatch, task_context):
+    fixture = _fixture(tmp_path)
+    state, _target, _log, artifacts, route, obligation, method, result = fixture
+    value = dict(task_context)
+    if value.get("path") == "expected":
+        value["path"] = str(state / "task.md")
+    monkeypatch.setattr(
+        packet_module, "authoritative_task_context",
+        lambda _state: json.dumps(value))
+
+    assert packet_module.build_typed_adapter_judger_packet(
+        route, artifacts, obligation, method, result, "none") is None
 
 
 def test_binding_game_default_off_and_image_fallback_preserve_original_path(

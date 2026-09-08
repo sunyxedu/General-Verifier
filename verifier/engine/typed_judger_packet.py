@@ -37,7 +37,7 @@ from .judger_prefetch import (
 
 
 TYPED_JUDGER_PACKET_PROTOCOL = (
-    "gv-typed-adapter-judger-packet-v2;"
+    "gv-typed-adapter-judger-packet-v3;"
     "evidence-cap=16384;render-cap=131072;fresh-replay=before+after;"
     "transport=no-tools-v1"
 )
@@ -152,34 +152,63 @@ def _same_result(left: DischargeResult, right_document: Mapping[str, Any]) -> bo
     return _result_identity(left) == right_document
 
 
-def _source_slots_complete(invocation: AdapterInvocation, evidence: dict) -> bool:
-    """Every declared source is read exactly once by this adapter receipt.
+def _task_context_document(raw: str, state_dir: str) -> dict:
+    value = _strict_json(raw)
+    expected_path = os.path.join(os.path.abspath(state_dir), "task.md")
+    if (not isinstance(value, dict) or set(value) != {"path", "text"}
+            or value.get("path") != expected_path
+            or not isinstance(value.get("text"), str)):
+        raise ValueError("typed-adapter task authority is invalid")
+    return value
+
+
+def _source_slot_coverage(invocation: AdapterInvocation, evidence: dict,
+                          task_context: Mapping[str, Any]) -> Optional[dict]:
+    """Execution sources are read; task authority is bound separately.
 
     Registry validation already rejects consumed-but-undeclared references.
-    This stricter packet gate also rejects the opposite direction: unused or
-    duplicate declared capabilities cannot enter a future tool-free Judger
-    transport as though they had been mechanically replayed.
+    This packet gate rejects unused or duplicate execution capabilities.  The
+    sole unused declaration it permits is the authoritative task context that
+    the packet carries verbatim and binds independently; arbitrary external
+    authorities still require the ordinary toolful Judger.
     """
     execution = evidence.get("execution")
     if not isinstance(execution, dict):
-        return False
+        return None
     declared = list(invocation.inputs)
+    evidence_declared = execution.get("declared_inputs")
     consumed = execution.get("consumed")
-    if not isinstance(consumed, list):
-        return False
+    if evidence_declared != declared or not isinstance(consumed, list):
+        return None
+    task_path = task_context.get("path") if isinstance(task_context, dict) else None
+    if not isinstance(task_path, str) or not task_path:
+        return None
+    execution_inputs = [item for item in declared if item.get("role") != "authority"]
+    authorities = [item for item in declared if item.get("role") == "authority"]
     declared_refs = [item.get("ref") for item in declared]
+    execution_refs = [item.get("ref") for item in execution_inputs]
     consumed_refs = [
         item.get("ref") if isinstance(item, dict) else None
         for item in consumed
     ]
-    return (
-        bool(declared_refs)
-        and None not in declared_refs
-        and None not in consumed_refs
-        and len(declared_refs) == len(set(declared_refs))
-        and len(consumed_refs) == len(set(consumed_refs))
-        and consumed_refs == declared_refs
-    )
+    if (not execution_refs or None in declared_refs or None in consumed_refs
+            or len(declared_refs) != len(set(declared_refs))
+            or len(consumed_refs) != len(set(consumed_refs))
+            or consumed_refs != execution_refs or len(authorities) > 1
+            or any(item.get("provenance") != "task_given"
+                   or item.get("ref") not in {"task.md", task_path}
+                   for item in authorities)):
+        return None
+    return {
+        "all_execution_inputs_freshly_read": True,
+        "semantic_authorities_bound": True,
+        "original_source_bytes_attached": False,
+        "execution_inputs": execution_inputs,
+        "semantic_authorities": authorities,
+        "declared_inputs": declared,
+        "evidence_declared_inputs": evidence_declared,
+        "consumed_identities": consumed,
+    }
 
 
 def _fresh_replay(
@@ -264,14 +293,14 @@ class TypedAdapterJudgerPacket:
 
     def _canonical_rendered(self) -> str:
         """Rebuild every model-visible byte from replay-owned packet state."""
-        task_context = _strict_json(self._task_context_json)
+        task_context = _task_context_document(
+            self._task_context_json, self._state_dir)
         obligation = _strict_json(self._obligation_json)
         method = _strict_json(self._method_json)
         result_identity = _strict_json(self._result_json)
         catalog = _strict_json(self._catalog_json)
         evidence_source = _strict_json(self._evidence_source.render())
-        if (not isinstance(task_context, dict)
-                or not isinstance(obligation, dict)
+        if (not isinstance(obligation, dict)
                 or not isinstance(method, dict)
                 or not isinstance(result_identity, dict)
                 or not isinstance(catalog, list)
@@ -332,8 +361,9 @@ class TypedAdapterJudgerPacket:
                     raw_evidence.encode("utf-8")).hexdigest()):
             raise ValueError("typed-adapter artifact bytes mismatch")
         evidence = _strict_json(raw_evidence)
-        if (not isinstance(evidence, dict)
-                or not _source_slots_complete(invocation, evidence)):
+        coverage = (_source_slot_coverage(invocation, evidence, task_context)
+                    if isinstance(evidence, dict) else None)
+        if coverage is None:
             raise ValueError("typed-adapter source coverage mismatch")
 
         catalog_sha256 = hashlib.sha256(
@@ -375,14 +405,7 @@ class TypedAdapterJudgerPacket:
                 "catalog_sha256": catalog_sha256,
             },
             "result": result_document,
-            "source_slot_coverage": {
-                "all_declared_inputs_freshly_read": True,
-                "original_source_bytes_attached": False,
-                "declared_inputs": list(invocation.inputs),
-                "evidence_declared_inputs": evidence["execution"][
-                    "declared_inputs"],
-                "consumed_identities": evidence["execution"]["consumed"],
-            },
+            "source_slot_coverage": coverage,
             "content_addressed_evidence": {
                 "digest": self.artifact_digest,
                 "raw_sha256": raw_sha256,
@@ -481,6 +504,8 @@ def build_typed_adapter_judger_packet(
             return None
 
         state_dir = os.path.abspath(discharger.context.state_dir)
+        task_context = authoritative_task_context(state_dir)
+        task_context_document = _task_context_document(task_context, state_dir)
         claim_id = obligation.claim_id
         row = {"id": claim_id}
         valid, _reason = discharger.registry.validate_evidence(
@@ -504,8 +529,10 @@ def build_typed_adapter_judger_packet(
         if not isinstance(raw_evidence, str):
             return None
         evidence = _strict_json(raw_evidence)
-        if not isinstance(evidence, dict) \
-                or not _source_slots_complete(invocation, evidence):
+        coverage = (_source_slot_coverage(
+            invocation, evidence, task_context_document)
+            if isinstance(evidence, dict) else None)
+        if coverage is None:
             return None
 
         catalog_json = discharger.adapter_catalog()
@@ -530,8 +557,6 @@ def build_typed_adapter_judger_packet(
         if replay is None or not evidence_source.revalidate():
             return None
         replay_digest = content_hash(_result_identity(replay))
-        task_context = authoritative_task_context(state_dir)
-
         bindings = {
             "task_context": content_hash(task_context),
             "obligation": content_hash(obligation_document),
@@ -563,14 +588,7 @@ def build_typed_adapter_judger_packet(
                 "catalog_sha256": bindings["adapter_catalog"],
             },
             "result": result_document,
-            "source_slot_coverage": {
-                "all_declared_inputs_freshly_read": True,
-                "original_source_bytes_attached": False,
-                "declared_inputs": list(invocation.inputs),
-                "evidence_declared_inputs": evidence["execution"][
-                    "declared_inputs"],
-                "consumed_identities": evidence["execution"]["consumed"],
-            },
+            "source_slot_coverage": coverage,
             "content_addressed_evidence": {
                 "digest": result.artifact,
                 "raw_sha256": sources["artifact"]["raw_sha256"],
