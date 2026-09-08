@@ -8,9 +8,10 @@ Per obligation:
    methods are reused: an adapter runs against the current candidate and its
    new evidence envelope is mechanically authenticated. Holds and refuted
    audits occupy separate slots and each must have been independently
-   accepted; no adapter property implies the missing direction. The first
-   candidate observed in a missing direction runs the complete game below,
-   then may seed that direction for later candidates.
+   accepted; no adapter property implies the missing direction. When a fresh
+   adapter observation lands in a missing direction, that exact MethodIR and
+   evidence face a new independent Judger audit. Only a complete yes/yes/n/a
+   audit may seed the direction; otherwise the complete game below runs.
 1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
    oracle's own guarantee, researched first when the domain is
    unfamiliar), each with a signed strength declaration — decisive
@@ -164,7 +165,8 @@ class BindingGame:
                 "key": key[:16], "reason": reason[:500],
             })
             if missing is not None:
-                method, fresh = missing
+                source_accepted, fresh = missing
+                method = source_accepted.method
                 direction_lease = self.method_cache.acquire(
                     key, direction=fresh.outcome)
                 if direction_lease.entry is not None:
@@ -183,6 +185,92 @@ class BindingGame:
                         "claim": row["id"], "obligation": obligation.id,
                         "key": key[:16], "reason": reuse_reason[:500],
                     })
+                elif direction_lease.leader:
+                    try:
+                        attempt, audit_passed, audit_reason = \
+                            self._audit_missing_direction(
+                            obligation, method, fresh)
+                        audit = attempt.audit or {}
+                        judger_accepted = audit_passed
+                        authority_stable = (
+                            self._method_cache_key(row, obligation) == key)
+                        if audit_passed and not authority_stable:
+                            audit_passed = False
+                            audit_reason = (
+                                "task authority changed during direction "
+                                "audit")
+                        self.log.append("method_cache_direction_audit", {
+                            "schema": "gv-method-direction-audit-v1",
+                            "claim": row["id"],
+                            "obligation": obligation.id,
+                            "key": key[:16],
+                            "method_digest": content_hash(method),
+                            "procedure": method["procedure"][:80],
+                            "fresh_discharge_artifact": fresh.artifact,
+                            "fresh_outcome": fresh.outcome,
+                            "source_binding_artifact":
+                                source_accepted.source_binding_artifact,
+                            "source_discharge_artifact":
+                                source_accepted.source_discharge_artifact,
+                            "source_outcome":
+                                source_accepted.source_outcome,
+                            "judger_accepted": judger_accepted,
+                            "authority_stable_after_judger": authority_stable,
+                            "direction_eligible": audit_passed,
+                            "sufficient": audit.get("sufficient"),
+                            "faithful": audit.get("faithful"),
+                            "degradation": audit.get("degradation"),
+                            "reason": str(audit.get(
+                                "reason", audit_reason))[:500],
+                        })
+                        if audit_passed:
+                            audited = self._settle(
+                                row, obligation, [attempt], method, fresh,
+                                audit=attempt.audit)
+                            accepted = self._accepted_method(
+                                row, obligation, audited)
+                            if self._method_cache_key(row, obligation) != key:
+                                audit_reason = (
+                                    "task authority changed while publishing "
+                                    "direction audit")
+                            elif (accepted is None
+                                  or accepted.source_outcome != fresh.outcome):
+                                audit_reason = (
+                                    "independent direction audit could not be "
+                                    "authenticated for cache publication")
+                            else:
+                                direction_lease.finish(accepted)
+                                return audited
+                        self.log.append("method_cache_bypass", {
+                            "claim": row["id"],
+                            "obligation": obligation.id,
+                            "key": key[:16],
+                            "reason": audit_reason[:500],
+                            # Keep the rejected optimization attempt
+                            # auditable without importing it into the
+                            # complete Oracle-led game's evidence set.
+                            "direction_audit": {
+                                "schema": "gv-method-direction-audit-v1",
+                                "method_digest": content_hash(method),
+                                "procedure": method["procedure"][:80],
+                                "fresh_discharge_artifact": fresh.artifact,
+                                "fresh_outcome": fresh.outcome,
+                                "sufficient": audit.get("sufficient"),
+                                "faithful": audit.get("faithful"),
+                                "degradation": audit.get("degradation"),
+                                "reason": str(audit.get(
+                                    "reason", audit_reason))[:500],
+                            },
+                        })
+                        return self._run_uncached_and_cache(
+                            row, obligation, key, lease=direction_lease,
+                            direction=fresh.outcome)
+                    finally:
+                        # This owns the direction flight until either a
+                        # certified entry is published or the complete-game
+                        # fallback takes it over. Every exceptional exit,
+                        # including logging/artifact failures, wakes waiters.
+                        direction_lease.finish()
                 return self._run_uncached_and_cache(
                     row, obligation, key, lease=direction_lease,
                     direction=fresh.outcome)
@@ -246,10 +334,10 @@ class BindingGame:
         """Try each distinct cached MethodIR without crossing signatures.
 
         Returns ``(settled, missing_observation, reason)``. The observation is
-        ``(method, fresh_result)`` only when its substantive direction has no
-        independently accepted slot. If two direction slots contain the same
-        exact MethodIR, one fresh adapter execution can select the matching
-        certificate without running that adapter twice.
+        ``(source_accepted_method, fresh_result)`` only when its substantive
+        direction has no independently accepted slot. If two direction slots
+        contain the same exact MethodIR, one fresh adapter execution can
+        select the matching certificate without running that adapter twice.
         """
         directions = {entry.source_outcome for entry in entries}
         attempted_methods = []
@@ -279,7 +367,7 @@ class BindingGame:
                 "fresh adapter outcome has no independently accepted "
                 f"signature for this MethodIR: fresh={fresh.outcome}")
             if fresh.outcome not in directions and missing is None:
-                missing = (accepted.method, fresh)
+                missing = (accepted, fresh)
         return None, missing, "; ".join(reasons) or "no reusable MethodIR"
 
     def _run_cached(self, row, obligation, accepted, *, key, waited=False):
@@ -384,6 +472,36 @@ class BindingGame:
         })
         return self._settle(
             row, obligation, [attempt], method, result, audit=audit), ""
+
+    def _audit_missing_direction(
+        self, obligation, method, result,
+    ):
+        """Independently audit one fresh adapter result in a new direction.
+
+        The opposite direction's signature supplies only the already accepted
+        exact MethodIR. It never supplies a verdict. The current candidate's
+        fresh evidence is structurally checked by ``_execute_cached_method``
+        before this function, then receives the same full Judger prompt as an
+        ordinary decisive attempt. Any non-complete audit falls through to
+        the unchanged Oracle-led game.
+        """
+        attempt = Attempt(
+            method=method,
+            discharge_artifact=result.artifact,
+            discharge_outcome=result.outcome,
+        )
+        degradation = self._degradation_record(
+            _method_strength(method), [attempt], {_method_strength(method)})
+        verdict = self._judge(
+            obligation, method, result, attempt, degradation=degradation)
+        if (verdict.get("sufficient") != "yes"
+                or verdict.get("faithful") != "yes"
+                or verdict.get("degradation") != "n/a"):
+            return attempt, False, (
+                "fresh opposite direction did not pass an independent "
+                "complete Judger audit"
+            )
+        return attempt, True, ""
 
     @staticmethod
     def _cacheable_signature(method, audit) -> bool:

@@ -44,6 +44,7 @@ EVENT_TYPES = (
     "method_redo",
     "method_bound",
     "method_cache_hit",
+    "method_cache_direction_audit",
     "method_cache_bypass",
     "adapter_discharge",
     "adapter_fallback",

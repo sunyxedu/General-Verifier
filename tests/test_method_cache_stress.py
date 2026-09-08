@@ -8,6 +8,7 @@ from dataclasses import replace
 
 import pytest
 
+from verifier import offline
 from verifier.core.events import EventLog
 from verifier.core.model import (
     BASIS_WORLD,
@@ -17,6 +18,7 @@ from verifier.core.model import (
     Obligation,
 )
 from verifier.engine.game import BindingGame
+from verifier.engine.certificate import request_certificate
 from verifier.engine.method_cache import (
     AcceptedMethod,
     AcceptedMethodCache,
@@ -163,10 +165,93 @@ def test_default_offline_services_reaudit_when_fresh_outcome_changes(tmp_path):
     assert [call["role"] for call in backend1.calls] == [
         "obligations", "critic", "oracles", "judger"]
     assert [call["role"] for call in backend2.calls] == [
-        "obligations", "critic", "oracles", "judger"]
+        "obligations", "critic", "judger"]
     events = list(second.log.replay())
     assert any(event["type"] == "method_cache_bypass" for event in events)
     assert not any(event["type"] == "method_cache_hit" for event in events)
+
+
+def test_fast_direction_audit_preserves_features_rank_and_ordered_outcome(
+        tmp_path):
+    method = typed_method()
+    compile_result = {"obligations": [{
+        "text": "status equals completed",
+        "required_basis": "world",
+        "severity": "must",
+        "clause": "Make status completed",
+        "refutable_by_absence": False,
+    }]}
+
+    def build(name, status, cache, fixtures):
+        state, _, _, _, _ = candidate(tmp_path, name, status)
+        backend = FixtureBackend({
+            "obligations": compile_result,
+            "critic": CRITIC_PASS,
+            **fixtures,
+        })
+
+        def factory(service):
+            kernel = _default_kernel(
+                service, model=None, backend=backend, critic_rounds=1,
+                parallel_obligations=1, parallel_claims=1)
+            kernel.contract_cache = None
+            kernel.binder.method_cache = cache
+            return kernel
+
+        return Service(
+            str(state), live_world=False, kernel_factory=factory), backend
+
+    shared = AcceptedMethodCache()
+    seed, _ = build("semantic-seed", "completed", shared, {
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES,
+    })
+    assert seed.commit(
+        "F", "final", "the candidate status is completed", [])["status"] \
+        == "verified"
+
+    fast, fast_backend = build("semantic-fast", "wrong", shared, {
+        "judger": JUDGE_YES,
+    })
+    cold, cold_backend = build(
+        "semantic-cold", "wrong", AcceptedMethodCache(), {
+            "oracles": {"methods": [method]}, "judger": JUDGE_YES,
+        })
+    fast_commit = fast.commit(
+        "F", "final", "the candidate status is completed", [])
+    cold_commit = cold.commit(
+        "F", "final", "the candidate status is completed", [])
+    assert fast_commit["status"] == cold_commit["status"] == "refuted"
+    assert [call["role"] for call in fast_backend.calls] == [
+        "obligations", "critic", "judger",
+    ]
+    assert [call["role"] for call in cold_backend.calls] == [
+        "obligations", "critic", "oracles", "judger",
+    ]
+
+    def semantic_report(service, final_id):
+        cert = request_certificate(
+            service.store, service.kernel, service.log, service.artifacts,
+            final_id)
+        features = offline._features(cert, extract_rounds=0)
+        features.update(offline._final_contract_audit(service.log, cert))
+        return {
+            "verdict": features["verdict"],
+            "verdict_strength": features["verdict_strength"],
+            "final_obligations": features["final_obligations"],
+            "final_obligations_total": features[
+                "final_obligations_total"],
+            "final_contrary_signals": features[
+                "final_contrary_signals"],
+            "rank_key": offline.rank_key(features),
+            "contract_audit_status": features["contract_audit_status"],
+            "final_obligation_contract": features[
+                "final_obligation_contract"],
+            "final_obligation_outcomes_ordered": features[
+                "final_obligation_outcomes_ordered"],
+        }
+
+    assert semantic_report(fast, fast_commit["claim_id"]) == \
+        semantic_report(cold, cold_commit["claim_id"])
 
 
 def test_default_online_service_uses_adapter_without_executor_seat(tmp_path):
@@ -362,8 +447,7 @@ def test_outcome_direction_change_bypasses_cached_judgment(
         Obligation("fresh", "status equals completed", BASIS_WORLD))
 
     assert fresh.outcome == fresh_outcome
-    assert [call["role"] for call in fresh_backend.calls] == [
-        "oracles", "judger"]
+    assert [call["role"] for call in fresh_backend.calls] == ["judger"]
     assert fresh_fallback.calls == []
     events = list(fresh_log.replay())
     reuse_attempts = [
@@ -411,7 +495,7 @@ def test_opposite_fresh_outcome_is_controlled_by_a_fresh_judger(tmp_path):
 
     assert fresh.outcome == OUTCOME_FAILED
     assert [call["role"] for call in fresh_backend.calls] == [
-        "oracles", "judger", "oracles"]
+        "judger", "oracles", "judger", "oracles"]
     events = list(fresh_log.replay())
     assert any(event["type"] == "method_cache_bypass" for event in events)
     assert not any(event["type"] == "method_cache_hit" for event in events)
@@ -489,7 +573,7 @@ def test_negative_direction_reuses_only_while_fresh_outcome_stays_refuted(
 
     assert fresh.outcome == OUTCOME_FAILED
     assert [call["role"] for call in fresh_backend.calls] == [
-        "oracles", "judger", "oracles"]
+        "judger", "oracles", "judger", "oracles"]
     assert fresh_fallback.calls == []
     events = list(fresh_log.replay())
     assert sum(

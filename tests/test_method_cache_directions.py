@@ -203,7 +203,7 @@ def test_each_pure_adapter_learns_both_directions_once(tmp_path, adapter):
         OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_HOLDS, OUTCOME_REFUTED,
     ]
     assert [call["role"] for call in calls] == [
-        "oracles", "judger", "oracles", "judger",
+        "oracles", "judger", "judger",
     ]
     entries = cache.acquire(next(iter(cache._entries))).entries
     assert {entry.source_outcome for entry in entries} == {
@@ -211,6 +211,19 @@ def test_each_pure_adapter_learns_both_directions_once(tmp_path, adapter):
     }
     assert _events(logs[2], "method_cache_hit")
     assert _events(logs[3], "method_cache_hit")
+    direction_audits = _events(logs[1], "method_cache_direction_audit")
+    assert len(direction_audits) == 1
+    direction_audit = direction_audits[0]["payload"]
+    assert direction_audit["schema"] == "gv-method-direction-audit-v1"
+    assert direction_audit["judger_accepted"] is True
+    assert direction_audit["authority_stable_after_judger"] is True
+    assert direction_audit["direction_eligible"] is True
+    assert direction_audit["source_outcome"] == OUTCOME_HOLDS
+    assert direction_audit["fresh_outcome"] == OUTCOME_REFUTED
+    assert len(direction_audit["method_digest"]) == 64
+    assert len(direction_audit["source_binding_artifact"]) == 64
+    assert len(direction_audit["source_discharge_artifact"]) == 64
+    assert len(direction_audit["fresh_discharge_artifact"]) == 64
     for log in logs[2:]:
         attempts = [event for event in _events(log, "adapter_discharge")
                     if event["payload"].get(
@@ -241,10 +254,27 @@ def test_rejected_opposite_audit_does_not_create_that_direction(tmp_path):
     rejected_backend = FixtureBackend({
         "oracles": {"methods": [method]}, "judger": JUDGE_NO,
     })
-    rejected, _, _, _ = _game(
+    rejected, _, rejected_log, _ = _game(
         tmp_path, "rejected", rejected_backend, cache, prepare("wrong"))
     assert rejected.run(_row("rejected"), _obligation("rejected")).outcome \
         == OUTCOME_FAILED
+    assert [call["role"] for call in rejected_backend.calls] == [
+        "judger", "oracles", "judger", "oracles",
+    ]
+    direction_audit = _events(
+        rejected_log, "method_cache_direction_audit")[0]["payload"]
+    assert direction_audit["judger_accepted"] is False
+    assert direction_audit["authority_stable_after_judger"] is True
+    assert direction_audit["direction_eligible"] is False
+    assert direction_audit["fresh_outcome"] == OUTCOME_REFUTED
+    assert direction_audit["fresh_discharge_artifact"]
+    rejected_bypass = [
+        event["payload"] for event in _events(
+            rejected_log, "method_cache_bypass")
+        if "direction_audit" in event["payload"]
+    ]
+    assert rejected_bypass[0]["direction_audit"]["reason"] == \
+        JUDGE_NO["reason"]
     key = next(iter(cache._entries))
     assert [entry.source_outcome for entry in cache.acquire(key).entries] \
         == [OUTCOME_HOLDS]
@@ -256,9 +286,7 @@ def test_rejected_opposite_audit_does_not_create_that_direction(tmp_path):
         tmp_path, "accepted", accepted_backend, cache, prepare("wrong"))
     assert accepted.run(_row("accepted"), _obligation("accepted")).outcome \
         == OUTCOME_REFUTED
-    assert [call["role"] for call in accepted_backend.calls] == [
-        "oracles", "judger",
-    ]
+    assert [call["role"] for call in accepted_backend.calls] == ["judger"]
 
     hit_backend = FixtureBackend({})
     hit, _, hit_log, _ = _game(
@@ -295,14 +323,19 @@ def test_direction_certificate_never_cross_binds_a_different_method(tmp_path):
         prepare("accepted", "accepted"))
     assert first.run(_row("a"), _obligation("a")).outcome == OUTCOME_HOLDS
 
+    verdicts = iter([copy.deepcopy(JUDGE_NO), copy.deepcopy(JUDGE_YES)])
     second_backend = FixtureBackend({
-        "oracles": {"methods": [method_b]}, "judger": JUDGE_YES,
+        "oracles": {"methods": [method_b]},
+        "judger": lambda _variables: next(verdicts),
     })
     second, _, _, _ = _game(
         tmp_path, "method-b", second_backend, cache,
         prepare("wrong", "wrong"))
     assert second.run(_row("b"), _obligation("b")).outcome \
         == OUTCOME_REFUTED
+    assert [call["role"] for call in second_backend.calls] == [
+        "judger", "oracles", "judger",
+    ]
 
     # Method A now observes refuted, but only method B owns the independently
     # approved refuted signature. Method B observes holds, whose signature is
@@ -329,7 +362,7 @@ def test_direction_certificate_never_cross_binds_a_different_method(tmp_path):
     assert by_direction[OUTCOME_REFUTED].method == method_b
 
 
-def test_missing_direction_single_flights_parallel_full_games(tmp_path):
+def test_missing_direction_single_flights_parallel_judger_audits(tmp_path):
     method = _method("document.json-value", {
         "address": "/app/result.json", "pointer": "/status",
         "expected": "accepted",
@@ -380,7 +413,7 @@ def test_missing_direction_single_flights_parallel_full_games(tmp_path):
             future.result(timeout=10) for future in followers]
 
     assert all(result.outcome == OUTCOME_REFUTED for result in results)
-    assert sum(len(job[0].calls) for job in jobs) == 2
+    assert sum(len(job[0].calls) for job in jobs) == 1
     assert all(job[3].calls == [] for job in jobs)
     assert sum(bool(_events(job[2], "method_cache_hit"))
                for job in jobs) == len(jobs) - 1
@@ -429,6 +462,15 @@ def test_failed_direction_leader_wakes_follower_that_can_seed_it(tmp_path):
     good, _, _, _ = _game(
         tmp_path, "recovered-direction", good_backend, cache,
         prepare("wrong"))
+    follower_observed_fresh_evidence = threading.Event()
+    original_adapter_only = good.discharger.discharge_adapter_only
+
+    def observe_before_direction_wait(*args, **kwargs):
+        result = original_adapter_only(*args, **kwargs)
+        follower_observed_fresh_evidence.set()
+        return result
+
+    good.discharger.discharge_adapter_only = observe_before_direction_wait
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         leader = pool.submit(
@@ -436,6 +478,7 @@ def test_failed_direction_leader_wakes_follower_that_can_seed_it(tmp_path):
         assert entered.wait(10)
         follower = pool.submit(
             good.run, _row("good"), _obligation("good"))
+        assert follower_observed_fresh_evidence.wait(10)
         release.set()
         assert leader.result(timeout=10).outcome == OUTCOME_FAILED
         assert follower.result(timeout=10).outcome == OUTCOME_REFUTED
@@ -500,6 +543,143 @@ def test_authority_mutation_before_direction_acquire_never_seeds_old_key(
     assert "authority changed" in bypass[-1]["payload"]["reason"]
 
 
+@pytest.mark.parametrize("mutation_stage", ["judger", "before-publish"])
+def test_authority_mutation_during_direction_audit_never_seeds_old_key(
+        tmp_path, mutation_stage):
+    method = _method("document.json-value", {
+        "address": "/app/result.json", "pointer": "/status",
+        "expected": "accepted",
+    })
+
+    def prepare(value):
+        def write(world):
+            (world / "result.json").write_text(json.dumps({"status": value}))
+        return write
+
+    cache = AcceptedMethodCache()
+    seed_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES,
+    })
+    seed, _, _, _ = _game(
+        tmp_path, f"{mutation_stage}-seed", seed_backend, cache,
+        prepare("accepted"))
+    assert seed.run(_row("seed"), _obligation("seed")).outcome \
+        == OUTCOME_HOLDS
+
+    state = tmp_path / f"{mutation_stage}-opposite"
+    judger_calls = 0
+
+    def judge_and_maybe_mutate(_variables):
+        nonlocal judger_calls
+        judger_calls += 1
+        if mutation_stage == "judger" and judger_calls == 1:
+            (state / "task.md").write_text(
+                "Authority changed while the fresh direction was audited.",
+                encoding="utf-8",
+            )
+        return copy.deepcopy(JUDGE_YES)
+
+    backend = FixtureBackend({
+        "oracles": {"methods": [method]},
+        "judger": judge_and_maybe_mutate,
+    })
+    game, _, log, _ = _game(
+        tmp_path, f"{mutation_stage}-opposite", backend, cache,
+        prepare("wrong"))
+    row, obligation = _row("opposite"), _obligation("opposite")
+    old_key = game._method_cache_key(row, obligation)
+    if mutation_stage == "before-publish":
+        original_accept = game._accepted_method
+        accept_calls = 0
+
+        def accept_then_mutate(*args, **kwargs):
+            nonlocal accept_calls
+            accepted = original_accept(*args, **kwargs)
+            accept_calls += 1
+            if accept_calls == 1:
+                (state / "task.md").write_text(
+                    "Authority changed immediately before publication.",
+                    encoding="utf-8",
+                )
+            return accepted
+
+        game._accepted_method = accept_then_mutate
+
+    assert game.run(row, obligation).outcome == OUTCOME_REFUTED
+
+    assert game._method_cache_key(row, obligation) != old_key
+    assert [call["role"] for call in backend.calls] == [
+        "judger", "oracles", "judger",
+    ]
+    assert [entry.source_outcome
+            for entry in cache.acquire(old_key).entries] == [OUTCOME_HOLDS]
+    assert not cache._flights
+    direction_audit = _events(
+        log, "method_cache_direction_audit")[0]["payload"]
+    assert direction_audit["judger_accepted"] is True
+    if mutation_stage == "judger":
+        assert direction_audit["authority_stable_after_judger"] is False
+        assert direction_audit["direction_eligible"] is False
+    else:
+        assert direction_audit["authority_stable_after_judger"] is True
+        assert direction_audit["direction_eligible"] is True
+    bypass = _events(log, "method_cache_bypass")
+    assert "authority changed" in bypass[-1]["payload"]["reason"]
+
+
+def test_direction_judger_infrastructure_failure_falls_back_and_seeds(
+        tmp_path):
+    method = _method("document.json-value", {
+        "address": "/app/result.json", "pointer": "/status",
+        "expected": "accepted",
+    })
+
+    def prepare(value):
+        def write(world):
+            (world / "result.json").write_text(json.dumps({"status": value}))
+        return write
+
+    cache = AcceptedMethodCache()
+    seed_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES,
+    })
+    seed, _, _, _ = _game(
+        tmp_path, "infra-seed", seed_backend, cache, prepare("accepted"))
+    assert seed.run(_row("seed"), _obligation("seed")).outcome \
+        == OUTCOME_HOLDS
+
+    calls = 0
+
+    def fail_fast_audit_then_recover(_variables):
+        nonlocal calls
+        calls += 1
+        if calls <= 4:
+            raise RoleError("synthetic direction Judger outage")
+        return copy.deepcopy(JUDGE_YES)
+
+    backend = FixtureBackend({
+        "oracles": {"methods": [method]},
+        "judger": fail_fast_audit_then_recover,
+    })
+    game, _, log, _ = _game(
+        tmp_path, "infra-opposite", backend, cache, prepare("wrong"))
+
+    assert game.run(_row("opposite"), _obligation("opposite")).outcome \
+        == OUTCOME_REFUTED
+    assert [call["role"] for call in backend.calls] == [
+        "judger", "judger", "judger", "judger", "oracles", "judger",
+    ]
+    assert len(_events(log, "judger_call_failed")) == 2
+    direction_audit = _events(
+        log, "method_cache_direction_audit")[0]["payload"]
+    assert direction_audit["judger_accepted"] is False
+    assert direction_audit["faithful"] == "no"
+    entries = cache.acquire(next(iter(cache._entries))).entries
+    assert {entry.source_outcome for entry in entries} == {
+        OUTCOME_HOLDS, OUTCOME_REFUTED,
+    }
+
+
 def test_keyboard_interrupt_releases_missing_direction_flight(tmp_path):
     method = _method("document.json-value", {
         "address": "/app/result.json", "pointer": "/status",
@@ -526,7 +706,7 @@ def test_keyboard_interrupt_releases_missing_direction_flight(tmp_path):
     interrupted, _, _, _ = _game(
         tmp_path,
         "interrupt-direction",
-        FixtureBackend({"oracles": interrupt}),
+        FixtureBackend({"judger": interrupt}),
         cache,
         prepare("wrong"),
     )
@@ -545,6 +725,61 @@ def test_keyboard_interrupt_releases_missing_direction_flight(tmp_path):
         prepare("wrong"))
     assert recovery.run(_row("recovery"), _obligation("recovery")).outcome \
         == OUTCOME_REFUTED
+    assert not cache._flights
+
+
+@pytest.mark.parametrize("interrupt_stage", ["audit-log", "accept-method"])
+def test_keyboard_interrupt_after_direction_judger_releases_flight(
+        tmp_path, interrupt_stage):
+    method = _method("document.json-value", {
+        "address": "/app/result.json", "pointer": "/status",
+        "expected": "accepted",
+    })
+
+    def prepare(value):
+        def write(world):
+            (world / "result.json").write_text(json.dumps({"status": value}))
+        return write
+
+    cache = AcceptedMethodCache()
+    seed_backend = FixtureBackend({
+        "oracles": {"methods": [method]}, "judger": JUDGE_YES,
+    })
+    seed, _, _, _ = _game(
+        tmp_path, f"lifecycle-{interrupt_stage}-seed", seed_backend, cache,
+        prepare("accepted"))
+    assert seed.run(_row("seed"), _obligation("seed")).outcome \
+        == OUTCOME_HOLDS
+
+    interrupted, _, log, _ = _game(
+        tmp_path, f"lifecycle-{interrupt_stage}",
+        FixtureBackend({"judger": JUDGE_YES}), cache, prepare("wrong"))
+    if interrupt_stage == "audit-log":
+        original_append = log.append
+
+        def interrupt_audit_event(event_type, payload):
+            if event_type == "method_cache_direction_audit":
+                raise KeyboardInterrupt
+            return original_append(event_type, payload)
+
+        log.append = interrupt_audit_event
+    else:
+        def interrupt_accept(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        interrupted._accepted_method = interrupt_accept
+
+    with pytest.raises(KeyboardInterrupt):
+        interrupted.run(_row("interrupt"), _obligation("interrupt"))
+    assert not cache._flights
+
+    recovery_backend = FixtureBackend({"judger": JUDGE_YES})
+    recovery, _, _, _ = _game(
+        tmp_path, f"lifecycle-{interrupt_stage}-recovery",
+        recovery_backend, cache, prepare("wrong"))
+    assert recovery.run(_row("recovery"), _obligation("recovery")).outcome \
+        == OUTCOME_REFUTED
+    assert [call["role"] for call in recovery_backend.calls] == ["judger"]
     assert not cache._flights
 
 

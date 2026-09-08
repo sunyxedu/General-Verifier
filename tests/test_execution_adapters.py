@@ -796,7 +796,7 @@ def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
     assert second.outcome == OUTCOME_REFUTED
     assert len(cache) == 1
     assert [call["role"] for call in backend1.calls] == ["oracles", "judger"]
-    assert [call["role"] for call in backend2.calls] == ["oracles", "judger"]
+    assert [call["role"] for call in backend2.calls] == ["judger"]
     assert fallback1.calls == fallback2.calls == []
     first_bound = artifacts1.get(first.artifact)["bound"]
     second_bound = artifacts2.get(second.artifact)["bound"]
@@ -829,7 +829,7 @@ def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
         backends.append(backend)
         outcomes.append(result.outcome)
         assert fallback.calls == []
-    assert sum(len(backend.calls) for backend in backends) == 4
+    assert sum(len(backend.calls) for backend in backends) == 3
     assert outcomes.count(OUTCOME_HOLDS) == 5
     assert outcomes.count(OUTCOME_REFUTED) == 5
 
@@ -1014,8 +1014,7 @@ def test_online_method_reuse_is_state_scoped_and_reads_live_bytes(tmp_path):
     result = second_game.run({**ROW, "id": "c2"}, obligation)
 
     assert result.outcome == OUTCOME_REFUTED
-    assert [call["role"] for call in second_backend.calls] == [
-        "oracles", "judger"]
+    assert [call["role"] for call in second_backend.calls] == ["judger"]
     assert fallback.calls == []
     events = list(log.replay())
     assert any(event["type"] == "method_cache_bypass" for event in events)
