@@ -132,6 +132,32 @@ OBLIGATIONS_SYSTEM = (
     "graph shares the node. A record-basis statement is not such a fact.\n"
 )
 
+# Added to the compiler seat only for the opt-in compact-inspection profile.
+# This is a completeness checklist, not a new acceptance rule: it names
+# generally recurring semantic dimensions that must remain separate when the
+# controlling source actually requires them.  Keeping it outside the base
+# system prompt preserves the control arm verbatim.
+COMPACT_COMPLETENESS_COMPILER_ADDENDUM = (
+    "\n\nCOMPACT CONTRACT COMPLETENESS CHECKLIST (representation only; all "
+    "ordinary AUTHORITY, NECESSITY, and SUFFICIENCY rules still control):\n"
+    "- For a collection result or transformation, compare the controlling "
+    "source against four separate dimensions: the candidate/output carrier; "
+    "membership and item identity; each required source-to-output or per-item "
+    "field/value relation; and each required quantity, filter, or aggregation. "
+    "Emit every dimension the source requires and invent none it does not. "
+    "Count, shape, existence, or aggregate agreement never substitutes for a "
+    "required membership, identity, content, or per-item relation.\n"
+    "- Make each emitted obligation independently readable by its downstream "
+    "checker. Within that obligation, close every source, carrier, target, and "
+    "anaphoric reference to the task's terminal authority or addressing scheme. "
+    "A phrase such as `the specified value`, `the output`, or `the corresponding "
+    "item` is valid only when that same obligation contains the complete local "
+    "antecedent chain needed to identify it.\n"
+    "- Run this checklist internally, then emit only the existing schema. Keep "
+    "wording concise, but never merge or omit independently falsifiable "
+    "conditions merely to shorten the representation."
+)
+
 # Appended to OBLIGATIONS_SYSTEM by the MCP server only when the mounting
 # harness supplied its ground truth (an authoritative task statement or a
 # pre-task snapshot) in the state dir. The general prompt above never

@@ -1,12 +1,19 @@
 """Offline profile plumbing; all model calls are local stubs."""
+import os
 from types import SimpleNamespace
 
 import pytest
 
 from verifier import offline
+from verifier.core.events import EventLog
+from verifier.core.store import ClaimStore
+from verifier.engine.kernel import Kernel
+from verifier.execution.instruments import ArtifactStore
+from verifier.llm import prompts
 from verifier.llm import codex_backend as cb
 from verifier.llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
 from verifier.llm.authority_backend import authority_compilation_backend
+from verifier.llm.schema import FixtureBackend
 
 
 def test_config_explicit_default_and_profile_separation(monkeypatch):
@@ -101,3 +108,59 @@ def test_authority_clone_preserves_profile_and_frozen_identity(tmp_path, monkeyp
         assert session.backend.runtime_instruction_identity == identity
         assert session.obligations_role.tools == []
         assert session.critic_role.tools == []
+
+
+def _prompt_kernel(tmp_path, compact):
+    backend = FixtureBackend({})
+    backend.compact_inspection = compact
+    return Kernel(
+        ClaimStore(),
+        EventLog(os.path.join(tmp_path, "events.jsonl")),
+        backend,
+        ArtifactStore(os.path.join(tmp_path, "artifacts")),
+        # Construction is all this prompt-wiring test needs.  Avoid creating
+        # an execution seat that could obscure which two roles changed.
+        discharger=SimpleNamespace(),
+    )
+
+
+def test_compact_profile_clones_only_compiler_and_critic_prompts(tmp_path):
+    control = _prompt_kernel(tmp_path / "control", False)
+    treatment = _prompt_kernel(tmp_path / "treatment", True)
+
+    assert control.obligations_role is COMPILE_OBLIGATIONS_AGENT
+    assert control.critic_role is CRITIC_AGENT
+    assert treatment.obligations_role is not COMPILE_OBLIGATIONS_AGENT
+    assert treatment.critic_role is not CRITIC_AGENT
+    assert treatment.obligations_role.system == (
+        COMPILE_OBLIGATIONS_AGENT.system
+        + prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM)
+    assert treatment.critic_role.system == (
+        CRITIC_AGENT.system + prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM)
+
+    # The treatment is a prompt representation change only.  Seat identity,
+    # output schema, tools, and retry/turn limits remain exactly symmetric.
+    for field in ("name", "template", "schema", "tools", "model", "max_turns"):
+        assert getattr(treatment.obligations_role, field) == getattr(
+            COMPILE_OBLIGATIONS_AGENT, field)
+        assert getattr(treatment.critic_role, field) == getattr(
+            CRITIC_AGENT, field)
+    assert COMPILE_OBLIGATIONS_AGENT.system == prompts.OBLIGATIONS_SYSTEM
+    assert CRITIC_AGENT.system == prompts.CRITIC_SYSTEM
+
+
+def test_compact_contract_checklists_are_general_and_complete():
+    compiler = prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM
+    critic = prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM
+    for text in (compiler, critic):
+        for dimension in (
+            "carrier", "membership", "item identity", "per-item",
+            "quantity", "aggregation",
+        ):
+            assert dimension in text
+        assert "terminal authority or addressing scheme" in text
+        assert "SQLite" not in text
+    assert "Emit every dimension the source requires and invent none" in compiler
+    assert "Finish the necessity attack and the sufficiency attack independently" in critic
+    assert "Finding one defect never ends the search" in critic
+    assert "every independently surviving defect" in critic

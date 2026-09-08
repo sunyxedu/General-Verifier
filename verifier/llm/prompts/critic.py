@@ -144,6 +144,30 @@ CRITIC_SYSTEM = (
     "fixed verdict label `insufficient` rejects either or both directions."
 )
 
+# Added to the Critic seat only for the opt-in compact-inspection profile.
+# The output schema deliberately stays unchanged: changing the durable audit
+# IR would also require a ledger/cache/replay protocol migration.  These rules
+# make the existing combined witness/repair fields carry a complete audit.
+COMPACT_COMPLETENESS_CRITIC_ADDENDUM = (
+    "\n\nCOMPACT CONTRACT AUDIT CHECKLIST (representation only; audit the "
+    "proposed contract exactly as written, never an imagined repair):\n"
+    "- For every collection result or transformation, audit separately each "
+    "dimension the controlling source requires: candidate/output carrier; "
+    "membership and item identity; source-to-output or per-item field/value "
+    "relations; and quantity, filter, or aggregation. Count, shape, existence, "
+    "or aggregate agreement cannot stand in for a required identity, content, "
+    "or per-item relation. Do not demand a dimension the source omits.\n"
+    "- Apply referent isolation to every obligation and to every proposed "
+    "repair: each source, carrier, target, and anaphor must resolve through a "
+    "complete local chain to the task's terminal authority or addressing "
+    "scheme when the obligation is read alone.\n"
+    "- Finish the necessity attack and the sufficiency attack independently "
+    "before choosing a verdict. Finding one defect never ends the search. On "
+    "failure, use the existing combined fields to report every independently "
+    "surviving defect in this response, each with its concrete witness and "
+    "smallest exact repair; do not repeat passed analysis or prompt text."
+)
+
 CRITIC_TEMPLATE = (
     "Claim statement: {claim_text}\n"
     "Claim kind: {claim_kind}\n"

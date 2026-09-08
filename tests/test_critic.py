@@ -514,6 +514,35 @@ def test_critic_rounds_is_a_per_kernel_knob(tmp_path):
         "obligations", "critic", "obligations", "critic"]
 
 
+@pytest.mark.parametrize("compact", [False, True])
+def test_compact_profile_preserves_critic_call_and_repair_budget(
+        tmp_path, compact):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    verdicts = iter([ATTACK, PASS])
+    backend = FixtureBackend({
+        "obligations": COMPILE,
+        "critic": lambda variables: next(verdicts),
+    })
+    backend.compact_inspection = compact
+    kernel = Kernel(
+        store, log, backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        critic_role=CRITIC_AGENT,
+        discharger=StubDischarger(),
+        critic_rounds=2,
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "P holds for every prime"))
+
+    assert store.status(cid) == "verified"
+    assert kernel.critic_rounds == 2
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "obligations", "critic"]
+    assert [event["payload"]["round"] for event in ledger_events(
+        log, "decomposition_attacked")] == [0, 1]
+
+
 def test_game_history_binds_both_seats_across_rounds(tmp_path):
     verdicts = iter([ATTACK, PASS])
     store, log, backend, _ = build(

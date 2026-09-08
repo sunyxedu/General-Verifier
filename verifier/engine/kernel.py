@@ -42,7 +42,7 @@ from ..core.model import (
     WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm import prompts
-from ..llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
+from ..llm.agents import AgentRole, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
 from ..llm.model_spans import model_scope, submit_with_context
 from ..core.store import ClaimStore
 from .authority_view import (
@@ -147,6 +147,26 @@ class Kernel:
             APPEND_ONLY_DELTA_PROTOCOL if self.append_only_deltas else None)
         self.obligations_role = obligations_role or COMPILE_OBLIGATIONS_AGENT
         self.critic_role = critic_role   # None -> no adversarial review
+        # Treatment-only prompt specialization.  Clone (never mutate) the
+        # compiler and Critic seats, retaining their schemas, tools, names,
+        # call/retry behavior, and the kernel's critic-round budget.  Unknown
+        # injected role implementations are left untouched rather than being
+        # wrapped with assumptions about their prompt protocol.
+        if getattr(backend, "compact_inspection", False) is True:
+            if (type(self.obligations_role) is AgentRole
+                    and self.obligations_role.name == "obligations"):
+                self.obligations_role = replace(
+                    self.obligations_role,
+                    system=(self.obligations_role.system
+                            + prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM),
+                )
+            if (type(self.critic_role) is AgentRole
+                    and self.critic_role.name == "critic"):
+                self.critic_role = replace(
+                    self.critic_role,
+                    system=(self.critic_role.system
+                            + prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM),
+                )
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),
