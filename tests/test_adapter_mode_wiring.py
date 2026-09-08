@@ -104,6 +104,8 @@ def test_online_and_offline_default_kernels_publish_the_same_adapter_catalog(
     assert all(entry["accepted_method_reuse"] is False for entry in ledger)
     assert online_kernel.discharger.context.world.mode == "live"
     assert offline_kernel.discharger.context.world.mode == "captured"
+    assert online_kernel.binder.method_cache is None
+    assert offline_kernel.binder.method_cache is None
 
 
 def test_ledger_method_is_freshly_oracle_judged_for_each_state(tmp_path):

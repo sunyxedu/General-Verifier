@@ -756,66 +756,9 @@ class BindingGame:
                     )
                     break
 
-                focused_fallback_attempted = False
-                if not repaired:
-                    # A final-world acceptance obligation is load-bearing for
-                    # candidate selection.  If both the broad first pass and
-                    # the ordinary exhausted-batch repair return no method,
-                    # give the Oracle one last *narrow* chance to enumerate a
-                    # directionally decisive local counterexample.  This is
-                    # semantic rather than task-specific: optimality,
-                    # conditional coverage, universals, and exact equalities
-                    # can often be refuted by one witness even when proving the
-                    # positive direction would require exhaustive recovery.
-                    #
-                    # The pass still only ENUMERATES.  Its method must execute
-                    # and survive the normal Judger, so the diagnostic flag can
-                    # neither become evidence nor manufacture a refutation.
-                    if (not self.live_world
-                            and row.get("kind") == "final"
-                            and obligation.required_basis == BASIS_WORLD):
-                        focused_fallback_attempted = True
-                        focused_feedback_payload = json.loads(feedback)
-                        focused_feedback_payload.update({
-                            "focused_counterexample_fallback": True,
-                            "ordinary_repair_empty": True,
-                            "focus_reason": (
-                                "both broad enumeration and the bounded "
-                                "ordinary repair returned methods=[]"
-                            ),
-                        })
-                        focused_feedback = json.dumps(
-                            focused_feedback_payload, ensure_ascii=False)
-                        try:
-                            repaired = self._enumerate(
-                                row,
-                                obligation,
-                                method_feedback=focused_feedback,
-                                oracle_round=2,
-                            )
-                        except RoleError as err:
-                            # An infrastructure/schema failure is not an
-                            # evidence-availability finding.
-                            failed_seen = True
-                            self.log.append(
-                                "methods_enumerated",
-                                {"claim": row["id"],
-                                 "obligation": obligation.id,
-                                 "repair": True,
-                                 "focused_counterexample_fallback": True,
-                                 "error": str(err)},
-                            )
-                            break
-
                 if not repaired:
                     if self.live_world:
                         failed_seen = True
-                    elif focused_fallback_attempted:
-                        unavailable_reasons.append(
-                            "focused counterexample fallback and ordinary "
-                            "oracle repair found no materially new sufficient "
-                            "method at the fixed evidence boundary"
-                        )
                     else:
                         unavailable_reasons.append(
                             "oracle repair found no materially new sufficient "
@@ -1229,15 +1172,6 @@ class BindingGame:
                             if "adapter_input_binding" in m else {})}
                         for m in methods],
         }
-        if method_feedback != "(none)":
-            try:
-                parsed_feedback = json.loads(method_feedback)
-            except (json.JSONDecodeError, TypeError):
-                parsed_feedback = {}
-            if (isinstance(parsed_feedback, dict)
-                    and parsed_feedback.get(
-                        "focused_counterexample_fallback") is True):
-                event["focused_counterexample_fallback"] = True
         self.log.append("methods_enumerated", event)
         return methods
 

@@ -319,12 +319,10 @@ def _default_kernel(sc: Service, model, backend=None,
         from .execution.adapters import (
             AdapterRoutingDischarger, default_adapter_registry,
         )
-        from .engine.method_cache import default_accepted_method_cache
 
         discharger = AdapterRoutingDischarger(
             agent_discharger, default_adapter_registry(), sc.artifacts, sc.log,
             sc.state_dir, live_world=sc.live_world)
-        method_cache = default_accepted_method_cache()
     else:
         discharger = agent_discharger
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,

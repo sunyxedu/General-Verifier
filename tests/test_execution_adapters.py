@@ -842,7 +842,9 @@ def test_default_online_and_offline_kernel_path_installs_adapter_router(
     assert isinstance(kernel.discharger, AdapterRoutingDischarger)
     assert kernel.binder.discharger is kernel.discharger
     assert "filesystem.exists" in kernel.discharger.adapter_catalog()
-    assert kernel.binder.method_cache is not None
+    # Adapter routing replaces only the executor. The production path must
+    # still run a fresh Oracle and a fresh Judger for every obligation.
+    assert kernel.binder.method_cache is None
 
 
 def test_accepted_method_reuse_reexecutes_current_candidate_without_llm(
