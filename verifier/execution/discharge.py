@@ -11,17 +11,21 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import stat
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
+from ..llm.prompts.discharge import DISCHARGE_REPAIR_CONTEXT
 from .instruments import (
     ArtifactStore, authoritative_task_context, world_evidence_context,
     world_map,
 )
 from ..core.model import (
     BASIS_RECORD, Obligation, OUTCOME_FAILED, STRENGTH_ANALYTIC, STRENGTHS,
+    content_hash,
 )
 from ..llm.schema import RoleError
 
@@ -30,6 +34,9 @@ from ..llm.schema import RoleError
 # character budget rather than an on-disk byte budget.  Keep the executor's
 # contract mechanically tied to the value used by _snapshot().
 SNAPSHOT_PER_FILE_CAP = 65_536
+# Repair material is optional. Oversized or invalid retained artifacts simply
+# leave the executor on its existing context-free redo path.
+REPAIR_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -197,6 +204,73 @@ class AgentDischarger:
     def discharge(self, row: Dict, obligation: Obligation,
                   method: Optional[Dict[str, str]] = None,
                   tag: str = "") -> DischargeResult:
+        return self._discharge(row, obligation, method, tag)
+
+    def discharge_with_repair(self, row: Dict, obligation: Obligation,
+                              method=None, tag="", *,
+                              previous_artifact=None) -> DischargeResult:
+        """Harness-selected previous attempt, not an Oracle method field.
+
+        Nothing is restored automatically and no previous verdict transfers.
+        Each call still runs the executor and produces new evidence for the
+        independent Judger. Custom dischargers need not support this capability.
+        """
+        # Inheriting this optional capability must not bypass a downstream
+        # subclass/instance that customizes the historical discharge method.
+        if getattr(self.discharge, "__func__", None) \
+                is not AgentDischarger.discharge:
+            return self.discharge(row, obligation, method=method, tag=tag)
+        return self._discharge(
+            row, obligation, method, tag,
+            previous_artifact=previous_artifact)
+
+    def _repair_material(self, digest) -> Optional[Dict[str, str]]:
+        """Bounded, local locator for untrusted building material only.
+
+        The binding game selects the digest from this same method attempt's
+        execution history. Never interpret model-supplied paths or discover a
+        different artifact when that exact artifact is unavailable. Validate
+        the canonical JSON digest, not the pretty-printed file's byte hash.
+        """
+        unavailable = None
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            return unavailable
+        if not all(hasattr(os, flag) for flag in (
+                "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+            return unavailable
+        root = os.path.abspath(self.artifacts.root)
+        root_fd = None
+        try:
+            root_fd = os.open(
+                root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            name = digest + ".json"
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            with os.fdopen(os.open(name, flags, dir_fd=root_fd), "rb") as handle:
+                before = os.fstat(handle.fileno())
+                if (not stat.S_ISREG(before.st_mode)
+                        or before.st_size > REPAIR_ARTIFACT_MAX_BYTES):
+                    return unavailable
+                raw = handle.read(REPAIR_ARTIFACT_MAX_BYTES + 1)
+                after = os.fstat(handle.fileno())
+                identity = lambda s: (s.st_dev, s.st_ino, s.st_size,
+                                      s.st_mtime_ns, s.st_ctime_ns)
+                if (len(raw) > REPAIR_ARTIFACT_MAX_BYTES
+                        or identity(before) != identity(after)):
+                    return unavailable
+                payload = json.loads(raw)
+                if (not isinstance(payload, dict)
+                        or content_hash(payload) != digest):
+                    return unavailable
+            return {"artifact": digest, "path": os.path.join(root, name)}
+        except (OSError, ValueError, TypeError, RecursionError, OverflowError):
+            return unavailable
+        finally:
+            if root_fd is not None:
+                os.close(root_fd)
+
+    def _discharge(self, row: Dict, obligation: Obligation,
+                   method=None, tag="", *,
+                   previous_artifact=None) -> DischargeResult:
         subdir = obligation.id[:12] + (f"-{tag}" if tag else "")
         workdir = os.path.join(self.workdir_base, subdir)
         os.makedirs(workdir, exist_ok=True)
@@ -221,6 +295,7 @@ class AgentDischarger:
         strength = method.get("strength", STRENGTH_ANALYTIC)
         if strength not in STRENGTHS:
             strength = STRENGTH_ANALYTIC
+        repair_material = self._repair_material(previous_artifact)
         variables = {
             "claim_text": row["text"],
             "obligation_text": obligation.text,
@@ -230,6 +305,10 @@ class AgentDischarger:
             # separate prevents feedback from silently becoming a new method
             # or an authority for the proposition under test.
             "redo_feedback": method.get("redo_feedback", "(none)"),
+            # Separate harness capability: a method field with this name
+            # cannot select an artifact or make an initial execution a redo.
+            "redo_repair_context": (DISCHARGE_REPAIR_CONTEXT.format(
+                locator=json.dumps(repair_material)) if repair_material else ""),
             # The executor must see the whole contract the oracle bound,
             # not just its procedure.  Otherwise it cannot know what
             # artifact it promised to produce or which provenance floor its

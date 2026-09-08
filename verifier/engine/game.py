@@ -1340,6 +1340,10 @@ class BindingGame:
              "procedure": method["procedure"][:80], "round": round_no,
              "reason": verdict["reason"][:200]},
         )
+        # Select before appending: each redo sees its immediate predecessor,
+        # never another obligation/method or an arbitrary model-chosen path.
+        previous_artifact = (attempt.redos[-1].get("artifact")
+                             if attempt.redos else attempt.discharge_artifact)
         attempt.redos.append({"reason": verdict["reason"],
                               "outcome": None, "artifact": None,
                               "audit": None})
@@ -1352,8 +1356,14 @@ class BindingGame:
         with model_scope(
                 stage="discharge", method_attempt=method_attempt,
                 redo=round_no):
-            result = self.discharger.discharge(
-                row, obligation, method=method_fb, tag="bound-redo")
+            repair = getattr(self.discharger, "discharge_with_repair", None)
+            if callable(repair):
+                result = repair(
+                    row, obligation, method=method_fb, tag="bound-redo",
+                    previous_artifact=previous_artifact)
+            else:
+                result = self.discharger.discharge(
+                    row, obligation, method=method_fb, tag="bound-redo")
         attempt.redos[-1]["outcome"] = result.outcome
         attempt.redos[-1]["artifact"] = result.artifact
         return result

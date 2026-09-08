@@ -1572,6 +1572,22 @@ class AdapterRoutingDischarger:
         })
         return result, ""
 
+    def discharge_with_repair(self, row, obligation, method=None, tag="", *,
+                              previous_artifact=None):
+        # Repair is an explicit harness capability, not adapter JSON. A fresh
+        # agent execution still follows; do not rerun the deterministic adapter
+        # or import any previous result as an accepted outcome.
+        if getattr(self.discharge, "__func__", None) \
+                is not AdapterRoutingDischarger.discharge:
+            return self.discharge(row, obligation, method=method, tag=tag)
+        self._fallback_event(row, obligation, method or {},
+                             "judger redo requires the agent executor")
+        repair = getattr(self.fallback, "discharge_with_repair", None)
+        if callable(repair):
+            return repair(row, obligation, method=method, tag=tag,
+                          previous_artifact=previous_artifact)
+        return self.fallback.discharge(row, obligation, method=method, tag=tag)
+
     def discharge(self, row, obligation, method=None, tag=""):
         method = method or {}
         # A judger-requested redo exists to repair execution fidelity.  A
