@@ -601,7 +601,12 @@ def _truth_evaluation(truth, semantic, final_status):
         findings.append("evidence_count")
     if missing:
         findings.append("business_evidence")
-    if semantic not in truth["acceptable_semantic_evidence"]:
+    semantic_identity = _canonical_json_sha(semantic)
+    acceptable_identities = {
+        _canonical_json_sha(item)
+        for item in truth["acceptable_semantic_evidence"]
+    }
+    if semantic_identity not in acceptable_identities:
         findings.append("complete_semantic_evidence")
     # Distance is reported separately from correctness. Equal nonzero distance
     # can establish no-regression, never correctness.
@@ -674,17 +679,20 @@ def _observer_rows(job, cap=64 * 1024 * 1024):
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    if (len(raw) > cap or not raw.endswith(b"\n")
+    if (len(raw) > cap
             or (before.st_dev, before.st_ino, before.st_size,
                 before.st_mtime_ns) !=
             (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
-        raise ValueError("observer ledger changed or is incomplete")
+        raise ValueError("observer ledger changed while it was read")
+    complete_tail = bool(raw) and raw.endswith(b"\n")
+    prefix_end = len(raw) if complete_tail else raw.rfind(b"\n") + 1
+    complete_prefix = raw[:prefix_end]
     rows = [json.loads(line, object_pairs_hook=_strict_object,
                        parse_constant=_nonfinite)
-            for line in raw.decode(errors="strict").splitlines()]
+            for line in complete_prefix.decode(errors="strict").splitlines()]
     if any(type(row) is not dict for row in rows):
         raise ValueError("observer ledger has non-object rows")
-    return raw, rows
+    return raw, rows, complete_tail
 
 
 def _uint(value):
@@ -729,10 +737,12 @@ def _accounting_summary(jobs, *, expected_jobs=None):
             findings.add("job_accounting_unavailable"); complete = False
             accounting = {}
         try:
-            raw, rows = _observer_rows(job)
+            raw, rows, complete_tail = _observer_rows(job)
         except BaseException:
             findings.add("observer_ledger_unavailable"); complete = False
             continue
+        if not complete_tail:
+            findings.add("observer_ledger_torn_or_empty"); complete = False
         if (accounting.get("ledger_sha256") != hashlib.sha256(raw).hexdigest()
                 or accounting.get("ledger_bytes") != len(raw)
                 or accounting.get("expected_profile") != RUNTIME):

@@ -408,6 +408,21 @@ def test_missing_worker_result_still_recovers_observer_known_minimum(tmp_path):
     assert report["known_minimum_price_equivalent_usd"]["treatment"] > 0
 
 
+def test_torn_observer_tail_keeps_complete_prefix_as_known_minimum(tmp_path):
+    control = _priced_job(tmp_path, "control", [_usage(output=7)])
+    treatment = _priced_job(tmp_path, "treatment", [_usage(output=11)])
+    ledger = Path(treatment["worker_output_root"]) / "observer.jsonl"
+    with ledger.open("ab") as handle:
+        handle.write(b'{"record_type":')
+    treatment["accounting"] = None
+    treatment["accounting_complete"] = False
+    report = comparison._accounting_summary([control, treatment])
+    assert report["complete"] is False
+    assert report["control_over_treatment"] is None
+    assert "observer_ledger_torn_or_empty" in report["findings"]
+    assert report["tokens"]["output_tokens"]["treatment"]["known_sum"] == 11
+
+
 def test_accounting_aggregates_multiple_jobs_without_cross_job_mismatch(tmp_path):
     jobs = [_priced_job(tmp_path, arm, [_usage(output=amount)])
             for amount in (3, 5) for arm in ("control", "treatment")]
@@ -482,7 +497,8 @@ def test_partial_or_unverified_never_passes_truth_or_no_regression():
         "sealed_truth_no_regression"] is False
 
 
-def test_absolute_truth_requires_a_complete_semantic_match():
+@pytest.mark.parametrize("replacement", [True, 1.0])
+def test_absolute_truth_requires_exact_json_types(replacement):
     expected = {
         "schema": comparison.SEMANTIC_SCHEMA,
         "input_tree_seal": "a" * 64, "verdict": "verified",
@@ -497,9 +513,9 @@ def test_absolute_truth_requires_a_complete_semantic_match():
     }
     assert comparison._truth_evaluation(
         truth, expected, "verified")["absolute_truth_correct"] is True
-    contradictory = json.loads(json.dumps(expected))
-    contradictory["obligations"][0]["evidence"].append({"value": "wrong"})
-    report = comparison._truth_evaluation(truth, contradictory, "verified")
+    changed = json.loads(json.dumps(expected))
+    changed["verdict_strength"] = replacement
+    report = comparison._truth_evaluation(truth, changed, "verified")
     assert report["absolute_truth_correct"] is False
     assert "complete_semantic_evidence" in report["findings"]
 
