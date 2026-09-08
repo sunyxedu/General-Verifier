@@ -204,6 +204,7 @@ def test_no_regression_and_absolute_truth_are_reported_separately():
     assert same_error["absolute_truth_pass"] is False
     assert same_error["truth_correct"] == {
         "control": False, "treatment": False}
+    assert same_error["exact_result_preserved"] is False
 
     regression = comparison.compare_pair(
         _job("verified"), _job("refuted"), {"label": "positive"})
@@ -212,6 +213,26 @@ def test_no_regression_and_absolute_truth_are_reported_separately():
         _job("refuted"), _job("verified"), {"label": "positive"})
     assert improvement["no_regression_pass"] is True
     assert improvement["absolute_truth_pass"] is False
+    assert improvement["exact_result_preserved"] is False
+
+
+def test_exact_result_preservation_requires_truth_and_complete_quality_identity():
+    same = comparison.compare_pair(
+        _job("verified"), _job("verified"), {"label": "positive"})
+    assert same["absolute_truth_pass"] is True
+    assert same["exact_quality_equal"] is True
+    assert same["exact_result_preserved"] is True
+
+    changed = _job("verified")
+    changed["quality_view"] = {
+        **changed["quality_view"],
+        "ordered_contract": [{"id": "different"}],
+    }
+    drift = comparison.compare_pair(
+        _job("verified"), changed, {"label": "positive"})
+    assert drift["absolute_truth_pass"] is True
+    assert drift["exact_quality_equal"] is False
+    assert drift["exact_result_preserved"] is False
 
 
 @pytest.mark.parametrize("verdict", ["partial", "unverified"])
@@ -243,7 +264,9 @@ def test_stratum_does_not_drop_a_missing_candidate(monkeypatch):
         }])
     assert report["no_regression_pass"] is False
     assert report["all_truth_correct"] is False
+    assert report["exact_result_preserved"] is False
     assert report["ten_x_no_regression_acceptance"] is False
+    assert report["ten_x_exact_result_acceptance"] is False
 
 
 def test_warm_regime_is_explicitly_rejected(tmp_path, monkeypatch):

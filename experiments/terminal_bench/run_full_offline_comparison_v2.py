@@ -544,12 +544,19 @@ def compare_pair(control, treatment, truth):
         all(arm_eligible.values())
         and (not truth_correct["control"] or truth_correct["treatment"]))
     absolute_truth_pass = bool(all(truth_correct.values()))
+    # The optimization claim is stronger than truth-label preservation.  A
+    # pair is result-preserving only when both arms are officially correct
+    # and the complete path-independent quality projection is identical.
+    # Sampling drift or an unprojectable field therefore fails closed; it is
+    # never relabelled as "no loss" merely because the final label matches.
+    exact_result_preserved = bool(absolute_truth_pass and exact is True)
     return {
         "complete": all(arm_eligible.values()),
         "official_label": expected, "verdicts": verdicts,
         "truth_eligible": arm_eligible, "truth_correct": truth_correct,
         "exact_quality_equal": exact, "no_regression_pass": no_regression,
         "absolute_truth_pass": absolute_truth_pass,
+        "exact_result_preserved": exact_result_preserved,
         "control": views["control"], "treatment": views["treatment"],
     }
 
@@ -701,15 +708,21 @@ def _stratum_report(key, candidate_ids, jobs, pair_reports):
     absolute_truth = (len(relevant) == len(candidate_ids)
                       and all(row["absolute_truth_pass"] is True
                               for row in relevant))
+    exact_result_preserved = (
+        len(relevant) == len(candidate_ids)
+        and all(row["exact_result_preserved"] is True for row in relevant))
     return {
         "stratum": key, "candidate_ids": list(candidate_ids),
         "no_regression_pass": no_regression,
         "all_truth_correct": absolute_truth,
+        "exact_result_preserved": exact_result_preserved,
         "cost": cost, "latency": latency,
         "ten_x_no_regression_acceptance": _ten_x_gate(
             no_regression, cost, latency),
         "ten_x_all_truth_correct_acceptance": _ten_x_gate(
             absolute_truth, cost, latency),
+        "ten_x_exact_result_acceptance": _ten_x_gate(
+            exact_result_preserved, cost, latency),
     }
 
 
@@ -783,6 +796,9 @@ def run_comparison(plan):
     cohort_truth_correct = (
         len(pair_reports) == len(pairs)
         and all(row["absolute_truth_pass"] for row in pair_reports))
+    cohort_exact_result = (
+        len(pair_reports) == len(pairs)
+        and all(row["exact_result_preserved"] for row in pair_reports))
     strata = {}
     for pair in pairs:
         key = pair["task_family"] + "|" + pair["truth"]["label"]
@@ -796,6 +812,8 @@ def run_comparison(plan):
         cohort_no_regression, aggregate_cost, aggregate_latency)
     strict_ten_x = _ten_x_gate(
         cohort_truth_correct, aggregate_cost, aggregate_latency)
+    exact_result_ten_x = _ten_x_gate(
+        cohort_exact_result, aggregate_cost, aggregate_latency)
     if aggregate_ten_x is True and any(
             row["ten_x_no_regression_acceptance"] is not True
             for row in stratum_reports):
@@ -804,6 +822,10 @@ def run_comparison(plan):
             row["ten_x_all_truth_correct_acceptance"] is not True
             for row in stratum_reports):
         strict_ten_x = False
+    if exact_result_ten_x is True and any(
+            row["ten_x_exact_result_acceptance"] is not True
+            for row in stratum_reports):
+        exact_result_ten_x = False
     result = {
         "schema": RESULT_SCHEMA, "status": "terminal", "run_id": run_id,
         "regime": "cold", "source": plan["source"], "runtime": RUNTIME,
@@ -813,12 +835,14 @@ def run_comparison(plan):
             "reported_candidates": len(pair_reports),
             "no_regression_pass": cohort_no_regression,
             "all_truth_correct": cohort_truth_correct,
+            "exact_result_preserved": cohort_exact_result,
             "cost": aggregate_cost,
             "latency": {**aggregate_latency,
                         "batch_makespan_seconds":
                             (time.monotonic_ns() - started) / 1e9},
             "ten_x_no_regression_acceptance": aggregate_ten_x,
             "ten_x_all_truth_correct_acceptance": strict_ten_x,
+            "ten_x_exact_result_acceptance": exact_result_ten_x,
         },
         "warm_cache": {
             "supported": False, "acceptance": None,
@@ -859,10 +883,12 @@ def main(argv=None):
     print(json.dumps({"ten_x_no_regression_acceptance":
                       result["aggregate"]["ten_x_no_regression_acceptance"],
                       "ten_x_all_truth_correct_acceptance": result[
-                          "aggregate"]["ten_x_all_truth_correct_acceptance"]},
+                          "aggregate"]["ten_x_all_truth_correct_acceptance"],
+                      "ten_x_exact_result_acceptance": result[
+                          "aggregate"]["ten_x_exact_result_acceptance"]},
                      sort_keys=True))
     return 0 if result["aggregate"][
-        "ten_x_no_regression_acceptance"] is True else 2
+        "ten_x_exact_result_acceptance"] is True else 2
 
 
 if __name__ == "__main__":
