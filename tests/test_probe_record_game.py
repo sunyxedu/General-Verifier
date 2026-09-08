@@ -61,7 +61,7 @@ def _inputs(tmp_path):
     return source, case
 
 
-def _backend_factory(monkeypatch, responses, calls):
+def _backend_factory(monkeypatch, responses, calls, *, compact_inspection=False):
     queue = copy.deepcopy(responses)
 
     def run(cmd, **kwargs):
@@ -85,12 +85,13 @@ def _backend_factory(monkeypatch, responses, calls):
 
     def factory(state):
         return CodexBackend(cwd=str(state), model="gpt-5.6-luna",
-                            effort="medium", service_tier="standard")
+                            effort="medium", service_tier="standard",
+                            compact_inspection=compact_inspection)
 
     return factory
 
 
-def _run(tmp_path, monkeypatch, typed):
+def _run(tmp_path, monkeypatch, typed, *, compact_inspection=False):
     source, case = _inputs(tmp_path)
     calls = []
     responses = [{"methods": [METHOD]}]
@@ -102,9 +103,39 @@ def _run(tmp_path, monkeypatch, typed):
         typed_adapters=typed,
         expected_source_seal=probe.offline.verify_immutable_input_anchor(str(source)),
         expected_source_fingerprint=probe._source_fingerprint(probe.SOURCE_ROOT),
-        backend_factory=_backend_factory(monkeypatch, responses, calls),
+        compact_inspection=compact_inspection,
+        backend_factory=_backend_factory(
+            monkeypatch, responses, calls, compact_inspection=compact_inspection),
     )
     return result, calls, source
+
+
+def test_inspection_profile_is_explicit_and_each_attempt_matches(tmp_path, monkeypatch):
+    result, calls, _ = _run(tmp_path, monkeypatch, True, compact_inspection=True)
+    assert result["compact_inspection"] is True
+    assert result["complete"] is True and result["test_only"] is True
+    assert result["runtime"] == probe.RUNTIME
+    assert len(calls) == 2
+    rows = [json.loads(line) for line in
+            (tmp_path / "typed" / "usage.jsonl").read_text().splitlines()]
+    assert len(rows) == 2
+    assert all(row["compact_inspection"] is True for row in rows)
+    assert len({row["runtime_instruction_identity"] for row in rows}) == 1
+
+
+def test_probe_rejects_mislabelled_backend_profile(tmp_path, monkeypatch):
+    source, case = _inputs(tmp_path)
+    calls = []
+    result = probe.run_probe(
+        source, case, tmp_path / "mismatch", typed_adapters=True,
+        expected_source_seal=probe.offline.verify_immutable_input_anchor(str(source)),
+        expected_source_fingerprint=probe._source_fingerprint(probe.SOURCE_ROOT),
+        compact_inspection=True,
+        backend_factory=_backend_factory(monkeypatch, [], calls),
+    )
+    assert not calls
+    assert result["complete"] is False
+    assert result["error_class"] == "ReplaySetupError"
 
 
 @pytest.mark.parametrize("typed,expected_calls", [

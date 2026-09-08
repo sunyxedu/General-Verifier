@@ -153,11 +153,14 @@ def run_probe(
     typed_adapters: bool,
     expected_source_seal: str,
     expected_source_fingerprint: str,
+    compact_inspection: bool = False,
     backend_factory: Callable[[Path], Any] | None = None,
 ) -> dict[str, Any]:
     """Run one arm. ``backend_factory`` is a local-test seam, not a CLI flag."""
     if type(typed_adapters) is not bool:
         raise ReplaySetupError("typed_adapters must be a boolean")
+    if type(compact_inspection) is not bool:
+        raise ReplaySetupError("compact_inspection must be a boolean")
     source = source.resolve(strict=True)
     output = output.absolute()
     if (not output.is_absolute() or ".." in output.parts
@@ -186,6 +189,7 @@ def run_probe(
         "full_e2e_acceptance": False, "arm": arm,
         "test_only": backend_factory is not None,
         "typed_adapters": typed_adapters, "runtime": dict(RUNTIME),
+        "compact_inspection": compact_inspection,
         "source": str(source), "source_seal": expected_source_seal,
         "source_root": str(SOURCE_ROOT),
         "source_fingerprint": expected_source_fingerprint,
@@ -215,7 +219,10 @@ def run_probe(
         log = EventLog(str(state / "events.jsonl"))
         offline.ingest_feed(str(state / "hook_feed.jsonl"), log)
         backend = (backend_factory(state) if backend_factory is not None else
-                   CodexBackend(cwd=str(state), **RUNTIME))
+                   CodexBackend(cwd=str(state), **RUNTIME,
+                                compact_inspection=compact_inspection))
+        if getattr(backend, "compact_inspection", False) is not compact_inspection:
+            raise ReplaySetupError("backend differs from inspection profile")
         validate = getattr(backend, "validate_offline_tool_scope", None)
         if callable(validate):
             validate(str(state), None, None)
@@ -318,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--case", dest="case_path", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--typed-adapters", choices=("0", "1"), required=True)
+    parser.add_argument("--compact-inspection", choices=("0", "1"), default="0")
     parser.add_argument("--source-seal", required=True)
     parser.add_argument("--source-fingerprint", required=True)
     parser.add_argument("--execute", action="store_true")
@@ -340,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
             "case": str(args.case_path.resolve()),
             "output_root": str(args.output_root.absolute()),
             "typed_adapters": args.typed_adapters == "1",
+            "compact_inspection": args.compact_inspection == "1",
             "runtime": RUNTIME,
         }, indent=2))
         return 0
@@ -347,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     result = run_probe(
         source, args.case_path, args.output_root,
         typed_adapters=args.typed_adapters == "1",
+        compact_inspection=args.compact_inspection == "1",
         expected_source_seal=args.source_seal,
         expected_source_fingerprint=args.source_fingerprint,
     )

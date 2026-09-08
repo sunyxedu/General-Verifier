@@ -142,6 +142,21 @@ _ARTIFACT_ADDRESS_NOTE = (
     "mismatch remains a defect; a matching digest never proves semantic "
     "correctness."
 )
+_COMPACT_INSPECTION_NOTE = (
+    "\n\nLOCAL EVIDENCE INSPECTION: within your existing role and tool "
+    "permissions, make the facts needed for this audit inspectable without "
+    "unnecessarily displaying entire large sources. When a complete local "
+    "computation suffices, prefer returning its exact relevant values, "
+    "coverage counts, source identities and integrity checks. The required "
+    "input must still be inspected completely at the method's stated scope; "
+    "truncation, selected rows or a digest are not proof of uninspected "
+    "content. Keep the complete sources accessible and inspect additional "
+    "contents whenever meaning, scope, provenance or fidelity requires it. "
+    "Preserve the promised artifact, absence rules and independent semantic "
+    "audit. This is a tool-output efficiency preference, not permission to "
+    "omit evidence, trust a reported outcome or re-execute a historical "
+    "action for a record obligation."
+)
 _USAGE_CAPTURE_LOCK = threading.Lock()
 _USAGE_WRITE_LOCK = threading.Lock()
 _USAGE_CAPTURE: Optional["_UsageCapture"] = None
@@ -1169,7 +1184,10 @@ class CodexBackend:
                  effort: str = "medium", timeout: int = 1800,
                  service_tier: str = DEFAULT_SERVICE_TIER,
                  offline_toolchain_dir: Optional[str] = None,
-                 offline_shared_cache_dir: Optional[str] = None):
+                 offline_shared_cache_dir: Optional[str] = None,
+                 compact_inspection: bool = False):
+        if type(compact_inspection) is not bool:
+            raise ValueError("compact_inspection must be a bool")
         self.roles = dict(roles) if roles is not None else dict(ALL_AGENT_ROLES)
         self.cwd = cwd
         # Compound model spec: "base[;role=model...]" — e.g.
@@ -1191,6 +1209,10 @@ class CodexBackend:
         # A run-scoped transport specification, not a task-dependent rule or
         # automatic artifact approval. Keep it in method-cache identity too.
         self._artifact_address_note = _ARTIFACT_ADDRESS_NOTE
+        # Experimental, explicit opt-in. Capture actual text, not a mutable
+        # environment flag; defaults retain the previous runtime identity.
+        self._compact_inspection_note = (
+            _COMPACT_INSPECTION_NOTE if compact_inspection else "")
         # These roots come only from verifier/operator construction.  Role
         # variables may name the same roots so prompts can use them, but may
         # never add or replace a filesystem grant.
@@ -1214,7 +1236,12 @@ class CodexBackend:
     @property
     def runtime_instruction_identity(self) -> str:
         return hashlib.sha256(
-            self._artifact_address_note.encode("utf-8")).hexdigest()
+            (self._artifact_address_note + self._compact_inspection_note)
+            .encode("utf-8")).hexdigest()
+
+    @property
+    def compact_inspection(self) -> bool:
+        return bool(self._compact_inspection_note)
 
     def _execution_cwd(self, role_name: str,
                        variables: Mapping[str, Any]) -> Optional[str]:
@@ -1754,6 +1781,8 @@ class CodexBackend:
             (role.system + "\n\n" if role.system else "")
             + prompt
             + (self._artifact_address_note if role_name == "judger" else "")
+            + (self._compact_inspection_note
+               if role_name in {"discharge", "judger"} else "")
             + (_SEARCH_NOTE if self._search_enabled(role_name) else "")
             + image_note
             + "\n\nYour FINAL message must be exactly one JSON object "
@@ -1766,6 +1795,8 @@ class CodexBackend:
             "model": role_model,
             "effort": self.effort,
             "service_tier": self.service_tier,
+            "compact_inspection": self.compact_inspection,
+            "runtime_instruction_identity": self.runtime_instruction_identity,
             "state_dir": (
                 os.path.realpath(os.path.abspath(self.cwd))
                 if self.cwd else None
