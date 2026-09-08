@@ -96,6 +96,9 @@ def test_catalog_describes_a_closed_pure_language():
     assert "process" in entry["language"]["excluded"]
     assert entry["direction"].startswith("holds-only")
     assert entry["resource_limits"]["source_chars"] == MAX_SOURCE_CHARS
+    assert "every require" in entry["typed_transport"]["requirement"]
+    assert "input_text(0)" in entry["typed_transport"]["example"]
+    assert "ordinary fresh toolful Judger" in entry["typed_transport"]["fallback"]
     assert "SQLite" not in json.dumps(entry)
     assert "recover.json" not in json.dumps(entry)
 
@@ -108,7 +111,7 @@ def test_program_relates_two_declared_json_inputs_without_agent_execution(tmp_pa
         '[{"id":"a","value":1},{"id":"b","value":2}]', encoding="utf-8")
     source = """source = input_json(0)
 result = input_json(1)
-require(source == result, "result preserves every source item", {"count": len(result)})
+require(source == result, "result preserves every source item", {"source": source, "result": result})
 observe("result_count", len(result))
 """
     method = _method(source, [
@@ -130,6 +133,12 @@ observe("result_count", len(result))
     assert execution["observation"]["assertions"][0]["subject_slots"] == [0, 1]
     assert execution["observation"]["observations"] == [
         {"label": "result_count", "value": 2}]
+    packet = build_typed_adapter_judger_packet(
+        route, artifacts, obligation, method, result,
+        "(none — decisive method, no degradation to audit)",
+    )
+    assert isinstance(packet, TypedAdapterJudgerPacket)
+    assert packet.revalidate() is True
 
 
 def test_general_binary_primitives_can_validate_a_custom_format(tmp_path):
@@ -154,7 +163,7 @@ for index in range(count):
     offset += 2
     decoded = decoded + [{"key": key, "value": value}]
 require(offset == len(raw), "the complete binary input was consumed", {"bytes": offset})
-require(decoded == candidate, "candidate equals all decoded records", {"records": decoded})
+require(decoded == candidate, "candidate equals all decoded records", {"decoded": decoded, "candidate": candidate})
 """
     method = _method(source, [
         _input("/app/records.bin", provenance="task_given"),
@@ -170,6 +179,12 @@ require(decoded == candidate, "candidate equals all decoded records", {"records"
         "the complete binary input was consumed",
         "candidate equals all decoded records",
     ]
+    packet = build_typed_adapter_judger_packet(
+        route, artifacts, obligation, method, result,
+        "(none — decisive method, no degradation to audit)",
+    )
+    assert isinstance(packet, TypedAdapterJudgerPacket)
+    assert packet.revalidate() is True
 
 
 @pytest.mark.parametrize("source", [

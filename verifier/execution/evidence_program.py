@@ -1165,6 +1165,21 @@ class EvidenceProgramAdapter(MethodAdapter):
                 "must be read and at least one must have role=subject; semantic authorities "
                 "that are not runtime-read files remain described in the MethodIR"
             ),
+            "typed_transport": {
+                "requirement": (
+                    "for restricted no-tools Judger transport, every require must use "
+                    "require(bool,label,observed); observed must be complete, untruncated, "
+                    "and depend on every subject slot used by the predicate"
+                ),
+                "example": (
+                    'value = input_text(0)\n'
+                    'require(value == "expected", "exact value", value)'
+                ),
+                "fallback": (
+                    "two-argument require remains valid adapter execution but uses the "
+                    "ordinary fresh toolful Judger"
+                ),
+            },
             "resource_limits": {
                 "source_chars": MAX_SOURCE_CHARS,
                 "ast_nodes": MAX_AST_NODES,
