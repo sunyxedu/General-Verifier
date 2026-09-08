@@ -266,6 +266,28 @@ claim coverage and pins `setup_id`. Multi-candidate warm/batch setups remain
 explicitly incomplete until source-receipt lineage is implemented; matching
 claim IDs alone is not a replacement for the producer's real pass receipts.
 
+`prepare_contract_entry.py` now provides one diagnostic-only **direct** claim
+preparation. It creates a new post-extraction state, invokes the existing
+Compiler/Critic path once (retaining its normal internal retry budget), and
+materializes without evidence work. Each claim gets a separate fresh ledger;
+the final uses a new local authority cache, never an ambient cache hit.
+Operator receipts and usage remain outside the role-readable state. The
+producer checks exact rounds, successful schema/model-call status chains,
+every provider attempt, source/config/whole-graph identity, and stable ledger
+bytes. Missing usage or any failed boundary produces an inconclusive receipt
+and no candidate entry; the created files and incurred attempts are retained.
+
+This output is still an **untrusted candidate**, not a replay authorization.
+Its payload binding explicitly relies on the pinned Kernel's terminal-pass
+control flow, not a cryptographic signature of a returned role result. An
+independent receipt consumer, parent-owned extraction/all-claims lifecycle,
+warm source-receipt lineage and fresh replay coordinator remain required
+before execution can be enabled. One claim's receipt explicitly excludes
+extraction and replay costs. Local process-stub counters test accounting
+semantics only: they are not paid benchmark data or evidence for 10x gains.
+No ordinary online/offline stage, prompt, scheduler or validation gate is
+changed by this experiment module.
+
 A zero observed verdict/rank mismatch on 20 candidates has a 95%
 rule-of-three-style upper bound of about 13.9% on an unconstrained disagreement
 rate. That bound describes observed outputs only; it neither resolves contract

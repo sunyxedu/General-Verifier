@@ -267,6 +267,18 @@ unrecoverable usage gap. Its driver stopped at the accounting gate; gcode
 treatment and compressor arms were not executed. No new measured performance
 ratio or zero-loss claim follows from this partial suite.
 
+The next diagnostic-only increment adds a real single-claim Compiler/Critic
+producer on a separate fresh input clone. It checks the successful call and
+all failed/provider/schema attempts, exact event rounds and authority cache
+publication, stable accounting bytes, and final source/graph/config identity.
+It returns only an untrusted contract candidate, never an evidence result;
+ordinary online/offline scoring does not import this experiment module.
+Independent receipt consumption and the complete setup/replay coordinator
+are still prerequisites to enabling paid isolation. Regression verification:
+**1006 passed, 4 skipped, 4 subtests passed**, with the same optional module
+excluded. The 35 new cases use synthetic protocol counters, not real model
+measurements. No additional cost or latency improvement is claimed.
+
 ### Optimization direction
 
 OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
