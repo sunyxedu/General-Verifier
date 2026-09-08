@@ -63,6 +63,8 @@ class _FileIdentity:
     inode: int
     mode: int
     links: int
+    uid: int
+    gid: int
     size: int
     mtime_ns: int
     ctime_ns: int
@@ -74,6 +76,8 @@ class _FileIdentity:
             value.st_ino,
             value.st_mode,
             value.st_nlink,
+            value.st_uid,
+            value.st_gid,
             value.st_size,
             value.st_mtime_ns,
             value.st_ctime_ns,
@@ -100,6 +104,28 @@ class _PacketSnapshot:
 
 class _SourceTooLarge(ValueError):
     """A structurally safe source cannot fit without truncation."""
+
+
+def _same_file_across_call(left: _StableFile, right: _StableFile) -> bool:
+    """Same rendered source after a model call, ignoring irrelevant ctime.
+
+    ``ctime`` is retained in ``_FileIdentity`` for the two observations made
+    during each individual read.  Across a long external call, however,
+    metadata such as a provenance xattr can advance ctime without changing
+    any byte the packet transported.  Raw bytes plus the remaining path and
+    file identity fields are the evidence boundary here.  This comparison
+    describes the two endpoints; it does not claim that no intermediate
+    write-and-restore occurred.
+    """
+    a, b = left.identity, right.identity
+    return (
+        left.path == right.path
+        and left.raw == right.raw
+        and (a.device, a.inode, a.mode, a.links, a.uid, a.gid, a.size,
+             a.mtime_ns)
+        == (b.device, b.inode, b.mode, b.links, b.uid, b.gid, b.size,
+            b.mtime_ns)
+    )
 
 
 def _supported() -> bool:
@@ -384,9 +410,26 @@ class JudgerEvidencePacket:
                 return (
                     current.state_path == self._snapshot.state_path
                     and current.artifact_root == self._snapshot.artifact_root
-                    and current.artifact == self._snapshot.artifact
+                    and _same_file_across_call(
+                        current.artifact, self._snapshot.artifact)
                 )
-            return current == self._snapshot
+            return (
+                current.state_path == self._snapshot.state_path
+                and current.artifact_root == self._snapshot.artifact_root
+                and _same_file_across_call(
+                    current.artifact, self._snapshot.artifact)
+                and current.ledger_event_count
+                == self._snapshot.ledger_event_count
+                and current.ledger_last_seq == self._snapshot.ledger_last_seq
+                and current.ledger_omitted_reason
+                == self._snapshot.ledger_omitted_reason
+                and ((current.ledger is None
+                      and self._snapshot.ledger is None)
+                     or (current.ledger is not None
+                         and self._snapshot.ledger is not None
+                         and _same_file_across_call(
+                             current.ledger, self._snapshot.ledger)))
+            )
         except (OSError, ValueError, TypeError, UnicodeError, NotImplementedError,
                 json.JSONDecodeError, RecursionError, OverflowError):
             return False

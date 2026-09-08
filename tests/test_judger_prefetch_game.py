@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 
 import pytest
 
@@ -93,6 +95,24 @@ def _judge(tmp_path, backend, *, retries=1, live_world=False):
         obligation, _method(), result, attempt,
         method_attempt=1, independent_judger=True)
     return verdict, attempt, log, artifacts, result
+
+
+@pytest.mark.parametrize("live_world", [False, True])
+def test_metadata_only_change_does_not_spend_a_second_judger_call(
+        tmp_path, live_world):
+    def metadata_only():
+        state = tmp_path / "state"
+        for path in [state / "events.jsonl", *list((state / "artifacts").glob("*.json"))]:
+            before = path.stat()
+            os.chmod(path, stat.S_IMODE(before.st_mode))
+
+    backend = _CaptureBackend(enabled=True, mutate=metadata_only)
+    verdict, _attempt, log, _artifacts, _result = _judge(
+        tmp_path, backend, retries=0, live_world=live_world)
+    assert verdict == YES
+    assert len(backend.calls) == 1
+    assert type(backend.calls[0]["packet"]) is JudgerEvidencePacket
+    assert not any(event["type"] == "judger_call_failed" for event in log.replay())
 
 
 def test_default_off_preserves_the_original_variables_path(tmp_path, monkeypatch):

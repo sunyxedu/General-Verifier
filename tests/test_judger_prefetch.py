@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
@@ -35,6 +37,22 @@ def _document(packet):
     rendered = packet.render()
     assert len(rendered.encode("utf-8")) <= prefetch.MAX_PREFETCH_RENDER_BYTES
     return json.loads(rendered)
+
+
+def _set_test_xattr(path):
+    if not hasattr(os, "setxattr"):
+        pytest.skip("os.setxattr is unavailable on this Python/platform")
+    errors = []
+    for name in (
+        "user.general-verifier-prefetch-test",
+        "com.general-verifier.prefetch-test",
+    ):
+        try:
+            os.setxattr(path, name, b"ctime-only metadata")
+            return
+        except OSError as exc:
+            errors.append(exc)
+    pytest.skip(f"filesystem rejected test xattrs: {errors!r}")
 
 
 def test_record_packet_preserves_complete_unicode_and_inert_text(tmp_path):
@@ -227,6 +245,143 @@ def test_revalidation_rejects_source_changes_and_inode_replacement(tmp_path):
     replacement = state / "artifacts" / "replacement.tmp"
     replacement.write_bytes(raw)
     replacement.replace(path)
+    assert packet.revalidate() is False
+
+
+def test_revalidation_ignores_only_endpoint_ctime_change(tmp_path):
+    state, log, artifacts, digest = _fixture(tmp_path)
+    packet = prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_RECORD, digest)
+    assert packet is not None
+    artifact_path = state / "artifacts" / f"{digest}.json"
+    ledger_path = state / "events.jsonl"
+    before = {
+        path: (path.read_bytes(), prefetch._FileIdentity.from_stat(path.stat()))
+        for path in (artifact_path, ledger_path)
+    }
+
+    for path in before:
+        _set_test_xattr(path)
+
+    for path, (raw, identity) in before.items():
+        current = prefetch._FileIdentity.from_stat(path.stat())
+        if current.ctime_ns == identity.ctime_ns:
+            pytest.skip("filesystem did not expose the xattr ctime transition")
+        assert path.read_bytes() == raw
+        assert current == replace(identity, ctime_ns=current.ctime_ns)
+        assert current != identity
+    assert packet.revalidate() is True
+
+
+def test_revalidation_accepts_same_mode_chmod_ctime_transition(tmp_path):
+    state, log, artifacts, digest = _fixture(tmp_path)
+    packet = prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_RECORD, digest)
+    assert packet is not None
+    path = state / "artifacts" / f"{digest}.json"
+    before = prefetch._FileIdentity.from_stat(path.stat())
+
+    path.chmod(stat.S_IMODE(before.mode))
+
+    after = prefetch._FileIdentity.from_stat(path.stat())
+    if after.ctime_ns == before.ctime_ns:
+        pytest.skip("filesystem did not expose the chmod ctime transition")
+    assert after == replace(before, ctime_ns=after.ctime_ns)
+    assert packet.revalidate() is True
+
+
+def test_revalidation_rejects_same_size_bytes_with_restored_mtime(tmp_path):
+    state, log, artifacts, digest = _fixture(tmp_path)
+    packet = prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_WORLD, digest)
+    assert packet is not None
+    path = state / "artifacts" / f"{digest}.json"
+    before = path.stat()
+    raw = path.read_bytes()
+    changed = raw.replace(b"alpha", b"omega", 1)
+    assert changed != raw and len(changed) == len(raw)
+
+    path.write_bytes(changed)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    after = path.stat()
+    assert after.st_size == before.st_size
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert packet.revalidate() is False
+
+
+def test_revalidation_rejects_mode_and_link_count_changes(tmp_path):
+    state, log, artifacts, digest = _fixture(tmp_path)
+    path = state / "artifacts" / f"{digest}.json"
+    packet = prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_WORLD, digest)
+    assert packet is not None
+    original_mode = stat.S_IMODE(path.stat().st_mode)
+
+    path.chmod(original_mode ^ stat.S_IXUSR)
+    assert packet.revalidate() is False
+
+    path.chmod(original_mode)
+    packet = prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_WORLD, digest)
+    assert packet is not None
+    os.link(path, state / "artifact-hardlink.json")
+    assert packet.revalidate() is False
+
+
+def test_across_call_identity_includes_owner(tmp_path):
+    state, _log, _artifacts, digest = _fixture(tmp_path)
+    path = state / "artifacts" / f"{digest}.json"
+    stable = prefetch._StableFile(
+        str(path), path.read_bytes(),
+        prefetch._FileIdentity.from_stat(path.stat()),
+    )
+
+    changed_uid = replace(
+        stable, identity=replace(stable.identity, uid=stable.identity.uid + 1))
+    changed_gid = replace(
+        stable, identity=replace(stable.identity, gid=stable.identity.gid + 1))
+    assert prefetch._same_file_across_call(stable, changed_uid) is False
+    assert prefetch._same_file_across_call(stable, changed_gid) is False
+
+
+def test_ctime_change_during_one_read_is_still_rejected(tmp_path, monkeypatch):
+    state, log, artifacts, digest = _fixture(tmp_path)
+    path = state / "artifacts" / f"{digest}.json"
+    original_read = prefetch.os.read
+    mutated = False
+    ctime_changed = False
+
+    def mutate_during_read(descriptor, count):
+        nonlocal mutated, ctime_changed
+        if not mutated:
+            mutated = True
+            before = path.stat().st_ctime_ns
+            path.chmod(stat.S_IMODE(path.stat().st_mode))
+            ctime_changed = path.stat().st_ctime_ns != before
+        return original_read(descriptor, count)
+
+    monkeypatch.setattr(prefetch.os, "read", mutate_during_read)
+    packet = prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_WORLD, digest)
+    if not ctime_changed:
+        pytest.skip("filesystem did not expose the chmod ctime transition")
+    assert mutated is True
+    assert packet is None
+
+
+def test_revalidation_does_not_confuse_attached_and_missing_ledger(tmp_path):
+    state, log, artifacts, digest = _fixture(tmp_path)
+    packet = prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_RECORD, digest)
+    assert packet is not None
+    assert packet._snapshot.ledger is not None
+
+    missing_snapshot = replace(packet._snapshot, ledger=None)
+    missing_packet = replace(packet, _snapshot=missing_snapshot)
+    assert missing_packet.revalidate() is False
+
+    (state / "events.jsonl").unlink()
     assert packet.revalidate() is False
 
 
