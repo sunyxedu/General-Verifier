@@ -149,3 +149,29 @@ off pending broader fresh-Oracle and full online/offline comparisons. Runtime
 settings and token-bucket reporting also follow the
 [official OpenAI evaluation checklist](https://developers.openai.com/api/docs/guides/deployment-checklist#choose-a-gpt-56-model);
 the requested Luna model and effective effort are unchanged.
+
+### Token-price equivalent, not an invoice
+
+For an explicit pricing reference, the official API Standard short-context
+Luna rates checked on 2026-09-08 are $0.20 / $0.02 / $1.20 per million
+uncached input / cached input / output tokens. Applying those fixed weights
+to **all eight** retained attempt bills gives $0.036566 for the default arm
+and $0.016319 for prefetch, a **2.24× token-price-equivalent reduction**.
+[Official API pricing](https://developers.openai.com/api/docs/pricing).
+
+This calculation assumes the quoted short-context Standard rate card; it is
+not verified account expenditure or full workflow cost. The largest recorded
+CLI input total was 123,259 tokens and every bill reported zero cache-write
+tokens. Included reasoning is not charged a second time. Subscription credits,
+contract terms, regional uplifts and local execution costs are not inferred
+from these CLI bills. The existing quality-gate limitations still apply.
+
+## Full BindingGame diagnostic plumbing
+
+`probe_record_game.py --judger-prefetch 0|1` exposes the same explicit,
+default-off profile while retaining fresh Oracle/executor/Judger work. Each
+attempt must agree with the requested model, effort, tier, inspection and
+prefetch profile, and only Judger may report an attached packet. Missing or
+contradictory telemetry makes that diagnostic inconclusive while preserving
+its token costs. This wrapper still excludes extraction, Obligation Compiler
+and Critic costs; it is not a full-E2E scoring entry point.

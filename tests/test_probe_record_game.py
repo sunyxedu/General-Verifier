@@ -61,7 +61,8 @@ def _inputs(tmp_path):
     return source, case
 
 
-def _backend_factory(monkeypatch, responses, calls, *, compact_inspection=False):
+def _backend_factory(monkeypatch, responses, calls, *, compact_inspection=False,
+                     judger_prefetch=False):
     queue = copy.deepcopy(responses)
 
     def run(cmd, **kwargs):
@@ -86,12 +87,14 @@ def _backend_factory(monkeypatch, responses, calls, *, compact_inspection=False)
     def factory(state):
         return CodexBackend(cwd=str(state), model="gpt-5.6-luna",
                             effort="medium", service_tier="standard",
-                            compact_inspection=compact_inspection)
+                            compact_inspection=compact_inspection,
+                            judger_prefetch=judger_prefetch)
 
     return factory
 
 
-def _run(tmp_path, monkeypatch, typed, *, compact_inspection=False):
+def _run(tmp_path, monkeypatch, typed, *, compact_inspection=False,
+         judger_prefetch=False):
     source, case = _inputs(tmp_path)
     calls = []
     responses = [{"methods": [METHOD]}]
@@ -104,10 +107,110 @@ def _run(tmp_path, monkeypatch, typed, *, compact_inspection=False):
         expected_source_seal=probe.offline.verify_immutable_input_anchor(str(source)),
         expected_source_fingerprint=probe._source_fingerprint(probe.SOURCE_ROOT),
         compact_inspection=compact_inspection,
+        judger_prefetch=judger_prefetch,
         backend_factory=_backend_factory(
-            monkeypatch, responses, calls, compact_inspection=compact_inspection),
+            monkeypatch, responses, calls, compact_inspection=compact_inspection,
+            judger_prefetch=judger_prefetch),
     )
     return result, calls, source
+
+
+@pytest.mark.parametrize("typed,expected_calls", [(False, 3), (True, 2)])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_prefetch_profile_is_explicit_and_judger_only(
+        tmp_path, monkeypatch, typed, expected_calls, enabled):
+    result, calls, _ = _run(tmp_path, monkeypatch, typed, judger_prefetch=enabled)
+    assert result["complete"] and result["runtime_profile_accounting_complete"]
+    assert result["judger_prefetch"] is enabled
+    assert result["prefetch_attached_attempts"] == int(enabled)
+    assert len(calls) == expected_calls
+    assert result["cost_report"]["metrics"]["started_attempts"] == expected_calls
+    assert result["binding_result"]["outcome"] == "holds"
+    root = tmp_path / ("typed" if typed else "control")
+    rows = [json.loads(line) for line in (root / "usage.jsonl").read_text().splitlines()]
+    assert [row["role"] for row in rows] == (
+        ["oracles", "judger"] if typed else ["oracles", "discharge", "judger"])
+    for row in rows:
+        assert row["judger_prefetch"] is enabled
+        assert row["judger_prefetch_attached"] is (enabled and row["role"] == "judger")
+    assert result["excluded_stage_costs"] == {
+        "extract": None, "obligations": None, "critic": None, "setup": None}
+
+
+@pytest.mark.parametrize("bad", [None, 0, 1, "1", [], {}])
+def test_invalid_prefetch_flag_fails_before_creating_output(tmp_path, bad):
+    with pytest.raises(ValueError, match="judger_prefetch must be a boolean"):
+        probe.run_probe(tmp_path / "missing", tmp_path / "missing-case",
+                        tmp_path / "out", typed_adapters=True,
+                        expected_source_seal="f" * 64,
+                        expected_source_fingerprint="f" * 64,
+                        judger_prefetch=bad)
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("judger_prefetch", False),
+    ("judger_prefetch_protocol", "wrong"),
+    ("model", "different-model"),
+    ("effort", "different-effort"),
+    ("judger_prefetch_attached", True),
+])
+def test_mislabeled_attempt_profile_is_inconclusive_not_free(
+        tmp_path, monkeypatch, field, value):
+    original_snapshots = probe._ledger_snapshots
+
+    def tampered(usage, spans):
+        snapshots = original_snapshots(usage, spans)
+        rows = [json.loads(line) for line in snapshots["usage"].splitlines()]
+        # The first attempt is Oracle, so attached=True is invalid there.
+        rows[0][field] = value
+        snapshots["usage"] = ("\n".join(map(json.dumps, rows)) + "\n").encode()
+        return snapshots
+
+    monkeypatch.setattr(probe, "_ledger_snapshots", tampered)
+    result, calls, _ = _run(tmp_path, monkeypatch, True, judger_prefetch=True)
+    assert result["complete"] is False
+    assert result["runtime_profile_accounting_complete"] is False
+    assert result["cost_report"]["complete"] is True
+    assert result["cost_report"]["metrics"]["started_attempts"] == len(calls) == 2
+
+
+def test_mislabeled_prefetch_backend_never_calls_model(tmp_path, monkeypatch):
+    source, case = _inputs(tmp_path)
+    calls = []
+    result = probe.run_probe(
+        source, case, tmp_path / "mismatch", typed_adapters=True,
+        expected_source_seal=probe.offline.verify_immutable_input_anchor(str(source)),
+        expected_source_fingerprint=probe._source_fingerprint(probe.SOURCE_ROOT),
+        judger_prefetch=True,
+        backend_factory=_backend_factory(monkeypatch, [], calls))
+    assert not calls
+    assert result["complete"] is False
+    assert result["error_class"] == "ReplaySetupError"
+
+
+@pytest.mark.parametrize("field", [
+    "judger_prefetch", "judger_prefetch_protocol",
+    "judger_prefetch_packet_sha256", "judger_prefetch_attached",
+    "compact_inspection",
+])
+def test_missing_disabled_profile_field_is_not_inferred_as_default(
+        tmp_path, monkeypatch, field):
+    original_snapshots = probe._ledger_snapshots
+
+    def missing(usage, spans):
+        snapshots = original_snapshots(usage, spans)
+        rows = [json.loads(line) for line in snapshots["usage"].splitlines()]
+        del rows[0][field]
+        snapshots["usage"] = ("\n".join(map(json.dumps, rows)) + "\n").encode()
+        return snapshots
+
+    monkeypatch.setattr(probe, "_ledger_snapshots", missing)
+    result, calls, _ = _run(tmp_path, monkeypatch, True)
+    assert result["complete"] is False
+    assert result["runtime_profile_accounting_complete"] is False
+    assert result["cost_report"]["complete"] is True
+    assert len(calls) == 2
 
 
 def test_inspection_profile_is_explicit_and_each_attempt_matches(tmp_path, monkeypatch):
@@ -178,7 +281,14 @@ def test_plan_and_paid_confirmation_do_not_start_model(tmp_path, monkeypatch, ca
     monkeypatch.setattr(probe, "run_probe",
                         lambda *args, **kwargs: pytest.fail("model path started"))
     assert probe.main(common) == 0
-    assert json.loads(capsys.readouterr().out)["diagnostic_only"] is True
+    planned = json.loads(capsys.readouterr().out)
+    assert planned["diagnostic_only"] is True
+    assert planned["judger_prefetch"] is False
+    assert planned["judger_prefetch_protocol"] is None
+    assert probe.main([*common, "--judger-prefetch", "1"]) == 0
+    planned = json.loads(capsys.readouterr().out)
+    assert planned["judger_prefetch"] is True
+    assert planned["judger_prefetch_protocol"] == probe.PREFETCH_PROTOCOL
     with pytest.raises(SystemExit):
         probe.main([*common, "--execute"])
 

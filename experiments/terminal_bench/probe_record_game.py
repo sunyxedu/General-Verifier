@@ -32,6 +32,7 @@ from verifier.core.events import EventLog
 from verifier.core.model import Obligation, content_hash
 from verifier.engine.contract_bundle import _strict_json
 from verifier.engine.game import BindingGame
+from verifier.engine.judger_prefetch import PREFETCH_PROTOCOL
 from verifier.execution.discharge import AgentDischarger
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.codex_backend import CodexBackend, codex_usage_ledger
@@ -44,6 +45,11 @@ SCOPE = "precompiled-record-obligation-binding-only"
 RUNTIME = {"model": "gpt-5.6-luna", "effort": "medium",
            "service_tier": "standard"}
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_PROFILE_FIELDS = frozenset((
+    "model", "effort", "service_tier", "role", "compact_inspection",
+    "judger_prefetch", "judger_prefetch_protocol", "judger_prefetch_attached",
+    "judger_prefetch_packet_sha256",
+))
 _CASE_KEYS = frozenset(("row", "obligation"))
 _ROW_KEYS = frozenset(("id", "kind", "text"))
 _OBLIGATION_KEYS = frozenset((
@@ -154,6 +160,7 @@ def run_probe(
     expected_source_seal: str,
     expected_source_fingerprint: str,
     compact_inspection: bool = False,
+    judger_prefetch: bool = False,
     backend_factory: Callable[[Path], Any] | None = None,
 ) -> dict[str, Any]:
     """Run one arm. ``backend_factory`` is a local-test seam, not a CLI flag."""
@@ -161,6 +168,8 @@ def run_probe(
         raise ReplaySetupError("typed_adapters must be a boolean")
     if type(compact_inspection) is not bool:
         raise ReplaySetupError("compact_inspection must be a boolean")
+    if type(judger_prefetch) is not bool:
+        raise ReplaySetupError("judger_prefetch must be a boolean")
     source = source.resolve(strict=True)
     output = output.absolute()
     if (not output.is_absolute() or ".." in output.parts
@@ -190,6 +199,8 @@ def run_probe(
         "test_only": backend_factory is not None,
         "typed_adapters": typed_adapters, "runtime": dict(RUNTIME),
         "compact_inspection": compact_inspection,
+        "judger_prefetch": judger_prefetch,
+        "judger_prefetch_protocol": PREFETCH_PROTOCOL if judger_prefetch else None,
         "source": str(source), "source_seal": expected_source_seal,
         "source_root": str(SOURCE_ROOT),
         "source_fingerprint": expected_source_fingerprint,
@@ -220,9 +231,12 @@ def run_probe(
         offline.ingest_feed(str(state / "hook_feed.jsonl"), log)
         backend = (backend_factory(state) if backend_factory is not None else
                    CodexBackend(cwd=str(state), **RUNTIME,
-                                compact_inspection=compact_inspection))
+                                compact_inspection=compact_inspection,
+                                judger_prefetch=judger_prefetch))
         if getattr(backend, "compact_inspection", False) is not compact_inspection:
             raise ReplaySetupError("backend differs from inspection profile")
+        if getattr(backend, "judger_prefetch", False) is not judger_prefetch:
+            raise ReplaySetupError("backend differs from prefetch profile")
         validate = getattr(backend, "validate_offline_tool_scope", None)
         if callable(validate):
             validate(str(state), None, None)
@@ -273,6 +287,29 @@ def run_probe(
     snapshots = _ledger_snapshots(usage, spans)
     if any(value is None for value in snapshots.values()):
         error_class = error_class or "LedgerSnapshotError"
+    profile_complete = False
+    attached_attempts = 0
+    try:
+        bills = [json.loads(line) for line in (snapshots["usage"] or b"").splitlines()
+                 if line.strip()]
+        profile_complete = bool(bills) and all(
+            isinstance(bill, dict) and _PROFILE_FIELDS <= bill.keys()
+            and bill.get("judger_prefetch") is judger_prefetch
+            and bill.get("judger_prefetch_protocol") == start["judger_prefetch_protocol"]
+            and bill.get("compact_inspection") is compact_inspection
+            and all(bill.get(key) == value for key, value in RUNTIME.items())
+            and type(bill.get("judger_prefetch_attached")) is bool
+            and ((bill["judger_prefetch_attached"] is False
+                  and bill.get("judger_prefetch_packet_sha256") is None)
+                 or (judger_prefetch and bill.get("role") == "judger"
+                     and bill["judger_prefetch_attached"] is True
+                     and isinstance(bill.get("judger_prefetch_packet_sha256"), str)
+                     and _SHA256.fullmatch(bill["judger_prefetch_packet_sha256"]) is not None))
+            for bill in bills)
+        attached_attempts = sum(
+            bill.get("judger_prefetch_attached") is True for bill in bills)
+    except (TypeError, ValueError, AttributeError):
+        error_class = error_class or "ProfileAccountingError"
     # This is the final boundary read: post-processing and accounting may not
     # race a source or code mutation into an apparently complete record.
     try:
@@ -289,7 +326,7 @@ def run_probe(
                          cloned_seal_after == expected_source_seal) and
                         fingerprint_after == expected_source_fingerprint)
     complete = (result is not None and cost.get("complete") is True
-                and source_unchanged and error_class is None)
+                and profile_complete and source_unchanged and error_class is None)
     terminal = {
         **start, "status": "terminal",
         "diagnostic_status": "complete" if complete else "inconclusive",
@@ -305,6 +342,8 @@ def run_probe(
         "spans_sha256": (hashlib.sha256(snapshots["spans"]).hexdigest()
                          if snapshots["spans"] is not None else None),
         "cost_report": cost,
+        "runtime_profile_accounting_complete": profile_complete,
+        "prefetch_attached_attempts": attached_attempts,
         "binding_result": binding, "events": events,
         "judger_ledger_rescan_observable": False,
         "note": (
@@ -326,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--typed-adapters", choices=("0", "1"), required=True)
     parser.add_argument("--compact-inspection", choices=("0", "1"), default="0")
+    parser.add_argument("--judger-prefetch", choices=("0", "1"), default="0")
     parser.add_argument("--source-seal", required=True)
     parser.add_argument("--source-fingerprint", required=True)
     parser.add_argument("--execute", action="store_true")
@@ -349,6 +389,9 @@ def main(argv: list[str] | None = None) -> int:
             "output_root": str(args.output_root.absolute()),
             "typed_adapters": args.typed_adapters == "1",
             "compact_inspection": args.compact_inspection == "1",
+            "judger_prefetch": args.judger_prefetch == "1",
+            "judger_prefetch_protocol": (
+                PREFETCH_PROTOCOL if args.judger_prefetch == "1" else None),
             "runtime": RUNTIME,
         }, indent=2))
         return 0
@@ -357,6 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         source, args.case_path, args.output_root,
         typed_adapters=args.typed_adapters == "1",
         compact_inspection=args.compact_inspection == "1",
+        judger_prefetch=args.judger_prefetch == "1",
         expected_source_seal=args.source_seal,
         expected_source_fingerprint=args.source_fingerprint,
     )
