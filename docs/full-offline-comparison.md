@@ -42,10 +42,12 @@ retained; they are not removed from the denominator.
 ## What this does not establish
 
 A complete worker result is not a quality or 10× pass. The outer comparison
-must additionally measure process-start-to-exit latency, authenticate source
-archives, compare compiled contracts and per-obligation outcomes, and retain
-all attempted jobs. Contract drift is not normalized away. An enabled prefetch
-flag is not evidence that a packet was actually used.
+is implemented by `run_full_offline_comparison.py`: it measures
+process-start-to-exit latency, authenticates source/input/support files,
+compares compiled contracts and per-obligation outcomes, and retains all
+attempted jobs. Contract drift is not normalized away. An enabled prefetch flag
+is not evidence that a packet was actually used; sampled acceptance requires an
+actual verifier-owned packet attachment.
 
 The two prepared gcode candidate inputs contain historical reconstructed `/app`
 snapshots, not original live task worlds. They can support a same-input relative
