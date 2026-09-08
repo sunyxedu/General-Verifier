@@ -793,12 +793,17 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         if backend is None:
             backend = CodexBackend(cwd=state_dir, model=model,
                                    effort=cfg["effort"],
-                                   service_tier=cfg["service_tier"])
+                                   service_tier=cfg["service_tier"],
+                                   offline_toolchain_dir=toolchain_dir,
+                                   offline_shared_cache_dir=cache_dir)
         elif (isinstance(backend, CodexBackend)
               and backend.service_tier != cfg["service_tier"]):
             raise ValueError(
                 "provided CodexBackend service_tier does not match the "
                 "offline scoring config")
+        if isinstance(backend, CodexBackend):
+            backend.validate_offline_tool_scope(
+                state_dir, toolchain_dir, cache_dir)
 
     # A formal adapter publishes a durable anchor before exposing its
     # ``.sanitized`` marker.  Legacy/direct callers do not have such an
@@ -842,7 +847,9 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                     sc, model,
                     backend=CodexBackend(cwd=sc.state_dir, model=model,
                                          effort=cfg["effort"],
-                                         service_tier=cfg["service_tier"]),
+                                         service_tier=cfg["service_tier"],
+                                         offline_toolchain_dir=toolchain_dir,
+                                         offline_shared_cache_dir=cache_dir),
                     critic_rounds=critic_rounds,
                     parallel_obligations=parallel_obligations,
                     parallel_claims=parallel_claims)

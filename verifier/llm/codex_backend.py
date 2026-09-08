@@ -13,10 +13,12 @@ Capability boundaries: live-world execution retains the user-requested YOLO
 mode (--dangerously-bypass-approvals-and-sandbox), so exec-mode runs never
 stall on a permission stop. Every offline seat instead uses a root-deny
 profile: the current state is readable, verifier-owned work/workspace and
-explicit shared toolchain/cache roots are writable, host caches are denied,
-and shell commands receive a fresh state-local HOME/cache/tmp. Ambient apps,
-plugins, browser/computer-use, memory, and host-skill discovery are disabled.
-Command network remains available for installing pinned verification tools.
+the discharge seat's operator-bound shared toolchain/cache roots are writable;
+the Judger receives only read/execute access to that toolchain, and other seats
+receive no extra shared-root grant. Host caches are denied, and shell commands
+receive a fresh state-local HOME/cache/tmp. Ambient apps, plugins,
+browser/computer-use, memory, and host-skill discovery are disabled. Command
+network remains available for installing pinned verification tools.
 
 The SDK path enforces the non-executing seats' no-execution palette as a hard
 boundary; for the Codex backend it holds only at the prompt level ("you cannot
@@ -676,7 +678,9 @@ class CodexBackend:
     def __init__(self, roles: Optional[Dict[str, Any]] = None,
                  cwd: Optional[str] = None, model: Optional[str] = None,
                  effort: str = "medium", timeout: int = 1800,
-                 service_tier: str = DEFAULT_SERVICE_TIER):
+                 service_tier: str = DEFAULT_SERVICE_TIER,
+                 offline_toolchain_dir: Optional[str] = None,
+                 offline_shared_cache_dir: Optional[str] = None):
         self.roles = dict(roles) if roles is not None else dict(ALL_AGENT_ROLES)
         self.cwd = cwd
         # Compound model spec: "base[;role=model...]" — e.g.
@@ -695,6 +699,19 @@ class CodexBackend:
         self.effort = effort
         self.service_tier = normalize_service_tier(service_tier)
         self.timeout = timeout
+        # These roots come only from verifier/operator construction.  Role
+        # variables may name the same roots so prompts can use them, but may
+        # never add or replace a filesystem grant.
+        self.offline_toolchain_dir = (
+            _canonical_policy_path(
+                offline_toolchain_dir, "operator toolchain directory")
+            if offline_toolchain_dir else None
+        )
+        self.offline_shared_cache_dir = (
+            _canonical_policy_path(
+                offline_shared_cache_dir, "operator shared cache directory")
+            if offline_shared_cache_dir else None
+        )
         # A discharge and its independent judger must inspect exactly the same
         # captured bytes, even if an executor later mutates its writable state.
         # Kernel construction shares one backend across both seats.
@@ -707,6 +724,51 @@ class CodexBackend:
         if self._is_offline_execution(role_name, variables):
             return self._offline_state_dir(variables)
         return self.cwd
+
+    def _offline_tool_roots(self, state_dir: str) \
+            -> tuple[str, Optional[str]]:
+        toolchain = self.offline_toolchain_dir or os.path.join(
+            state_dir, "work", "_toolchains")
+        cache = self.offline_shared_cache_dir
+        if cache is not None and (
+                _path_is_within(toolchain, cache)
+                or _path_is_within(cache, toolchain)):
+            raise RoleError(
+                "offline operator toolchain and shared cache must be "
+                "disjoint")
+        return toolchain, cache
+
+    def validate_offline_tool_scope(
+        self,
+        state_dir: str,
+        toolchain_dir: Optional[str],
+        shared_cache_dir: Optional[str],
+    ) -> None:
+        """Require Service and backend to share one operator-owned scope."""
+        state = _canonical_policy_path(state_dir, "state directory")
+        if self.cwd is not None:
+            backend_state = _canonical_policy_path(
+                self.cwd, "backend state directory")
+            if backend_state != state:
+                raise RoleError(
+                    "offline Service state does not match the backend cwd")
+        expected_toolchain, expected_cache = self._offline_tool_roots(state)
+        supplied_toolchain = (
+            _canonical_policy_path(toolchain_dir, "toolchain_dir")
+            if toolchain_dir else os.path.join(state, "work", "_toolchains")
+        )
+        supplied_cache = (
+            _canonical_policy_path(shared_cache_dir, "shared_cache_dir")
+            if shared_cache_dir else None
+        )
+        if supplied_toolchain != expected_toolchain:
+            raise RoleError(
+                "offline Service toolchain does not match the backend's "
+                "operator-owned scope")
+        if supplied_cache != expected_cache:
+            raise RoleError(
+                "offline Service shared cache does not match the backend's "
+                "operator-owned scope")
 
     def _search_enabled(self, role_name: str) -> bool:
         return role_name in _SEARCH_ROLES
@@ -973,23 +1035,38 @@ class CodexBackend:
         # follow a candidate-planted ``work``/HOME/cache symlink.
         for path in dict.fromkeys((work, *env.values())):
             _ensure_verifier_owned_chain(work, path)
-        # Additional writable roots have distinct meanings. A scratch workdir
-        # cannot escape state/work; the durable workspace cannot escape
-        # state/workspace; and an external toolchain/cache receives only an
-        # exact-root grant. In particular, no caller-provided parent of the
-        # state can turn the root-deny profile back into sibling visibility.
+        # Shared tool roots are bound when the backend is constructed.  The
+        # prompt variables may repeat those paths for the discharge role, but
+        # are not an authority to add or replace a filesystem grant.
+        operator_toolchain, operator_cache = self._offline_tool_roots(state_dir)
+        for key, expected in (
+            ("toolchain_dir", operator_toolchain),
+            ("shared_cache_dir", operator_cache),
+        ):
+            declared = variables.get(key)
+            if not declared:
+                continue
+            declared = _canonical_policy_path(declared, key)
+            if expected is None or declared != expected:
+                raise RoleError(
+                    f"offline {key} does not match the backend's "
+                    "operator-owned scope")
+
+        # Additional writable roots inside the state have distinct meanings.
+        # A scratch workdir cannot escape state/work and the durable workspace
+        # cannot escape state/workspace. External toolchain/cache grants below
+        # come exclusively from the backend's operator-owned scope.
+        read_roots: list[str] = []
         writable_roots: list[str] = []
         toolchain_root: Optional[str] = None
         workspace_base = os.path.join(state_dir, "workspace")
-        for key in ("workdir", "workspace_dir", "toolchain_dir", "shared_cache_dir"):
+        for key in ("workdir", "workspace_dir"):
             candidate = variables.get(key)
             if not candidate:
                 continue
             candidate = _canonical_policy_path(candidate, key)
             if _path_is_within(work, candidate):
                 _ensure_verifier_owned_chain(work, candidate)
-                if key == "toolchain_dir":
-                    toolchain_root = candidate
                 continue
             if key == "workdir":
                 raise RoleError(
@@ -1002,14 +1079,36 @@ class CodexBackend:
                 _ensure_verifier_owned_chain(workspace_base, candidate)
                 writable_roots.append(candidate)
                 continue
-            if _path_is_within(state_dir, candidate) \
-                    or _path_is_within(candidate, state_dir):
-                raise RoleError(
-                    f"offline {key} overlaps the isolated state: {candidate}")
-            _ensure_verifier_owned_chain(candidate, candidate)
-            writable_roots.append(candidate)
-            if key == "toolchain_dir":
-                toolchain_root = candidate
+        if role_name in {"discharge", "judger"}:
+            toolchain_root = operator_toolchain
+            if _path_is_within(work, toolchain_root):
+                _ensure_verifier_owned_chain(work, toolchain_root)
+            else:
+                if (_path_is_within(state_dir, toolchain_root)
+                        or _path_is_within(toolchain_root, state_dir)):
+                    raise RoleError(
+                        "offline operator toolchain overlaps the isolated "
+                        f"state: {toolchain_root}")
+                _ensure_verifier_owned_chain(toolchain_root, toolchain_root)
+            if role_name == "judger":
+                # More specific than state/work=write for a cold, state-local
+                # toolchain: the independent Judger may rerun it but not alter
+                # what the discharge installed.
+                read_roots.append(toolchain_root)
+            elif not _path_is_within(work, toolchain_root):
+                writable_roots.append(toolchain_root)
+
+        if role_name == "discharge" and operator_cache is not None:
+            if _path_is_within(work, operator_cache):
+                _ensure_verifier_owned_chain(work, operator_cache)
+            else:
+                if (_path_is_within(state_dir, operator_cache)
+                        or _path_is_within(operator_cache, state_dir)):
+                    raise RoleError(
+                        "offline operator shared cache overlaps the isolated "
+                        f"state: {operator_cache}")
+                _ensure_verifier_owned_chain(operator_cache, operator_cache)
+                writable_roots.append(operator_cache)
         for runtime_root in runtime_read_roots:
             for writable_root in (work, *writable_roots):
                 if (_path_is_within(runtime_root, writable_root)
@@ -1017,20 +1116,17 @@ class CodexBackend:
                     raise RoleError(
                         "offline runtime read root overlaps a writable root: "
                         f"{runtime_root}")
-        cache_root = variables.get("shared_cache_dir")
-        if cache_root:
-            cache_root = _canonical_policy_path(
-                cache_root, "shared_cache_dir")
+        if role_name == "discharge" and operator_cache is not None:
             # package-manager caches shared across trials: downloads and
             # unpacked wheels are reused, installs into a fresh toolchain
             # become hardlinks instead of fetches
             env.update({
-                "UV_CACHE_DIR": os.path.join(cache_root, "uv"),
+                "UV_CACHE_DIR": os.path.join(operator_cache, "uv"),
                 "UV_LINK_MODE": "hardlink",
-                "PIP_CACHE_DIR": os.path.join(cache_root, "pip"),
-                "npm_config_cache": os.path.join(cache_root, "npm"),
-                "CARGO_HOME": os.path.join(cache_root, "cargo"),
-                "GOMODCACHE": os.path.join(cache_root, "gomod"),
+                "PIP_CACHE_DIR": os.path.join(operator_cache, "pip"),
+                "npm_config_cache": os.path.join(operator_cache, "npm"),
+                "CARGO_HOME": os.path.join(operator_cache, "cargo"),
+                "GOMODCACHE": os.path.join(operator_cache, "gomod"),
             })
         path_parts = []
         if toolchain_root is not None:
@@ -1050,7 +1146,7 @@ class CodexBackend:
             f"{_toml_string(state_dir)}=\"read\"",
             f"{_toml_string(work)}=\"write\"",
             *(f"{_toml_string(root)}=\"read\""
-              for root in runtime_read_roots),
+              for root in dict.fromkeys((*runtime_read_roots, *read_roots))),
             *(f"{_toml_string(root)}=\"write\""
               for root in dict.fromkeys(writable_roots)),
             # Keep explicit host-cache denies even under :root=deny. They

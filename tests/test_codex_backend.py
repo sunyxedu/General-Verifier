@@ -1025,10 +1025,17 @@ def test_offline_execution_rejects_workdir_outside_work(tmp_path):
 def test_offline_execution_rejects_shared_root_containing_state(tmp_path, key):
     state = tmp_path / "scoring" / "candidate" / "gv"
     state.mkdir(parents=True)
-    with pytest.raises(RoleError, match="overlaps the isolated state"):
-        CodexBackend(cwd=str(state))._execution_policy_args(
+    root = tmp_path / "scoring"
+    kwargs = {
+        ("offline_toolchain_dir" if key == "toolchain_dir"
+         else "offline_shared_cache_dir"): str(root),
+    }
+    expected = ("overlaps the isolated state" if key == "toolchain_dir"
+                else "overlaps the isolated state|must be disjoint")
+    with pytest.raises(RoleError, match=expected):
+        CodexBackend(cwd=str(state), **kwargs)._execution_policy_args(
             "discharge", {
-                "world_mode": "captured", key: str(tmp_path / "scoring"),
+                "world_mode": "captured", key: str(root),
             })
 
 

@@ -291,6 +291,12 @@ def _default_kernel(sc: Service, model, backend=None,
         # an injected backend (e.g. CodexBackend) still needs the
         # harness-swapped role registry — same double-registration rule
         backend.roles = roles
+    validate_tool_scope = getattr(
+        backend, "validate_offline_tool_scope", None)
+    if not sc.live_world and validate_tool_scope is not None:
+        validate_tool_scope(
+            sc.state_dir, sc.toolchain_dir,
+            getattr(sc, "shared_cache_dir", None))
     agent_discharger = AgentDischarger(
         backend, sc.artifacts,
         workdir_base=os.path.join(sc.state_dir, "work"),

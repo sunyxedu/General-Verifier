@@ -212,7 +212,11 @@ def test_codex_policy_grants_shared_roots_and_points_caches_at_them(tmp_path):
     cache = shared / "cache"
     toolchain.mkdir(parents=True)
     cache.mkdir(parents=True)
-    backend = CodexBackend(cwd=str(state), model="m")
+    backend = CodexBackend(
+        cwd=str(state), model="m",
+        offline_toolchain_dir=str(toolchain),
+        offline_shared_cache_dir=str(cache),
+    )
     args = backend._execution_policy_args("discharge", {
         "world_mode": "captured",
         "workdir": str(work / "abc-bound"),

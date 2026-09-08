@@ -124,7 +124,10 @@ def test_offline_policy_grants_only_configured_roots_and_pins_path(
     toolchain.mkdir(parents=True)
     _set_roots(monkeypatch, runtime, runtime_bin)
 
-    args = CodexBackend(cwd=os.fspath(state))._execution_policy_args(
+    args = CodexBackend(
+        cwd=os.fspath(state),
+        offline_toolchain_dir=os.fspath(toolchain),
+    )._execution_policy_args(
         "discharge", {
             "world_mode": "captured",
             "toolchain_dir": os.fspath(toolchain),
@@ -163,7 +166,10 @@ def test_state_local_toolchain_stays_first_on_path(tmp_path, monkeypatch):
     toolchain = state / "work" / "toolchain"
     _set_roots(monkeypatch, runtime_bin)
 
-    args = CodexBackend(cwd=os.fspath(state))._execution_policy_args(
+    args = CodexBackend(
+        cwd=os.fspath(state),
+        offline_toolchain_dir=os.fspath(toolchain),
+    )._execution_policy_args(
         "discharge", {
             "world_mode": "captured",
             "toolchain_dir": os.fspath(toolchain),
@@ -186,8 +192,11 @@ def test_offline_policy_rejects_runtime_overlap_with_writable_toolchain(
     _set_roots(monkeypatch, runtime)
 
     with pytest.raises(RoleError, match="overlaps a writable root"):
-        CodexBackend(cwd=os.fspath(state))._execution_policy_args(
-            "critic", {
+        CodexBackend(
+            cwd=os.fspath(state),
+            offline_toolchain_dir=os.fspath(toolchain),
+        )._execution_policy_args(
+            "discharge", {
                 "world_mode": "captured",
                 "toolchain_dir": os.fspath(toolchain),
             })
