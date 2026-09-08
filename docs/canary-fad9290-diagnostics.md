@@ -119,3 +119,31 @@ as **untrusted repair material** can help locate defects and reuse scaffolding.
 It cannot supply an absent authoritative grammar or make an unfaithful method
 faithful. Fresh execution and independent auditing remain required; savings
 from this follow-up are not yet measured.
+
+## First paired candidate: contract drift, not adapter direction drift
+
+The first video candidate (`extract-moves-from-video__KFN5iFo`) has now
+finished in both arms. Control returned `unverified`; treatment returned
+`refuted`. The whole treatment process is still running, so there is still
+no completed process-level A/B cost or wall-time ratio. Its elapsed time has
+already exceeded one tenth of the completed control's 54.6 minutes; this
+particular pair cannot deliver 10x latency reduction.
+
+The candidate task, final answer, and world-manifest bytes match across arms.
+The control's final decomposition failed Critic after repair oscillation and
+never materialized final obligations. Treatment instead completed a cold
+authority-contract build with six final MUST obligations. One required the
+last solver action to be a standalone echo command with no later action.
+The retained record's last solver call was a file-writing command instead.
+After repairing an incorrect ledger terminal watermark, a fresh Judger
+accepted the negative audit. The same solver-record facts existed in control,
+but control never executed that final obligation.
+
+For this candidate, treatment had a contract-cache miss and publish, no hit;
+neither arm had method-cache events, and treatment had no typed adapter
+execution or fallback. The refutation therefore did not come from reused
+evidence or direct adapter execution. This is differing contract coverage,
+not opposite outcomes on a shared exact obligation. The authority-only
+compilation path and stochastic claim/decomposition differences remain
+confounded in a single full-pipeline pair. Do not call this a proven quality
+regression, a proven improvement, or a successful zero-loss comparison.

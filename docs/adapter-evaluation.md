@@ -218,6 +218,19 @@ video control has now completed in 54.6 minutes with complete usage, but its
 treatment is still running. Neither these tests nor that control-only result
 establishes a 10x improvement. Full intermediate/support auditing remains enabled.
 
+`07a2c83` adds a standalone, read-only
+[span/usage analyzer](../experiments/terminal_bench/analyze_model_spans.py).
+It keeps observed-token completeness separate from attribution completeness,
+counts each provider attempt, and rejects duplicate or mismatched lifecycle
+joins. Missing spans do not invalidate otherwise complete old usage rows;
+the external run audit must still establish that no attempts are missing.
+The real, completed 55-call video-control ledger produces exactly the same
+token totals with `cost_complete=true`, `attribution_complete=false`, as
+expected for frozen source without spans. Local regression at this revision:
+**825 passed, 4 skipped, 4 subtests passed**, with the same optional module
+excluded. The [first paired candidate diagnostic](canary-fad9290-diagnostics.md)
+records a final-contract difference, so no zero-loss result is claimed.
+
 ### Optimization direction
 
 OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
