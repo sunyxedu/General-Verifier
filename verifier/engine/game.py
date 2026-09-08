@@ -3,7 +3,7 @@ Binding game: per obligation, bind one sufficient method to real evidence.
 
 Per obligation:
 
-0. For an equivalent final obligation, a process-local cache may supply
+0. An explicitly injected experimental process-local cache may supply
    decisive typed methods whose sufficiency a Judger already accepted. Only
    methods are reused: an adapter runs against the current candidate and its
    new evidence envelope is mechanically authenticated. Holds and refuted
@@ -12,6 +12,8 @@ Per obligation:
    adapter observation lands in a missing direction, that exact MethodIR and
    evidence face a new independent Judger audit. Only a complete yes/yes/n/a
    audit may seed the direction; otherwise the complete game below runs.
+   The shipped online/offline kernels do not inject this cache: their normal
+   architecture always enters the Oracle/executor/fresh-Judger game below.
 1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
    oracle's own guarantee, researched first when the domain is
    unfamiliar), each with a signed strength declaration — decisive
@@ -157,9 +159,9 @@ class BindingGame:
         self.append_only_deltas = append_only_deltas_enabled()
         self.append_only_delta_protocol = (
             APPEND_ONLY_DELTA_PROTOCOL if self.append_only_deltas else None)
-        # Optional because custom/test BindingGames historically have no
-        # cross-candidate sharing.  The shipped online/offline kernel injects
-        # the process-local cache explicitly.
+        # Optional experimental dependency.  The shipped online/offline
+        # kernels deliberately pass ``None`` so every obligation follows the
+        # Oracle/executor/fresh-Judger architecture below.
         self.method_cache = method_cache
         # Default-off transport experiment. It keeps the same fresh Judger
         # seat and schema, but cannot share accepted methods while enabled.

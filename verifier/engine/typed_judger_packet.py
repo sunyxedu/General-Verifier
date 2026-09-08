@@ -50,6 +50,7 @@ MAX_TYPED_JUDGER_PACKET_BYTES = 128 * 1024
 ELIGIBLE_ADAPTERS = frozenset({
     ("filesystem.exists", 1),
     ("filesystem.sha256", 1),
+    ("document.json-predicate", 1),
     ("document.json-value", 1),
     ("document.text", 1),
     ("ledger.event", 1),

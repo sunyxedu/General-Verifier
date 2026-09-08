@@ -76,6 +76,13 @@ MAX_ARGUMENT_CHARS = 65_536
 MAX_DECLARED_INPUTS = 32
 MAX_INPUT_REF_CHARS = 4_096
 MAX_RETAINED_VALUE_CHARS = 16_384
+MAX_JSON_PREDICATES = 16
+MAX_JSON_SHAPE_PROPERTIES = 64
+MAX_JSON_PROPERTY_NAME_CHARS = 1_024
+MAX_RETAINED_JSON_FAILURES = 64
+MAX_JSON_DEPTH = 128
+MAX_JSON_NODES = 100_000
+MAX_JSON_INTEGER_DIGITS = 4_096
 MAX_LEDGER_EVENTS = 20_000
 MAX_LEDGER_BYTES = 32 * 1024 * 1024
 MAX_LEDGER_VALUE_BYTES = 1024 * 1024
@@ -97,6 +104,20 @@ class AdapterNotApplicable(ValueError):
 
 def _no_json_constants(value: str) -> None:
     raise ValueError(f"non-standard JSON constant {value!r}")
+
+
+def _finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number")
+    return parsed
+
+
+def _bounded_json_int(value: str) -> int:
+    if len(value.removeprefix("-")) > MAX_JSON_INTEGER_DIGITS:
+        raise AdapterNotApplicable(
+            "JSON integer exceeds the predicate resource boundary")
+    return int(value)
 
 
 def _object_without_duplicates(pairs):
@@ -597,6 +618,16 @@ def _bounded_json(value: Any) -> Any:
     }
 
 
+def _strict_json_document(data: bytes) -> Any:
+    return json.loads(
+        data.decode("utf-8", errors="strict"),
+        object_pairs_hook=_object_without_duplicates,
+        parse_constant=_no_json_constants,
+        parse_float=_finite_json_float,
+        parse_int=_bounded_json_int,
+    )
+
+
 def _json_pointer(value: Any, pointer: str) -> Any:
     if pointer == "":
         return value
@@ -702,6 +733,483 @@ class JsonValueAdapter(MethodAdapter):
              "pointer": pointer, "expected": _bounded_json(expected),
              "actual": _bounded_json(actual)},
             WITNESS_WORLD_STATE, observation, (identity,))
+
+
+_JSON_TYPES = frozenset((
+    "null", "boolean", "integer", "number", "string", "array", "object",
+))
+
+
+def _json_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if type(value) is bool:
+        return "boolean"
+    if type(value) is int:
+        return "integer"
+    if type(value) is float:
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    raise ValueError("JSON value has an unsupported runtime type")
+
+
+def _matches_json_type(value: Any, expected: str) -> bool:
+    # JSON has one number production. ``integer`` is the useful exact subset;
+    # ``number`` deliberately includes both decoded integer and float values.
+    if expected == "number":
+        return type(value) in (int, float)
+    return _json_type(value) == expected
+
+
+def _validate_json_tree(root: Any) -> None:
+    """Reject invalid Unicode and bound work before evaluating predicates.
+
+    Parser recursion/resource failures remain adapter-inapplicable.  A parsed
+    string containing an unpaired surrogate is substantively invalid UTF-8
+    JSON for this adapter, while a merely large/deep valid value falls back.
+    """
+    stack = [(root, 0)]
+    nodes = 0
+    while stack:
+        value, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
+            raise AdapterNotApplicable(
+                "JSON document exceeds the predicate resource boundary")
+        if isinstance(value, str):
+            value.encode("utf-8", errors="strict")
+        elif isinstance(value, list):
+            stack.extend((item, depth + 1) for item in value)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                key.encode("utf-8", errors="strict")
+                stack.append((item, depth + 1))
+        elif type(value) is float:
+            if not math.isfinite(value):
+                raise ValueError("non-finite JSON number")
+        elif value is not None and type(value) not in (bool, int):
+            raise ValueError("unsupported JSON value type")
+
+
+def _validate_json_property_name(value: Any, field: str) -> str:
+    if (not isinstance(value, str)
+            or len(value) > MAX_JSON_PROPERTY_NAME_CHARS):
+        raise AdapterNotApplicable(
+            f"{field} must be a string of at most "
+            f"{MAX_JSON_PROPERTY_NAME_CHARS} characters")
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as error:
+        raise AdapterNotApplicable(f"{field} contains invalid Unicode") from error
+    return value
+
+
+def _validate_json_predicate(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict) or not isinstance(value.get("kind"), str):
+        raise AdapterNotApplicable(
+            "each JSON predicate must be an object with a string kind")
+    kind = value["kind"]
+    if kind == "valid":
+        required = {"kind"}
+    elif kind in {"equals", "array.contains"}:
+        required = {"kind", "pointer", "expected"}
+    elif kind == "array.length":
+        required = {"kind", "pointer", "operator", "expected"}
+    elif kind == "array.items-object":
+        required = {
+            "kind", "pointer", "required", "properties",
+            "additional_properties",
+        }
+    else:
+        raise AdapterNotApplicable(f"unknown JSON predicate kind {kind!r}")
+    if set(value) != required:
+        raise AdapterNotApplicable(
+            f"JSON predicate {kind!r} has the wrong shape")
+
+    if "pointer" in value:
+        pointer = value["pointer"]
+        if not isinstance(pointer, str):
+            raise AdapterNotApplicable("JSON predicate pointer must be a string")
+        try:
+            pointer.encode("utf-8", errors="strict")
+        except UnicodeEncodeError as error:
+            raise AdapterNotApplicable(
+                "JSON predicate pointer contains invalid Unicode") from error
+        # Exercise the same parser used during execution. A valid non-root
+        # pointer cannot resolve against None and therefore raises LookupError.
+        try:
+            _json_pointer(None, pointer)
+        except LookupError:
+            pass
+
+    if kind in {"equals", "array.contains"}:
+        try:
+            _validate_json_tree(value["expected"])
+        except UnicodeEncodeError as error:
+            raise AdapterNotApplicable(
+                "JSON predicate expected value contains invalid Unicode") \
+                from error
+    elif kind == "array.length":
+        operator = value["operator"]
+        expected = value["expected"]
+        if not isinstance(operator, str) or operator not in {"eq", "gte", "lte"}:
+            raise AdapterNotApplicable(
+                "array.length operator must be eq, gte, or lte")
+        if type(expected) is not int or expected < 0:
+            raise AdapterNotApplicable(
+                "array.length expected must be a non-negative integer")
+    elif kind == "array.items-object":
+        required_keys = value["required"]
+        properties = value["properties"]
+        additional = value["additional_properties"]
+        if (not isinstance(required_keys, list)
+                or len(required_keys) > MAX_JSON_SHAPE_PROPERTIES
+                or not isinstance(properties, dict)
+                or len(properties) > MAX_JSON_SHAPE_PROPERTIES
+                or type(additional) is not bool):
+            raise AdapterNotApplicable(
+                "invalid array.items-object shape declaration")
+        checked_required = [
+            _validate_json_property_name(item, "required property")
+            for item in required_keys
+        ]
+        if len(checked_required) != len(set(checked_required)):
+            raise AdapterNotApplicable(
+                "array.items-object required properties must be unique")
+        checked_properties = {}
+        for key, expected_type in properties.items():
+            key = _validate_json_property_name(key, "property name")
+            if (not isinstance(expected_type, str)
+                    or expected_type not in _JSON_TYPES):
+                raise AdapterNotApplicable(
+                    f"unsupported JSON property type {expected_type!r}")
+            checked_properties[key] = expected_type
+        if not set(checked_required) <= set(checked_properties):
+            raise AdapterNotApplicable(
+                "every required property needs a declared type")
+    return dict(value)
+
+
+class JsonPredicateAdapter(MethodAdapter):
+    """Apply a bounded conjunction of closed predicates to strict JSON."""
+
+    name = "document.json-predicate"
+    basis = BASIS_WORLD
+    # This path is eligible for a compact *fresh* Judger transport, but never
+    # for a cached prior verdict/signature.
+    accepted_method_reuse = False
+    summary = (
+        "Parse one bounded regular world file as strict UTF-8 JSON, rejecting "
+        "duplicate keys, invalid Unicode, and non-finite numbers, then apply "
+        "1..16 declarative predicates: valid, type-sensitive structural "
+        "equals, exact array contains, array length eq/gte/lte, or bounded "
+        "array item object shape/type. Predicates are conjoined; no code or "
+        "selector language is executed."
+    )
+    arguments = {
+        "address": "string",
+        "predicates": (
+            "1..16 closed objects. valid={kind}; "
+            "equals|array.contains={kind,pointer,expected}; "
+            "array.length={kind,pointer,operator:eq|gte|lte,expected:int>=0}; "
+            "array.items-object={kind,pointer,required:string[],"
+            "properties:{name:null|boolean|integer|number|string|array|object},"
+            "additional_properties:boolean}. Equality and containment are "
+            "type-sensitive; object key order is ignored and array order is "
+            "preserved. number accepts integer or floating-point JSON numbers; "
+            "integer accepts only integer JSON numbers."
+        ),
+    }
+    max_bytes = 8 * 1024 * 1024
+
+    def catalog_entry(self) -> Dict[str, Any]:
+        entry = super().catalog_entry()
+        # The base catalog is intentionally simple. This closed union gives
+        # the Oracle an exact machine-readable field contract without adding
+        # a general schema language for the adapter to interpret.
+        entry["predicate_variants"] = [
+            {"kind": "valid", "fields": ["kind"]},
+            {"kind": "equals",
+             "fields": ["kind", "pointer", "expected"]},
+            {"kind": "array.contains",
+             "fields": ["kind", "pointer", "expected"]},
+            {"kind": "array.length",
+             "fields": ["kind", "pointer", "operator", "expected"],
+             "operators": ["eq", "gte", "lte"]},
+            {"kind": "array.items-object",
+             "fields": ["kind", "pointer", "required", "properties",
+                        "additional_properties"],
+             "property_types": sorted(_JSON_TYPES)},
+        ]
+        entry["resource_limits"] = {
+            "file_bytes": self.max_bytes,
+            "predicates": MAX_JSON_PREDICATES,
+            "shape_properties": MAX_JSON_SHAPE_PROPERTIES,
+            "json_depth": MAX_JSON_DEPTH,
+            "json_nodes": MAX_JSON_NODES,
+            "integer_digits": MAX_JSON_INTEGER_DIGITS,
+            "retained_failures": MAX_RETAINED_JSON_FAILURES,
+        }
+        return entry
+
+    @staticmethod
+    def _base_result(index: int, predicate: Mapping[str, Any]) -> Dict[str, Any]:
+        return {
+            "index": index,
+            "kind": predicate["kind"],
+            **({"pointer": predicate["pointer"]}
+               if "pointer" in predicate else {}),
+        }
+
+    @staticmethod
+    def _array_items_result(index: int, predicate: Mapping[str, Any],
+                            actual: Any) -> Dict[str, Any]:
+        result = JsonPredicateAdapter._base_result(index, predicate)
+        result["actual_type"] = _json_type(actual)
+        if not isinstance(actual, list):
+            result.update({
+                "matched": False,
+                "failure_kind": WITNESS_WORLD_STATE,
+                "failure_count": 1,
+                "failures": [{
+                    "reason": "selected value is not an array",
+                    "actual_type": result["actual_type"],
+                }],
+                "failures_truncated": 0,
+            })
+            return result
+
+        required = tuple(predicate["required"])
+        properties = predicate["properties"]
+        allow_extra = predicate["additional_properties"]
+        failures = []
+        failure_count = 0
+        saw_positive = False
+        saw_absence = False
+
+        def add_failure(failure: Dict[str, Any], *, absence: bool) -> None:
+            nonlocal failure_count, saw_positive, saw_absence
+            failure_count += 1
+            saw_absence = saw_absence or absence
+            saw_positive = saw_positive or not absence
+            if len(failures) < MAX_RETAINED_JSON_FAILURES:
+                failures.append(failure)
+
+        declared_keys = set(properties)
+        for item_index, item in enumerate(actual):
+            if not isinstance(item, dict):
+                add_failure({
+                    "item_index": item_index,
+                    "reason": "array item is not an object",
+                    "actual_type": _json_type(item),
+                }, absence=False)
+                continue
+            missing = [key for key in required if key not in item]
+            if missing:
+                add_failure({
+                    "item_index": item_index,
+                    "reason": "required properties are absent",
+                    "properties": missing,
+                }, absence=True)
+            if not allow_extra:
+                extra = sorted(set(item) - declared_keys)
+                if extra:
+                    add_failure({
+                        "item_index": item_index,
+                        "reason": "additional properties are present",
+                        "property_count": len(extra),
+                        "properties": extra[:MAX_JSON_SHAPE_PROPERTIES],
+                        "properties_truncated": max(
+                            0, len(extra) - MAX_JSON_SHAPE_PROPERTIES),
+                    }, absence=False)
+            for key, expected_type in properties.items():
+                if key in item and not _matches_json_type(
+                        item[key], expected_type):
+                    add_failure({
+                        "item_index": item_index,
+                        "reason": "property has the wrong JSON type",
+                        "property": key,
+                        "expected_type": expected_type,
+                        "actual_type": _json_type(item[key]),
+                    }, absence=False)
+        result.update({
+            "matched": failure_count == 0,
+            "array_length": len(actual),
+            "items_examined": len(actual),
+            "failure_count": failure_count,
+            "failures": failures,
+            "failures_truncated": failure_count - len(failures),
+        })
+        if failure_count:
+            result["failure_kind"] = (
+                WITNESS_WORLD_STATE if saw_positive else WITNESS_ABSENCE)
+            result["contains_absence_failure"] = saw_absence
+        return result
+
+    def _predicate_result(self, index: int, predicate: Mapping[str, Any],
+                          parsed: Any) -> Dict[str, Any]:
+        kind = predicate["kind"]
+        result = self._base_result(index, predicate)
+        if kind == "valid":
+            return {**result, "matched": True, "root_type": _json_type(parsed)}
+        try:
+            actual = _json_pointer(parsed, predicate["pointer"])
+        except LookupError:
+            return {
+                **result,
+                "pointer_present": False,
+                "matched": False,
+                "failure_kind": WITNESS_ABSENCE,
+                "reason": "JSON pointer is absent",
+            }
+        result.update({"pointer_present": True,
+                       "actual_type": _json_type(actual)})
+        if kind == "equals":
+            expected = predicate["expected"]
+            matched = canonical(actual) == canonical(expected)
+            return {
+                **result,
+                "expected": _bounded_json(expected),
+                "actual": _bounded_json(actual),
+                "matched": matched,
+                **({"failure_kind": WITNESS_WORLD_STATE} if not matched else {}),
+            }
+        if kind == "array.contains":
+            if not isinstance(actual, list):
+                return {
+                    **result, "matched": False,
+                    "failure_kind": WITNESS_WORLD_STATE,
+                    "reason": "selected value is not an array",
+                }
+            expected = predicate["expected"]
+            expected_canonical = canonical(expected)
+            match_count = 0
+            first_match = None
+            for item_index, item in enumerate(actual):
+                if canonical(item) == expected_canonical:
+                    match_count += 1
+                    if first_match is None:
+                        first_match = item_index
+            return {
+                **result,
+                "expected": _bounded_json(expected),
+                "array_length": len(actual),
+                "match_count": match_count,
+                "first_match_index": first_match,
+                "matched": match_count > 0,
+                **({"failure_kind": WITNESS_ABSENCE}
+                   if match_count == 0 else {}),
+            }
+        if kind == "array.length":
+            if not isinstance(actual, list):
+                return {
+                    **result, "matched": False,
+                    "failure_kind": WITNESS_WORLD_STATE,
+                    "reason": "selected value is not an array",
+                }
+            operator = predicate["operator"]
+            expected = predicate["expected"]
+            actual_length = len(actual)
+            matched = {
+                "eq": actual_length == expected,
+                "gte": actual_length >= expected,
+                "lte": actual_length <= expected,
+            }[operator]
+            absence = (operator in {"eq", "gte"}
+                       and actual_length < expected)
+            return {
+                **result,
+                "operator": operator,
+                "expected_length": expected,
+                "actual_length": actual_length,
+                "matched": matched,
+                **({"failure_kind": (
+                    WITNESS_ABSENCE if absence else WITNESS_WORLD_STATE)}
+                   if not matched else {}),
+            }
+        return self._array_items_result(index, predicate, actual)
+
+    def execute(self, invocation, obligation, context):
+        self.exact_arguments(invocation.arguments, ("address", "predicates"))
+        address = invocation.arguments["address"]
+        raw_predicates = invocation.arguments["predicates"]
+        if (not isinstance(address, str)
+                or not isinstance(raw_predicates, list)
+                or not 1 <= len(raw_predicates) <= MAX_JSON_PREDICATES):
+            raise AdapterNotApplicable(
+                f"document.json-predicate requires 1..{MAX_JSON_PREDICATES} "
+                "predicates")
+        predicates = [_validate_json_predicate(item) for item in raw_predicates]
+        self.require_subject(invocation, address, WORLD_FILE_PROVENANCES)
+        resolved = context.resolve(address)
+        try:
+            data, identity = _read_bounded_file(resolved, self.max_bytes)
+        except AdapterNotApplicable:
+            if not os.path.lexists(resolved.host_path):
+                observation = {"address": address, "exists": False,
+                               "world_mode": resolved.mode}
+                if obligation.refutable_by_absence:
+                    return AdapterExecution(
+                        OUTCOME_REFUTED,
+                        {"reason": "required JSON artifact is absent",
+                         "address": address},
+                        WITNESS_ABSENCE, observation, ())
+                raise AdapterNotApplicable(
+                    "absence cannot settle this obligation; the agent "
+                    "executor must interpret the missing document")
+            raise
+        try:
+            parsed = _strict_json_document(data)
+            _validate_json_tree(parsed)
+        except AdapterNotApplicable:
+            raise
+        except (UnicodeDecodeError, UnicodeEncodeError, ValueError,
+                json.JSONDecodeError) as error:
+            observation = {
+                "address": address,
+                "identity": identity,
+                "strict_json_valid": False,
+                "parse_error": str(error)[:2_000],
+            }
+            return AdapterExecution(
+                OUTCOME_REFUTED,
+                {"reason": "world artifact is not strict UTF-8 JSON",
+                 "address": address, "error": str(error)[:2_000]},
+                WITNESS_WORLD_STATE, observation, (identity,))
+
+        results = [self._predicate_result(index, predicate, parsed)
+                   for index, predicate in enumerate(predicates)]
+        failed = [result for result in results if not result["matched"]]
+        observation = {
+            "address": address,
+            "identity": identity,
+            "strict_json_valid": True,
+            "predicate_count": len(results),
+            "predicates_examined": len(results),
+            "results": results,
+            "matched": not failed,
+        }
+        if not failed:
+            return AdapterExecution(
+                OUTCOME_HOLDS, None, WITNESS_NONE, observation, (identity,))
+        positive = any(
+            result.get("failure_kind") == WITNESS_WORLD_STATE
+            for result in failed)
+        if not positive and not obligation.refutable_by_absence:
+            raise AdapterNotApplicable(
+                "predicate failure proves only absence; the agent executor "
+                "must interpret it for this obligation")
+        witness_kind = WITNESS_WORLD_STATE if positive else WITNESS_ABSENCE
+        return AdapterExecution(
+            OUTCOME_REFUTED,
+            {"reason": "one or more JSON predicates did not match",
+             "address": address, "failed": failed},
+            witness_kind, observation, (identity,))
 
 
 class TextValueAdapter(MethodAdapter):
@@ -2447,6 +2955,7 @@ def default_adapter_registry(
         FileExistsAdapter(),
         FileSha256Adapter(),
         JsonValueAdapter(),
+        JsonPredicateAdapter(),
         TextValueAdapter(),
         LedgerEventAdapter(),
         LedgerToolCallStringAdapter(),

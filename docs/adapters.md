@@ -19,6 +19,7 @@ describe available operations; the model prompts remain domain independent.
 | `filesystem.exists@1` | Address presence and artifact kind | Absence requires an explicit presence obligation |
 | `filesystem.sha256@1` | File bytes compared with a declared digest | The digest's authority is audited independently |
 | `document.json-value@1` | Exact, type-sensitive JSON Pointer comparison | Strict UTF-8 JSON only |
+| `document.json-predicate@1` | Bounded structural equality, array membership/length, and array-item shape/type predicates | Closed algebra over strict UTF-8 JSON only |
 | `ledger.event@1` | One retained event's type and payload subset | Establishes record facts only |
 | `ledger.tool-call-string@1` | Exact string selection within an explicit ledger interval | Cannot interpret or execute command text |
 | `ledger.tool-call-string@2` | Explicit existence, equality, nonempty or nonblank string predicate | Record facts only; no command-language interpretation |
@@ -51,6 +52,22 @@ eligible for accepted-method reuse.
 `expected_kind`, and `world_mode` for every substantive result. A missing
 target has `actual_kind="absent"`; an existing target also carries its file
 identity. This operation does not inspect file contents.
+
+`document.json-predicate` accepts one world address and 1--16 conjoined
+predicate objects. `valid` checks the whole document. `equals` and
+`array.contains` take an RFC 6901 `pointer` and an arbitrary JSON `expected`
+value. `array.length` adds `operator=eq|gte|lte` and a non-negative integer
+`expected`. `array.items-object` declares `required` property names,
+`properties` mapped to closed JSON type names, and whether additional
+properties are allowed. It scans every array item and retains bounded failure
+details. Empty arrays therefore satisfy an item-shape predicate vacuously;
+combine it with `array.length` when non-emptiness is required. Missing members
+or values fail by absence and can refute only an obligation explicitly marked
+`refutable_by_absence`; wrong types, extra fields, and invalid JSON are positive
+world-state contradictions. The adapter never evaluates JSONPath, regexes,
+schemas, expressions, or code. It is eligible for the restricted typed packet,
+which still invokes a fresh independent Judger, but not accepted-method verdict
+reuse.
 
 For example, `/input/cmd` and `/input/keystrokes` are different explicit
 record dialects. A raw program containing a nested tool invocation needs the
