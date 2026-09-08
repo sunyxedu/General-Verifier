@@ -1185,10 +1185,17 @@ class JsonPredicateAdapter(MethodAdapter):
         results = [self._predicate_result(index, predicate, parsed)
                    for index, predicate in enumerate(predicates)]
         failed = [result for result in results if not result["matched"]]
+        retained_document = _bounded_json(parsed)
         observation = {
             "address": address,
             "identity": identity,
             "strict_json_valid": True,
+            # Keep one bounded copy, rather than duplicating a selected array
+            # in every predicate receipt. Small documents are fully
+            # inspectable by the fresh Judger; large ones remain bound by an
+            # exact canonical digest and explicit incompleteness marker.
+            "document": retained_document,
+            "document_complete": retained_document is parsed,
             "predicate_count": len(results),
             "predicates_examined": len(results),
             "results": results,

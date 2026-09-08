@@ -1,6 +1,7 @@
 """General, fail-closed checks for the declarative JSON predicate adapter."""
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 
@@ -154,11 +155,39 @@ def test_conjoined_predicates_emit_replayable_bounded_evidence(tmp_path):
     evidence = artifacts.get(result.artifact)
     observation = evidence["execution"]["observation"]
     assert observation["strict_json_valid"] is True
+    assert observation["document_complete"] is True
+    assert observation["document"] == document
     assert observation["predicate_count"] == len(predicates)
     assert all(item["matched"] for item in observation["results"])
     valid, reason = routing.registry.validate_evidence(
         typed, ROW, obligation(), result, artifacts)
     assert valid, reason
+
+
+def test_large_document_receipt_is_digest_bounded_and_explicit(tmp_path):
+    _, world, artifacts, _, fallback, routing = environment(tmp_path)
+    document = {"items": ["x" * 1_000 for _ in range(20)]}
+    (world / "result.json").write_text(
+        json.dumps(document), encoding="utf-8")
+
+    result = routing.discharge(
+        ROW, obligation(), method([{
+            "kind": "array.length", "pointer": "/items",
+            "operator": "eq", "expected": 20,
+        }]))
+
+    observation = artifacts.get(result.artifact)["execution"]["observation"]
+    assert result.outcome == OUTCOME_HOLDS
+    assert observation["document_complete"] is False
+    assert observation["document"] == {
+        "truncated": True,
+        "canonical_sha256": hashlib.sha256(
+            canonical(document).encode("utf-8")).hexdigest(),
+        "canonical_chars": len(canonical(document)),
+        "type": "dict",
+    }
+    assert len(json.dumps(observation)) < 18_000
+    assert fallback.calls == []
 
 
 @pytest.mark.parametrize(("actual", "different"), [

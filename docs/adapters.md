@@ -67,7 +67,9 @@ or values fail by absence and can refute only an obligation explicitly marked
 world-state contradictions. The adapter never evaluates JSONPath, regexes,
 schemas, expressions, or code. It is eligible for the restricted typed packet,
 which still invokes a fresh independent Judger, but not accepted-method verdict
-reuse.
+reuse. Its receipt retains the complete parsed document when its canonical JSON
+is at most 16,384 characters; larger documents carry the canonical digest,
+size, and an explicit incomplete marker instead.
 
 For example, `/input/cmd` and `/input/keystrokes` are different explicit
 record dialects. A raw program containing a nested tool invocation needs the
