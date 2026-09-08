@@ -66,15 +66,28 @@ def render_trace(state_dir):
             event = json.loads(line)
             p = event["payload"]
             if event["type"] == "tool_call":
-                calls[p.get("tool_use_id")] = p.get("input")
+                calls[p.get("tool_use_id")] = {
+                    "tool": p.get("tool"),
+                    "input": p.get("input"),
+                }
             else:
                 step += 1
-                command = calls.pop(p.get("tool_use_id"), None)
+                call = calls.pop(p.get("tool_use_id"), None)
                 parts.append(f"--- Agent Step {step} ---")
-                if command is not None:
-                    text = command if isinstance(command, str) else \
-                        (command.get("cmd") or command.get("command")
-                         or json.dumps(command, ensure_ascii=False))
+                if call is not None and call["input"] is not None:
+                    command = call["input"]
+                    if isinstance(command, str):
+                        text = command
+                    elif call["tool"] == "bash" \
+                            and isinstance(command, dict) \
+                            and isinstance(command.get("keystrokes"), str):
+                        text = command["keystrokes"]
+                    elif isinstance(command, dict):
+                        text = (command.get("cmd")
+                                or command.get("command")
+                                or json.dumps(command, ensure_ascii=False))
+                    else:
+                        text = json.dumps(command, ensure_ascii=False)
                     parts.append(f"[Command] {str(text).rstrip()}")
                 parts.append(f"[Output]\n{p.get('excerpt', '')}")
                 parts.append("")

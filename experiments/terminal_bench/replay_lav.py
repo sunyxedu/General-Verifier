@@ -38,46 +38,124 @@ sys.path.insert(0, HERE)
 import replay  # noqa: E402  (step parsing + normalization)
 
 
-def convert_feed(traj: dict, feed_path: str):
-    """Official steps -> hook-feed ledger dialect (the TieredCodex shape the
-    extractor already reads). Commands become tools.exec_command calls."""
-    session = str(uuid.uuid4())
-    events = []
-    n = 0
-    for step in traj["trajectory"]["steps"]:
-        for tc in step.get("tool_calls") or []:
-            if tc.get("tool_name") != "bash":
-                continue
-            cmd = (tc.get("arguments") or {}).get("keystrokes") or ""
-            n += 1
-            tid = f"call_replay{n:04d}"
-            args = json.dumps({"cmd": cmd, "workdir": "/app",
-                               "yield_time_ms": 10000})
-            events.append({"type": "tool_call", "payload": {
-                "agent": None,
-                "input": f"const r = await tools.exec_command({args});\n"
-                         "text(r.output);\n",
-                "session": session, "tool": "exec", "tool_use_id": tid}})
-            recorded = ""
-            obs = step.get("observation") or {}
-            results = obs.get("results") or []
-            if results:
-                content = results[0].get("content") or ""
-                try:
-                    recorded = json.loads(content).get("output", "")
-                except (json.JSONDecodeError, AttributeError):
-                    recorded = content
-            excerpt = json.dumps([{"text": recorded, "type": "input_text"}])
-            events.append({"type": "tool_result", "payload": {
-                "agent": None, "excerpt": excerpt,
-                "excerpt_truncated": False,
-                "response_chars": len(recorded),
-                "response_sha256": hashlib.sha256(
-                    recorded.encode()).hexdigest(),
-                "session": session, "tool": "exec", "tool_use_id": tid}})
-    with open(feed_path, "w") as f:
-        for e in events:
-            f.write(json.dumps(e, ensure_ascii=False) + "\n")
+FEED_CONVERSION_PROFILE = "atif-single-call-per-step-v1"
+
+
+def convert_feed(traj: dict, feed_path: str) -> dict:
+    """Preserve source tool identity/arguments; never infer tool aliases.
+
+    This replay converter accepts only the single-call subset of source steps.
+    Ambiguous observations fail before publishing a feed. Non-bash calls are
+    retained as records, but cannot authorize a reconstructed-world replay.
+    Results retain the historical output-text projection, not their complete
+    metadata. The returned report is diagnostic, not verification authority.
+    """
+    trajectory = traj.get("trajectory") if isinstance(traj, dict) else None
+    if not isinstance(trajectory, dict) or not isinstance(
+            trajectory.get("steps"), list):
+        raise ValueError("trajectory must contain a steps list")
+    session = trajectory.get("session_id")
+    agent_info = trajectory.get("agent")
+    if session is not None and not isinstance(session, str):
+        raise ValueError("session_id must be a string or null")
+    if agent_info is not None and not isinstance(agent_info, dict):
+        raise ValueError("agent must be an object or null")
+    agent = agent_info.get("name") if agent_info is not None else None
+    if agent is not None and not isinstance(agent, str):
+        raise ValueError("agent.name must be a string or null")
+
+    events, projection, seen_ids = [], [], set()
+    call_count = result_count = unsupported = 0
+    for step_index, step in enumerate(trajectory["steps"]):
+        if not isinstance(step, dict):
+            raise ValueError("each trajectory step must be an object")
+        calls = step.get("tool_calls")
+        calls = [] if calls is None else calls
+        obs = step.get("observation")
+        obs = {} if obs is None else obs
+        if not isinstance(calls, list) or not isinstance(obs, dict):
+            raise ValueError("tool_calls must be a list; observation an object")
+        results = obs.get("results")
+        results = [] if results is None else results
+        if not isinstance(results, list):
+            raise ValueError("observation.results must be a list")
+        if len(calls) > 1 or len(results) > len(calls):
+            raise ValueError("ambiguous calls/results outside single-call profile")
+        if not calls:
+            continue
+        tc = calls[0]
+        if not isinstance(tc, dict) or not isinstance(
+                tc.get("tool_name"), str) or not tc["tool_name"]:
+            raise ValueError("tool call must have a nonempty string tool_name")
+        if "arguments" not in tc:
+            raise ValueError("tool call must contain arguments")
+        tid = tc.get("tool_call_id", f"call_replay:{step_index}:0")
+        if not isinstance(tid, str) or not tid or tid in seen_ids:
+            raise ValueError("tool_call_id must be a unique nonempty string")
+        seen_ids.add(tid)
+        identity = {"agent": agent, "session": session,
+                    "tool": tc["tool_name"], "tool_use_id": tid}
+        events.append({"type": "tool_call", "payload": {
+            **identity, "input": tc["arguments"]}})
+        call_count += 1
+        if tc["tool_name"] != "bash" or not isinstance(
+                tc["arguments"], dict) or not isinstance(
+                tc["arguments"].get("keystrokes"), str):
+            unsupported += 1
+        projection.append({"step_index": step_index,
+                           "tool_calls": calls, "results": results})
+        if not results:
+            continue
+        result = results[0]
+        if not isinstance(result, dict) or not isinstance(
+                result.get("content"), str):
+            raise ValueError("result must contain string content")
+        if "source_call_id" in result and (
+                "tool_call_id" not in tc or result["source_call_id"] != tid):
+            raise ValueError("result source_call_id does not match source call")
+        recorded = result["content"]
+        try:
+            decoded = json.loads(recorded)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict) and isinstance(decoded.get("output"), str):
+            recorded = decoded["output"]
+        events.append({"type": "tool_result", "payload": {
+            **identity,
+            "excerpt": json.dumps([{"text": recorded, "type": "input_text"}],
+                                  ensure_ascii=False),
+            "excerpt_truncated": False,
+            "response_chars": len(recorded),
+            "response_sha256": hashlib.sha256(recorded.encode()).hexdigest()}})
+        result_count += 1
+
+    # Validate/serialize the entire projection before opening the destination.
+    # Top-level benchmark reward and trajectory metrics are not hashed or fed.
+    try:
+        source_bytes = json.dumps(
+            {"session": session, "agent": agent, "steps": projection},
+            sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        feed = "".join(json.dumps(e, sort_keys=True, ensure_ascii=False,
+                                  allow_nan=False) + "\n" for e in events)
+        feed_bytes = feed.encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ValueError("tool records must contain valid UTF-8 JSON values") from exc
+    report = {
+        "profile": FEED_CONVERSION_PROFILE,
+        "diagnostic_only": True,
+        "source_projection_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "feed_sha256": hashlib.sha256(feed_bytes).hexdigest(),
+        "feed_bytes": len(feed_bytes),
+        "source_tool_calls": call_count,
+        "tool_results": result_count,
+        "calls_without_result": call_count - result_count,
+        "unsupported_replay_calls": unsupported,
+        "result_projection": "output text when present, otherwise raw content",
+        "not_preserved": ["non-tool messages", "complete result metadata"],
+    }
+    with open(feed_path, "w", encoding="utf-8") as f:
+        f.write(feed)
+    return report
 
 
 def extract_problem(steps):
@@ -130,6 +208,14 @@ def build_trial(traj_path: str, job_dir: str, image: str) -> dict:
     os.makedirs(os.path.join(trial_dir, "gv-state"), exist_ok=True)
     os.makedirs(os.path.join(trial_dir, "artifacts"), exist_ok=True)
 
+    # Validate record association before any replay. Retaining a tool record
+    # does not imply we can reconstruct that tool's filesystem effects.
+    conversion = convert_feed(traj, os.path.join(
+        trial_dir, "gv-state", "hook_feed.jsonl"))
+    if conversion["unsupported_replay_calls"]:
+        return {"trial": trial_name, "status": "unsupported-replay-tools",
+                "feed_conversion": conversion}
+
     # 1. replay
     name = f"gv-replay-{uuid.uuid4().hex[:8]}"
     up = replay.docker(["run", "-d", "--name", name, image,
@@ -181,14 +267,13 @@ def build_trial(traj_path: str, job_dir: str, image: str) -> dict:
     execs = [s for s in steps_report if s["kind"] == "exec"]
     fidelity = {"exec_steps": len(execs),
                 "exec_matched": sum(s["match"] for s in execs),
-                "world_captured": world_ok, "steps": steps_report}
+                "world_captured": world_ok, "steps": steps_report,
+                "feed_conversion": conversion}
     with open(os.path.join(trial_dir, "replay_report.json"), "w") as f:
         json.dump(fidelity, f, ensure_ascii=False, indent=1)
 
     # 3. ledger + contract + final
     steps = traj["trajectory"]["steps"]
-    convert_feed(traj, os.path.join(trial_dir, "gv-state",
-                                    "hook_feed.jsonl"))
     with open(os.path.join(trial_dir, "gv-state", "task.md"), "w") as f:
         f.write(extract_problem(steps))
     with open(os.path.join(trial_dir, "gv-state", "final.txt"), "w") as f:

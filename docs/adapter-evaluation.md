@@ -15,6 +15,11 @@ The separately gated [append-only Compiler repair](append-only-delta.md)
 addresses an observed regeneration waste; paid validation of that option is
 still pending and it remains off by default.
 
+The subsequent [source tool identity correction](tool-identity-conversion.md)
+changes only the replay converter and trace readers, not the core architecture.
+Local checks cover 15 source traces (10 accepted, five explicitly refused for
+unlabelled multi-call steps); no new paid A/B or no-loss result is claimed.
+
 ## Paired offline pilot
 
 Source revision: `eccefb9`; pipeline fingerprint: `35e435a6ae5535bf`.
