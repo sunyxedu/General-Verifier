@@ -76,6 +76,10 @@ from ..core.model import (
 )
 from ..llm.schema import RoleError
 from .method_cache import AcceptedMethod, build_method_cache_key
+from ..execution.config import (
+    APPEND_ONLY_DELTA_PROTOCOL,
+    append_only_deltas_enabled,
+)
 
 
 def _method_strength(method: Dict[str, str]) -> str:
@@ -141,6 +145,11 @@ class BindingGame:
         self.registry = registry
         self.memory = memory  # advisory; feeds the oracle's registry slot
         self.live_world = live_world
+        # Match the Kernel's run-scoped compiler identity. Environment
+        # mutation cannot move accepted methods between experiment modes.
+        self.append_only_deltas = append_only_deltas_enabled()
+        self.append_only_delta_protocol = (
+            APPEND_ONLY_DELTA_PROTOCOL if self.append_only_deltas else None)
         # Optional because custom/test BindingGames historically have no
         # cross-candidate sharing.  The shipped online/offline kernel injects
         # the process-local cache explicitly.
@@ -336,6 +345,8 @@ class BindingGame:
             judger_role=self.judger_role,
             live_world=self.live_world,
             adapter_catalog=catalog,
+            append_only_deltas=self.append_only_deltas,
+            append_only_delta_protocol=self.append_only_delta_protocol,
         )
 
     def _run_cached_entries(

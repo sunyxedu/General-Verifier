@@ -277,6 +277,46 @@ CRITIC_FEEDBACK_TEMPLATE = (
     "do not repair one by breaking the other."
 )
 
+# Used only after the Critic has selected its exact ``APPEND OBLIGATION:``
+# repair instruction and the operator has enabled the versioned delta path.
+# The existing contract is still included so the Compiler can avoid a
+# duplicate or overstrong addition, but it is retained mechanically rather
+# than entrusted to another model emission.
+APPEND_DELTA_FEEDBACK_TEMPLATE = (
+    "A critic found a sufficiency gap which it classified as an append-only "
+    "repair. Here is the exact existing obligation contract; the verifier "
+    "will retain every entry without allowing you to rewrite it: "
+    "{previous_obligations}\n"
+    "Game record — every prior round of this decomposition game in order "
+    "and binding on both seats: {game_history}\n"
+    "Witness: {counterexample_world}\n"
+    "Repair instruction: {missing_condition}\n"
+    "Re-audit the controlling source and propose only the smallest new, "
+    "independent tail obligation or obligations needed to close that exact "
+    "gap. Do not restate, edit, reorder, merge, or delete an existing entry."
+)
+
+# Appended after the ordinary Compiler template so the wire contract is
+# unambiguous despite retaining the established ``obligations`` JSON schema
+# and role identity. Double braces survive AgentRole's ``str.format``.
+APPEND_DELTA_OUTPUT_CONTRACT = (
+    "\n\nAPPEND-ONLY DELTA OUTPUT CONTRACT "
+    "(obligations-array-delta-v1): the verifier already retains the complete "
+    "existing contract shown above. In {{\"obligations\": [...]}} return "
+    "ONLY one or more new tail obligation objects. Do not copy any existing "
+    "obligation into this array. The verifier will deep-copy and append your "
+    "array, then a fresh independent Critic will audit the complete merged "
+    "contract in both directions."
+)
+
+APPEND_DELTA_GUARD_FEEDBACK = (
+    "\nMECHANICAL APPEND-DELTA VIOLATION: the preceding delta was rejected "
+    "before Critic review because {violation}. Rejected delta obligations: "
+    "{rejected_obligations}. The exact existing contract remains unchanged. "
+    "Return only one or more genuinely new tail obligation objects; do not "
+    "return the complete contract or any old prefix."
+)
+
 APPEND_REPAIR_GUARD_FEEDBACK = (
     "\nMECHANICAL APPEND-ONLY CONTRACT: the preceding repair was rejected before "
     "critic review because it violated the append-only instruction: "

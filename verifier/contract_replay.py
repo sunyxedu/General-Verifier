@@ -27,6 +27,7 @@ from .engine.contract_bundle import (
     ContractBundleIdentity, SealedContractBundle, claim_graph_sha256,
 )
 from .engine.method_cache import _backend_identity, _role_identity
+from .execution.config import APPEND_ONLY_DELTA_PROTOCOL
 from .llm.authority_backend import authority_compilation_backend
 
 
@@ -164,6 +165,21 @@ def compilation_config_sha256(kernel, config: dict[str, Any]) -> str:
     """
     semantic = {key: value for key, value in config.items()
                 if key not in {"config", "typed_adapters", "browser_observer"}}
+    configured_delta = config.get("append_only_deltas", False)
+    configured_protocol = config.get("append_only_delta_protocol")
+    if (type(configured_delta) is not bool
+            or configured_delta != getattr(
+                kernel, "append_only_deltas", False)
+            or configured_protocol != (
+                APPEND_ONLY_DELTA_PROTOCOL if configured_delta else None)
+            or configured_protocol != getattr(
+                kernel, "append_only_delta_protocol", None)):
+        raise ReplaySetupError(
+            "compiler append-repair protocol differs from configuration")
+    # Normalize legacy fixture dictionaries which omit the disabled flag so
+    # explicit false and implicit default false have one exact identity.
+    semantic["append_only_deltas"] = configured_delta
+    semantic["append_only_delta_protocol"] = configured_protocol
     backend = _backend_identity(kernel.backend)
     if backend is None or kernel.critic_role is None or kernel.critic_rounds < 1:
         raise ReplaySetupError("known compiler backend and independent Critic required")

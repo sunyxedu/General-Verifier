@@ -47,6 +47,7 @@ def _environment(request, stage):
         "PATH": request["runtime_path"],
         "GV_TYPED_ADAPTERS": "0" if stage == "control" else "1",
         "GV_CONTRACT_CACHE": "1",
+        "GV_APPEND_ONLY_DELTAS": "0",  # Isolate adapter dispatch, not compiler repair.
         "GV_MAX_CONCURRENT_SEATS": str(request["max_concurrent_seats"]),
         "GV_OFFLINE_RUNTIME_READ_ROOTS": json.dumps(request["runtime_read_roots"]),
         "TZ": request.get("timezone", "Europe/London"),
@@ -100,6 +101,7 @@ def _recorded_config(request, stage):
     expected = {"model": "gpt-5.6-luna", "seats": "codex", "effort": "medium",
                 "service_tier": "standard", "max_rounds": 3, "critic_rounds": 4,
                 "typed_adapters": stage != "control", "contract_cache": True,
+                "append_only_deltas": False, "append_only_delta_protocol": None,
                 "offline_runtime_read_roots": request["runtime_read_roots"], "browser_observer": None}
     expected["config"] = content_hash({"pipeline": offline.pipeline_fingerprint(), **expected})[:16]
     if content_hash(record.get("config")) != content_hash(expected):
@@ -193,7 +195,7 @@ def _worker(request_path, expected_sha, stage):
     if _source_fingerprint(SOURCE_ROOT) != request["source_fingerprint"]:
         raise ValueError("running source differs from parent pin")
     expected_env = _environment(request, stage)
-    for key in ("PATH", "GV_TYPED_ADAPTERS", "GV_CONTRACT_CACHE",
+    for key in ("PATH", "GV_TYPED_ADAPTERS", "GV_CONTRACT_CACHE", "GV_APPEND_ONLY_DELTAS",
                 "GV_MAX_CONCURRENT_SEATS", "GV_OFFLINE_RUNTIME_READ_ROOTS", "TZ"):
         if os.environ.get(key) != expected_env[key]:
             raise ValueError("worker environment differs from request: " + key)

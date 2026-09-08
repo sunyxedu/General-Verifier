@@ -147,6 +147,8 @@ def _backend_identity(backend) -> Optional[Dict[str, Any]]:
 def build_method_cache_key(
     *, state_dir: str, row: Dict[str, Any], obligation, backend,
     oracles_role, judger_role, live_world: bool, adapter_catalog: str,
+    append_only_deltas: bool = False,
+    append_only_delta_protocol: Optional[str] = None,
 ) -> Optional[str]:
     """Build an exact semantic key, or disable reuse on uncertain input."""
     if row.get("kind") != "final" or obligation.premise_scope:
@@ -181,7 +183,14 @@ def build_method_cache_key(
         return None
 
     return content_hash({
-        "schema": "gv-accepted-method-cache-key-v1",
+        "schema": "gv-accepted-method-cache-key-v2",
+        # Method applicability is obligation-scoped, but experiment modes
+        # must never silently share process-local reuse across different
+        # compiler repair semantics.
+        "compiler_repair": {
+            "append_only_deltas": append_only_deltas,
+            "protocol": append_only_delta_protocol,
+        },
         # Parent-claim text is explicitly untrusted context in the Oracle
         # protocol.  Exact obligation + controlling clause are the semantic
         # boundary, which lets equivalent final claims from different

@@ -12,14 +12,20 @@ came from. The verifier is auditable through its own ledger.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import replace
 from typing import Dict, List, Optional
 
 from ..execution.discharge import AgentDischarger, DischargeResult
+from ..execution.config import (
+    APPEND_ONLY_DELTA_PROTOCOL,
+    append_only_deltas_enabled,
+)
 from ..core.events import EventLog
 from ..execution.instruments import (
     ArtifactStore, LedgerInstrument, authoritative_task_context,
@@ -133,6 +139,12 @@ class Kernel:
         self.live_world = live_world
         self.critic_rounds = (MAX_CRITIC_ROUNDS if critic_rounds is None
                               else critic_rounds)
+        # Resolve the experimental repair representation once per Kernel.
+        # Runtime environment mutation cannot change compiler semantics
+        # halfway through a verification game.
+        self.append_only_deltas = append_only_deltas_enabled()
+        self.append_only_delta_protocol = (
+            APPEND_ONLY_DELTA_PROTOCOL if self.append_only_deltas else None)
         self.obligations_role = obligations_role or COMPILE_OBLIGATIONS_AGENT
         self.critic_role = critic_role   # None -> no adversarial review
         self.discharger = discharger or AgentDischarger(
@@ -140,6 +152,17 @@ class Kernel:
             state_dir=os.path.dirname(os.path.abspath(log.path)),
             live_world=live_world, store=store)
         self.binder = binder      # binding game; None -> direct discharge (tests)
+        if binder is not None:
+            binder_delta = getattr(
+                binder, "append_only_deltas", self.append_only_deltas)
+            binder_protocol = getattr(
+                binder, "append_only_delta_protocol",
+                self.append_only_delta_protocol)
+            if (binder_delta != self.append_only_deltas
+                    or binder_protocol != self.append_only_delta_protocol):
+                raise ValueError(
+                    "binding game and kernel use different append-repair "
+                    "protocols")
         self.memory = memory      # advisory stores; None -> static hints
         self.contract_cache = contract_cache
         # Experimental adapter-isolation diagnostic only.  Ordinary online
@@ -631,7 +654,10 @@ class Kernel:
                     backend_identity=session.identity,
                     obligations_role=session.obligations_role,
                     critic_role=session.critic_role,
-                    critic_rounds=self.critic_rounds)
+                    critic_rounds=self.critic_rounds,
+                    append_only_deltas=self.append_only_deltas,
+                    append_only_delta_protocol=
+                        self.append_only_delta_protocol)
                 lease = self.contract_cache.acquire(key)
                 try:
                     # The lookup/single-flight wait may outlive an online task
@@ -848,7 +874,14 @@ class Kernel:
             failure_missing_condition = verdict["missing_condition"]
             if critic_calls == self.critic_rounds:
                 break  # last attack stands; a repair would go unreviewed
-            semantic_feedback = prompts.CRITIC_FEEDBACK_TEMPLATE.format(
+            append_delta = (
+                self.append_only_deltas
+                and verdict["missing_condition"].lstrip().startswith(
+                    "APPEND OBLIGATION:"))
+            feedback_template = (
+                prompts.APPEND_DELTA_FEEDBACK_TEMPLATE
+                if append_delta else prompts.CRITIC_FEEDBACK_TEMPLATE)
+            semantic_feedback = feedback_template.format(
                 previous_obligations=json.dumps(
                     payload["obligations"], ensure_ascii=False),
                 game_history=json.dumps(history, ensure_ascii=False),
@@ -864,12 +897,26 @@ class Kernel:
                 )
                 with model_scope(
                         stage="contract_compile", round=repair_calls + 1):
-                    candidate = obligations_role.call(
+                    repair_role = obligations_role
+                    if append_delta:
+                        repair_role = replace(
+                            obligations_role,
+                            template=(obligations_role.template
+                                      + prompts.APPEND_DELTA_OUTPUT_CONTRACT))
+                    candidate = repair_role.call(
                         backend, repair_variables)
                 repair_calls += 1
-                violation = None
-                if verdict["missing_condition"].lstrip().startswith(
-                        "APPEND OBLIGATION:"):
+                if append_delta:
+                    violation = self._append_delta_violation(
+                        payload, candidate)
+                    if violation is None:
+                        candidate = self._merge_append_delta(
+                            payload, candidate)
+                else:
+                    violation = None
+                if (not append_delta
+                        and verdict["missing_condition"].lstrip().startswith(
+                            "APPEND OBLIGATION:")):
                     violation = self._append_repair_violation(payload, candidate)
                 if violation is None:
                     payload = candidate
@@ -892,7 +939,10 @@ class Kernel:
                         "repair_attempt": repair_calls,
                     },
                 )
-                guard_feedback = prompts.APPEND_REPAIR_GUARD_FEEDBACK.format(
+                guard_template = (
+                    prompts.APPEND_DELTA_GUARD_FEEDBACK
+                    if append_delta else prompts.APPEND_REPAIR_GUARD_FEEDBACK)
+                guard_feedback = guard_template.format(
                     violation=violation,
                     rejected_obligations=json.dumps(
                         candidate["obligations"], ensure_ascii=False),
@@ -953,6 +1003,37 @@ class Kernel:
                     f"obligation {index} changed: expected {expected!r}, "
                     f"got {actual!r}")
         return None
+
+    @staticmethod
+    def _append_delta_violation(previous: Dict, candidate: Dict):
+        """Return why an additions-only response is not an admissible delta.
+
+        Arbitrary new obligation text cannot reveal whether a model intended
+        to edit an old item.  The sound mechanical guarantee is instead that
+        no response can replace old bytes: they are deep-copied below.  This
+        guard additionally rejects an empty delta and the unambiguous legacy
+        mistake of echoing the complete old contract as its prefix.  It does
+        not use fuzzy text or clause matching.
+        """
+        additions = candidate["obligations"]
+        if not additions:
+            return "the additions-only obligation array is empty"
+        old = previous["obligations"]
+        if old and len(additions) >= len(old) \
+                and additions[:len(old)] == old:
+            return (
+                "the additions-only obligation array repeats the complete "
+                "existing contract as a prefix")
+        return None
+
+    @staticmethod
+    def _merge_append_delta(previous: Dict, delta: Dict) -> Dict:
+        """Construct a full contract without exposing old items to rewrite."""
+        return {
+            "obligations": (
+                copy.deepcopy(previous["obligations"])
+                + copy.deepcopy(delta["obligations"]))
+        }
 
     @staticmethod
     def _bounded_context_value(value, limit: int) -> Dict:

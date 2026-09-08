@@ -9,6 +9,8 @@ from typing import Mapping, Optional
 
 TYPED_ADAPTERS_ENV = "GV_TYPED_ADAPTERS"
 CONTRACT_CACHE_ENV = "GV_CONTRACT_CACHE"
+APPEND_ONLY_DELTAS_ENV = "GV_APPEND_ONLY_DELTAS"
+APPEND_ONLY_DELTA_PROTOCOL = "obligations-array-delta-v1"
 OFFLINE_RUNTIME_READ_ROOTS_ENV = "GV_OFFLINE_RUNTIME_READ_ROOTS"
 
 _MAX_OFFLINE_RUNTIME_READ_ROOTS = 64
@@ -88,6 +90,22 @@ def contract_cache_enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
     value = values.get(CONTRACT_CACHE_ENV, "0")
     if value not in ("0", "1"):
         raise ValueError(f"{CONTRACT_CACHE_ENV} must be exactly 0 or 1")
+    return value == "1"
+
+
+def append_only_deltas_enabled(
+    environ: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether exact Critic append repairs use the additions-only protocol.
+
+    This remains an explicit experiment until its result and cost gates have
+    been exercised.  A misspelling must not silently change Compiler/Critic
+    semantics or share an identity with the default full-replacement path.
+    """
+    values = os.environ if environ is None else environ
+    value = values.get(APPEND_ONLY_DELTAS_ENV, "0")
+    if value not in ("0", "1"):
+        raise ValueError(f"{APPEND_ONLY_DELTAS_ENV} must be exactly 0 or 1")
     return value == "1"
 
 

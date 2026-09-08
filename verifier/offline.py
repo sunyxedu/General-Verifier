@@ -344,12 +344,19 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
     # so score resumption cannot mix runs with different browser observers.
     from .execution.browser import configured_browser_observer
     from .execution.config import (
+        APPEND_ONLY_DELTA_PROTOCOL,
+        append_only_deltas_enabled,
         contract_cache_enabled,
         offline_runtime_read_roots,
         typed_adapters_enabled,
     )
     fields["typed_adapters"] = typed_adapters_enabled()
     fields["contract_cache"] = contract_cache_enabled()
+    fields["append_only_deltas"] = append_only_deltas_enabled()
+    fields["append_only_delta_protocol"] = (
+        APPEND_ONLY_DELTA_PROTOCOL
+        if fields["append_only_deltas"] else None
+    )
     fields["offline_runtime_read_roots"] = (
         list(offline_runtime_read_roots()) if fields["seats"] == "codex" else [])
     browser_observer = (configured_browser_observer()

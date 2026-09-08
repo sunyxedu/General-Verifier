@@ -16,11 +16,13 @@ from ..core.model import content_hash
 from .method_cache import _role_identity
 
 
-CONTRACT_CACHE_SCHEMA = "gv-authority-final-contract-v1"
+CONTRACT_CACHE_SCHEMA = "gv-authority-final-contract-v2"
 
 
 def contract_cache_key(*, view, variables, backend_identity,
-                       obligations_role, critic_role, critic_rounds) -> str:
+                       obligations_role, critic_role, critic_rounds,
+                       append_only_deltas=False,
+                       append_only_delta_protocol=None) -> str:
     return content_hash({
         "schema": CONTRACT_CACHE_SCHEMA,
         "authority": view.identity,
@@ -29,6 +31,10 @@ def contract_cache_key(*, view, variables, backend_identity,
         "obligations_role": _role_identity(obligations_role),
         "critic_role": _role_identity(critic_role),
         "critic_rounds": critic_rounds,
+        "append_only_repair": {
+            "enabled": append_only_deltas,
+            "protocol": append_only_delta_protocol,
+        },
     })
 
 
