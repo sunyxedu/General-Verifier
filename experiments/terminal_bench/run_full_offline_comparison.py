@@ -316,7 +316,7 @@ def compare_pair(control, treatment):
             "prefetch_exercised": treatment.get("prefetch_exercised")}
 
 
-def _accounting_summary(jobs):
+def _accounting_summary(jobs, *, expected_jobs=None):
     buckets = {name: {
                     "control": {"known_sum": 0, "unknown_attempts": 0},
                     "treatment": {"known_sum": 0, "unknown_attempts": 0},
@@ -324,17 +324,29 @@ def _accounting_summary(jobs):
                for name in ("input_tokens", "uncached_input_tokens",
                             "cached_input_tokens", "cache_write_input_tokens",
                             "output_tokens", "reasoning_tokens")}
+    findings = set()
     complete = bool(jobs)
+    if expected_jobs is not None and len(jobs) != expected_jobs:
+        complete = False
+        findings.add("planned_job_count_incomplete")
+    if (sum(job.get("arm") == "control" for job in jobs)
+            != sum(job.get("arm") == "treatment" for job in jobs)):
+        complete = False
+        findings.add("arm_count_unbalanced")
     for job in jobs:
         accounting = job.get("accounting")
         if type(accounting) is not dict:
             complete = False
+            findings.add("job_accounting_unavailable")
             continue
-        if accounting.get("accounting_complete") is not True:
+        if (accounting.get("accounting_complete") is not True
+                or job.get("accounting_complete", True) is not True):
             complete = False
+            findings.add("job_accounting_incomplete")
         tokens = accounting.get("tokens")
         if type(tokens) is not dict:
             complete = False
+            findings.add("job_token_buckets_unavailable")
             continue
         for name in buckets:
             row = tokens.get(name)
@@ -343,12 +355,18 @@ def _accounting_summary(jobs):
                     or type(row.get("unknown_attempts")) is not int
                     or row["unknown_attempts"] < 0):
                 complete = False
+                findings.add("invalid_token_bucket")
             else:
                 buckets[name][job["arm"]]["known_sum"] += row["known_sum"]
                 buckets[name][job["arm"]]["unknown_attempts"] += row[
                     "unknown_attempts"]
                 if row["unknown_attempts"]:
                     complete = False
+                    findings.add("unknown_token_attempts")
+    if any(buckets["cache_write_input_tokens"][arm]["known_sum"]
+           for arm in ("control", "treatment")):
+        complete = False
+        findings.add("nonzero_cache_write_pricing_unavailable")
     estimate = None
     ratio = None
     if complete:
@@ -359,7 +377,7 @@ def _accounting_summary(jobs):
                 for name, rate in COST_RATES_USD_PER_MILLION.items())
         if estimate["treatment"] > 0:
             ratio = estimate["control"] / estimate["treatment"]
-    return {"complete": complete, "tokens": buckets,
+    return {"complete": complete, "findings": sorted(findings), "tokens": buckets,
             "price_equivalent_usd": estimate,
             "control_over_treatment": ratio,
             "rates_usd_per_million": COST_RATES_USD_PER_MILLION,
@@ -376,6 +394,17 @@ def _read_worker_result(job):
     return value, digest
 
 
+def _recover_worker_accounting(job):
+    """Preserve trustworthy-looking known buckets without claiming completeness."""
+    try:
+        value, digest = _read_json(
+            Path(job["worker_plan"]["output_root"]) / "worker-result.json")
+    except BaseException:
+        return None, None
+    accounting = value.get("accounting") if type(value) is dict else None
+    return (accounting if type(accounting) is dict else None), digest
+
+
 def _postflight_integrity(plan, pair, job):
     if (_sha(__file__) != plan["coordinator_sha256"]
             or _sha(plan["worker_path"]) != plan["worker_sha256"]
@@ -388,11 +417,11 @@ def _postflight_integrity(plan, pair, job):
 def _run_job(plan, projection, output, pair, job, ordinal):
     stdout_path = output / f"job-{ordinal:02d}.stdout"
     stderr_path = output / f"job-{ordinal:02d}.stderr"
-    started = time.monotonic_ns()
     command = [sys.executable, plan["worker_path"], "--plan", job["plan_path"],
                "--plan-sha256", job["plan_sha256"], "--execute",
                "--confirm-paid", "GPT-5.6-Luna"]
     with _private_output(stdout_path) as stdout, _private_output(stderr_path) as stderr:
+        started = time.monotonic_ns()
         process = subprocess.Popen(command, stdout=stdout, stderr=stderr,
                                    env=_subprocess_env(), start_new_session=True)
         _write_new(output / f"job-{ordinal:02d}-start.json", {
@@ -402,6 +431,7 @@ def _run_job(plan, projection, output, pair, job, ordinal):
         })
         try:
             returncode = process.wait()
+            finished = time.monotonic_ns()
         except BaseException:
             try:
                 os.killpg(process.pid, signal.SIGINT)
@@ -416,7 +446,7 @@ def _run_job(plan, projection, output, pair, job, ordinal):
             except ProcessLookupError:
                 process.wait()
             raise
-    wall = (time.monotonic_ns() - started) / 1e9
+    wall = (finished - started) / 1e9
     result, result_digest = _read_worker_result(job)
     _postflight_integrity(plan, pair, job)
     certificate = result.get("certificate")
@@ -476,9 +506,12 @@ def run_comparison(plan):
             try:
                 summary = _run_job(plan, projection, output, pair, job, ordinal)
             except BaseException as error:
+                recovered, recovered_digest = _recover_worker_accounting(job)
                 summary = {"candidate_id": pair["candidate_id"], "arm": job["arm"],
                            "supervisor_failure": type(error).__name__,
-                           "worker_complete": False, "accounting_complete": False}
+                           "worker_complete": False, "accounting": recovered,
+                           "accounting_complete": False,
+                           "recovered_worker_result_sha256": recovered_digest}
                 _write_new(output / f"job-{ordinal:02d}-result.json", summary)
                 integrity_stop = "supervisor_integrity_unavailable"
             failures = summary.get("worker_failures")
@@ -489,7 +522,7 @@ def run_comparison(plan):
         by_arm = {job.get("arm"): job for job in pair_jobs}
         comparison = compare_pair(by_arm.get("control", {}), by_arm.get("treatment", {}))
         pairs_report.append({"candidate_id": pair["candidate_id"], **comparison})
-    costs = _accounting_summary([job for job in jobs if not job.get("skipped")])
+    costs = _accounting_summary(jobs, expected_jobs=2 * len(pairs))
     control_wall = sum(job.get("spawn_to_exit_wall_seconds", 0) for job in jobs
                        if job.get("arm") == "control")
     treatment_wall = sum(job.get("spawn_to_exit_wall_seconds", 0) for job in jobs

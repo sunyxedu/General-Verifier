@@ -64,7 +64,7 @@ def _fixture_plan(tmp_path):
 
 
 def _accounting(complete=True, unknown=0, base=10):
-    return {
+    value = {
         "accounting_complete": complete,
         "tokens": {
             name: {"known_sum": base, "unknown_attempts": unknown}
@@ -73,6 +73,8 @@ def _accounting(complete=True, unknown=0, base=10):
                          "output_tokens", "reasoning_tokens")
         },
     }
+    value["tokens"]["cache_write_input_tokens"]["known_sum"] = 0
+    return value
 
 
 def test_validates_two_balanced_opaque_pairs_without_writes(tmp_path):
@@ -129,6 +131,7 @@ def test_incomplete_cost_retains_every_known_bucket_but_has_no_ratio():
     report = comparison._accounting_summary(jobs)
     assert report["complete"] is False
     assert report["control_over_treatment"] is None
+    assert "job_accounting_incomplete" in report["findings"]
     assert report["tokens"]["output_tokens"] == {
         "control": {"known_sum": 20, "unknown_attempts": 0},
         "treatment": {"known_sum": 7, "unknown_attempts": 1},
@@ -146,6 +149,26 @@ def test_complete_cost_uses_output_once_and_computes_ratio():
     # Reasoning is a diagnostic subset of output and is not billed twice.
     expected = (100 * .20 + 100 * .02 + 100 * 1.20) / 1_000_000
     assert report["price_equivalent_usd"]["control"] == pytest.approx(expected)
+
+
+def test_nonzero_cache_write_or_missing_planned_job_makes_cost_inconclusive():
+    control = _accounting(base=100)
+    treatment = _accounting(base=10)
+    treatment["tokens"]["cache_write_input_tokens"]["known_sum"] = 1
+    report = comparison._accounting_summary([
+        {"arm": "control", "accounting": control},
+        {"arm": "treatment", "accounting": treatment},
+    ], expected_jobs=2)
+    assert report["complete"] is False
+    assert report["control_over_treatment"] is None
+    assert "nonzero_cache_write_pricing_unavailable" in report["findings"]
+
+    missing = comparison._accounting_summary([
+        {"arm": "control", "accounting": control},
+    ], expected_jobs=2)
+    assert missing["complete"] is False
+    assert {"planned_job_count_incomplete", "arm_count_unbalanced"} <= set(
+        missing["findings"])
 
 
 def test_rank_projection_requires_original_feature_schema():
