@@ -56,4 +56,50 @@ suite passed with `TMPDIR=/private/tmp`: 1,594 passed, 5 skipped and 4 subtests
 passed, excluding the existing optional `test_score_llm_verifier.py` suite.
 The canonical temporary directory avoids an unrelated report-build test's
 `/var` versus `/private/var` path-alias assertion; no report code was changed.
-There has not yet been a paid full-BindingGame test of version 3.
+
+## First paid BindingGame diagnostic: no demonstrated improvement
+
+Frozen source `392f2abb71dfd4e7cc2176589840044c25fb017b` was tested in four
+serial fresh processes on two sealed synthetic record obligations. Both arms
+used GPT-5.6-Luna, medium/standard, with compact inspection, prefetch and
+contract/method reuse disabled. The original Oracle, executor, independent
+Judger and bounded repair remained in place. This excludes extraction,
+Obligation Compiler and Critic: it is not full E2E or an original-main A/B.
+
+| Case | Control process wall / calls | Typed process wall / calls | Final result, both arms |
+|---|---:|---:|---|
+| Tool identity irrelevant, positive | 175.25 s / 3 | 129.00 s / 3 | holds / record / decisive |
+| Exact tool identity required, negative | 188.78 s / 3 | 313.38 s / 5 | refuted / record / decisive |
+
+All four input seals, source fingerprints, artifact addresses, runtime profiles
+and usage/span hashes passed postflight. Both signature pairs matched their
+explicit synthetic expected outcomes. **Neither typed final binding used v3.**
+
+- Positive: Oracle selected v3 but supplied `expected` with a non-equality
+  predicate, which the unchanged argument validator rejects. The original
+  agent executor handled the fallback. Its faster run cannot be attributed
+  to the typed instrument.
+- Negative: v3 executed correctly and produced a stable complete-file
+  observation, explicitly without future-closure proof. Judger rejected its
+  scope. The original repair path then used a fresh Oracle, agent executor
+  and Judger; that agent result became the final binding.
+
+The negative control agent called a one-time ledger read complete/immutable;
+the repaired agent called two equal reads a sealed boundary. Neither artifact
+provided independent writer-closure or immutable-epoch evidence. Judger accepted
+those descriptions while rejecting v3's explicit limitation. This is a scope
+interpretation and auditing inconsistency, not evidence that the agent produced
+a stronger snapshot. It also means matching final signatures alone does not
+establish equal verification quality. No result, rejection or gate was relabeled.
+
+Across both cases, typed used 442.38 s versus control 364.03 s (**21.5% slower**),
+8 versus 6 billed calls, and higher totals in every main token bucket:
+uncached input 172,252 versus 133,618; cached input 591,872 versus 416,256;
+output 16,895 versus 13,451. Rejected and fallback attempts are included.
+This does not pass the performance or no-loss target. It does not authorize
+inventing ledger closure, excluding audit suffixes, or relaxing independent
+judgment to improve adoption.
+
+Retained run: `experiments/terminal_bench/results/gv-observed-eof-gate-runs.tCfWIL`.
+The coordinator's prospective signature gate and its separate
+`observed_eof_adapter_bound=false` results remain unchanged.
