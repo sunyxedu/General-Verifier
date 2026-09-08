@@ -76,6 +76,7 @@ from ..core.model import (
 )
 from ..llm.schema import RoleError
 from .method_cache import AcceptedMethod, build_method_cache_key
+from .judger_prefetch import build_judger_evidence_packet
 from ..execution.config import (
     APPEND_ONLY_DELTA_PROTOCOL,
     append_only_deltas_enabled,
@@ -334,6 +335,11 @@ class BindingGame:
                 lease.finish(fill)
 
     def _method_cache_key(self, row, obligation):
+        # This transport protocol is deliberately fresh-review-only until its
+        # semantic/result gates have passed.  It may reduce inspection turns;
+        # it must not also acquire authority to skip either signer.
+        if getattr(self.backend, "judger_prefetch", False) is True:
+            return None
         state = os.path.dirname(os.path.abspath(self.log.path))
         catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
         return build_method_cache_key(
@@ -1285,14 +1291,31 @@ class BindingGame:
             "world_map": world_map(state, live_world=self.live_world),
             "evidence": json.dumps(evidence, ensure_ascii=False),
         }
+        packet = None
+        if getattr(self.backend, "judger_prefetch", False) is True:
+            packet = build_judger_evidence_packet(
+                self.artifacts,
+                self.log,
+                method.get("basis", ""),
+                result.artifact,
+            )
         total_calls = self.judger_error_retries + 1
         for call_no in range(1, total_calls + 1):
             try:
+                call_variables = variables
+                if packet is not None and call_no == 1:
+                    call_variables = dict(variables)
+                    call_variables["_judger_evidence_packet"] = packet
                 with model_scope(
                         stage="judger", method_attempt=method_attempt,
                         redo=redo, judger_retry_index=call_no,
                         independent_judger=independent_judger):
-                    verdict = self.judger_role.call(self.backend, variables)
+                    verdict = self.judger_role.call(
+                        self.backend, call_variables)
+                    if (packet is not None and call_no == 1
+                            and not packet.revalidate()):
+                        raise RoleError(
+                            "judger evidence prefetch changed during audit")
                 break
             except RoleError as err:
                 will_retry = call_no < total_calls

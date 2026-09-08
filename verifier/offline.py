@@ -310,7 +310,8 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
                   max_rounds: int = 3,
                   critic_rounds: Optional[int] = None,
                   service_tier: Optional[str] = None,
-                  compact_inspection: bool = False) -> Dict[str, Any]:
+                  compact_inspection: bool = False,
+                  judger_prefetch: bool = False) -> Dict[str, Any]:
     """The full identity of a scoring run's judgment: the pipeline
     fingerprint plus the resolved run configuration, as plaintext fields
     with a content hash (`config`). Two configs must never share derived
@@ -323,6 +324,10 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         raise ValueError("compact_inspection must be a bool")
     if compact_inspection and seats != "codex":
         raise ValueError("compact_inspection is only valid for Codex seats")
+    if type(judger_prefetch) is not bool:
+        raise ValueError("judger_prefetch must be a bool")
+    if judger_prefetch and seats != "codex":
+        raise ValueError("judger_prefetch is only valid for Codex seats")
     if not model and seats == "codex":
         from .llm.codex_backend import DEFAULT_MODEL
         model = DEFAULT_MODEL
@@ -344,7 +349,13 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         "max_rounds": max_rounds,
         "critic_rounds": critic_rounds,
         "compact_inspection": compact_inspection,
+        "judger_prefetch": judger_prefetch,
     }
+    if judger_prefetch:
+        from .engine.judger_prefetch import PREFETCH_PROTOCOL
+        fields["judger_prefetch_protocol"] = PREFETCH_PROTOCOL
+    else:
+        fields["judger_prefetch_protocol"] = None
     # Optional verifier instruments are part of the experiment, not ambient
     # machine state.  Stamp the pinned public identity (never its host path)
     # so score resumption cannot mix runs with different browser observers.
@@ -391,11 +402,13 @@ def config_id(model: Optional[str] = None, seats: Optional[str] = None,
               effort: Optional[str] = None, max_rounds: int = 3,
               critic_rounds: Optional[int] = None,
               service_tier: Optional[str] = None,
-              compact_inspection: bool = False) -> str:
+              compact_inspection: bool = False,
+              judger_prefetch: bool = False) -> str:
     return config_fields(
         model, seats, effort, max_rounds, critic_rounds,
         service_tier=service_tier,
         compact_inspection=compact_inspection,
+        judger_prefetch=judger_prefetch,
     )["config"]
 
 
@@ -765,7 +778,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           parallel_obligations: Optional[int] = None,
           parallel_claims: Optional[int] = None,
           shared_dir: Optional[str] = None,
-          compact_inspection: bool = False) -> Dict[str, Any]:
+          compact_inspection: bool = False,
+          judger_prefetch: bool = False) -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -778,6 +792,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     ``standard`` by default; ``fast`` explicitly enables Codex Fast mode.
     ``compact_inspection`` is an opt-in evidence presentation preference,
     not a change to stage order, evidence scope, or independent review.
+    ``judger_prefetch`` is an opt-in verifier-owned evidence packet passed
+    to the same independent Judger; it does not change its verdict schema.
 
     Execution strategy (NOT part of the config identity — it changes the
     schedule, never the judgment): ``parallel_obligations`` discharges
@@ -810,7 +826,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     cfg = config_fields(model=model, seats=seats, effort=effort,
                         max_rounds=max_rounds, critic_rounds=critic_rounds,
                         service_tier=service_tier,
-                        compact_inspection=compact_inspection)
+                        compact_inspection=compact_inspection,
+                        judger_prefetch=judger_prefetch)
     critic_rounds = cfg["critic_rounds"]
     fingerprint = pipeline_fingerprint()
     extract_rounds = 0
@@ -827,6 +844,11 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         raise ValueError(
             "provided backend compact_inspection does not match the "
             "offline scoring config")
+    if (backend is not None
+            and getattr(backend, "judger_prefetch", False) is not judger_prefetch):
+        raise ValueError(
+            "provided backend judger_prefetch does not match the "
+            "offline scoring config")
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
         if backend is None:
@@ -834,6 +856,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                                    effort=cfg["effort"],
                                    service_tier=cfg["service_tier"],
                                    compact_inspection=cfg["compact_inspection"],
+                                   judger_prefetch=cfg["judger_prefetch"],
                                    offline_toolchain_dir=toolchain_dir,
                                    offline_shared_cache_dir=cache_dir)
         elif (isinstance(backend, CodexBackend)
@@ -889,6 +912,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                                          effort=cfg["effort"],
                                          service_tier=cfg["service_tier"],
                                          compact_inspection=cfg["compact_inspection"],
+                                         judger_prefetch=cfg["judger_prefetch"],
                                          offline_toolchain_dir=toolchain_dir,
                                          offline_shared_cache_dir=cache_dir),
                     critic_rounds=critic_rounds,

@@ -58,3 +58,36 @@ The earlier paid `any_identity/opaque` failure also involved a separate Judger
 coverage interpretation. Fixed inputs do not fix that semantic issue or establish
 10× end-to-end performance. Subject snapshots and online source-epoch invalidation
 are not implemented here; no new time boundary is silently imposed.
+
+### First fixed-input full-BindingGame gate: result regression remains
+
+Four serial jobs at frozen `b577be0`, retained in
+`experiments/terminal_bench/results/gv-fixed-input-gate-runs.eYRP6y/`, compared
+typed off/on on the same explicit synthetic opaque-identity inputs. All used
+Luna medium/standard, compact inspection off, and no method cache. Independent
+postflight checks passed source/input seals, artifact hashes and usage/spans
+hashes for all four terminal jobs. All failures remain charged.
+
+| Case / arm | Result (record basis) | Process seconds | Model attempts | Uncached / cached / output tokens |
+| --- | --- | ---: | ---: | --- |
+| Identity irrelevant / control | holds, decisive | 144.383 | 3 | 82,198 / 116,736 / 5,344 |
+| Identity irrelevant / typed | holds, decisive | 71.998 | 2 | 20,504 / 79,360 / 2,742 |
+| Exact identity / typed | failed, no settled strength | 234.131 | 4 | 86,469 / 209,152 / 9,248 |
+| Exact identity / control | refuted, decisive | 159.061 | 3 | 99,400 / 138,752 / 5,603 |
+
+The positive pair preserved its result and was approximately 2× faster, using
+less of every priced token category. It used one actual fixed-v1 adapter and
+no fallback. The negative typed arm also used fixed-v1 correctly, with two
+actual adapter refutations and no mechanical fallback, but both were rejected
+by fresh Judger reviews: Oracle chose fixed `through_seq=8`, then `10`, while
+the audit journal had grown to 10, then 14 records. Absence over those prefixes
+did not certify absence over the full requested ledger. Fixed subject binding
+therefore fixes the demonstrated argument error but not complete-scope method
+selection. No relaxed Judger rule, automatic audit-suffix exclusion or new epoch
+policy was added to make this case pass.
+
+This gate fails result equivalence. It is a same-version adapter ablation,
+not a comparison with original main, and excludes extraction, Obligation
+Compiler and Critic. Neither its positive speedup nor its complete accounting
+establishes zero result loss, monetary-cost improvement overall, full offline
+or online performance, or the 10× target.

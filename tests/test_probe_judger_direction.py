@@ -31,7 +31,8 @@ def _verdict(sufficient: str):
     }
 
 
-def _codex_factory(monkeypatch, responses, calls, *, on_call=None):
+def _codex_factory(monkeypatch, responses, calls, *, on_call=None,
+                   judger_prefetch=False):
     queue = list(responses)
 
     def run(cmd, **kwargs):
@@ -62,6 +63,7 @@ def _codex_factory(monkeypatch, responses, calls, *, on_call=None):
         return CodexBackend(
             cwd=str(state), model="gpt-5.6-luna", effort="medium",
             service_tier="standard", compact_inspection=False,
+            judger_prefetch=judger_prefetch,
         )
 
     return factory
@@ -69,7 +71,7 @@ def _codex_factory(monkeypatch, responses, calls, *, on_call=None):
 
 def _run(
     tmp_path, monkeypatch, case_id="exists-alpha", responses=None,
-    name="probe", *, on_call=None,
+    name="probe", *, on_call=None, judger_prefetch=False,
 ):
     calls = []
     expected = probe._case_spec(case_id)["expected_sufficient"]
@@ -80,9 +82,65 @@ def _run(
         expected_source_fingerprint=probe._source_fingerprint(probe.SOURCE_ROOT),
         backend_factory=_codex_factory(
             monkeypatch, responses, calls, on_call=on_call,
+            judger_prefetch=judger_prefetch,
         ),
+        judger_prefetch=judger_prefetch,
     )
     return result, calls
+
+
+@pytest.mark.parametrize("case_id", probe.CASES)
+def test_prefetch_profile_runs_same_real_adapter_and_records_actual_exposure(
+        tmp_path, monkeypatch, case_id):
+    result, calls = _run(tmp_path, monkeypatch, case_id,
+                         judger_prefetch=True)
+    assert result["complete"] and result["semantic_pass"]
+    assert result["judger_prefetch"] is True
+    assert result["runtime_profile_accounting_complete"] is True
+    assert result["prefetch_attached_attempts"] == 1
+    assert result["fixture_adapter_executions"] == 1
+    assert len(calls) == 1
+    assert "VERIFIER-BOUND RAW EVIDENCE TRANSPORT" in calls[0][-1]
+    assert result["full_e2e_acceptance"] is False
+    assert all(value is None for value in result["excluded_stage_costs"].values())
+
+
+def test_wrong_prefetch_profile_bill_is_inconclusive(tmp_path, monkeypatch):
+    from verifier.llm import codex_backend as cb
+
+    original = cb._record_codex_attempt
+
+    def wrong_bill(*args, **kwargs):
+        kwargs["base"] = {**kwargs["base"], "judger_prefetch": False}
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cb, "_record_codex_attempt", wrong_bill)
+    result, calls = _run(tmp_path, monkeypatch, judger_prefetch=True)
+    assert len(calls) == 1
+    assert result["cost_report"]["complete"] is True
+    assert result["runtime_profile_accounting_complete"] is False
+    assert result["complete"] is False and result["semantic_pass"] is False
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "1", [], {}])
+def test_invalid_prefetch_profile_fails_before_creating_state(tmp_path, invalid):
+    output = tmp_path / "probe"
+    with pytest.raises(probe.ReplaySetupError, match="must be a bool"):
+        probe.run_probe(output, case_id="exists-alpha",
+                        expected_source_fingerprint="a" * 64,
+                        judger_prefetch=invalid)
+    assert not output.exists()
+
+
+def test_injected_backend_prefetch_profile_cannot_disagree(tmp_path, monkeypatch):
+    calls = []
+    factory = _codex_factory(monkeypatch, [_verdict("yes")], calls)
+    with pytest.raises(probe.ReplaySetupError, match="prefetch profile"):
+        probe.run_probe(
+            tmp_path / "probe", case_id="exists-alpha",
+            expected_source_fingerprint=probe._source_fingerprint(probe.SOURCE_ROOT),
+            backend_factory=factory, judger_prefetch=True)
+    assert calls == []
 
 
 def test_case_matrix_fixes_one_prefix_and_both_outcome_directions():

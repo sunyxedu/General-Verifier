@@ -30,7 +30,7 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
                seats=None, effort=None, critic_rounds=None,
                label=lambda rec: str(rec), tag="score", on_record=None,
                heartbeat=60, service_tier=None,
-               compact_inspection=False):
+               compact_inspection=False, judger_prefetch=False):
     """jobs: list of (record, state_dir). Scores every state dir, merges
     the features into its record, appends to out_path. Returns the
     records that were scored. `on_record`, when given, fires once per
@@ -74,6 +74,7 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
                                      critic_rounds=critic_rounds,
                                      service_tier=service_tier,
                                      compact_inspection=compact_inspection,
+                                     judger_prefetch=judger_prefetch,
                                      **extra)
         except BaseException:
             if board is not None:

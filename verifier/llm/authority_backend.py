@@ -239,11 +239,14 @@ def authority_compilation_backend(backend, obligations_role, critic_role):
                 roles=registry, cwd=backend.cwd, model=model_spec,
                 effort=backend.effort, timeout=backend.timeout,
                 service_tier=backend.service_tier,
-                compact_inspection=backend.compact_inspection)
+                compact_inspection=backend.compact_inspection,
+                judger_prefetch=backend.judger_prefetch)
             # Clone the captured instructions, not potentially changed module
             # defaults: the session identity above describes this exact backend.
             isolated._artifact_address_note = backend._artifact_address_note
             isolated._compact_inspection_note = backend._compact_inspection_note
+            isolated._judger_prefetch_note = backend._judger_prefetch_note
+            isolated._judger_prefetch_protocol = backend._judger_prefetch_protocol
             isolated._authority_scratch = scratch
             identity["policy"] = authority_policy_args("/AUTHORITY_SCRATCH")
         else:

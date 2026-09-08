@@ -215,12 +215,16 @@ def _artifact_integrity(
 
 def _runtime_backend(
     state: Path, backend_factory: Callable[[Path], Any] | None,
+    judger_prefetch: bool = False,
 ) -> Any:
     backend = (backend_factory(state) if backend_factory is not None else
                CodexBackend(cwd=os.fspath(state), **RUNTIME,
-                            compact_inspection=False))
+                            compact_inspection=False,
+                            judger_prefetch=judger_prefetch))
     if getattr(backend, "compact_inspection", False) is not False:
         raise ReplaySetupError("backend differs from compact_inspection=false")
+    if getattr(backend, "judger_prefetch", False) is not judger_prefetch:
+        raise ReplaySetupError("backend differs from judger_prefetch profile")
     for field, expected in RUNTIME.items():
         if hasattr(backend, field) and getattr(backend, field) != expected:
             raise ReplaySetupError("backend differs from pinned Luna runtime")
@@ -238,8 +242,11 @@ def run_probe(
     case_id: str,
     expected_source_fingerprint: str,
     backend_factory: Callable[[Path], Any] | None = None,
+    judger_prefetch: bool = False,
 ) -> dict[str, Any]:
     """Run one isolated Judger call; ``backend_factory`` is test-only."""
+    if type(judger_prefetch) is not bool:
+        raise ReplaySetupError("judger_prefetch must be a bool")
     output = output.absolute()
     if (not output.is_absolute() or ".." in output.parts
             or os.path.lexists(output)):
@@ -260,7 +267,7 @@ def run_probe(
     artifacts = ArtifactStore(os.fspath(state / "artifacts"))
     registry = default_adapter_registry()
     context = AdapterContext(os.fspath(state), False, log)
-    backend = _runtime_backend(state, backend_factory)
+    backend = _runtime_backend(state, backend_factory, judger_prefetch)
     game = BindingGame(
         backend, artifacts, log, None, live_world=False,
         method_cache=None,
@@ -278,6 +285,9 @@ def run_probe(
         "full_e2e_acceptance": False,
         "test_only": backend_factory is not None,
         "runtime": dict(RUNTIME), "compact_inspection": False,
+        "judger_prefetch": judger_prefetch,
+        "judger_prefetch_protocol": getattr(
+            backend, "_judger_prefetch_protocol", None),
         "source_fingerprint": expected_source_fingerprint,
         "source_seal": source_seal,
         "excluded_stages": list(_EXCLUDED),
@@ -385,6 +395,20 @@ def run_probe(
     snapshots = _ledger_snapshots(usage, spans)
     if any(value is None for value in snapshots.values()):
         error_class = error_class or "LedgerSnapshotError"
+    profile_complete = False
+    attached_attempts = 0
+    try:
+        bills = [json.loads(line) for line in (snapshots["usage"] or b"").splitlines()
+                 if line.strip()]
+        profile_complete = bool(bills) and all(
+            bill.get("judger_prefetch") is judger_prefetch
+            and bill.get("judger_prefetch_protocol")
+            == start["judger_prefetch_protocol"]
+            for bill in bills)
+        attached_attempts = sum(
+            bill.get("judger_prefetch_attached") is True for bill in bills)
+    except (TypeError, ValueError, AttributeError):
+        error_class = error_class or "ProfileAccountingError"
     # Recheck after accounting and snapshot reads, the final trust boundary.
     try:
         final_unchanged = (
@@ -410,6 +434,7 @@ def run_probe(
     )
     complete = (
         valid_verdicts and cost.get("complete") is True
+        and profile_complete
         and input_unchanged and artifacts_unchanged and final_unchanged
         and error_class is None
     )
@@ -436,6 +461,8 @@ def run_probe(
                          if snapshots["spans"] is not None else None),
         "cost_report": cost,
         "fixture_adapter_executions": len(evidence_digests),
+        "runtime_profile_accounting_complete": profile_complete,
+        "prefetch_attached_attempts": attached_attempts,
         # Written only after the paid/model scope has closed.
         "cases": results,
         "note": (
@@ -456,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--case", choices=CASES, required=True)
     parser.add_argument("--source-fingerprint", required=True)
+    parser.add_argument("--judger-prefetch", choices=("0", "1"), default="0")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm-paid")
     args = parser.parse_args(argv)
@@ -472,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
             "full_e2e_acceptance": False,
             "output_root": os.fspath(args.output_root.absolute()),
             "runtime": RUNTIME, "compact_inspection": False,
+            "judger_prefetch": args.judger_prefetch == "1",
             "source_fingerprint": args.source_fingerprint,
             "case": {"case_id": _case_spec(args.case)["case_id"],
                      "expected_sufficient":
@@ -483,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output_root,
         case_id=args.case,
         expected_source_fingerprint=args.source_fingerprint,
+        judger_prefetch=args.judger_prefetch == "1",
     )
     print(json.dumps({
         "output": os.fspath(args.output_root),
