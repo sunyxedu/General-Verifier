@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -28,8 +29,12 @@ FEATURE_SCHEMA_VERSION = 3
 COST_RATES_USD_PER_MILLION = {
     "uncached_input_tokens": 0.20,
     "cached_input_tokens": 0.02,
+    "cache_write_input_tokens": 0.25,
     "output_tokens": 1.20,
 }
+LONG_CONTEXT_INPUT_THRESHOLD = 272_000
+LONG_CONTEXT_INPUT_MULTIPLIER = 2.0
+LONG_CONTEXT_OUTPUT_MULTIPLIER = 1.5
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_KEYS = {
     "schema", "comparison_id", "output_root", "worker_path",
@@ -316,6 +321,183 @@ def compare_pair(control, treatment):
             "prefetch_exercised": treatment.get("prefetch_exercised")}
 
 
+def _observer_bytes(worker_output, cap=64 * 1024 * 1024):
+    """Read a finished worker's observer ledger without following a symlink."""
+    path = Path(worker_output) / "observer.jsonl"
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or before.st_size > cap):
+            raise ValueError("observer ledger is not a bounded regular file")
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(1024 * 1024, cap + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > cap:
+                raise ValueError("observer ledger exceeds size limit")
+        after = os.fstat(fd)
+        if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or total != before.st_size):
+            raise ValueError("observer ledger changed while being read")
+    finally:
+        os.close(fd)
+    raw = b"".join(chunks)
+    if not raw or not raw.endswith(b"\n"):
+        raise ValueError("observer ledger is empty or incomplete")
+    rows = [json.loads(line, object_pairs_hook=_strict_object,
+                       parse_constant=_nonfinite)
+            for line in raw.decode("utf-8", errors="strict").splitlines()]
+    if any(type(row) is not dict for row in rows):
+        raise ValueError("observer ledger contains a non-object record")
+    return raw, rows
+
+
+def _uint(value):
+    return type(value) is int and value >= 0
+
+
+def _attempt_price_equivalent_usd(row):
+    """Price one complete observer attempt; the long-context tier is per call.
+
+    Cache-write tokens are a subset of the observer's uncached bucket.  Their
+    1.25x rate replaces, rather than supplements, the ordinary uncached rate.
+    """
+    long_context = row["input_tokens"] > LONG_CONTEXT_INPUT_THRESHOLD
+    input_multiplier = LONG_CONTEXT_INPUT_MULTIPLIER if long_context else 1.0
+    output_multiplier = LONG_CONTEXT_OUTPUT_MULTIPLIER if long_context else 1.0
+    regular_uncached = (row["uncached_input_tokens"]
+                        - row["cache_write_input_tokens"])
+    input_cost = (
+        regular_uncached * COST_RATES_USD_PER_MILLION[
+            "uncached_input_tokens"]
+        + row["cached_input_tokens"] * COST_RATES_USD_PER_MILLION[
+            "cached_input_tokens"]
+        + row["cache_write_input_tokens"] * COST_RATES_USD_PER_MILLION[
+            "cache_write_input_tokens"]
+    ) * input_multiplier
+    output_cost = (row["output_tokens"]
+                   * COST_RATES_USD_PER_MILLION["output_tokens"]
+                   * output_multiplier)
+    return (input_cost + output_cost) / 1_000_000, long_context
+
+
+def _observer_bill(job, accounting):
+    """Independently bind a price-equivalent bill to one worker ledger."""
+    findings = set()
+    try:
+        raw, rows = _observer_bytes(job["worker_output_root"])
+    except (KeyError, OSError, UnicodeError, ValueError, TypeError):
+        return {"complete": False, "findings": ["observer_ledger_unavailable"],
+                "attempt_count": None, "long_context_attempts": None,
+                "price_equivalent_usd": None}
+    if (accounting.get("ledger_sha256") != hashlib.sha256(raw).hexdigest()
+            or type(accounting.get("ledger_bytes")) is not int
+            or accounting["ledger_bytes"] != len(raw)):
+        findings.add("observer_ledger_identity_mismatch")
+    if accounting.get("expected_profile") != RUNTIME:
+        findings.add("observer_accounting_profile_mismatch")
+
+    event_counts = {name: 0 for name in (
+        "logical_calls_started", "logical_calls_finished",
+        "attempts_started", "attempts_finished")}
+    starts = {}
+    finishes = {}
+    kind_to_count = {
+        "codex_logical_call_started": "logical_calls_started",
+        "codex_logical_call_finished": "logical_calls_finished",
+        "codex_cli_attempt_started": "attempts_started",
+        "codex_cli_attempt_finished": "attempts_finished",
+    }
+    for row in rows:
+        kind = row.get("record_type")
+        if row.get("schema") != "gv-codex-attempt-observer-v1" or kind not in kind_to_count:
+            findings.add("observer_record_schema_mismatch")
+            continue
+        event_counts[kind_to_count[kind]] += 1
+        if any(row.get(key) != value for key, value in RUNTIME.items()):
+            findings.add("observer_declared_profile_mismatch")
+        if kind.startswith("codex_cli_attempt"):
+            if any(row.get("command_" + key) != value
+                   for key, value in RUNTIME.items()):
+                findings.add("observer_command_profile_mismatch")
+            attempt_id = row.get("attempt_id")
+            if not isinstance(attempt_id, str) or not attempt_id:
+                findings.add("observer_attempt_identity_invalid")
+                continue
+            target = starts if kind.endswith("_started") else finishes
+            if attempt_id in target:
+                findings.add("observer_attempt_lifecycle_duplicate")
+            else:
+                target[attempt_id] = row
+
+    recorded_counts = accounting.get("observed_event_counts")
+    if type(recorded_counts) is not dict or recorded_counts != event_counts:
+        findings.add("observer_event_counts_mismatch")
+    if (type(accounting.get("attempt_count")) is not int
+            or accounting["attempt_count"] != len(starts)
+            or set(starts) != set(finishes)):
+        findings.add("observer_attempt_count_mismatch")
+
+    token_sums = {name: 0 for name in (
+        "input_tokens", "uncached_input_tokens", "cached_input_tokens",
+        "cache_write_input_tokens", "output_tokens", "reasoning_tokens")}
+    price = 0.0
+    long_context_attempts = 0
+    for attempt_id, row in finishes.items():
+        start = starts.get(attempt_id)
+        if (start is None or any(start.get(key) != row.get(key) for key in (
+                "call_id", "attempt_index", "command_sha256", "cwd"))):
+            findings.add("observer_attempt_identity_mismatch")
+        if (row.get("usage_complete") is not True
+                or row.get("usage_status") != "complete"
+                or row.get("terminal_status") != "returned"
+                or row.get("process_started") is not True):
+            findings.add("observer_attempt_usage_incomplete")
+            continue
+        if not all(_uint(row.get(name)) for name in token_sums):
+            findings.add("observer_attempt_usage_invalid")
+            continue
+        if (row["cached_input_tokens"] > row["input_tokens"]
+                or row["uncached_input_tokens"] != (
+                    row["input_tokens"] - row["cached_input_tokens"])
+                or row["cache_write_input_tokens"] > row[
+                    "uncached_input_tokens"]
+                or row["reasoning_tokens"] > row["output_tokens"]):
+            findings.add("observer_attempt_usage_invalid")
+            continue
+        for name in token_sums:
+            token_sums[name] += row[name]
+        attempt_price, long_context = _attempt_price_equivalent_usd(row)
+        price += attempt_price
+        long_context_attempts += int(long_context)
+
+    tokens = accounting.get("tokens")
+    if type(tokens) is not dict:
+        findings.add("observer_accounting_tokens_missing")
+    else:
+        for name, known_sum in token_sums.items():
+            bucket = tokens.get(name)
+            if (type(bucket) is not dict or bucket.get("known_sum") != known_sum
+                    or bucket.get("unknown_attempts") != 0):
+                findings.add("observer_token_totals_mismatch")
+    if accounting.get("accounting_complete") is not True:
+        findings.add("observer_accounting_incomplete")
+    return {
+        "complete": not findings,
+        "findings": sorted(findings),
+        "attempt_count": len(finishes),
+        "long_context_attempts": long_context_attempts,
+        "price_equivalent_usd": price if not findings else None,
+    }
+
+
 def _accounting_summary(jobs, *, expected_jobs=None):
     buckets = {name: {
                     "control": {"known_sum": 0, "unknown_attempts": 0},
@@ -325,6 +507,9 @@ def _accounting_summary(jobs, *, expected_jobs=None):
                             "cached_input_tokens", "cache_write_input_tokens",
                             "output_tokens", "reasoning_tokens")}
     findings = set()
+    priced_attempts = {"control": 0, "treatment": 0}
+    long_context_attempts = {"control": 0, "treatment": 0}
+    arm_prices = {"control": 0.0, "treatment": 0.0}
     complete = bool(jobs)
     if expected_jobs is not None and len(jobs) != expected_jobs:
         complete = False
@@ -343,6 +528,14 @@ def _accounting_summary(jobs, *, expected_jobs=None):
                 or job.get("accounting_complete", True) is not True):
             complete = False
             findings.add("job_accounting_incomplete")
+        bill = _observer_bill(job, accounting)
+        findings.update(bill["findings"])
+        if bill["complete"] is not True:
+            complete = False
+        else:
+            priced_attempts[job["arm"]] += bill["attempt_count"]
+            long_context_attempts[job["arm"]] += bill["long_context_attempts"]
+            arm_prices[job["arm"]] += bill["price_equivalent_usd"]
         tokens = accounting.get("tokens")
         if type(tokens) is not dict:
             complete = False
@@ -363,24 +556,25 @@ def _accounting_summary(jobs, *, expected_jobs=None):
                 if row["unknown_attempts"]:
                     complete = False
                     findings.add("unknown_token_attempts")
-    if any(buckets["cache_write_input_tokens"][arm]["known_sum"]
-           for arm in ("control", "treatment")):
-        complete = False
-        findings.add("nonzero_cache_write_pricing_unavailable")
     estimate = None
     ratio = None
     if complete:
-        estimate = {}
-        for arm in ("control", "treatment"):
-            estimate[arm] = sum(
-                buckets[name][arm]["known_sum"] * rate / 1_000_000
-                for name, rate in COST_RATES_USD_PER_MILLION.items())
+        estimate = arm_prices
         if estimate["treatment"] > 0:
             ratio = estimate["control"] / estimate["treatment"]
     return {"complete": complete, "findings": sorted(findings), "tokens": buckets,
             "price_equivalent_usd": estimate,
             "control_over_treatment": ratio,
             "rates_usd_per_million": COST_RATES_USD_PER_MILLION,
+            "price_equivalent_profile": dict(RUNTIME),
+            "priced_observer_attempts": priced_attempts,
+            "long_context_attempts": long_context_attempts,
+            "long_context_pricing_inference": {
+                "per": "observer_attempt",
+                "input_tokens_predicate": "input_tokens > 272000",
+                "input_rate_multiplier": LONG_CONTEXT_INPUT_MULTIPLIER,
+                "output_rate_multiplier": LONG_CONTEXT_OUTPUT_MULTIPLIER,
+            },
             "invoice_claim": False}
 
 
@@ -458,6 +652,7 @@ def _run_job(plan, projection, output, pair, job, ordinal):
     audit = result.get("role_and_cache_audit")
     summary = {
         "candidate_id": pair["candidate_id"], "arm": job["arm"],
+        "worker_output_root": job["worker_plan"]["output_root"],
         "returncode": returncode, "spawn_to_exit_wall_seconds": wall,
         "worker_result_sha256": result_digest,
         "worker_complete": result.get("complete") is True and returncode == 0,
@@ -508,6 +703,7 @@ def run_comparison(plan):
             except BaseException as error:
                 recovered, recovered_digest = _recover_worker_accounting(job)
                 summary = {"candidate_id": pair["candidate_id"], "arm": job["arm"],
+                           "worker_output_root": job["worker_plan"]["output_root"],
                            "supervisor_failure": type(error).__name__,
                            "worker_complete": False, "accounting": recovered,
                            "accounting_complete": False,
