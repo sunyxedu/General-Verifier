@@ -44,6 +44,7 @@ _PLAN_KEYS = {
 }
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+_ATTEMPT = re.compile(r"[0-9a-f]{32}\Z")
 _ROLES = frozenset({
     "extract", "obligations", "critic", "oracles", "discharge", "judger",
 })
@@ -568,6 +569,73 @@ def _transport_profile(modules, backend, arm):
     return profile
 
 
+def _validated_attempt_rows(rows, label):
+    """Validate one ledger's identities without equating its ID namespace."""
+    result = list(rows)
+    attempt_ids = set()
+    logical_attempts = set()
+    threads = set()
+    for row in result:
+        attempt_id = row.get("attempt_id")
+        call_id = row.get("call_id")
+        attempt_index = row.get("attempt_index")
+        thread = row.get("thread_id")
+        logical_attempt = (call_id, attempt_index)
+        if (not isinstance(attempt_id, str)
+                or not _ATTEMPT.fullmatch(attempt_id)
+                or attempt_id in attempt_ids
+                or not isinstance(call_id, str)
+                or not _ATTEMPT.fullmatch(call_id)
+                or type(attempt_index) is not int or attempt_index < 1
+                or logical_attempt in logical_attempts
+                or type(row.get("usage_complete")) is not bool
+                or row.get("usage_status") not in {"complete", "partial"}
+                or row["usage_complete"] is not (
+                    row["usage_status"] == "complete")):
+            raise ValueError(
+                f"{label} attempt identities are invalid or duplicate")
+        attempt_ids.add(attempt_id)
+        logical_attempts.add(logical_attempt)
+        if thread is None:
+            if row["usage_complete"] is not False:
+                raise ValueError(
+                    f"{label} threadless attempt is not incomplete")
+        elif (not isinstance(thread, str) or not thread or thread in threads):
+            raise ValueError(
+                f"{label} attempt thread identities are invalid or duplicate")
+        else:
+            threads.add(thread)
+    return result
+
+
+def _attempt_threads_agree(native, observed):
+    """Bind same-position records, including a process killed after thread start."""
+    native_thread = native.get("thread_id")
+    observed_thread = observed.get("thread_id")
+    if native_thread == observed_thread and isinstance(native_thread, str) \
+            and native_thread:
+        return True
+    if native_thread is not None and observed_thread is not None:
+        return False
+    if (native.get("usage_complete") is not False
+            or observed.get("usage_complete") is not False
+            or native.get("usage_status") != "partial"
+            or observed.get("usage_status") != "partial"
+            or native.get("attempt_status") != "timeout"
+            or observed.get("terminal_status") != "timeout"):
+        return False
+    # The native parser can observe ``thread.started`` even when the outer
+    # observer kills the process before receiving a return object.  These two
+    # ledgers use independent IDs, so bounded timing plus preserved order is
+    # the common fail-closed identity for that interrupted attempt.
+    for key in ("started_at_unix_ns", "finished_at_unix_ns", "duration_ns"):
+        left, right = native.get(key), observed.get(key)
+        if (type(left) is not int or type(right) is not int
+                or abs(left - right) > 50_000_000):
+            return False
+    return True
+
+
 def _audit_attempts(output: Path, arm: str, profile: dict) -> dict:
     observer, observer_sha = _read_jsonl(output / "observer.jsonl")
     roles, role_order, attempts = set(), [], []
@@ -586,7 +654,6 @@ def _audit_attempts(output: Path, arm: str, profile: dict) -> dict:
                 or role_order.index(left) >= role_order.index(right):
             raise ValueError("offline roles began outside architecture order")
     native, native_sha = _read_jsonl(output / "native-usage.jsonl")
-    native_by_thread = {}
     restricted_attempts = raw_packets = 0
     for row in native:
         required = {
@@ -595,17 +662,14 @@ def _audit_attempts(output: Path, arm: str, profile: dict) -> dict:
             "judger_prefetch_protocol", "judger_prefetch_attached",
             "judger_prefetch_packet_sha256", "runtime_instruction_identity",
             "typed_judger_transport", "typed_judger_protocol",
-            "typed_judger_packet_sha256", "thread_id", "role", *_COUNTERS,
+            "typed_judger_packet_sha256", "attempt_id", "call_id",
+            "attempt_index", "thread_id", "role", *_COUNTERS,
         }
         if not required <= set(row) or row["record_type"] != "codex_cli_attempt" \
                 or row["backend"] != "codex-cli" \
                 or any(row[key] != value for key, value in RUNTIME.items()) \
                 or row["compact_inspection"] is not False:
             raise ValueError("native attempt runtime profile changed")
-        thread = row["thread_id"]
-        if not isinstance(thread, str) or not thread or thread in native_by_thread:
-            raise ValueError("native attempt thread identity is not unique")
-        native_by_thread[thread] = row
         typed = row["typed_judger_transport"]
         if type(typed) is not bool:
             raise ValueError("native typed transport flag is malformed")
@@ -640,23 +704,19 @@ def _audit_attempts(output: Path, arm: str, profile: dict) -> dict:
                         and row["judger_prefetch_packet_sha256"] is not None)):
                 raise ValueError("ordinary attempt transport profile changed")
             raw_packets += int(row["judger_prefetch_attached"])
-    observed_by_thread = {}
-    for row in attempts:
-        thread = row.get("thread_id")
-        if not isinstance(thread, str) or not thread \
-                or thread in observed_by_thread:
-            raise ValueError("observer attempt thread identity is not unique")
-        observed_by_thread[thread] = row
-    if set(observed_by_thread) != set(native_by_thread):
+    native_rows = _validated_attempt_rows(native, "native")
+    observed_rows = _validated_attempt_rows(attempts, "observer")
+    if len(observed_rows) != len(native_rows):
         raise ValueError("observer/native attempt inventories disagree")
-    for thread, row in native_by_thread.items():
-        observed = observed_by_thread[thread]
+    for row, observed in zip(native_rows, observed_rows):
         fields = ("role", "model", "effort", "service_tier",
+                  "attempt_index", "usage_complete", "usage_status",
                   "runtime_instruction_identity", "typed_judger_transport",
                   "typed_judger_protocol", "typed_judger_packet_sha256",
                   *_COUNTERS)
         if any(type(row.get(key)) is not type(observed.get(key))
                or row.get(key) != observed.get(key) for key in fields) \
+                or not _attempt_threads_agree(row, observed) \
                 or any(observed.get("command_" + key) != row.get(key)
                        for key in ("model", "effort", "service_tier")):
             raise ValueError("observer/native attempt accounting disagrees")

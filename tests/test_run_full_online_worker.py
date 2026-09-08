@@ -208,6 +208,21 @@ def _audit_files(root: Path, monkeypatch, *, treatment: bool,
     for index, call in enumerate(backend.calls):
         role = call["role"]
         thread = f"thread-{index}"
+        observer_attempt_identity = {
+            "attempt_id": f"{index + 1:032x}",
+            "call_id": f"{index + 101:032x}",
+            "attempt_index": 1,
+        }
+        native_attempt_identity = {
+            "attempt_id": f"{index + 1001:032x}",
+            "call_id": f"{index + 1101:032x}",
+            "attempt_index": 1,
+        }
+        timing = {
+            "started_at_unix_ns": 1_000_000_000 + index * 1_000_000,
+            "finished_at_unix_ns": 1_000_100_000 + index * 1_000_000,
+            "duration_ns": 100_000,
+        }
         restricted = treatment and final_adapter and role == "judger"
         logical.append({"record_type": "codex_logical_call_started",
                         "role": role})
@@ -223,7 +238,9 @@ def _audit_files(root: Path, monkeypatch, *, treatment: bool,
             "typed_judger_protocol": (
                 transport_profile["protocol"] if restricted else None),
             "typed_judger_packet_sha256": "a" * 64 if restricted else None,
-            "thread_id": thread, **counters,
+            "terminal_status": "returned", "usage_complete": True,
+            "usage_status": "complete", "thread_id": thread,
+            **observer_attempt_identity, **timing, **counters,
         })
         raw_attached = treatment and not restricted and role == "judger"
         native_rows.append({
@@ -242,7 +259,9 @@ def _audit_files(root: Path, monkeypatch, *, treatment: bool,
             "typed_judger_packet_sha256": "a" * 64 if restricted else None,
             "runtime_instruction_identity": (
                 restricted_identity if restricted else ordinary_identity),
-            "thread_id": thread, "role": role, **counters,
+            "attempt_status": "success", "usage_complete": True,
+            "usage_status": "complete", "thread_id": thread, "role": role,
+            **native_attempt_identity, **timing, **counters,
         })
     _write_jsonl(output / "observer.jsonl", logical + attempts)
     if cache:
@@ -509,6 +528,64 @@ def test_execution_audit_requires_exact_native_observer_bijection(
         rows[0]["typed_judger_packet_sha256"] = "a" * 64
     _write_jsonl(output / "native-usage.jsonl", rows)
     with pytest.raises(ValueError, match="disagree|restricted telemetry"):
+        worker._audit_execution(output, state_path, "control", cert, protocol)
+
+
+def test_execution_audit_pairs_threadless_timeout_across_independent_ledgers(
+        tmp_path, monkeypatch):
+    output, state_path, cert, protocol = _audit_files(
+        tmp_path, monkeypatch, treatment=False, final_adapter=False)
+    observer = worker._read_jsonl(output / "observer.jsonl")
+    observed = next(row for row in reversed(observer)
+                    if row.get("record_type") == "codex_cli_attempt_finished")
+    native = worker._read_jsonl(output / "native-usage.jsonl")
+    native_attempt = native[-1]
+    observed.update({
+        "thread_id": None, "terminal_status": "timeout",
+        "usage_complete": False, "usage_status": "partial",
+    })
+    native_attempt.update({
+        "attempt_status": "timeout", "usage_complete": False,
+        "usage_status": "partial",
+    })
+    for key in worker._ATTEMPT_COUNTER_FIELDS:
+        observed[key] = None
+        native_attempt[key] = None
+    _write_jsonl(output / "observer.jsonl", observer)
+    _write_jsonl(output / "native-usage.jsonl", native)
+
+    report = worker._audit_execution(
+        output, state_path, "control", cert, protocol)
+
+    assert report["native_attempts"] == report["observer_finished_attempts"]
+
+
+def test_execution_audit_rejects_unbound_threadless_timeout(
+        tmp_path, monkeypatch):
+    output, state_path, cert, protocol = _audit_files(
+        tmp_path, monkeypatch, treatment=False, final_adapter=False)
+    observer = worker._read_jsonl(output / "observer.jsonl")
+    observed = next(row for row in reversed(observer)
+                    if row.get("record_type") == "codex_cli_attempt_finished")
+    native = worker._read_jsonl(output / "native-usage.jsonl")
+    native_attempt = native[-1]
+    observed.update({
+        "thread_id": None, "terminal_status": "timeout",
+        "usage_complete": False, "usage_status": "partial",
+        "finished_at_unix_ns": native_attempt["finished_at_unix_ns"]
+        + 50_000_001,
+    })
+    native_attempt.update({
+        "attempt_status": "timeout", "usage_complete": False,
+        "usage_status": "partial",
+    })
+    for key in worker._ATTEMPT_COUNTER_FIELDS:
+        observed[key] = None
+        native_attempt[key] = None
+    _write_jsonl(output / "observer.jsonl", observer)
+    _write_jsonl(output / "native-usage.jsonl", native)
+
+    with pytest.raises(ValueError, match="thread identities disagree"):
         worker._audit_execution(output, state_path, "control", cert, protocol)
 
 

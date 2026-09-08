@@ -43,6 +43,7 @@ _PLAN_KEYS = {
 }
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+_ATTEMPT = re.compile(r"[0-9a-f]{32}\Z")
 _TASK_CAP = 1024 * 1024
 _INPUT_FILE_CAP = 32 * 1024 * 1024
 _INPUT_TOTAL_CAP = 128 * 1024 * 1024
@@ -1717,25 +1718,78 @@ def _audit_execution(output: Path, state: Path, arm: str,
     if not native_rows:
         raise ValueError("native runtime profile is unavailable")
 
-    def by_thread(rows, label):
-        result = {}
-        for row in rows:
+    def validated_attempt_rows(rows, label):
+        result = list(rows)
+        attempt_ids = set()
+        logical_attempts = set()
+        threads = set()
+        for row in result:
+            attempt_id = row.get("attempt_id")
+            call_id = row.get("call_id")
+            attempt_index = row.get("attempt_index")
             thread = row.get("thread_id")
-            if not isinstance(thread, str) or not thread or thread in result:
-                raise ValueError(f"{label} attempt thread identities are not unique")
-            result[thread] = row
+            logical_attempt = (call_id, attempt_index)
+            if (not isinstance(attempt_id, str)
+                    or not _ATTEMPT.fullmatch(attempt_id)
+                    or attempt_id in attempt_ids
+                    or not isinstance(call_id, str)
+                    or not _ATTEMPT.fullmatch(call_id)
+                    or type(attempt_index) is not int or attempt_index < 1
+                    or logical_attempt in logical_attempts
+                    or type(row.get("usage_complete")) is not bool
+                    or row.get("usage_status") not in {"complete", "partial"}
+                    or row["usage_complete"] is not (
+                        row["usage_status"] == "complete")):
+                raise ValueError(
+                    f"{label} attempt identities are invalid or duplicate")
+            attempt_ids.add(attempt_id)
+            logical_attempts.add(logical_attempt)
+            if thread is None:
+                if row["usage_complete"] is not False:
+                    raise ValueError(
+                        f"{label} threadless attempt is not incomplete")
+            elif (not isinstance(thread, str) or not thread
+                  or thread in threads):
+                raise ValueError(
+                    f"{label} attempt thread identities are invalid or duplicate")
+            else:
+                threads.add(thread)
         return result
 
-    observed_by_thread = by_thread(attempts, "observer")
-    native_by_thread = by_thread(native_rows, "native")
-    if set(observed_by_thread) != set(native_by_thread):
+    observed_rows = validated_attempt_rows(attempts, "observer")
+    native_attempt_rows = validated_attempt_rows(native_rows, "native")
+    if len(observed_rows) != len(native_attempt_rows):
         raise ValueError("observer and native attempt inventories disagree")
-    for thread, native in native_by_thread.items():
-        observed = observed_by_thread[thread]
+    for native, observed in zip(native_attempt_rows, observed_rows):
         profile_fields = (
-            "role", "model", "effort", "service_tier",
+            "attempt_index", "usage_complete", "usage_status", "role",
+            "model", "effort", "service_tier",
             "runtime_instruction_identity",
         )
+        same_thread = (
+            native.get("thread_id") == observed.get("thread_id")
+            and isinstance(native.get("thread_id"), str)
+            and bool(native["thread_id"])
+        )
+        if not same_thread:
+            same_timeout = (
+                not (native.get("thread_id") is not None
+                     and observed.get("thread_id") is not None)
+                and native.get("usage_complete") is False
+                and observed.get("usage_complete") is False
+                and native.get("usage_status") == "partial"
+                and observed.get("usage_status") == "partial"
+                and native.get("attempt_status") == "timeout"
+                and observed.get("terminal_status") == "timeout"
+            )
+            for key in ("started_at_unix_ns", "finished_at_unix_ns",
+                        "duration_ns"):
+                left, right = native.get(key), observed.get(key)
+                same_timeout = same_timeout and type(left) is int \
+                    and type(right) is int and abs(left - right) <= 50_000_000
+            if not same_timeout:
+                raise ValueError(
+                    "observer and native attempt thread identities disagree")
         if any(native.get(key) != observed.get(key) for key in profile_fields):
             raise ValueError("observer and native attempt profiles disagree")
         if any(observed.get("command_" + key) != native.get(key)
