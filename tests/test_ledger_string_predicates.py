@@ -12,6 +12,7 @@ import pytest
 from verifier.core.events import EventLog
 from verifier.core.model import (
     BASIS_RECORD,
+    OUTCOME_FAILED,
     OUTCOME_HOLDS,
     OUTCOME_REFUTED,
     WITNESS_ABSENCE,
@@ -656,14 +657,21 @@ def test_default_catalog_registers_both_versions_without_method_reuse():
     }
 
 
-def test_v2_adapter_still_requires_fresh_oracle_and_judger_each_time(tmp_path):
+@pytest.mark.parametrize("live_world", [False, True])
+@pytest.mark.parametrize(("observed", "outcome"), [
+    ("alpha", OUTCOME_HOLDS),
+    ("beta", OUTCOME_REFUTED),
+])
+def test_v2_adapter_still_requires_fresh_oracle_and_judger_each_time(
+        tmp_path, live_world, observed, outcome):
     state, _, log, fallback, routing = harness(
-        tmp_path, default_registry=True)
-    (state / "task.md").write_text("Retain the exact nonblank string")
-    event = append_value(log, "alpha")
+        tmp_path, default_registry=True, live_world=live_world)
+    (state / "task.md").write_text("The retained value must equal alpha")
+    event = append_value(log, observed)
     typed = adapter_method({
         "value_pointer": "/input/value", "tool_names": ["runner"],
-        "selector": "any", "through_seq": event["seq"],
+        # A concrete unequal first value is a contradiction, not absence.
+        "selector": "first", "through_seq": event["seq"],
         "predicate": "equals", "expected": "alpha",
     })
     cache = AcceptedMethodCache()
@@ -673,15 +681,15 @@ def test_v2_adapter_still_requires_fresh_oracle_and_judger_each_time(tmp_path):
     })
     game = BindingGame(
         backend, routing.artifacts, log, routing,
-        live_world=False, method_cache=cache)
+        live_world=live_world, method_cache=cache)
     obligation = Obligation(
         "obligation-1", "the retained value equals alpha", BASIS_RECORD)
 
     first = game.run(ROW, obligation)
     second = game.run(ROW, obligation)
 
-    assert first.outcome == OUTCOME_HOLDS
-    assert second.outcome == OUTCOME_HOLDS
+    assert first.outcome == outcome
+    assert second.outcome == outcome
     assert [call["role"] for call in backend.calls] == [
         "oracles", "judger", "oracles", "judger"]
     assert len(cache) == 0
@@ -691,6 +699,16 @@ def test_v2_adapter_still_requires_fresh_oracle_and_judger_each_time(tmp_path):
     assert len(adapter_events) == 2
     assert all(event["payload"]["adapter"]
                == "ledger.tool-call-string@2" for event in adapter_events)
+    # A deterministic executor result is evidence, not an accepted verdict.
+    # Each repeated game gives its actual fresh receipt to the Judger.
+    audits = [call for call in backend.calls if call["role"] == "judger"]
+    for audit, event in zip(audits, adapter_events, strict=True):
+        evidence = json.loads(audit["variables"]["evidence"])
+        assert evidence["artifact_digest"] == event["payload"]["artifact"]
+        assert evidence["outcome"] == outcome
+    event_types = [event["type"] for event in log.replay()]
+    assert "method_cache_hit" not in event_types
+    assert event_types.count("judger_verdict") == 2
 
 
 def test_invalid_v2_binding_uses_existing_fallback_and_audit_event(tmp_path):
@@ -708,3 +726,45 @@ def test_invalid_v2_binding_uses_existing_fallback_and_audit_event(tmp_path):
               if event["type"] == "adapter_fallback"]
     assert len(events) == 1
     assert events[0]["payload"]["adapter"] == "ledger.tool-call-string"
+
+
+@pytest.mark.parametrize("live_world", [False, True])
+@pytest.mark.parametrize("observed", ["alpha", "beta"])
+@pytest.mark.parametrize("rejected_field", ["sufficient", "faithful"])
+def test_v2_receipt_cannot_override_independent_judger_rejection(
+        tmp_path, live_world, observed, rejected_field):
+    _, artifacts, log, fallback, routing = harness(
+        tmp_path, default_registry=True, live_world=live_world)
+    event = append_value(log, observed)
+    typed = adapter_method({
+        "value_pointer": "/input/value", "tool_names": ["runner"],
+        "selector": "first", "through_seq": event["seq"],
+        "predicate": "equals", "expected": "alpha",
+    })
+    backend = FixtureBackend({
+        "oracles": {"methods": [typed]},
+        "judger": {**JUDGE_YES, rejected_field: "no",
+                   "reason": "Independent audit rejected the proposed evidence."},
+    })
+    cache = AcceptedMethodCache()
+    # Keep this fixture small. Production repair budgets are unchanged.
+    game = BindingGame(
+        backend, artifacts, log, routing, live_world=live_world,
+        method_cache=cache, redo_rounds=0)
+
+    result = game.run(ROW, Obligation(
+        "obligation-1", "the retained value equals alpha", BASIS_RECORD))
+
+    assert result.outcome == OUTCOME_FAILED
+    assert artifacts.get(result.artifact)["bound"] is None
+    assert len(cache) == 0
+    assert fallback.calls == []
+    events = list(log.replay())
+    adapter_events = [e for e in events if e["type"] == "adapter_discharge"]
+    assert len(adapter_events) == 1
+    assert adapter_events[0]["payload"]["outcome"] == (
+        OUTCOME_HOLDS if observed == "alpha" else OUTCOME_REFUTED)
+    event_types = [e["type"] for e in events]
+    assert event_types.count("judger_verdict") == 1
+    assert "method_bound" not in event_types
+    assert "method_cache_hit" not in event_types

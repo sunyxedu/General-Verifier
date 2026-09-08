@@ -5,6 +5,28 @@ stages, role schemas, model settings, evidence floors, repair limits and
 independent Judger are unchanged. No incorrect pointer is auto-corrected and
 no invalid digest is accepted.
 
+## Architecture boundary
+
+The original responsibilities remain separate: Obligation Compiler defines
+what must hold, Critic reviews that contract, Oracle Compiler chooses a method,
+the executor produces evidence, and Judger independently audits it. Typed
+adapters are executor implementations, not alternative compilers or judges.
+Neither a successful adapter run nor a matching artifact digest can settle a
+binding without the required audit. Evidence floors, provenance, absence rules,
+and production repair budgets are not optimization knobs.
+
+Current record probes disable accepted-method reuse and exclude upstream
+compilation explicitly; they do not pretend those stages cost zero. Existing
+cross-candidate cache policies are not broadened or enabled by this correction.
+Any proposal to skip a fresh role call through reuse needs a separate, explicit
+architectural decision and evaluation, not an implicit claim of equivalence.
+
+Local guards exercise both online and offline BindingGames, positive and
+negative record results, repeated Oracle/Judger calls, and Judger rejection on
+either sufficiency or fidelity. Rejected receipts cannot become accepted
+bindings or cache entries. These are orchestration tests with fixture verdicts,
+not evidence of model-level no-loss or complete online/offline task performance.
+
 ## Failed optimization diagnostic
 
 The adaptive gcode followup at frozen `981a97339236f1ba0fe23c639b42a4df9c1a47d5`
@@ -73,3 +95,35 @@ Raw followup: `experiments/terminal_bench/results/gv-record-preference-runs.Tq96
 Its complete final `binding-game` artifact retains the full Oracle MethodIR,
 all attempts and audits. Old archives, results and operator inputs were not
 rewritten to hide the regression.
+
+## Corrected positive followup
+
+Frozen `da154d6b11b3c48447342bd7ddc4d282768b4d4d` completed the same
+precompiled gcode record obligation with one actual `ledger.tool-call-string@2`
+execution, zero fallbacks, one Oracle call and one fresh Judger call.
+The result remained holds/record/decisive with yes/yes/n/a audit and unchanged
+source and case pins. The emitted receipt was 3,175 bytes; the final binding
+artifact was 5,187 bytes. Both are actual files, not token estimates.
+
+| Single-obligation diagnostic | Earlier untyped control | Corrected typed followup |
+| --- | ---: | ---: |
+| Process wall seconds | 265.916 | 74.505 |
+| Attempted model calls | 3 | 2 |
+| Uncached input tokens | 90,560 | 49,480 |
+| Cached input tokens | 585,984 | 104,192 |
+| Output tokens | 11,537 | 3,039 |
+
+This is a historical-control adaptive followup, not a fresh randomized pair.
+Its observed wall ratio is 3.57×; the three billable token categories are
+reported separately rather than converted into an unsupported monetary cost.
+It does not establish 10× overall savings or full-task result preservation.
+The Oracle selected a smaller positive-witness prefix; the fresh Judger
+accepted that prefix only because one authentic event suffices for this
+existential claim. This does not authorize narrower scope for a negative or
+universal claim.
+
+Raw corrected runs: `experiments/terminal_bench/results/gv-record-wire-runs.xxClEU/`.
+The matrix also prospectively specifies a synthetic negative pair: only the
+copied video feed's tool identity is renamed, preserving other payloads and
+the original archive. That counterfactual checks tool-identity handling; it
+is not an authentic Terminal Bench trajectory or a whole-task score.
