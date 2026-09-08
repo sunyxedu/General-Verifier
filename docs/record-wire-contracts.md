@@ -170,3 +170,45 @@ fixture-only tests isolate causality or justify rollout.
 After the architecture guards, the local regression command completed with
 1,311 passed, 4 skipped, and 4 subtests passed. It retained the existing exclusion
 of `tests/test_score_llm_verifier.py` for its unavailable optional dependency.
+
+## Explicit synthetic semantics: parity still fails
+
+The subsequent frozen `1b9b7a7` matrix separates exact literal identity from an
+explicitly identity-independent nonblank-string predicate. These are synthetic
+authorities and inert records, not Terminal-Bench task rewards. Compact
+inspection was fixed off, with no method cache, throughout all eight jobs.
+
+| Predicate / input label | Expected | Control | Typed | Successful typed adapter executions |
+| --- | --- | --- | --- | ---: |
+| Exact identity / required label | holds | holds | holds | 1 |
+| Exact identity / opaque label | refuted | refuted | refuted | 0 |
+| Any identity / required label | holds | holds | holds | 1 |
+| Any identity / opaque label | holds | holds | failed | 0 |
+
+Every non-failed result was record/decisive. `failed` is an unresolved binding,
+not a refutation and not a correct negative. In that arm, two invalid logical
+subject declarations caused agent fallback. Judger then rejected both methods
+for omitting newly appended verifier metadata, despite observing an authentic
+positive existential witness. The ordinary budget exhausted after six calls;
+all costs remain counted. Other typed arms also incurred format fallbacks.
+In particular, the negative arm had **no successful adapter exposure**, so its
+correct final refutation does not validate the adapter's negative path.
+
+Raw runs are `experiments/terminal_bench/results/gv-semantic-profile-runs.xTR0C0/`;
+inputs are `gv-record-semantic-gate.th8ZCe/input/` under the same results root.
+The semantic jobs overlapped, so their wall times are not a performance A/B.
+This gate fails result equivalence. Mechanical argument validation and semantic
+sufficiency need separate investigation; neither automatic acceptance nor
+task-specific identity rules are justified. The main stage interfaces, ordering,
+and independent Judger requirements remain unchanged by this diagnostic.
+
+An independent read-only audit recomputed every input seal, case/feed hash,
+frozen-source fingerprint and all 16 usage/span file hashes without mismatch.
+Across the four semantic cases, typed used 19 calls versus control's 12;
+uncached/cached/output tokens were respectively 415,277/1,403,648/50,946 versus
+267,568/845,824/26,985. This is a cost regression in every token category.
+
+After the default-off full offline profile plumbing, local regression completed
+with 1,384 passed, 4 skipped and 4 subtests passed, retaining the same optional
+`test_score_llm_verifier.py` exclusion. Unit coverage is not a replacement for
+the failed paid semantic gate.

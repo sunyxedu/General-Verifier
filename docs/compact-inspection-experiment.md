@@ -31,6 +31,17 @@ identity, and recorded on every attempted-call bill. The disabled identity is
 unchanged. The probe rejects a backend whose actual profile disagrees with its
 declared experiment setting.
 
+The ordinary offline scoring path also accepts an explicit
+`compact_inspection=False` argument, exposed by Terminal-Bench `score.py` as
+`--compact-inspection 0|1`. It is forwarded to both extraction and kernel
+backends; only the existing executor/Judger preference changes their prompts.
+Authority-only backend clones preserve the captured runtime instructions.
+The scoring config always records the boolean and includes it in its hash, so
+an old config with no field is not silently relabeled as a new measured run.
+An injected backend whose actual profile differs from the declared setting is
+rejected. This plumbing does not enable contract or accepted-method caches,
+merge stages, alter budgets, or establish end-to-end speedup.
+
 Official documentation permits replacing Codex's built-in instructions, but
 this experiment does **not** use that broader mechanism. It follows the narrower
 guidance to define efficient tool-loop criteria while preserving evidence,
@@ -51,3 +62,34 @@ Keep the separate exact-identity/identity-independent semantic gate at
 `--compact-inspection 0` first, so that it diagnoses the earlier adapter parity
 question without adding another treatment. No single-obligation experiment
 stands in for full online/offline, multi-candidate, end-to-end acceptance.
+
+### First frozen profile pair: no measured gain
+
+At `1b9b7a7aaa2cbddbae2286dfaaaa05031a1a96cb`, runs are retained under
+`experiments/terminal_bench/results/gv-semantic-profile-runs.xTR0C0/`.
+The gcode pair ran sequentially, default then compact, after all eight separate
+synthetic semantic jobs terminated. Both used the same precompiled record
+obligation, sealed input, typed adapters enabled, no method cache, and Luna
+medium/standard. All attempt bills and span sidecars were complete, with file
+hashes matching their result records.
+
+| Metric | Default | Compact |
+| --- | ---: | ---: |
+| Process wall seconds | 139.330 | 307.125 |
+| Model attempts | 2 | 5 |
+| Uncached input tokens | 85,828 | 113,361 |
+| Cached input tokens | 181,248 | 575,744 |
+| Output tokens | 5,125 | 11,401 |
+| Actual adapter executions | 1 | 0 |
+| Final result | holds / record / decisive | holds / record / decisive |
+
+Compact was 2.20× slower in this observation and used more of every priced token
+category; no monetary tariff was assumed. This is not an isolated causal
+estimate: the unchanged Oracle prompt generated different methods. Default
+used `ledger.tool-call-string@2`; compact selected `ledger.event` with an invalid
+subject reference, causing agent fallback. Its first execution omitted the
+promised exact event, which the independent Judger rejected; normal redo then
+delivered the event and passed. Those fallback/redo costs remain included.
+The preference therefore remains experimental and off by default. It has not
+established result preservation beyond this individual obligation, much less
+10× end-to-end improvement.

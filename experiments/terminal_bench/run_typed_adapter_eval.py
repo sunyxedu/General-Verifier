@@ -69,7 +69,56 @@ def _manifest(path: Path) -> dict[str, Any]:
         raise PlanError(f"cannot read manifest {path}: {exc}") from exc
     if value.get("schema") != "gv-terminal-bench-typed-adapter-eval/v1":
         raise PlanError("wrong eval manifest schema")
+    verifier = value.get("verifier")
+    if not isinstance(verifier, dict) or type(
+            verifier.get("compact_inspection", False)) is not bool:
+        raise PlanError("verifier.compact_inspection must be a boolean")
+    for comparison in (value.get("comparisons") or {}):
+        _validate_compact_comparison(value, comparison)
     return value
+
+
+def _arm_profile(
+    manifest: dict[str, Any], comparison: str, arm: str,
+) -> tuple[bool, dict[str, str]]:
+    """Resolve one explicit CLI setting and the existing GV environment."""
+    try:
+        spec = manifest["comparisons"][comparison][arm]
+    except (KeyError, TypeError) as error:
+        raise PlanError(f"missing {comparison}/{arm} arm configuration") from error
+    if not isinstance(spec, dict):
+        raise PlanError(f"{comparison}/{arm} arm configuration must be an object")
+    compact = spec.get(
+        "compact_inspection",
+        manifest.get("verifier", {}).get("compact_inspection", False),
+    )
+    if type(compact) is not bool:
+        raise PlanError(f"{comparison}/{arm} compact_inspection must be boolean")
+    unknown = set(spec) - {"compact_inspection"} - {
+        key for key in spec if isinstance(key, str) and key.startswith("GV_")
+    }
+    if unknown:
+        raise PlanError(
+            f"{comparison}/{arm} has unsupported arm fields: {sorted(unknown)}")
+    environment = {
+        key: str(value) for key, value in spec.items() if key.startswith("GV_")
+    }
+    return compact, environment
+
+
+def _validate_compact_comparison(
+    manifest: dict[str, Any], comparison: str,
+) -> None:
+    """A compact A/B may not silently change adapters or cache policy too."""
+    spec = (manifest.get("comparisons") or {}).get(comparison)
+    if not isinstance(spec, dict) or not all(
+            isinstance(spec.get(arm), dict) for arm in ("control", "treatment")):
+        return
+    control, control_env = _arm_profile(manifest, comparison, "control")
+    treatment, treatment_env = _arm_profile(manifest, comparison, "treatment")
+    if control != treatment and control_env != treatment_env:
+        raise PlanError(
+            f"{comparison} changes compact_inspection together with GV settings")
 
 
 def _selected(manifest: dict[str, Any], tier: str) \
@@ -195,15 +244,17 @@ def _commit(source_root: Path, override: str) -> str:
 
 def _command(
     manifest: dict[str, Any], source_root: Path, group: Group, phase: str,
-    scores: Path, rep: str,
+    scores: Path, rep: str, comparison: str, arm: str,
 ) -> list[str]:
     cfg = manifest["verifier"]
+    compact, _environment = _arm_profile(manifest, comparison, arm)
     command = [
         sys.executable,
         os.fspath(source_root / "experiments" / "terminal_bench" / "score.py"),
         "--job", group.job,
         "--model", cfg["model"], "--seats", cfg["seats"],
         "--effort", cfg["effort"], "--service-tier", cfg["service_tier"],
+        "--compact-inspection", "1" if compact else "0",
         "--workers", str(manifest["phases"][phase]["workers"]),
         "--parallel-obligations", str(cfg["parallel_obligations"]),
         "--parallel-claims", str(cfg["parallel_claims"]),
@@ -259,7 +310,9 @@ def _schedule(
             for arm in _arm_order(group, arms)]
 
 
-def _attempt_audit(path: Path) -> tuple[bool, list[str]]:
+def _attempt_audit(
+    path: Path, *, compact_inspection: bool | None = None,
+) -> tuple[bool, list[str]]:
     errors: list[str] = []
     try:
         rows = [json.loads(line) for line in path.read_text(
@@ -270,13 +323,29 @@ def _attempt_audit(path: Path) -> tuple[bool, list[str]]:
         return False, ["usage ledger has no attempts"]
     ids: set[str] = set()
     by_call: dict[str, list[int]] = defaultdict(list)
+    runtime_identities: set[str] = set()
     for row in rows:
+        if type(row) is not dict:
+            errors.append("usage ledger contains a non-object row")
+            continue
         if row.get("record_type") != ATTEMPT_RECORD:
             errors.append("usage ledger contains a legacy/non-attempt row")
             continue
         if row.get("schema_version") != 1 \
                 or row.get("attempt_schema_version") != 1:
             errors.append("usage ledger has the wrong attempt schema")
+        if compact_inspection is not None:
+            if row.get("compact_inspection") is not compact_inspection:
+                errors.append(
+                    "usage ledger compact_inspection differs from the arm")
+            runtime_identity = row.get("runtime_instruction_identity")
+            if (not isinstance(runtime_identity, str)
+                    or len(runtime_identity) != 64
+                    or any(char not in "0123456789abcdef"
+                           for char in runtime_identity)):
+                errors.append("usage ledger has invalid runtime instruction identity")
+            else:
+                runtime_identities.add(runtime_identity)
         attempt = row.get("attempt_id")
         call = row.get("call_id")
         index = row.get("attempt_index")
@@ -316,10 +385,41 @@ def _attempt_audit(path: Path) -> tuple[bool, list[str]]:
     for call, indexes in by_call.items():
         if sorted(indexes) != list(range(1, len(indexes) + 1)):
             errors.append(f"attempt indexes are not contiguous for call {call}")
+    if compact_inspection is not None and len(runtime_identities) != 1:
+        errors.append("usage ledger mixes runtime instruction identities")
     return not errors, errors
 
 
-def _result_audit(path: Path, trials: tuple[str, ...]) -> list[str]:
+def _attempt_runtime_identity(path: Path) -> str | None:
+    """Return the one observed runtime identity, never derive it from a flag."""
+    try:
+        rows = [json.loads(line) for line in path.read_text(
+            encoding="utf-8").splitlines() if line.strip()]
+    except (OSError, json.JSONDecodeError):
+        return None
+    identities: set[str] = set()
+    for row in rows:
+        if type(row) is not dict:
+            return None
+        if row.get("record_type") != ATTEMPT_RECORD:
+            continue
+        identity = row.get("runtime_instruction_identity")
+        if not isinstance(identity, str):
+            return None
+        identities.add(identity)
+    if len(identities) != 1:
+        return None
+    identity = next(iter(identities))
+    if (not isinstance(identity, str) or len(identity) != 64
+            or any(char not in "0123456789abcdef" for char in identity)):
+        return None
+    return identity
+
+
+def _result_audit(
+    path: Path, trials: tuple[str, ...], *,
+    compact_inspection: bool | None = None,
+) -> list[str]:
     try:
         rows = [json.loads(line) for line in path.read_text(
             encoding="utf-8").splitlines() if line.strip()]
@@ -328,10 +428,22 @@ def _result_audit(path: Path, trials: tuple[str, ...]) -> list[str]:
     counts = defaultdict(int)
     errors: list[str] = []
     for row in rows:
+        if type(row) is not dict:
+            errors.append("results ledger contains a non-object row")
+            continue
         trial = row.get("trial")
         features = row.get("features")
-        if trial in trials and features is not None:
+        if trial in trials:
             counts[trial] += 1
+            if type(features) is not dict:
+                errors.append(f"{trial} has malformed features")
+                continue
+            if compact_inspection is not None and (
+                    row.get("compact_inspection") is not compact_inspection
+                    or features.get("compact_inspection") is not
+                    compact_inspection):
+                errors.append(
+                    f"{trial} compact_inspection differs from the arm")
             audit_status = features.get("contract_audit_status")
             contract = features.get("final_obligation_contract")
             outcomes = features.get("final_obligation_outcomes_ordered")
@@ -386,10 +498,11 @@ def _run_one(
     stderr_path = run_dir / "run.log"
     scoring_root = run_dir / "scoring"
     rep = run_id
-    command = _command(manifest, source_root, group, phase, scores, rep)
-    arm_cfg = manifest["comparisons"][comparison][arm]
+    command = _command(
+        manifest, source_root, group, phase, scores, rep, comparison, arm)
+    compact_inspection, arm_cfg = _arm_profile(manifest, comparison, arm)
     env = os.environ.copy()
-    env.update({key: str(value) for key, value in arm_cfg.items()})
+    env.update(arm_cfg)
     env["GV_SCORING_ROOT"] = os.fspath(scoring_root)
     for name in _CLEARED_ENV:
         env.pop(name, None)
@@ -405,6 +518,7 @@ def _run_one(
     state_path = run_dir / "run-state.json"
     _write_state(state_path, {
         "schema": RUN_SCHEMA, "run_id": run_id, "status": "running",
+        "compact_inspection": compact_inspection,
         "started_at_unix_ns": start_wall,
         "started_at_monotonic_ns": start_mono,
     })
@@ -416,8 +530,11 @@ def _run_one(
     finish_mono = time.monotonic_ns()
     finish_wall = time.time_ns()
     fingerprint_after = _source_fingerprint(source_root)
-    usage_ok, usage_errors = _attempt_audit(usage)
-    result_errors = _result_audit(scores, group.trials)
+    usage_ok, usage_errors = _attempt_audit(
+        usage, compact_inspection=compact_inspection)
+    runtime_instruction_identity = _attempt_runtime_identity(usage)
+    result_errors = _result_audit(
+        scores, group.trials, compact_inspection=compact_inspection)
     fingerprint_unchanged = fingerprint_after == source_fingerprint
     usage_ok = (usage_ok and proc.returncode == 0 and not result_errors
                 and fingerprint_unchanged)
@@ -450,6 +567,8 @@ def _run_one(
         "seats": manifest["verifier"]["seats"],
         "effort": manifest["verifier"]["effort"],
         "service_tier": manifest["verifier"]["service_tier"],
+        "compact_inspection": compact_inspection,
+        "runtime_instruction_identity": runtime_instruction_identity,
         "mode": manifest["verifier"]["mode"],
         "max_concurrent_seats": manifest["verifier"]["max_concurrent_seats"],
         "runtime_path": manifest["verifier"]["runtime_path"],
@@ -469,6 +588,8 @@ def _run_one(
         "started_at_monotonic_ns": start_mono,
         "finished_at_monotonic_ns": finish_mono,
         "usage_audit_complete": usage_ok,
+        "compact_inspection": compact_inspection,
+        "runtime_instruction_identity": runtime_instruction_identity,
         "result_audit_errors": result_errors,
         "source_fingerprint_unchanged": fingerprint_unchanged,
     })
@@ -491,9 +612,13 @@ def _plan_rows(
                 "comparison": comparison, "tier": tier, "phase": phase,
                 "arm": arm, "job": group.job, "tasks": list(group.tasks),
                 "trials": list(group.trials),
-                "environment": manifest["comparisons"][comparison][arm],
+                "environment": _arm_profile(
+                    manifest, comparison, arm)[1],
+                "compact_inspection": _arm_profile(
+                    manifest, comparison, arm)[0],
                 "command": _command(
-                    manifest, source_root, group, phase, scores, run_id),
+                    manifest, source_root, group, phase, scores, run_id,
+                    comparison, arm),
             })
     return rows
 
@@ -502,7 +627,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--comparison",
-                        choices=("full-e2e", "adapter-isolation"),
+                        choices=("full-e2e", "adapter-isolation",
+                                 "compact-inspection"),
                         default="full-e2e")
     parser.add_argument("--tier", choices=("canary", "core", "acceptance"),
                         default="canary")

@@ -309,7 +309,8 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
                   effort: Optional[str] = None,
                   max_rounds: int = 3,
                   critic_rounds: Optional[int] = None,
-                  service_tier: Optional[str] = None) -> Dict[str, Any]:
+                  service_tier: Optional[str] = None,
+                  compact_inspection: bool = False) -> Dict[str, Any]:
     """The full identity of a scoring run's judgment: the pipeline
     fingerprint plus the resolved run configuration, as plaintext fields
     with a content hash (`config`). Two configs must never share derived
@@ -318,6 +319,10 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
     and store the plaintext fields alongside for analysis.
     max_rounds bounds extraction retries; critic_rounds bounds the
     decomposition game (default: the kernel's MAX_CRITIC_ROUNDS)."""
+    if type(compact_inspection) is not bool:
+        raise ValueError("compact_inspection must be a bool")
+    if compact_inspection and seats != "codex":
+        raise ValueError("compact_inspection is only valid for Codex seats")
     if not model and seats == "codex":
         from .llm.codex_backend import DEFAULT_MODEL
         model = DEFAULT_MODEL
@@ -338,6 +343,7 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         "service_tier": resolved_service_tier,
         "max_rounds": max_rounds,
         "critic_rounds": critic_rounds,
+        "compact_inspection": compact_inspection,
     }
     # Optional verifier instruments are part of the experiment, not ambient
     # machine state.  Stamp the pinned public identity (never its host path)
@@ -384,10 +390,12 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
 def config_id(model: Optional[str] = None, seats: Optional[str] = None,
               effort: Optional[str] = None, max_rounds: int = 3,
               critic_rounds: Optional[int] = None,
-              service_tier: Optional[str] = None) -> str:
+              service_tier: Optional[str] = None,
+              compact_inspection: bool = False) -> str:
     return config_fields(
         model, seats, effort, max_rounds, critic_rounds,
         service_tier=service_tier,
+        compact_inspection=compact_inspection,
     )["config"]
 
 
@@ -756,7 +764,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           service_tier: Optional[str] = None,
           parallel_obligations: Optional[int] = None,
           parallel_claims: Optional[int] = None,
-          shared_dir: Optional[str] = None) -> Dict[str, Any]:
+          shared_dir: Optional[str] = None,
+          compact_inspection: bool = False) -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -767,6 +776,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     `model` then names the codex model (default gpt-5.6-luna) and
     `effort` its reasoning effort (default medium). ``service_tier`` is
     ``standard`` by default; ``fast`` explicitly enables Codex Fast mode.
+    ``compact_inspection`` is an opt-in evidence presentation preference,
+    not a change to stage order, evidence scope, or independent review.
 
     Execution strategy (NOT part of the config identity — it changes the
     schedule, never the judgment): ``parallel_obligations`` discharges
@@ -798,7 +809,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             os.makedirs(path, exist_ok=True)
     cfg = config_fields(model=model, seats=seats, effort=effort,
                         max_rounds=max_rounds, critic_rounds=critic_rounds,
-                        service_tier=service_tier)
+                        service_tier=service_tier,
+                        compact_inspection=compact_inspection)
     critic_rounds = cfg["critic_rounds"]
     fingerprint = pipeline_fingerprint()
     extract_rounds = 0
@@ -810,12 +822,18 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         raise ImmutableInputError(
             "diagnostic-only offline state cannot be scored normally; "
             "create a fresh state from sealed immutable inputs")
+    if (backend is not None
+            and getattr(backend, "compact_inspection", False) is not compact_inspection):
+        raise ValueError(
+            "provided backend compact_inspection does not match the "
+            "offline scoring config")
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
         if backend is None:
             backend = CodexBackend(cwd=state_dir, model=model,
                                    effort=cfg["effort"],
                                    service_tier=cfg["service_tier"],
+                                   compact_inspection=cfg["compact_inspection"],
                                    offline_toolchain_dir=toolchain_dir,
                                    offline_shared_cache_dir=cache_dir)
         elif (isinstance(backend, CodexBackend)
@@ -870,6 +888,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                     backend=CodexBackend(cwd=sc.state_dir, model=model,
                                          effort=cfg["effort"],
                                          service_tier=cfg["service_tier"],
+                                         compact_inspection=cfg["compact_inspection"],
                                          offline_toolchain_dir=toolchain_dir,
                                          offline_shared_cache_dir=cache_dir),
                     critic_rounds=critic_rounds,

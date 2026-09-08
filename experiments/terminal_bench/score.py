@@ -234,6 +234,11 @@ def main():
               "Codex Fast mode and has different credit accounting)"),
     )
     ap.add_argument(
+        "--compact-inspection", choices=["0", "1"], default="0",
+        help=("explicit experimental Codex inspection profile; default 0 "
+              "preserves the existing role instructions"),
+    )
+    ap.add_argument(
         "--parallel-obligations", type=int, default=None,
         help=("discharges run concurrently within one claim (default: "
               "GV_PARALLEL_OBLIGATIONS or 4); an execution strategy, not "
@@ -256,6 +261,9 @@ def main():
     args = ap.parse_args()
     if args.service_tier == "fast" and args.seats != "codex":
         ap.error("--service-tier fast requires --seats codex")
+    compact_inspection = args.compact_inspection == "1"
+    if compact_inspection and args.seats != "codex":
+        ap.error("--compact-inspection 1 requires --seats codex")
 
     job_dir = os.path.join(HERE, "results", "jobs", args.job)
     scores_path = os.path.abspath(os.path.expanduser(
@@ -272,7 +280,8 @@ def main():
                                 effort=args.effort,
                                 max_rounds=args.max_rounds,
                                 critic_rounds=args.critic_rounds,
-                                service_tier=args.service_tier)
+                                service_tier=args.service_tier,
+                                compact_inspection=compact_inspection)
     done = res.recorded(scores_path, "job", "trial", "config", "rep")
     # cached feature records, so already-scored trials still rank in the TSV
     scored = {r["trial"]: r for r in res.load(scores_path)
@@ -292,6 +301,7 @@ def main():
                if (args.job, t["trial"], cfg["config"], args.rep) not in done)
     print(f"[tb:score] backend={cfg['seats']} model={cfg['model']} "
           f"effort={cfg['effort']} service_tier={cfg['service_tier']} "
+          f"compact_inspection={cfg['compact_inspection']} "
           f"scoring=claim-graph-certificate max_rounds={args.max_rounds} "
           f"critic_rounds={cfg['critic_rounds']} "
           f"workers={args.workers} job={args.job} "
@@ -397,6 +407,7 @@ def main():
                 seats=args.seats, effort=args.effort,
                 critic_rounds=args.critic_rounds,
                 service_tier=args.service_tier,
+                compact_inspection=compact_inspection,
                 label=lambda r: (
                     f"{r['task']}/{r['trial']} reward={r['reward']}"
                 ),
