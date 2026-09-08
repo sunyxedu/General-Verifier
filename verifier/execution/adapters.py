@@ -3018,6 +3018,7 @@ def default_adapter_registry(
     # Imported lazily so the pure VM can reuse the closed adapter protocol
     # without making this module's definitions depend on import order.
     from .evidence_program import EvidenceProgramAdapter
+    from .record_program import RecordProgramAdapter
 
     if browser_observer is None:
         browser_observer = configured_browser_observer()
@@ -3033,6 +3034,7 @@ def default_adapter_registry(
         LedgerToolCallStringAdapterV2(),
         LedgerToolCallStringAdapterV3(),
         EvidenceProgramAdapter(),
+        RecordProgramAdapter(),
     ]
     if browser_observer is not None:
         adapters.append(BrowserHtmlAdapter(browser_observer))
