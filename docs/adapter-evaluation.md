@@ -192,6 +192,13 @@ failure still needs repair; normalizing metadata cannot make an incorrect
 instrument faithful. Skipping other obligations after a cached refutation was
 not added: it could change exported outcomes and advisory tie-breaking.
 
+At implementation revision `46fbe76`, the local regression command above
+produced **774 passed, 4 skipped, 4 subtests passed** (with the same unavailable
+optional `llm_verifier` test module excluded). A separate, no-model native
+sandbox fixture passed 12 checks covering shared and cold toolchain execution,
+Judger read-only enforcement, and external cache/sibling-state read denial.
+These fixtures do not establish performance or complete native-tool isolation.
+
 ### Optimization direction
 
 OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
