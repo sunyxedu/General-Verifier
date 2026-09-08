@@ -11,13 +11,19 @@ import uuid
 import pytest
 
 from experiments.terminal_bench.eval_offline_policy import (
+    ONLINE_POLICY_IDENTITY_SCHEMA,
+    ONLINE_POLICY_PROTOCOL,
     POLICY_IDENTITY_SCHEMA,
     POLICY_PROTOCOL,
     EvalOfflinePolicyError,
+    EvalOnlinePolicyPlan,
     OfflinePolicyBinding,
     apply_eval_offline_policy,
+    apply_eval_online_policy,
     eval_offline_policy,
+    eval_online_policy,
     plan_eval_offline_policy,
+    plan_eval_online_policy,
 )
 from verifier.llm import codex_backend
 from verifier.llm.codex_backend import CodexBackend
@@ -474,3 +480,177 @@ def test_binding_rejects_invalid_external_authority_before_creating_work(
             runtime_read_roots=(os.fspath(state),),
         )
     assert not (state / "work").exists()
+
+
+def test_online_plan_is_explicit_read_only_and_has_distinct_identity(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("GV_OFFLINE_RUNTIME_READ_ROOTS", "[]")
+    state = tmp_path / "state"
+    state.mkdir()
+
+    plan = plan_eval_online_policy(
+        codex_backend, bindings=[_binding(state)])
+
+    assert isinstance(plan, EvalOnlinePolicyPlan)
+    assert not (state / "work").exists()
+    assert plan.identity["schema"] == ONLINE_POLICY_IDENTITY_SCHEMA
+    assert plan.identity["protocol"] == ONLINE_POLICY_PROTOCOL
+    assert plan.identity["scope"] == "exact-class-live-only"
+    assert plan.identity["binding_count"] == 1
+    for key in (
+        "backend_source_sha256",
+        "original_method_source_sha256",
+        "original_method_code_sha256",
+        "overlay_source_sha256",
+        "policy_method_source_sha256",
+        "policy_method_code_sha256",
+        "bindings_sha256",
+    ):
+        assert len(plan.identity[key]) == 64
+        int(plan.identity[key], 16)
+
+
+@pytest.mark.parametrize(
+    "role", ["extract", "obligations", "critic", "oracles", "discharge", "judger"],
+)
+def test_online_and_offline_entry_points_render_the_same_isolation_bytes(
+    tmp_path, monkeypatch, role,
+):
+    monkeypatch.setenv("GV_OFFLINE_RUNTIME_READ_ROOTS", "[]")
+    state = tmp_path / "state"
+    state.mkdir()
+    binding = _binding(state)
+    backend = CodexBackend(cwd=os.fspath(state))
+
+    with eval_offline_policy(codex_backend, bindings=[binding]) as offline_plan:
+        offline = backend._execution_policy_args(
+            role, {"world_mode": "captured"})
+    with eval_online_policy(codex_backend, bindings=[binding]) as online_plan:
+        online = backend._execution_policy_args(role, {"world_mode": "live"})
+
+    assert offline == online
+    assert offline_plan.identity["schema"] == POLICY_IDENTITY_SCHEMA
+    assert offline_plan.identity["protocol"] == POLICY_PROTOCOL
+    assert offline_plan.identity["scope"] == "exact-class-offline-only"
+    assert online_plan.identity["schema"] == ONLINE_POLICY_IDENTITY_SCHEMA
+
+
+@pytest.mark.parametrize(
+    "variables",
+    [
+        {},
+        {"world_mode": "captured"},
+        {"world_mode": "unavailable"},
+        {"world_mode": "LIVE"},
+        {"world_mode": None},
+    ],
+)
+def test_online_api_requires_exact_live_world_mode(
+    tmp_path, monkeypatch, variables,
+):
+    monkeypatch.setenv("GV_OFFLINE_RUNTIME_READ_ROOTS", "[]")
+    state = tmp_path / "state"
+    state.mkdir()
+    backend = CodexBackend(cwd=os.fspath(state))
+
+    with eval_online_policy(codex_backend, bindings=[_binding(state)]):
+        with pytest.raises(RoleError, match="requires world_mode='live'"):
+            backend._execution_policy_args("critic", variables)
+
+
+def test_online_api_rejects_string_subclass_world_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("GV_OFFLINE_RUNTIME_READ_ROOTS", "[]")
+    state = tmp_path / "state"
+    state.mkdir()
+    backend = CodexBackend(cwd=os.fspath(state))
+
+    class Live(str):
+        pass
+
+    with eval_online_policy(codex_backend, bindings=[_binding(state)]):
+        with pytest.raises(RoleError, match="requires world_mode='live'"):
+            backend._execution_policy_args(
+                "critic", {"world_mode": Live("live")})
+
+
+def test_online_api_requires_bound_exact_backend_and_cwd(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("GV_OFFLINE_RUNTIME_READ_ROOTS", "[]")
+    state = tmp_path / "state"
+    other = tmp_path / "other"
+    state.mkdir()
+    other.mkdir()
+    plan = plan_eval_online_policy(
+        codex_backend, bindings=[_binding(state)])
+
+    class Child(CodexBackend):
+        pass
+
+    with apply_eval_online_policy(plan):
+        with pytest.raises(RoleError, match="no eval offline policy binding"):
+            CodexBackend(cwd=os.fspath(other))._execution_policy_args(
+                "critic", {"world_mode": "live"})
+        with pytest.raises(RoleError, match="operator-bound backend cwd"):
+            CodexBackend()._execution_policy_args(
+                "critic", {"world_mode": "live"})
+        with pytest.raises(RoleError, match="exact CodexBackend class"):
+            Child(cwd=os.fspath(state))._execution_policy_args(
+                "critic", {"world_mode": "live"})
+
+
+@pytest.mark.parametrize("key", ["toolchain_dir", "shared_cache_dir"])
+def test_online_candidate_cannot_replace_operator_roots(
+    tmp_path, monkeypatch, key,
+):
+    monkeypatch.setenv("GV_OFFLINE_RUNTIME_READ_ROOTS", "[]")
+    state = tmp_path / "state"
+    replacement = tmp_path / "replacement"
+    state.mkdir()
+    replacement.mkdir()
+    backend = CodexBackend(cwd=os.fspath(state))
+
+    with eval_online_policy(codex_backend, bindings=[_binding(state)]):
+        with pytest.raises(RoleError, match="operator binding"):
+            backend._execution_policy_args("discharge", {
+                "world_mode": "live", key: os.fspath(replacement),
+            })
+        with pytest.raises(RoleError, match="escapes state/work"):
+            backend._execution_policy_args("discharge", {
+                "world_mode": "live",
+                "workdir": os.fspath(state.parent / "candidate-work"),
+            })
+
+
+def test_offline_api_still_rejects_live_after_online_api_is_added(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("GV_OFFLINE_RUNTIME_READ_ROOTS", "[]")
+    state = tmp_path / "state"
+    state.mkdir()
+    backend = CodexBackend(cwd=os.fspath(state))
+    original = CodexBackend.__dict__["_execution_policy_args"]
+
+    with eval_offline_policy(codex_backend, bindings=[_binding(state)]):
+        with pytest.raises(RoleError, match="refuses live"):
+            backend._execution_policy_args("critic", {"world_mode": "live"})
+
+    assert CodexBackend.__dict__["_execution_policy_args"] is original
+
+
+def test_online_overlay_restores_after_body_exception(tmp_path, monkeypatch):
+    monkeypatch.setenv("GV_OFFLINE_RUNTIME_READ_ROOTS", "[]")
+    state = tmp_path / "state"
+    state.mkdir()
+    original = CodexBackend.__dict__["_execution_policy_args"]
+
+    with pytest.raises(KeyboardInterrupt, match="operator stop"):
+        with eval_online_policy(codex_backend, bindings=[_binding(state)]):
+            assert CodexBackend.__dict__["_execution_policy_args"] is not original
+            raise KeyboardInterrupt("operator stop")
+
+    assert CodexBackend.__dict__["_execution_policy_args"] is original
+    assert CodexBackend(cwd=os.fspath(state))._execution_policy_args(
+        "critic", {"world_mode": "live"},
+    ) == ["--dangerously-bypass-approvals-and-sandbox"]

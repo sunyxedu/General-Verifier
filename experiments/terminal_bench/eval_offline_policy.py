@@ -10,6 +10,10 @@ The overlay deliberately has no verifier imports.  A worker can import this
 file, then load one selected frozen verifier tree and explicitly bind each
 offline state to operator-owned filesystem roots.  Candidate variables may
 repeat a binding but cannot add authority.
+
+The separately named online entry point applies the same filesystem and tool
+isolation to calls explicitly marked ``world_mode="live"``.  It never changes
+the original offline entry point's accepted modes or identity protocol.
 """
 from __future__ import annotations
 
@@ -30,6 +34,8 @@ from typing import Any, Iterable, Iterator, Mapping, Optional
 
 POLICY_PROTOCOL = "gv-common-offline-codex-policy-v1"
 POLICY_IDENTITY_SCHEMA = "gv-common-offline-codex-policy-identity-v1"
+ONLINE_POLICY_PROTOCOL = "gv-common-online-codex-policy-v1"
+ONLINE_POLICY_IDENTITY_SCHEMA = "gv-common-online-codex-policy-identity-v1"
 
 _OFFLINE_PROFILE = "gv-offline"
 _OFFLINE_WORLD_MODES = frozenset({"captured", "unavailable"})
@@ -294,6 +300,21 @@ class EvalOfflinePolicyPlan:
         return dict(self._identity)
 
 
+@dataclass(frozen=True)
+class EvalOnlinePolicyPlan:
+    """Read-only, source-bound plan for an isolated live-world eval."""
+
+    module: types.ModuleType = field(repr=False, compare=False)
+    backend_class: type = field(repr=False, compare=False)
+    original_method: Any = field(repr=False, compare=False)
+    bindings: tuple[OfflinePolicyBinding, ...] = field(repr=False)
+    _identity: Mapping[str, Any] = field(repr=False, compare=False)
+
+    @property
+    def identity(self) -> dict[str, Any]:
+        return dict(self._identity)
+
+
 def plan_eval_offline_policy(
     module: types.ModuleType,
     *,
@@ -344,6 +365,65 @@ def plan_eval_offline_policy(
         "scope": "exact-class-offline-only",
     })
     return EvalOfflinePolicyPlan(
+        module=module, backend_class=backend_class, original_method=original,
+        bindings=normalized, _identity=identity)
+
+
+def plan_eval_online_policy(
+    module: types.ModuleType,
+    *,
+    bindings: Iterable[OfflinePolicyBinding],
+) -> EvalOnlinePolicyPlan:
+    """Build an immutable live-world plan without changing directories.
+
+    This is an explicit evaluation overlay, not the backend's production
+    online policy.  It reuses the offline renderer only after binding a live
+    call to an exact operator-owned state directory.
+    """
+    if not isinstance(module, types.ModuleType):
+        raise EvalOfflinePolicyError("module must be an imported Python module")
+    backend_class = getattr(module, "CodexBackend", None)
+    if not isinstance(backend_class, type):
+        raise EvalOfflinePolicyError("module must expose CodexBackend")
+    if backend_class.__module__ != module.__name__:
+        raise EvalOfflinePolicyError("CodexBackend must be defined by the module")
+    original = inspect.getattr_static(backend_class, "_execution_policy_args", None)
+    original_source_hash, original_code_hash = _function_identities(
+        original, "CodexBackend._execution_policy_args")
+
+    normalized = tuple(bindings)
+    if not normalized or len(normalized) > _MAX_BINDINGS:
+        raise EvalOfflinePolicyError("bindings must contain 1..256 states")
+    if not all(isinstance(item, OfflinePolicyBinding) for item in normalized):
+        raise EvalOfflinePolicyError("bindings must contain OfflinePolicyBinding values")
+    states = [item.state_dir for item in normalized]
+    if len(states) != len(set(states)):
+        raise EvalOfflinePolicyError("each state_dir may be bound only once")
+
+    backend_source = _stable_file_bytes(
+        _source_file(module, backend_class), "backend source")
+    overlay_source = _stable_file_bytes(__file__, "overlay source")
+    policy_source_hash, policy_code_hash = _function_identities(
+        _build_policy_args, "overlay policy implementation")
+    bindings_bytes = json.dumps(
+        [item._identity_record() for item in normalized],
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    identity = MappingProxyType({
+        "schema": ONLINE_POLICY_IDENTITY_SCHEMA,
+        "protocol": ONLINE_POLICY_PROTOCOL,
+        "backend_module": module.__name__,
+        "backend_source_sha256": hashlib.sha256(backend_source).hexdigest(),
+        "original_method_source_sha256": original_source_hash,
+        "original_method_code_sha256": original_code_hash,
+        "overlay_source_sha256": hashlib.sha256(overlay_source).hexdigest(),
+        "policy_method_source_sha256": policy_source_hash,
+        "policy_method_code_sha256": policy_code_hash,
+        "bindings_sha256": hashlib.sha256(bindings_bytes).hexdigest(),
+        "binding_count": len(normalized),
+        "scope": "exact-class-live-only",
+    })
+    return EvalOnlinePolicyPlan(
         module=module, backend_class=backend_class, original_method=original,
         bindings=normalized, _identity=identity)
 
@@ -425,18 +505,28 @@ def _search_enabled(plan: EvalOfflinePolicyPlan, backend: Any, role_name: str) -
 
 
 def _binding_for_backend(
-    plan: EvalOfflinePolicyPlan,
+    plan: EvalOfflinePolicyPlan | EvalOnlinePolicyPlan,
     backend: Any,
     role_name: str,
     variables: Mapping[str, Any],
 ) -> OfflinePolicyBinding:
     if type(backend) is not plan.backend_class:
-        raise _role_error(
-            plan, "eval offline policy supports only the exact CodexBackend class")
-    offline_check = getattr(backend, "_is_offline_execution", None)
-    if not callable(offline_check) or not offline_check(role_name, variables):
-        raise _role_error(
-            plan, "eval offline policy refuses live or unclassified execution")
+        message = (
+            "eval online policy supports only the exact CodexBackend class"
+            if isinstance(plan, EvalOnlinePolicyPlan)
+            else "eval offline policy supports only the exact CodexBackend class"
+        )
+        raise _role_error(plan, message)
+    if isinstance(plan, EvalOnlinePolicyPlan):
+        world_mode = variables.get("world_mode")
+        if type(world_mode) is not str or world_mode != "live":
+            raise _role_error(
+                plan, "eval online policy requires world_mode='live'")
+    else:
+        offline_check = getattr(backend, "_is_offline_execution", None)
+        if not callable(offline_check) or not offline_check(role_name, variables):
+            raise _role_error(
+                plan, "eval offline policy refuses live or unclassified execution")
     cwd = getattr(backend, "cwd", None)
     if cwd is None:
         raise _role_error(
@@ -735,4 +825,74 @@ def eval_offline_policy(
     """Convenience context manager combining read-only plan and install."""
     plan = plan_eval_offline_policy(module, bindings=bindings)
     with apply_eval_offline_policy(plan):
+        yield plan
+
+
+@contextmanager
+def apply_eval_online_policy(
+    plan: EvalOnlinePolicyPlan,
+) -> Iterator[EvalOnlinePolicyPlan]:
+    """Install one live-world eval plan and restore the original method."""
+    if not isinstance(plan, EvalOnlinePolicyPlan):
+        raise EvalOfflinePolicyError("plan must be an EvalOnlinePolicyPlan")
+    module = plan.module
+    backend_class = plan.backend_class
+    replacement = _replacement_for(plan)
+    with _INSTALL_LOCK:
+        if module in _ACTIVE_INSTALLS:
+            raise EvalOfflinePolicyError(
+                "an eval policy is already installed for this module")
+        if inspect.getattr_static(
+                backend_class, "_execution_policy_args", None) is not plan.original_method:
+            raise EvalOfflinePolicyError(
+                "backend policy method changed after the plan was built")
+        _ACTIVE_INSTALLS[module] = replacement
+        try:
+            setattr(backend_class, "_execution_policy_args", replacement)
+        except BaseException:
+            del _ACTIVE_INSTALLS[module]
+            raise
+
+    body_error: Optional[BaseException] = None
+    try:
+        yield plan
+    except BaseException as error:
+        body_error = error
+    restore_error: Optional[BaseException] = None
+    try:
+        with _INSTALL_LOCK:
+            current = inspect.getattr_static(
+                backend_class, "_execution_policy_args", None)
+            try:
+                setattr(
+                    backend_class, "_execution_policy_args", plan.original_method)
+            except BaseException as error:
+                restore_error = error
+            else:
+                if current is not replacement:
+                    restore_error = EvalOfflinePolicyError(
+                        "backend policy method changed during overlay use")
+            _ACTIVE_INSTALLS.pop(module, None)
+    except BaseException as error:
+        restore_error = restore_error or error
+
+    if body_error is not None and restore_error is not None:
+        raise BaseExceptionGroup(
+            "eval online policy body and restoration both failed",
+            [body_error, restore_error])
+    if body_error is not None:
+        raise body_error.with_traceback(body_error.__traceback__)
+    if restore_error is not None:
+        raise restore_error
+
+
+@contextmanager
+def eval_online_policy(
+    module: types.ModuleType,
+    *,
+    bindings: Iterable[OfflinePolicyBinding],
+) -> Iterator[EvalOnlinePolicyPlan]:
+    """Plan and temporarily install the isolated live-world eval policy."""
+    plan = plan_eval_online_policy(module, bindings=bindings)
+    with apply_eval_online_policy(plan):
         yield plan
