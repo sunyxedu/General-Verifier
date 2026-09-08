@@ -119,11 +119,12 @@ def _groups(phase: str, selected: dict[str, dict[str, Any]]) -> list[Group]:
 
 def _source_fingerprint(source_root: Path) -> str:
     paths = [
-        source_root / "experiments" / "terminal_bench" / "score.py",
-        source_root / "experiments" / "terminal_bench" / "harborjobs.py",
         source_root / "pyproject.toml",
         source_root / "uv.lock",
     ]
+    # Include the runner, preparation/replay and accounting code too. Do not
+    # recurse into results/: archived frozen sources are data, not this run.
+    paths.extend(sorted((source_root / "experiments" / "terminal_bench").glob("*.py")))
     paths.extend(sorted(
         (source_root / "experiments" / "common").rglob("*.py")))
     paths.extend(sorted((source_root / "verifier").rglob("*.py")))

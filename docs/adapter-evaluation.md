@@ -291,6 +291,25 @@ optional module excluded. The remaining paid-run gate is parent-owned
 extraction/all-attempts accounting, warm lineage and fresh evidence/replay
 coordination. No new real-model A/B or performance improvement is claimed.
 
+The cold diagnostic now has callable setup, billing aggregation, and fresh
+evidence replay components. Setup runs actual extraction and every planned
+Compiler/Critic pair; each arm then runs fresh Oracle, executor and Judger.
+The final bundle pin is published only after source/plan revalidation and
+terminal records. Consumers must require the complete state, result and pin
+together; injected test factories are explicitly marked `test_only`.
+Production stage responsibilities, scheduling and verification standards are
+unchanged. Shared contracts remain a diagnostic control, not a production
+shortcut or full-E2E acceptance result.
+
+Local integration verifies 5 setup calls plus 4 calls per arm: 13 physically
+executed, or 9 charged to each analytical arm including the full shared setup.
+These are protocol-stub tests, not paid measurements. Regression: **1085
+passed, 4 skipped, 4 subtests passed**, with the same optional module excluded.
+Parent setup wall excludes initial preflight and final terminal-record/pin
+writes; full process timing is still required from the eventual coordinator.
+Paid-run admission/orchestration and warm lineage remain unfinished;
+`adapter-isolation --execute` remains disabled. No new performance claim.
+
 ### Optimization direction
 
 OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)

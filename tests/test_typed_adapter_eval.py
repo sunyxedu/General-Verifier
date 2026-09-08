@@ -105,6 +105,34 @@ def test_source_fingerprint_includes_score_local_dependencies(tmp_path):
     assert runner._source_fingerprint(tmp_path) != before
 
 
+@pytest.mark.parametrize("filename", [
+    "run_typed_adapter_eval.py", "analyze_model_spans.py", "shared_setup.py",
+    "prepare_contract_entry.py", "validate_prepared_contract_entry.py",
+    "prepare_shared_contracts.py", "replay_prepared_contracts.py", "future_coordinator.py",
+])
+def test_source_fingerprint_covers_every_top_level_experiment_module(tmp_path, filename):
+    folder = tmp_path / "experiments" / "terminal_bench"
+    folder.mkdir(parents=True)
+    before = runner._source_fingerprint(tmp_path)
+    (folder / filename).write_text("first version")
+    first = runner._source_fingerprint(tmp_path)
+    assert first != before
+    (folder / filename).write_text("different version")
+    assert runner._source_fingerprint(tmp_path) != first
+
+
+def test_source_fingerprint_does_not_hash_archived_sources_or_documentation(tmp_path):
+    folder = tmp_path / "experiments" / "terminal_bench"
+    folder.mkdir(parents=True)
+    (folder / "score.py").write_text("fixed live scorer")
+    before = runner._source_fingerprint(tmp_path)
+    (folder / "README.md").write_text("notes")
+    archive = folder / "results" / "frozen-source"
+    archive.mkdir(parents=True)
+    (archive / "score.py").write_text("old archived source")
+    assert runner._source_fingerprint(tmp_path) == before
+
+
 def test_paid_output_rejects_host_temp_trees():
     with pytest.raises(runner.PlanError, match="host temporary tree"):
         runner._validate_execute_output_root(
