@@ -247,7 +247,7 @@ def _audit_files(root: Path, monkeypatch, *, treatment: bool,
         raw_attached = treatment and not restricted and role == "judger"
         native_rows.append({
             "record_type": "codex_cli_attempt", "backend": "codex-cli",
-            **worker.RUNTIME, "compact_inspection": False,
+            **worker.RUNTIME, "compact_inspection": treatment,
             "judger_prefetch": treatment and not restricted,
             "judger_prefetch_protocol": (
                 transport_profile["raw_prefetch_protocol"]

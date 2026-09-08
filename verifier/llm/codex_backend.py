@@ -160,6 +160,19 @@ _COMPACT_INSPECTION_NOTE = (
     "omit evidence, trust a reported outcome or re-execute a historical "
     "action for a record obligation."
 )
+_COMPACT_REPORT_NOTE = (
+    "\n\nCOMPLETE BUT COMPACT REPORTING: perform every analysis, attack, "
+    "coverage check, and independence check required by this role before "
+    "deciding. Compress only the final JSON representation. Do not restate "
+    "the prompt, narrate successful reasoning, or repeat the same passed "
+    "fact. Preserve every required output item and schema field; never merge "
+    "or omit claims, obligations, methods, defects, witnesses, repairs, "
+    "sources, or scope. Where the role requires named audits, retain each "
+    "required label with a concise pass result. On failure, still report "
+    "every independently visible defect and the concrete witness or repair. "
+    "This is output serialization economy only, not permission to weaken a "
+    "contract, skip a gate, reduce evidence, or change a verdict."
+)
 _JUDGER_PREFETCH_NOTE = (
     "\n\nVERIFIER-BOUND RAW EVIDENCE TRANSPORT: the following JSON packet "
     "contains complete, unchanged file contents read by the verifier. "
@@ -1509,6 +1522,8 @@ class CodexBackend:
         # environment flag; defaults retain the previous runtime identity.
         self._compact_inspection_note = (
             _COMPACT_INSPECTION_NOTE if compact_inspection else "")
+        self._compact_report_note = (
+            _COMPACT_REPORT_NOTE if compact_inspection else "")
         self._judger_prefetch_protocol = None
         self._judger_prefetch_note = ""
         if judger_prefetch:
@@ -1580,6 +1595,7 @@ class CodexBackend:
     def runtime_instruction_identity(self) -> str:
         return hashlib.sha256(
             (self._artifact_address_note + self._compact_inspection_note
+             + self._compact_report_note
              + self._judger_prefetch_note)
             .encode("utf-8")).hexdigest()
 
@@ -2152,6 +2168,7 @@ class CodexBackend:
             + (self._artifact_address_note if role_name == "judger" else "")
             + (self._compact_inspection_note
                if role_name in {"discharge", "judger"} else "")
+            + self._compact_report_note
             + (_SEARCH_NOTE if self._search_enabled(role_name) else "")
             + image_note
             + (self._judger_prefetch_note + prefetch_body

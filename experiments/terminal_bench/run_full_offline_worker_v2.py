@@ -669,7 +669,7 @@ def _audit_attempts(output: Path, state: Path, arm: str,
         if not required <= set(row) or row["record_type"] != "codex_cli_attempt" \
                 or row["backend"] != "codex-cli" \
                 or any(row[key] != value for key, value in RUNTIME.items()) \
-                or row["compact_inspection"] is not False:
+                or row["compact_inspection"] is not (arm == "treatment"):
             raise ValueError("native attempt runtime profile changed")
         typed = row["typed_judger_transport"]
         if type(typed) is not bool:
@@ -777,7 +777,8 @@ def run_worker(plan):
     try:
         _clone(offline, inputs, state, plan["input_seal"])
         backend = backend_module.CodexBackend(
-            cwd=str(state), **RUNTIME, compact_inspection=False,
+            cwd=str(state), **RUNTIME,
+            compact_inspection=plan["arm"] == "treatment",
             judger_prefetch=plan["arm"] == "treatment",
             restricted_judger_cwd=restricted_judger_cwd)
         transport = _transport_profile(modules, backend, plan["arm"])
@@ -796,7 +797,8 @@ def run_worker(plan):
                     features = offline.score(
                         str(state), **RUNTIME, seats="codex", max_rounds=3,
                         parallel_claims=4, parallel_obligations=4,
-                        shared_dir=None, compact_inspection=False,
+                        shared_dir=None,
+                        compact_inspection=plan["arm"] == "treatment",
                         judger_prefetch=plan["arm"] == "treatment",
                         restricted_judger_cwd=restricted_judger_cwd)
         certificate = _certificate(state, features)

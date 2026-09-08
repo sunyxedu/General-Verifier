@@ -1675,7 +1675,7 @@ def _audit_execution(output: Path, state: Path, arm: str,
         if (row["record_type"] != "codex_cli_attempt"
                 or row["backend"] != "codex-cli"
                 or any(row[key] != value for key, value in RUNTIME.items())
-                or row["compact_inspection"] is not False
+                or row["compact_inspection"] is not (arm == "treatment")
                 or type(row["typed_judger_transport"]) is not bool
                 or not isinstance(row["runtime_instruction_identity"], str)
                 or row["runtime_instruction_identity"]
@@ -1907,7 +1907,8 @@ def run_worker(plan):
     try:
         pre_inputs = _clone_inputs(inputs, state, plan["input_seal"])
         backend = backend_module.CodexBackend(
-            cwd=str(state), **RUNTIME, compact_inspection=False,
+            cwd=str(state), **RUNTIME,
+            compact_inspection=plan["arm"] == "treatment",
             judger_prefetch=plan["arm"] == "treatment",
             restricted_judger_cwd=restricted_judger_cwd,
         )

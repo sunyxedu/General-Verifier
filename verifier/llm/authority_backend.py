@@ -245,6 +245,7 @@ def authority_compilation_backend(backend, obligations_role, critic_role):
             # defaults: the session identity above describes this exact backend.
             isolated._artifact_address_note = backend._artifact_address_note
             isolated._compact_inspection_note = backend._compact_inspection_note
+            isolated._compact_report_note = backend._compact_report_note
             isolated._judger_prefetch_note = backend._judger_prefetch_note
             isolated._judger_prefetch_protocol = backend._judger_prefetch_protocol
             isolated._authority_scratch = scratch

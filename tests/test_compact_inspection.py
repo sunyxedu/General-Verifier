@@ -31,7 +31,7 @@ def _runner(calls):
 @pytest.mark.parametrize("role_name", [
     "extract", "obligations", "critic", "oracles", "discharge", "judger"])
 @pytest.mark.parametrize("world_mode", ["live", "captured", "unavailable"])
-def test_opt_in_changes_only_evidence_role_prompt_not_policy(
+def test_opt_in_compacts_reports_and_only_evidence_roles_get_inspection_note(
         tmp_path, monkeypatch, role_name, world_mode):
     role = SimpleNamespace(system="fixed system", schema={"ok": bool})
     calls = []
@@ -45,9 +45,12 @@ def test_opt_in_changes_only_evidence_role_prompt_not_policy(
             "world_mode": world_mode, "basis": "record"}) == {"ok": True}
     (base, base_args), (opt, opt_args) = calls
     assert cb._COMPACT_INSPECTION_NOTE not in base[-1]
+    assert cb._COMPACT_REPORT_NOTE not in base[-1]
     expected = role_name in {"discharge", "judger"}
     assert (cb._COMPACT_INSPECTION_NOTE in opt[-1]) is expected
-    assert opt[-1].replace(cb._COMPACT_INSPECTION_NOTE, "") == base[-1]
+    assert cb._COMPACT_REPORT_NOTE in opt[-1]
+    assert opt[-1].replace(cb._COMPACT_INSPECTION_NOTE, "").replace(
+        cb._COMPACT_REPORT_NOTE, "") == base[-1]
     # The only command difference is prompt text and the fresh output path.
     def command_contract(command):
         command = list(command[:-1])
@@ -109,5 +112,18 @@ def test_note_preserves_full_evidence_and_no_historical_reexecution():
         "independent semantic audit",
         "not permission to omit evidence",
         "re-execute a historical action",
+    ):
+        assert invariant in note
+
+
+def test_compact_report_note_preserves_every_role_gate_and_failure():
+    note = cb._COMPACT_REPORT_NOTE
+    for invariant in (
+        "perform every analysis",
+        "Preserve every required output item",
+        "never merge or omit claims, obligations, methods, defects",
+        "retain each required label",
+        "every independently visible defect",
+        "not permission to weaken a contract, skip a gate",
     ):
         assert invariant in note

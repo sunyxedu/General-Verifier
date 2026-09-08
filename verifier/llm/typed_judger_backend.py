@@ -284,6 +284,7 @@ def restricted_typed_judger_backend(
         # The packet note is the sole new instruction channel.
         isolated._artifact_address_note = backend._artifact_address_note
         isolated._compact_inspection_note = backend._compact_inspection_note
+        isolated._compact_report_note = backend._compact_report_note
         isolated._judger_prefetch_note = ""
         isolated._judger_prefetch_protocol = None
         isolated._typed_judger_scratch = scratch
