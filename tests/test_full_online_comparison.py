@@ -35,7 +35,10 @@ def _inputs(root, label):
 
 def _fixture_plan(tmp_path):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    worker = tmp_path / "worker.py"
+    source = tmp_path / "source"
+    worker = source / "experiments" / "terminal_bench" \
+        / "run_full_online_worker.py"
+    worker.parent.mkdir(parents=True)
     worker.write_text(
         "import hashlib, json\n"
         "from pathlib import Path\n"
@@ -60,8 +63,6 @@ def _fixture_plan(tmp_path):
         " raw=json.dumps(value,sort_keys=True,separators=(',',':')).encode()\n"
         " return hashlib.sha256(raw).hexdigest()\n",
         encoding="utf-8")
-    source = tmp_path / "source"
-    source.mkdir()
     (source / "pyproject.toml").write_text("[project]\nname='fixture'\n")
     runtime = tmp_path / "runtime"
     (runtime / "bin").mkdir(parents=True)
@@ -123,6 +124,13 @@ def _fixture_plan(tmp_path):
                                     else ["refuted"]),
             "minimum_evidence_count": 1, "required_evidence": [],
         }
+        truth["acceptable_semantic_evidence"] = [{
+            "schema": comparison.SEMANTIC_SCHEMA,
+            "input_tree_seal": snapshot["seal"],
+            "verdict": truth["acceptable_verdicts"][0],
+            "verdict_strength": 1, "truth_eligible": True,
+            "obligations": [{"evidence": [{}]}],
+        }]
         truth_path = tmp_path / f"truth-{index}.json"
         pairs.append({"candidate_id": candidate,
                       "truth_path": str(truth_path.resolve()),
@@ -190,6 +198,16 @@ def test_source_and_cli_runtime_content_are_verified(tmp_path):
         plan["pairs"][0]["jobs"][0]["plan_path"]).read_text())["source_root"])
     (source / "pyproject.toml").write_text("changed\n")
     with pytest.raises(ValueError, match="archive fingerprint"):
+        comparison.validate_plan(plan)
+
+
+def test_worker_is_bound_before_import_to_the_canonical_frozen_source(tmp_path):
+    plan = _fixture_plan(tmp_path / "worker-binding")
+    attacker = tmp_path / "attacker.py"
+    attacker.write_text("raise RuntimeError('worker executed')\n")
+    plan["worker_path"] = str(attacker.resolve())
+    plan["worker_sha256"] = comparison._sha(attacker)
+    with pytest.raises(ValueError, match="canonical frozen-source worker"):
         comparison.validate_plan(plan)
 
     plan = _fixture_plan(tmp_path / "runtime-case")
@@ -378,6 +396,18 @@ def test_failed_accounting_retains_known_minimum_but_never_a_ratio(tmp_path):
     assert report["tokens"]["output_tokens"]["treatment"]["known_sum"] == 10
 
 
+def test_missing_worker_result_still_recovers_observer_known_minimum(tmp_path):
+    control = _priced_job(tmp_path, "control", [_usage(output=7)])
+    treatment = _priced_job(tmp_path, "treatment", [_usage(output=11)])
+    treatment["accounting"] = None
+    treatment["accounting_complete"] = False
+    report = comparison._accounting_summary([control, treatment])
+    assert report["complete"] is False
+    assert report["control_over_treatment"] is None
+    assert report["tokens"]["output_tokens"]["treatment"]["known_sum"] == 11
+    assert report["known_minimum_price_equivalent_usd"]["treatment"] > 0
+
+
 def test_accounting_aggregates_multiple_jobs_without_cross_job_mismatch(tmp_path):
     jobs = [_priced_job(tmp_path, arm, [_usage(output=amount)])
             for amount in (3, 5) for arm in ("control", "treatment")]
@@ -419,6 +449,9 @@ def test_typed_transport_audit_consumes_native_observer_bijection():
     assert comparison._transport_audit(base, "treatment") is True
     assert comparison._transport_audit(
         {**base, "observer_finished_attempts": 1}, "treatment") is False
+    unavailable = json.loads(json.dumps(base))
+    unavailable["typed_judger_transport"]["packet_unavailable_fallback"] = True
+    assert comparison._transport_audit(unavailable, "treatment") is False
     assert comparison._transport_audit(base, "control") is False
 
 
@@ -428,6 +461,7 @@ def test_partial_or_unverified_never_passes_truth_or_no_regression():
         "expected_final_status": "verified", "minimum_evidence_count": 1,
         "required_evidence": [], "typed_adapter_eligibility": "ineligible",
         "typed_packet_eligibility": "ineligible",
+        "acceptable_semantic_evidence": [],
     }
     semantic = {
         "input_tree_seal": "a" * 64, "verdict": "unverified",
@@ -448,12 +482,35 @@ def test_partial_or_unverified_never_passes_truth_or_no_regression():
         "sealed_truth_no_regression"] is False
 
 
+def test_absolute_truth_requires_a_complete_semantic_match():
+    expected = {
+        "schema": comparison.SEMANTIC_SCHEMA,
+        "input_tree_seal": "a" * 64, "verdict": "verified",
+        "verdict_strength": 1, "truth_eligible": True,
+        "obligations": [{"evidence": [{"value": "expected"}]}],
+    }
+    truth = {
+        "input_seal": "a" * 64, "acceptable_verdicts": ["verified"],
+        "expected_final_status": "verified", "minimum_evidence_count": 1,
+        "required_evidence": [{"value": "expected"}],
+        "acceptable_semantic_evidence": [expected],
+    }
+    assert comparison._truth_evaluation(
+        truth, expected, "verified")["absolute_truth_correct"] is True
+    contradictory = json.loads(json.dumps(expected))
+    contradictory["obligations"][0]["evidence"].append({"value": "wrong"})
+    report = comparison._truth_evaluation(truth, contradictory, "verified")
+    assert report["absolute_truth_correct"] is False
+    assert "complete_semantic_evidence" in report["findings"]
+
+
 def test_unknown_verdict_and_restricted_fallback_fail_closed():
     truth = {
         "input_seal": "a" * 64, "acceptable_verdicts": ["verified"],
         "expected_final_status": "verified", "minimum_evidence_count": 1,
         "required_evidence": [], "typed_adapter_eligibility": "eligible",
         "typed_packet_eligibility": "eligible",
+        "acceptable_semantic_evidence": [],
     }
     semantic = {
         "input_tree_seal": "a" * 64, "verdict": "future-verdict",

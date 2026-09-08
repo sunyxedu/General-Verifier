@@ -56,7 +56,8 @@ _TRUTH_KEYS = {"schema", "candidate_id", "input_seal", "task_family",
                "polarity", "typed_adapter_eligibility",
                "typed_packet_eligibility", "browser_required",
                "expected_final_status", "acceptable_verdicts",
-               "minimum_evidence_count", "required_evidence"}
+               "minimum_evidence_count", "required_evidence",
+               "acceptable_semantic_evidence"}
 _SOURCE_KEYS = {"source_commit", "source_fingerprint"}
 _RUNTIME_KEYS = {"codex_cli_path", "codex_cli_realpath",
                  "codex_cli_sha256", "codex_cli_version",
@@ -145,6 +146,40 @@ def _load_worker(path, digest):
             or any(not callable(getattr(module, item, None)) for item in helpers)):
         raise ValueError("worker does not provide the strict v2 contract")
     return module
+
+
+def _bind_worker_before_import(plan, raw_pairs):
+    """Bind executable coordinator code to the frozen source as data first."""
+    identity = plan.get("source_identity")
+    if (type(identity) is not dict or set(identity) != _SOURCE_KEYS
+            or not _COMMIT.fullmatch(identity.get("source_commit", ""))
+            or not _HASH.fullmatch(identity.get("source_fingerprint", ""))):
+        raise ValueError("source identity is incomplete")
+    try:
+        first_job = raw_pairs[0]["jobs"][0]
+        first_plan_path = _canonical(first_job["plan_path"], existing=True)
+        worker_plan, worker_plan_sha = _read_json(first_plan_path, 256 * 1024)
+    except (IndexError, KeyError, TypeError) as error:
+        raise ValueError("cannot bind worker before import") from error
+    if (type(first_job) is not dict or set(first_job) != _JOB_KEYS
+            or worker_plan_sha != first_job.get("plan_sha256")
+            or type(worker_plan) is not dict):
+        raise ValueError("first worker plan identity is invalid")
+    source = _canonical(worker_plan.get("source_root"), existing=True)
+    if not source.is_dir() or (source / ".git").exists():
+        raise ValueError("first worker source is not a frozen directory")
+    if (worker_plan.get("source_commit") != identity["source_commit"]
+            or worker_plan.get("source_fingerprint")
+            != identity["source_fingerprint"]):
+        raise ValueError("first worker source identity differs")
+    if _source_fingerprint(source) != identity["source_fingerprint"]:
+        raise ValueError("source archive fingerprint changed")
+    expected = (source / "experiments" / "terminal_bench"
+                / "run_full_online_worker.py").resolve(strict=True)
+    selected = _canonical(plan.get("worker_path"), existing=True)
+    if selected != expected:
+        raise ValueError("worker must be the canonical frozen-source worker")
+    return selected
 
 
 def _source_fingerprint(source_root):
@@ -270,6 +305,26 @@ def _validate_truth(value, candidate, seal):
             or any(type(item) is not dict or not item for item in required)
             or type(minimum) is not int or not 1 <= minimum <= 512):
         raise ValueError("invalid evidence truth floor")
+    acceptable_semantics = value.get("acceptable_semantic_evidence")
+    if (type(acceptable_semantics) is not list
+            or not 1 <= len(acceptable_semantics) <= 16):
+        raise ValueError("complete acceptable semantic truth is required")
+    identities = set()
+    for semantic in acceptable_semantics:
+        if (type(semantic) is not dict
+                or set(semantic) != {"schema", "input_tree_seal", "verdict",
+                                     "verdict_strength", "truth_eligible",
+                                     "obligations"}
+                or semantic.get("schema") != SEMANTIC_SCHEMA
+                or semantic.get("input_tree_seal") != seal
+                or semantic.get("verdict") not in verdicts
+                or semantic.get("truth_eligible") is not True
+                or type(semantic.get("obligations")) is not list):
+            raise ValueError("acceptable semantic truth is malformed")
+        digest = _canonical_json_sha(semantic)
+        if digest in identities:
+            raise ValueError("acceptable semantic truth is duplicated")
+        identities.add(digest)
     _canonical_json_sha(required)
     return value
 
@@ -295,11 +350,12 @@ def validate_plan(plan, *, require_fresh_outputs=True):
     if (_sha(__file__) != plan.get("coordinator_sha256")
             or not _HASH.fullmatch(plan.get("coordinator_sha256", ""))):
         raise ValueError("coordinator source changed")
-    worker = _load_worker(plan["worker_path"], plan["worker_sha256"])
     raw_pairs = plan.get("pairs")
     if type(raw_pairs) is not list or not 6 <= len(raw_pairs) <= 64 \
             or len(raw_pairs) % 2:
         raise ValueError("need 6-64 even candidate pairs")
+    _bind_worker_before_import(plan, raw_pairs)
+    worker = _load_worker(plan["worker_path"], plan["worker_sha256"])
     candidates, seals, outputs, truths = set(), set(), set(), set()
     first_arms, pairs, frozen = [], [], None
     for raw_pair in raw_pairs:
@@ -545,6 +601,8 @@ def _truth_evaluation(truth, semantic, final_status):
         findings.append("evidence_count")
     if missing:
         findings.append("business_evidence")
+    if semantic not in truth["acceptable_semantic_evidence"]:
+        findings.append("complete_semantic_evidence")
     # Distance is reported separately from correctness. Equal nonzero distance
     # can establish no-regression, never correctness.
     distance = len(findings) + shortfall + missing
@@ -664,9 +722,12 @@ def _accounting_summary(jobs, *, expected_jobs=None):
         findings.add("arm_count_unbalanced"); complete = False
     for job in jobs:
         arm, accounting = job.get("arm"), job.get("accounting")
-        if arm not in known_price or type(accounting) is not dict:
-            findings.add("job_accounting_unavailable"); complete = False
+        if arm not in known_price:
+            findings.add("job_arm_invalid"); complete = False
             continue
+        if type(accounting) is not dict:
+            findings.add("job_accounting_unavailable"); complete = False
+            accounting = {}
         try:
             raw, rows = _observer_rows(job)
         except BaseException:
@@ -827,7 +888,8 @@ def _transport_audit(audit, arm):
     return (arm == "treatment" and transport["enabled"] is True
             and transport["protocol"] == TYPED_PACKET_PROTOCOL
             and transport["boundary"] == TYPED_BOUNDARY
-            and transport["restricted_fallback_attempted"] is False)
+            and transport["restricted_fallback_attempted"] is False
+            and transport["packet_unavailable_fallback"] is False)
 
 
 def _run_job(plan, worker, output, pair, job, ordinal):
