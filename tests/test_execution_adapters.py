@@ -137,6 +137,7 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         ("filesystem.exists", 1),
         ("filesystem.sha256", 1),
         ("document.json-value", 1),
+        ("document.text", 1),
         ("ledger.event", 1),
         ("ledger.tool-call-string", 1),
         ("ledger.tool-call-string", 2),
@@ -313,6 +314,84 @@ def test_json_value_uses_strict_json_and_type_sensitive_equality(tmp_path):
     assert holds.outcome == OUTCOME_HOLDS
     assert bool_is_not_one.outcome == OUTCOME_REFUTED
     assert fallback.calls == []
+
+
+@pytest.mark.parametrize("predicate,expected,matched", [
+    ("equals", "alpha\nflag{general}\nomega\n", True),
+    ("contains", "flag{general}", True),
+    ("starts_with", "alpha\n", True),
+    ("ends_with", "omega\n", True),
+    ("contains", "flag{different}", False),
+])
+def test_text_adapter_applies_exact_utf8_literal_predicates(
+    tmp_path, predicate, expected, matched,
+):
+    _, world, artifacts, _, fallback, routing = captured(tmp_path)
+    target = world / "answer.txt"
+    target.write_text("alpha\nflag{general}\nomega\n")
+    result = routing.discharge(
+        ROW, Obligation("c1", "the exact text predicate holds", BASIS_WORLD),
+        method("document.text", {
+            "address": "/app/answer.txt", "predicate": predicate,
+            "expected": expected,
+        }, inputs=[subject("/app/answer.txt")]))
+
+    assert result.outcome == (OUTCOME_HOLDS if matched else OUTCOME_REFUTED)
+    assert result.witness_kind == (
+        WITNESS_NONE if matched else WITNESS_WORLD_STATE)
+    evidence = artifacts.get(result.artifact)
+    observation = evidence["execution"]["observation"]
+    assert observation["matched"] is matched
+    assert observation["identity"]["sha256"]
+    assert "actual" not in observation
+    assert fallback.calls == []
+
+
+def test_text_adapter_is_strict_and_absence_aware(tmp_path):
+    _, world, _, _, fallback, routing = captured(tmp_path)
+    (world / "binary.txt").write_bytes(b"\xff")
+    obligation = Obligation(
+        "c1", "the required literal text exists", BASIS_WORLD,
+        refutable_by_absence=True)
+
+    invalid_utf8 = routing.discharge(
+        ROW, obligation,
+        method("document.text", {
+            "address": "/app/binary.txt", "predicate": "contains",
+            "expected": "required",
+        }, inputs=[subject("/app/binary.txt")]))
+    absent = routing.discharge(
+        ROW, obligation,
+        method("document.text", {
+            "address": "/app/missing.txt", "predicate": "contains",
+            "expected": "required",
+        }, inputs=[subject("/app/missing.txt")]))
+
+    assert invalid_utf8.outcome == OUTCOME_REFUTED
+    assert invalid_utf8.witness_kind == WITNESS_WORLD_STATE
+    assert absent.outcome == OUTCOME_REFUTED
+    assert absent.witness_kind == WITNESS_ABSENCE
+    assert fallback.calls == []
+
+
+@pytest.mark.parametrize("arguments", [
+    {"address": "/app/answer.txt", "predicate": "regex", "expected": ".*"},
+    {"address": "/app/answer.txt", "predicate": "contains", "expected": 1},
+    {"address": "/app/answer.txt", "predicate": "contains", "expected": ""},
+    {"address": "/app/answer.txt", "predicate": "contains",
+     "expected": "x" * 16_385},
+])
+def test_text_adapter_rejects_executable_or_unbounded_arguments(
+    tmp_path, arguments,
+):
+    _, world, _, _, fallback, routing = captured(tmp_path)
+    (world / "answer.txt").write_text("text")
+    result = routing.discharge(
+        ROW, Obligation("c1", "text check", BASIS_WORLD),
+        method("document.text", arguments,
+               inputs=[subject("/app/answer.txt")]))
+    assert result.instrument == "fallback"
+    assert len(fallback.calls) == 1
 
 
 def test_live_world_adapter_reads_the_original_absolute_address(tmp_path):

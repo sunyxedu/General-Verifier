@@ -704,6 +704,115 @@ class JsonValueAdapter(MethodAdapter):
             WITNESS_WORLD_STATE, observation, (identity,))
 
 
+class TextValueAdapter(MethodAdapter):
+    """Apply one exact, bounded literal predicate to a UTF-8 document.
+
+    This deliberately does not expose regular expressions, normalization, or
+    executable selectors. The Oracle still has to justify that the chosen
+    literal predicate settles the obligation, and the independent Judger
+    still audits that semantic bridge.
+    """
+
+    name = "document.text"
+    basis = BASIS_WORLD
+    summary = (
+        "Decode one bounded regular world file as strict UTF-8 and apply one "
+        "literal predicate: equals, contains, starts_with, or ends_with. "
+        "No normalization, regular expression, or command execution occurs."
+    )
+    arguments = {
+        "address": "string",
+        "predicate": "equals|contains|starts_with|ends_with",
+        "expected": f"literal string of at most {MAX_RETAINED_VALUE_CHARS} characters",
+    }
+    max_bytes = 8 * 1024 * 1024
+    predicates = frozenset(("equals", "contains", "starts_with", "ends_with"))
+
+    def execute(self, invocation, obligation, context):
+        self.exact_arguments(
+            invocation.arguments, ("address", "predicate", "expected"))
+        address = invocation.arguments["address"]
+        predicate = invocation.arguments["predicate"]
+        expected = invocation.arguments["expected"]
+        if (not isinstance(address, str)
+                or predicate not in self.predicates
+                or not isinstance(expected, str)
+                or (predicate != "equals" and not expected)
+                or len(expected) > MAX_RETAINED_VALUE_CHARS):
+            raise AdapterNotApplicable("invalid document.text arguments")
+        try:
+            expected.encode("utf-8", errors="strict")
+        except UnicodeEncodeError as error:
+            raise AdapterNotApplicable(
+                "document.text expected value is not valid UTF-8 text") from error
+        self.require_subject(invocation, address, WORLD_FILE_PROVENANCES)
+        resolved = context.resolve(address)
+        try:
+            data, identity = _read_bounded_file(resolved, self.max_bytes)
+        except AdapterNotApplicable:
+            if not os.path.lexists(resolved.host_path):
+                observation = {"address": address, "exists": False,
+                               "world_mode": resolved.mode}
+                if obligation.refutable_by_absence:
+                    return AdapterExecution(
+                        OUTCOME_REFUTED,
+                        {"reason": "required text artifact is absent",
+                         "address": address},
+                        WITNESS_ABSENCE, observation, ())
+                raise AdapterNotApplicable(
+                    "absence cannot settle this obligation; the agent "
+                    "executor must interpret the missing document")
+            raise
+        try:
+            actual = data.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as error:
+            observation = {
+                "address": address, "identity": identity,
+                "encoding": "utf-8", "decode_error": str(error),
+            }
+            return AdapterExecution(
+                OUTCOME_REFUTED,
+                {"reason": "world artifact is not strict UTF-8 text",
+                 "address": address, "error": str(error)},
+                WITNESS_WORLD_STATE, observation, (identity,))
+
+        if predicate == "equals":
+            matched = actual == expected
+            first_match = 0 if matched else None
+        elif predicate == "contains":
+            first_match = actual.find(expected)
+            matched = first_match >= 0
+            if not matched:
+                first_match = None
+        elif predicate == "starts_with":
+            matched = actual.startswith(expected)
+            first_match = 0 if matched else None
+        else:
+            matched = actual.endswith(expected)
+            first_match = len(actual) - len(expected) if matched else None
+
+        observation = {
+            "address": address,
+            "identity": identity,
+            "encoding": "utf-8",
+            "predicate": predicate,
+            "expected": expected,
+            "text_characters": len(actual),
+            "matched": matched,
+            "first_match_character": first_match,
+        }
+        if matched:
+            return AdapterExecution(
+                OUTCOME_HOLDS, None, WITNESS_NONE, observation, (identity,))
+        return AdapterExecution(
+            OUTCOME_REFUTED,
+            {"reason": "UTF-8 text literal predicate did not match",
+             "address": address, "predicate": predicate,
+             "expected": expected, "actual_sha256": identity["sha256"],
+             "actual_characters": len(actual)},
+            WITNESS_WORLD_STATE, observation, (identity,))
+
+
 def _contains(actual: Any, expected: Any, path: str = "$.payload") \
         -> Sequence[Dict[str, Any]]:
     """Return exact subset mismatches; an empty list means containment."""
@@ -2337,6 +2446,7 @@ def default_adapter_registry(
         FileExistsAdapter(),
         FileSha256Adapter(),
         JsonValueAdapter(),
+        TextValueAdapter(),
         LedgerEventAdapter(),
         LedgerToolCallStringAdapter(),
         LedgerToolCallStringAdapterV2(),
