@@ -1145,8 +1145,10 @@ def _semantic_evidence_projection(state: Path, certificate: dict) -> dict:
         "input_tree_seal": inputs["seal"],
         "verdict": certificate.get("verdict"),
         "verdict_strength": certificate.get("verdict_strength"),
+        # Settle truth only for the verifier's three explicit terminal
+        # verdicts. Missing, future, or malformed values fail closed.
         "truth_eligible": certificate.get("verdict")
-                          not in {"partial", "unverified"},
+                          in {"verified", "supported", "refuted"},
         "obligations": obligations,
     }
     return {"content_sha256": _content_digest(document), "document": document}

@@ -592,6 +592,21 @@ def test_unverified_no_method_is_a_complete_fail_closed_result(
     assert semantic["document"]["truth_eligible"] is False
 
 
+@pytest.mark.parametrize(
+    ("verdict", "eligible"),
+    [(None, False), ("future-verdict", False), ("partial", False),
+     ("unverified", False), ("verified", True), ("supported", True),
+     ("refuted", True)],
+)
+def test_semantic_truth_eligibility_is_an_explicit_allowlist(
+        verdict, eligible, tmp_path, monkeypatch):
+    _output, state_path, cert, _protocol = _audit_files(
+        tmp_path, monkeypatch, treatment=False, final_adapter=False)
+    cert["verdict"] = verdict
+    semantic = worker._semantic_evidence_projection(state_path, cert)
+    assert semantic["document"]["truth_eligible"] is eligible
+
+
 def test_semantic_evidence_is_content_addressed_and_path_independent(
         tmp_path, monkeypatch):
     monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
