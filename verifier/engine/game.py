@@ -77,6 +77,7 @@ from ..core.model import (
 from ..llm.schema import RoleError
 from .method_cache import AcceptedMethod, build_method_cache_key
 from .judger_prefetch import build_judger_evidence_packet
+from .typed_judger_packet import build_typed_adapter_judger_packet
 from ..execution.config import (
     APPEND_ONLY_DELTA_PROTOCOL,
     append_only_deltas_enabled,
@@ -128,7 +129,10 @@ class BindingGame:
         live_world: bool = True,
         judger_error_retries: int = 1,
         method_cache=None,
+        typed_adapter_judger_packet: bool = False,
     ):
+        if type(typed_adapter_judger_packet) is not bool:
+            raise ValueError("typed_adapter_judger_packet must be a bool")
         self.backend = backend
         self.artifacts = artifacts
         self.log = log
@@ -155,6 +159,9 @@ class BindingGame:
         # cross-candidate sharing.  The shipped online/offline kernel injects
         # the process-local cache explicitly.
         self.method_cache = method_cache
+        # Default-off transport experiment. It keeps the same fresh Judger
+        # seat and schema, but cannot share accepted methods while enabled.
+        self.typed_adapter_judger_packet = typed_adapter_judger_packet
 
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
@@ -338,7 +345,8 @@ class BindingGame:
         # This transport protocol is deliberately fresh-review-only until its
         # semantic/result gates have passed.  It may reduce inspection turns;
         # it must not also acquire authority to skip either signer.
-        if getattr(self.backend, "judger_prefetch", False) is True:
+        if (getattr(self.backend, "judger_prefetch", False) is True
+                or self.typed_adapter_judger_packet):
             return None
         state = os.path.dirname(os.path.abspath(self.log.path))
         catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
@@ -1299,6 +1307,30 @@ class BindingGame:
                 method.get("basis", ""),
                 result.artifact,
             )
+        typed_packet = None
+        if self.typed_adapter_judger_packet:
+            # Codex attaches captured images independently of prompt text.
+            # A text packet may not stand in for those raw inputs, so probe
+            # the same deterministic selector the backend will use and stay
+            # on the original path whenever an image is present or the probe
+            # itself cannot be established.
+            captured_images_present = False
+            image_probe = getattr(self.backend, "_captured_images", None)
+            if callable(image_probe):
+                try:
+                    captured_images_present = bool(
+                        image_probe("judger", variables))
+                except Exception:
+                    captured_images_present = True
+            typed_packet = build_typed_adapter_judger_packet(
+                self.discharger,
+                self.artifacts,
+                obligation,
+                method,
+                result,
+                degradation,
+                captured_images_present=captured_images_present,
+            )
         total_calls = self.judger_error_retries + 1
         for call_no in range(1, total_calls + 1):
             try:
@@ -1306,6 +1338,10 @@ class BindingGame:
                 if packet is not None and call_no == 1:
                     call_variables = dict(variables)
                     call_variables["_judger_evidence_packet"] = packet
+                if typed_packet is not None and call_no == 1:
+                    if call_variables is variables:
+                        call_variables = dict(variables)
+                    call_variables["_typed_adapter_judger_packet"] = typed_packet
                 with model_scope(
                         stage="judger", method_attempt=method_attempt,
                         redo=redo, judger_retry_index=call_no,
@@ -1316,6 +1352,10 @@ class BindingGame:
                             and not packet.revalidate()):
                         raise RoleError(
                             "judger evidence prefetch changed during audit")
+                    if (typed_packet is not None and call_no == 1
+                            and not typed_packet.revalidate()):
+                        raise RoleError(
+                            "typed-adapter Judger packet changed during audit")
                 break
             except RoleError as err:
                 will_retry = call_no < total_calls

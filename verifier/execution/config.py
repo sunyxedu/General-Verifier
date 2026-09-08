@@ -8,6 +8,7 @@ from typing import Mapping, Optional
 
 
 TYPED_ADAPTERS_ENV = "GV_TYPED_ADAPTERS"
+TYPED_JUDGER_PACKET_ENV = "GV_TYPED_JUDGER_PACKET"
 CONTRACT_CACHE_ENV = "GV_CONTRACT_CACHE"
 APPEND_ONLY_DELTAS_ENV = "GV_APPEND_ONLY_DELTAS"
 APPEND_ONLY_DELTA_PROTOCOL = "obligations-array-delta-v1"
@@ -126,3 +127,21 @@ def typed_adapters_enabled(
     if value == "0":
         return False
     raise ValueError(f"{TYPED_ADAPTERS_ENV} must be exactly 0 or 1")
+
+
+def typed_judger_packet_enabled(
+    environ: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Experimental typed-adapter evidence transport; strictly opt in.
+
+    This flag changes only how a fresh independent Judger receives an
+    already-produced typed-adapter receipt.  It never authorizes method
+    reuse, an adapter, or a verdict.  Keep the default off until the
+    restricted Judger transport and no-loss evaluation are complete.
+    """
+    values = os.environ if environ is None else environ
+    value = values.get(TYPED_JUDGER_PACKET_ENV, "0")
+    if value not in ("0", "1"):
+        raise ValueError(
+            f"{TYPED_JUDGER_PACKET_ENV} must be exactly 0 or 1")
+    return value == "1"

@@ -269,7 +269,11 @@ def _default_kernel(sc: Service, model, backend=None,
     from .llm.agents import (
         ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
     )
-    from .execution.config import typed_adapters_enabled, contract_cache_enabled
+    from .execution.config import (
+        contract_cache_enabled,
+        typed_adapters_enabled,
+        typed_judger_packet_enabled,
+    )
     from .execution.discharge import AgentDischarger
     from .engine.game import BindingGame
 
@@ -307,7 +311,11 @@ def _default_kernel(sc: Service, model, backend=None,
         live_world=sc.live_world,
         store=sc.store)   # evidence-workspace index over the claim graph
     method_cache = None
-    if typed_adapters_enabled():
+    typed_adapters = typed_adapters_enabled()
+    typed_judger_packet = typed_judger_packet_enabled()
+    if typed_judger_packet and not typed_adapters:
+        raise ValueError("typed-adapter Judger packet requires typed adapters")
+    if typed_adapters:
         from .execution.adapters import (
             AdapterRoutingDischarger, default_adapter_registry,
         )
@@ -321,7 +329,8 @@ def _default_kernel(sc: Service, model, backend=None,
         discharger = agent_discharger
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                          memory=sc.memory, live_world=sc.live_world,
-                         method_cache=method_cache)
+                         method_cache=method_cache,
+                         typed_adapter_judger_packet=typed_judger_packet)
     if parallel_obligations is None:
         parallel_obligations = getattr(sc, "parallel_obligations", None)
     if parallel_claims is None:

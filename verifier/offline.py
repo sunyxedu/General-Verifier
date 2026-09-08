@@ -366,8 +366,19 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         contract_cache_enabled,
         offline_runtime_read_roots,
         typed_adapters_enabled,
+        typed_judger_packet_enabled,
     )
     fields["typed_adapters"] = typed_adapters_enabled()
+    fields["typed_adapter_judger_packet"] = typed_judger_packet_enabled()
+    if fields["typed_adapter_judger_packet"] and not fields["typed_adapters"]:
+        raise ValueError(
+            "typed-adapter Judger packet requires typed adapters")
+    if fields["typed_adapter_judger_packet"]:
+        from .engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
+        fields["typed_adapter_judger_packet_protocol"] = (
+            TYPED_JUDGER_PACKET_PROTOCOL)
+    else:
+        fields["typed_adapter_judger_packet_protocol"] = None
     fields["contract_cache"] = contract_cache_enabled()
     fields["append_only_deltas"] = append_only_deltas_enabled()
     fields["append_only_delta_protocol"] = (
