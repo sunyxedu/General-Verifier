@@ -791,7 +791,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           parallel_claims: Optional[int] = None,
           shared_dir: Optional[str] = None,
           compact_inspection: bool = False,
-          judger_prefetch: bool = False) -> Dict[str, Any]:
+          judger_prefetch: bool = False,
+          restricted_judger_cwd: Optional[str] = None) -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -840,6 +841,13 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                         service_tier=service_tier,
                         compact_inspection=compact_inspection,
                         judger_prefetch=judger_prefetch)
+    if restricted_judger_cwd is not None and (
+            seats != "codex"
+            or cfg["typed_adapter_judger_packet"] is not True
+            or kernel_factory is not None):
+        raise ValueError(
+            "restricted_judger_cwd requires the built-in typed Codex "
+            "Judger pipeline")
     critic_rounds = cfg["critic_rounds"]
     fingerprint = pipeline_fingerprint()
     extract_rounds = 0
@@ -870,12 +878,23 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                                    compact_inspection=cfg["compact_inspection"],
                                    judger_prefetch=cfg["judger_prefetch"],
                                    offline_toolchain_dir=toolchain_dir,
-                                   offline_shared_cache_dir=cache_dir)
+                                   offline_shared_cache_dir=cache_dir,
+                                   restricted_judger_cwd=restricted_judger_cwd)
         elif (isinstance(backend, CodexBackend)
               and backend.service_tier != cfg["service_tier"]):
             raise ValueError(
                 "provided CodexBackend service_tier does not match the "
                 "offline scoring config")
+        expected_restricted_cwd = (
+            os.path.abspath(os.fspath(restricted_judger_cwd))
+            if restricted_judger_cwd is not None else None)
+        actual_restricted_cwd = (
+            backend._revalidate_restricted_judger_cwd()
+            if type(backend) is CodexBackend else None)
+        if actual_restricted_cwd != expected_restricted_cwd:
+            raise ValueError(
+                "provided backend does not carry the exact restricted "
+                "Judger cwd binding")
         if isinstance(backend, CodexBackend):
             backend.validate_offline_tool_scope(
                 state_dir, toolchain_dir, cache_dir)
@@ -926,7 +945,9 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                                          compact_inspection=cfg["compact_inspection"],
                                          judger_prefetch=cfg["judger_prefetch"],
                                          offline_toolchain_dir=toolchain_dir,
-                                         offline_shared_cache_dir=cache_dir),
+                                         offline_shared_cache_dir=cache_dir,
+                                         restricted_judger_cwd=(
+                                             restricted_judger_cwd)),
                     critic_rounds=critic_rounds,
                     parallel_obligations=parallel_obligations,
                     parallel_claims=parallel_claims)

@@ -45,7 +45,6 @@ _PLAN_KEYS = {
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ATTEMPT = re.compile(r"[0-9a-f]{32}\Z")
-_TYPED_SCRATCH = re.compile(r"gv-typed-judger-[a-z0-9_]{8}\Z")
 _ROLES = frozenset({
     "extract", "obligations", "critic", "oracles", "discharge", "judger",
 })
@@ -637,40 +636,8 @@ def _attempt_threads_agree(native, observed):
     return True
 
 
-def _accounting_execution_cwds(output: Path, state: Path, arm: str,
-                               profile: dict) -> dict:
-    """Bind analyzer cwd grants to the worker's fixed restricted transport."""
-    if type(profile) is not dict:
-        raise ValueError("transport profile is unavailable for cwd accounting")
-    state_path = str(state)
-    permitted = {state_path}
-    rows, _digest = _read_jsonl(output / "observer.jsonl")
-    for row in rows:
-        if row.get("record_type") != "codex_cli_attempt_finished":
-            continue
-        cwd = row.get("cwd")
-        if row.get("typed_judger_transport") is not True:
-            if cwd != state_path:
-                raise ValueError("ordinary attempt escaped the state cwd")
-            continue
-        path = Path(cwd) if isinstance(cwd, str) else None
-        if (arm != "treatment" or path is None or not path.is_absolute()
-                or os.path.realpath(cwd) != cwd
-                or path.parent != Path("/private/tmp")
-                or not _TYPED_SCRATCH.fullmatch(path.name)
-                or row.get("role") != "judger"
-                or row.get("runtime_instruction_identity")
-                != profile.get("restricted")
-                or row.get("typed_judger_protocol")
-                != profile.get("typed_protocol")
-                or not isinstance(row.get("typed_judger_packet_sha256"), str)
-                or not _HASH.fullmatch(row["typed_judger_packet_sha256"])):
-            raise ValueError("restricted attempt cwd is not operator-bound")
-        permitted.add(cwd)
-    return {state_path: (state_path, *sorted(permitted - {state_path}))}
-
-
-def _audit_attempts(output: Path, arm: str, profile: dict) -> dict:
+def _audit_attempts(output: Path, state: Path, arm: str,
+                    profile: dict) -> dict:
     observer, observer_sha = _read_jsonl(output / "observer.jsonl")
     roles, role_order, attempts = set(), [], []
     for row in observer:
@@ -748,9 +715,13 @@ def _audit_attempts(output: Path, arm: str, profile: dict) -> dict:
                   "runtime_instruction_identity", "typed_judger_transport",
                   "typed_judger_protocol", "typed_judger_packet_sha256",
                   *_COUNTERS)
+        expected_cwd = (
+            str(output / "typed-judger-scratch")
+            if row["typed_judger_transport"] else str(state))
         if any(type(row.get(key)) is not type(observed.get(key))
                or row.get(key) != observed.get(key) for key in fields) \
                 or not _attempt_threads_agree(row, observed) \
+                or observed.get("cwd") != expected_cwd \
                 or any(observed.get("command_" + key) != row.get(key)
                        for key in ("model", "effort", "service_tier")):
             raise ValueError("observer/native attempt accounting disagrees")
@@ -778,7 +749,13 @@ def run_worker(plan):
     if not hasattr(backend_module, "_run_codex_process"):
         raise ValueError("current source lacks the common observer seam")
     output.mkdir(parents=True, exist_ok=False)
+    output.chmod(0o700)
     state = output / "state"
+    restricted_judger_cwd = None
+    if plan["arm"] == "treatment":
+        scratch = output / "typed-judger-scratch"
+        os.mkdir(scratch, 0o500)
+        restricted_judger_cwd = str(scratch)
     worker_id = uuid.uuid4().hex
     started_unix, started_mono = time.time_ns(), time.monotonic_ns()
     context = {str(state): {"arm": plan["arm"], "worker_id": worker_id,
@@ -801,7 +778,8 @@ def run_worker(plan):
         _clone(offline, inputs, state, plan["input_seal"])
         backend = backend_module.CodexBackend(
             cwd=str(state), **RUNTIME, compact_inspection=False,
-            judger_prefetch=plan["arm"] == "treatment")
+            judger_prefetch=plan["arm"] == "treatment",
+            restricted_judger_cwd=restricted_judger_cwd)
         transport = _transport_profile(modules, backend, plan["arm"])
         binding = policy.OfflinePolicyBinding(
             state_dir=str(state),
@@ -819,12 +797,13 @@ def run_worker(plan):
                         str(state), **RUNTIME, seats="codex", max_rounds=3,
                         parallel_claims=4, parallel_obligations=4,
                         shared_dir=None, compact_inspection=False,
-                        judger_prefetch=plan["arm"] == "treatment")
+                        judger_prefetch=plan["arm"] == "treatment",
+                        restricted_judger_cwd=restricted_judger_cwd)
         certificate = _certificate(state, features)
         architecture = _audit_architecture(
             state, certificate["certificate"], certificate["artifact"])
         attempt_audit = _audit_attempts(
-            output, plan["arm"], transport)
+            output, state, plan["arm"], transport)
         observed_roles = set(attempt_audit["roles_observed"])
         if (any("judger_seq" in row for row in architecture["lineages"])
                 and "judger" not in observed_roles) \
@@ -843,8 +822,10 @@ def run_worker(plan):
                 accounting = analyzer.analyze_file(
                     output / "observer.jsonl", context_by_cwd=context,
                     **RUNTIME, session_summary=observation.summary(),
-                    execution_cwds_by_state=_accounting_execution_cwds(
-                        output, state, plan["arm"], transport))
+                    execution_cwds_by_state={str(state): (
+                        (str(state), restricted_judger_cwd)
+                        if restricted_judger_cwd is not None
+                        else (str(state),))})
                 if accounting.get("accounting_complete") is not True:
                     failures.append("AccountingIncomplete")
             if (offline.verify_immutable_input_anchor(str(inputs))

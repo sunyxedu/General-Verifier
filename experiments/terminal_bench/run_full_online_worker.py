@@ -44,7 +44,6 @@ _PLAN_KEYS = {
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ATTEMPT = re.compile(r"[0-9a-f]{32}\Z")
-_TYPED_SCRATCH = re.compile(r"gv-typed-judger-[a-z0-9_]{8}\Z")
 _TASK_CAP = 1024 * 1024
 _INPUT_FILE_CAP = 32 * 1024 * 1024
 _INPUT_TOTAL_CAP = 128 * 1024 * 1024
@@ -525,37 +524,6 @@ def _read_jsonl_identity(path: Path, cap=_EVENT_CAP) -> tuple[list[dict], str]:
     if not rows or any(type(row) is not dict for row in rows):
         raise ValueError("audit ledger must contain objects")
     return rows, _sha_bytes(raw)
-
-
-def _accounting_execution_cwds(output: Path, state: Path, arm: str,
-                               profile: dict) -> dict:
-    """Bind analyzer cwd grants to the worker's fixed restricted transport."""
-    if type(profile) is not dict:
-        raise ValueError("transport profile is unavailable for cwd accounting")
-    state_path = str(state)
-    permitted = {state_path}
-    for row in _read_jsonl(output / "observer.jsonl"):
-        if row.get("record_type") != "codex_cli_attempt_finished":
-            continue
-        cwd = row.get("cwd")
-        if row.get("typed_judger_transport") is not True:
-            if cwd != state_path:
-                raise ValueError("ordinary attempt escaped the state cwd")
-            continue
-        path = Path(cwd) if isinstance(cwd, str) else None
-        if (arm != "treatment" or path is None or not path.is_absolute()
-                or os.path.realpath(cwd) != cwd
-                or path.parent != Path("/private/tmp")
-                or not _TYPED_SCRATCH.fullmatch(path.name)
-                or row.get("role") != "judger"
-                or row.get("runtime_instruction_identity")
-                != profile.get("restricted_runtime_instruction_identity")
-                or row.get("typed_judger_protocol") != profile.get("protocol")
-                or not isinstance(row.get("typed_judger_packet_sha256"), str)
-                or not _HASH.fullmatch(row["typed_judger_packet_sha256"])):
-            raise ValueError("restricted attempt cwd is not operator-bound")
-        permitted.add(cwd)
-    return {state_path: (state_path, *sorted(permitted - {state_path}))}
 
 
 def _artifact(state: Path, digest: str) -> tuple[dict, str]:
@@ -1824,6 +1792,11 @@ def _audit_execution(output: Path, state: Path, arm: str,
                     "observer and native attempt thread identities disagree")
         if any(native.get(key) != observed.get(key) for key in profile_fields):
             raise ValueError("observer and native attempt profiles disagree")
+        expected_cwd = (
+            str(output / "typed-judger-scratch")
+            if native["typed_judger_transport"] else str(state))
+        if observed.get("cwd") != expected_cwd:
+            raise ValueError("observer and native execution cwd disagree")
         if any(observed.get("command_" + key) != native.get(key)
                for key in ("model", "effort", "service_tier")):
             raise ValueError("native attempt disagrees with actual CLI profile")
@@ -1900,7 +1873,13 @@ def run_worker(plan):
         raise ValueError("source lacks the required observer seam")
 
     output.mkdir(parents=True, exist_ok=False)
+    output.chmod(0o700)
     state = output / "state"
+    restricted_judger_cwd = None
+    if plan["arm"] == "treatment":
+        scratch = output / "typed-judger-scratch"
+        os.mkdir(scratch, 0o500)
+        restricted_judger_cwd = str(scratch)
     worker_id = uuid.uuid4().hex
     started_unix, started_mono = time.time_ns(), time.monotonic_ns()
     context = {str(state): {"arm": plan["arm"], "worker_id": worker_id,
@@ -1930,6 +1909,7 @@ def run_worker(plan):
         backend = backend_module.CodexBackend(
             cwd=str(state), **RUNTIME, compact_inspection=False,
             judger_prefetch=plan["arm"] == "treatment",
+            restricted_judger_cwd=restricted_judger_cwd,
         )
         transport_profile = _typed_transport_profile(
             modules, backend, plan["arm"])
@@ -1975,8 +1955,10 @@ def run_worker(plan):
                 accounting = analyzer.analyze_file(
                     output / "observer.jsonl", context_by_cwd=context,
                     **RUNTIME, session_summary=observation.summary(),
-                    execution_cwds_by_state=_accounting_execution_cwds(
-                        output, state, plan["arm"], transport_profile))
+                    execution_cwds_by_state={str(state): (
+                        (str(state), restricted_judger_cwd)
+                        if restricted_judger_cwd is not None
+                        else (str(state),))})
                 if accounting.get("accounting_complete") is not True:
                     failures.append("AccountingIncomplete")
             post_inputs = input_snapshot(state, runtime_state=True)

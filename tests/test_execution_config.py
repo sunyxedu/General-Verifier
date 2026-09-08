@@ -9,6 +9,7 @@ from verifier.execution.config import (
     typed_judger_packet_enabled,
 )
 from verifier.execution.discharge import AgentDischarger
+from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.schema import FixtureBackend
 from verifier.mcp_server import Service, _default_kernel
 from verifier import offline
@@ -95,3 +96,62 @@ def test_packet_mode_is_stamped_and_cannot_run_without_typed_adapters(
     with pytest.raises(ValueError, match="requires typed adapters"):
         _default_kernel(
             service, model=None, backend=FixtureBackend({}), critic_rounds=0)
+
+
+def test_restricted_judger_cwd_cannot_be_silently_ignored(
+        tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o500)
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "0")
+    monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "0")
+
+    with pytest.raises(ValueError, match="requires the built-in typed Codex"):
+        offline.score(
+            str(tmp_path / "state"), seats="codex",
+            restricted_judger_cwd=str(scratch))
+
+
+def test_restricted_judger_cwd_rejects_custom_kernel_factory(
+        tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o500)
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
+    monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "1")
+
+    with pytest.raises(ValueError, match="built-in typed Codex"):
+        offline.score(
+            str(tmp_path / "state"), seats="codex",
+            restricted_judger_cwd=str(scratch),
+            kernel_factory=lambda _service: object())
+
+
+def test_restricted_judger_cwd_rejects_unbound_injected_backend(
+        tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o500)
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
+    monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "1")
+    backend = CodexBackend(cwd=str(tmp_path))
+
+    with pytest.raises(ValueError, match="exact restricted Judger cwd"):
+        offline.score(
+            str(tmp_path / "state"), seats="codex", backend=backend,
+            judger_prefetch=False,
+            restricted_judger_cwd=str(scratch))
+
+
+def test_injected_backend_cannot_hide_restricted_judger_cwd(
+        tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o500)
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
+    monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "1")
+    backend = CodexBackend(
+        cwd=str(state), restricted_judger_cwd=str(scratch))
+
+    with pytest.raises(ValueError, match="exact restricted Judger cwd"):
+        offline.score(
+            str(state), seats="codex", backend=backend,
+            judger_prefetch=False)

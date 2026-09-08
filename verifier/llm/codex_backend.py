@@ -32,6 +32,7 @@ are comparable to each other only within a backend.
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import os
 import posixpath
@@ -44,6 +45,7 @@ import threading
 import sys
 import time
 import uuid
+import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -247,6 +249,31 @@ class _AttemptUsage:
     error: Optional[str]
 
 
+@dataclass(frozen=True)
+class _PrivateEmptyDirectory:
+    path: str
+    descriptor: int
+    device: int
+    inode: int
+    mode: int
+    uid: int
+    gid: int
+    parent_device: int
+    parent_inode: int
+    parent_mode: int
+    parent_uid: int
+    parent_gid: int
+
+
+class _BoundExecutionDirectory(str):
+    """Display as the audited path while launching through its bound fd."""
+
+    def __new__(cls, path: str, descriptor: int):
+        value = str.__new__(cls, path)
+        value.descriptor = descriptor
+        return value
+
+
 @contextmanager
 def codex_usage_ledger(
     path: str,
@@ -399,6 +426,10 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
 def _run_codex_process(cmd, *, cwd, stdin, timeout):
     """Run one CLI attempt and clean its dedicated POSIX process group."""
+    bound_cwd = (cwd if isinstance(cwd, _BoundExecutionDirectory) else None)
+    if bound_cwd is not None and os.name != "posix":
+        raise OSError(
+            errno.ENOTSUP, "fd-bound Codex cwd requires a POSIX host")
     run_kwargs = {
         "cwd": cwd,
         "stdin": stdin,
@@ -409,10 +440,26 @@ def _run_codex_process(cmd, *, cwd, stdin, timeout):
     if os.name != "posix" or not hasattr(os, "killpg"):
         return subprocess.run(cmd, **run_kwargs)
 
+    launch_cmd = cmd
+    launch_cwd = cwd
+    launch_kwargs = {}
+    if bound_cwd is not None:
+        # Popen's cwd parameter resolves a pathname after our policy checks.
+        # The tiny isolated launcher instead enters the already-open directory
+        # and immediately replaces itself with Codex.  Closing the inherited
+        # descriptor before exec prevents it becoming an ambient capability.
+        launch_cmd = [
+            sys.executable, "-I", "-c",
+            "import os,sys;f=int(sys.argv[1]);os.fchdir(f);os.close(f);"
+            "os.execvp(sys.argv[2],sys.argv[2:])",
+            str(bound_cwd.descriptor), *cmd,
+        ]
+        launch_cwd = None
+        launch_kwargs["pass_fds"] = (bound_cwd.descriptor,)
     proc = subprocess.Popen(
-        cmd, cwd=cwd, stdin=stdin,
+        launch_cmd, cwd=launch_cwd, stdin=stdin,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, start_new_session=True,
+        text=True, start_new_session=True, **launch_kwargs,
     )
     try:
         try:
@@ -1336,6 +1383,76 @@ def _canonical_policy_path(value: Any, label: str) -> str:
     return path
 
 
+def _bind_private_empty_directory(value: Any,
+                                  label: str) -> _PrivateEmptyDirectory:
+    path = _canonical_policy_path(value, label)
+    parent_path = os.path.dirname(path)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) \
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = None
+    try:
+        descriptor = os.open(path, flags)
+        observed = os.fstat(descriptor)
+        entries = tuple(os.listdir(descriptor))
+        named = os.lstat(path)
+        parent = os.lstat(parent_path)
+    except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise RoleError(f"{label} is unavailable: {path}") from error
+    named_identity = (named.st_dev, named.st_ino, named.st_mode,
+                      named.st_uid, named.st_gid)
+    observed_identity = (observed.st_dev, observed.st_ino, observed.st_mode,
+                         observed.st_uid, observed.st_gid)
+    if (not stat.S_ISDIR(observed.st_mode)
+            or observed_identity != named_identity
+            or observed.st_uid != os.geteuid()
+            or stat.S_IMODE(observed.st_mode) != 0o500
+            or entries
+            or not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.geteuid()
+            or stat.S_IMODE(parent.st_mode) != 0o700):
+        os.close(descriptor)
+        raise RoleError(
+            f"{label} must be an empty operator-bound 0500 directory "
+            f"under an operator-owned 0700 parent: {path}")
+    return _PrivateEmptyDirectory(
+        path, descriptor, observed.st_dev, observed.st_ino, observed.st_mode,
+        observed.st_uid, observed.st_gid, parent.st_dev, parent.st_ino,
+        parent.st_mode, parent.st_uid, parent.st_gid)
+
+
+def _revalidate_private_empty_directory(
+        binding: _PrivateEmptyDirectory,
+        label: str) -> str:
+    try:
+        observed = os.fstat(binding.descriptor)
+        named = os.lstat(binding.path)
+        entries = tuple(os.listdir(binding.descriptor))
+        parent = os.lstat(os.path.dirname(binding.path))
+    except OSError as error:
+        raise RoleError(f"{label} is unavailable: {binding.path}") from error
+    identity = (
+        observed.st_dev, observed.st_ino, observed.st_mode,
+        observed.st_uid, observed.st_gid,
+        parent.st_dev, parent.st_ino, parent.st_mode,
+        parent.st_uid, parent.st_gid,
+    )
+    expected = (
+        binding.device, binding.inode, binding.mode, binding.uid, binding.gid,
+        binding.parent_device, binding.parent_inode, binding.parent_mode,
+        binding.parent_uid, binding.parent_gid,
+    )
+    named_identity = (named.st_dev, named.st_ino, named.st_mode,
+                      named.st_uid, named.st_gid)
+    if (identity != expected
+            or named_identity != identity[:5] or entries
+            or stat.S_IMODE(observed.st_mode) != 0o500
+            or stat.S_IMODE(parent.st_mode) != 0o700):
+        raise RoleError(f"{label} identity changed: {binding.path}")
+    return binding.path
+
+
 def extract_json(text: str) -> Any:
     """First JSON object in `text` (fences and prose tolerated)."""
     decoder = json.JSONDecoder()
@@ -1361,7 +1478,8 @@ class CodexBackend:
                  offline_toolchain_dir: Optional[str] = None,
                  offline_shared_cache_dir: Optional[str] = None,
                  compact_inspection: bool = False,
-                 judger_prefetch: bool = False):
+                 judger_prefetch: bool = False,
+                 restricted_judger_cwd: Optional[str] = None):
         if type(compact_inspection) is not bool:
             raise ValueError("compact_inspection must be a bool")
         if type(judger_prefetch) is not bool:
@@ -1411,12 +1529,52 @@ class CodexBackend:
                 offline_shared_cache_dir, "operator shared cache directory")
             if offline_shared_cache_dir else None
         )
+        self._restricted_judger_cwd_binding = (
+            _bind_private_empty_directory(
+                restricted_judger_cwd, "restricted Judger cwd")
+            if restricted_judger_cwd is not None else None
+        )
+        binding = self._restricted_judger_cwd_binding
+        self._restricted_judger_cwd_finalizer = (
+            weakref.finalize(self, os.close, binding.descriptor)
+            if binding is not None else None)
+        if binding is not None:
+            for candidate in (
+                    self.cwd, self.offline_toolchain_dir,
+                    self.offline_shared_cache_dir):
+                if candidate is None:
+                    continue
+                candidate_path = _canonical_policy_path(
+                    candidate, "restricted Judger disjoint root")
+                if (_path_is_within(candidate_path, binding.path)
+                        or _path_is_within(binding.path, candidate_path)):
+                    raise RoleError(
+                        "restricted Judger cwd must be disjoint from every "
+                        "candidate or shared writable root")
         # A discharge and its independent judger must inspect exactly the same
         # captured bytes, even if an executor later mutates its writable state.
         # Kernel construction shares one backend across both seats.
         self._image_cache: Dict[tuple[str, ...], tuple[_CapturedImage, ...]] = {}
         self._image_blobs: Dict[tuple[str, str], _CapturedImage] = {}
         self._image_blob_bytes = 0
+
+    @property
+    def restricted_judger_cwd(self) -> Optional[str]:
+        binding = self._restricted_judger_cwd_binding
+        return binding.path if binding is not None else None
+
+    def _revalidate_restricted_judger_cwd(self) -> Optional[str]:
+        binding = self._restricted_judger_cwd_binding
+        return (_revalidate_private_empty_directory(
+            binding, "restricted Judger cwd") if binding is not None else None)
+
+    def _restricted_judger_execution_cwd(
+            self) -> Optional[_BoundExecutionDirectory]:
+        binding = self._restricted_judger_cwd_binding
+        if binding is None:
+            return None
+        _revalidate_private_empty_directory(binding, "restricted Judger cwd")
+        return _BoundExecutionDirectory(binding.path, binding.descriptor)
 
     @property
     def runtime_instruction_identity(self) -> str:

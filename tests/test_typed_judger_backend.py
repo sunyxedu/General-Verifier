@@ -217,6 +217,116 @@ def test_context_preserves_seat_identity_and_uses_fresh_scratch(tmp_path):
         assert unchanged is child
 
 
+def test_operator_bound_scratch_is_exact_and_stable(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    scratch = tmp_path / "typed-judger-scratch"
+    scratch.mkdir(mode=0o500)
+    backend = CodexBackend(
+        cwd=str(state), restricted_judger_cwd=str(scratch))
+
+    with restricted_typed_judger_backend(backend) as first:
+        assert first._execution_cwd("judger", {}) == str(scratch)
+    with restricted_typed_judger_backend(backend) as second:
+        assert second._execution_cwd("judger", {}) == str(scratch)
+
+
+@pytest.mark.parametrize("defect", ["nonempty", "permissions", "symlink"])
+def test_operator_bound_scratch_rejects_untrusted_directory(
+        defect, tmp_path):
+    scratch = tmp_path / "typed-judger-scratch"
+    if defect == "symlink":
+        target = tmp_path / "target"
+        target.mkdir(mode=0o700)
+        scratch.symlink_to(target, target_is_directory=True)
+    else:
+        scratch.mkdir(mode=0o500)
+        if defect == "nonempty":
+            scratch.chmod(0o700)
+            (scratch / "unexpected").write_text("x")
+            scratch.chmod(0o500)
+        else:
+            scratch.chmod(0o755)
+
+    with pytest.raises(RoleError, match="restricted Judger cwd"):
+        CodexBackend(cwd=str(tmp_path), restricted_judger_cwd=str(scratch))
+
+
+def test_operator_bound_scratch_rejects_inode_replacement(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    scratch = tmp_path / "typed-judger-scratch"
+    scratch.mkdir(mode=0o500)
+    backend = CodexBackend(
+        cwd=str(state), restricted_judger_cwd=str(scratch))
+
+    with pytest.raises(TypedJudgerTransportError, match="scratch changed"):
+        with restricted_typed_judger_backend(backend):
+            scratch.rename(tmp_path / "old-scratch")
+            scratch.mkdir(mode=0o500)
+
+
+def test_operator_bound_scratch_rejects_post_call_file(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    scratch = tmp_path / "typed-judger-scratch"
+    scratch.mkdir(mode=0o500)
+    backend = CodexBackend(
+        cwd=str(state), restricted_judger_cwd=str(scratch))
+
+    with pytest.raises(TypedJudgerTransportError, match="scratch changed"):
+        with restricted_typed_judger_backend(backend):
+            scratch.chmod(0o700)
+            (scratch / "unexpected").write_text("x")
+            scratch.chmod(0o500)
+    scratch.chmod(0o700)
+
+
+def test_scratch_revalidation_does_not_mask_cancellation(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    scratch = tmp_path / "typed-judger-scratch"
+    scratch.mkdir(mode=0o500)
+    backend = CodexBackend(
+        cwd=str(state), restricted_judger_cwd=str(scratch))
+
+    with pytest.raises(KeyboardInterrupt):
+        with restricted_typed_judger_backend(backend):
+            scratch.chmod(0o700)
+            raise KeyboardInterrupt
+
+
+def test_bound_process_enters_open_directory_not_replacement(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    scratch = tmp_path / "typed-judger-scratch"
+    scratch.mkdir(mode=0o500)
+    backend = CodexBackend(
+        cwd=str(state), restricted_judger_cwd=str(scratch))
+    bound = backend._restricted_judger_execution_cwd()
+    original = tmp_path / "original-scratch"
+    scratch.rename(original)
+    scratch.mkdir(mode=0o500)
+
+    with open(os.devnull) as devnull:
+        completed = cb._run_codex_process(
+            ["/bin/pwd", "-P"], cwd=bound, stdin=devnull, timeout=5)
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == str(original)
+
+
+def test_bound_scratch_must_be_disjoint_from_candidate_root(tmp_path):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir(mode=0o700)
+    scratch = candidate / "typed-judger-scratch"
+    scratch.mkdir(mode=0o500)
+
+    with pytest.raises(RoleError, match="must be disjoint"):
+        CodexBackend(
+            cwd=str(candidate), restricted_judger_cwd=str(scratch))
+
+
 def test_restricted_call_appends_complete_inert_packet_only(tmp_path, monkeypatch):
     state, _target, *_middle, packet = _fixture(tmp_path)
     backend = CodexBackend(

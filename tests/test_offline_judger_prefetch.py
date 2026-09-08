@@ -99,6 +99,48 @@ def test_extractor_and_kernel_backends_receive_same_flag(
         seen[1].runtime_instruction_identity
 
 
+def test_extractor_and_kernel_receive_same_restricted_cwd(
+        tmp_path, monkeypatch):
+    from verifier import mcp_server
+
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "task.md").write_text("Report the synthetic answer.")
+    (state / "final.txt").write_text("synthetic answer")
+    (state / "hook_feed.jsonl").write_text("")
+    scratch = tmp_path / "typed-judger-scratch"
+    scratch.mkdir(mode=0o500)
+    seen = []
+
+    def complete(self, role_name, user, variables):
+        assert role_name == "extract"
+        seen.append(self)
+        return {"commits": [{"label": "F", "kind": "final",
+                             "text": "synthetic answer", "deps": [],
+                             "revises": ""}]}
+
+    class ReachedKernel(Exception):
+        pass
+
+    def kernel(sc, model, **kwargs):
+        seen.append(kwargs["backend"])
+        raise ReachedKernel()
+
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
+    monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "1")
+    monkeypatch.setattr(cb.CodexBackend, "complete", complete)
+    monkeypatch.setattr(mcp_server, "_default_kernel", kernel)
+    with pytest.raises(ReachedKernel):
+        offline.score(
+            str(state), seats="codex", model="gpt-5.6-luna",
+            effort="medium", service_tier="standard",
+            judger_prefetch=True,
+            restricted_judger_cwd=str(scratch))
+
+    assert len(seen) == 2 and seen[0] is not seen[1]
+    assert all(item.restricted_judger_cwd == str(scratch) for item in seen)
+
+
 def test_score_many_forwards_flag(tmp_path, monkeypatch):
     seen = []
 

@@ -118,11 +118,17 @@ def validate_typed_judger_stream(stdout: str) -> None:
 class _TypedJudgerCodexBackend(CodexBackend):
     """One-use Codex backend whose only evidence attachment is a typed packet."""
 
+    def _current_typed_judger_scratch(self):
+        source = getattr(self, "_typed_judger_source_backend", None)
+        if source is not None:
+            return source._restricted_judger_execution_cwd()
+        return self._typed_judger_scratch
+
     def _execution_policy_args(self, role_name, variables):
-        return typed_judger_policy_args(self._typed_judger_scratch)
+        return typed_judger_policy_args(self._current_typed_judger_scratch())
 
     def _execution_cwd(self, role_name, variables):
-        return self._typed_judger_scratch
+        return self._current_typed_judger_scratch()
 
     def _search_enabled(self, role_name):
         return False
@@ -186,11 +192,15 @@ class _TypedJudgerCodexBackend(CodexBackend):
         call_variables.pop("_judger_evidence_packet", None)
         call_variables.pop("_typed_adapter_judger_packet", None)
         packet_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
-        with _typed_judger_attempt_scope(
-                TYPED_JUDGER_PACKET_PROTOCOL, packet_sha256):
-            return super().complete(
-                role_name, prompt + _TYPED_JUDGER_NOTE + body,
-                call_variables)
+        try:
+            with _typed_judger_attempt_scope(
+                    TYPED_JUDGER_PACKET_PROTOCOL, packet_sha256):
+                return super().complete(
+                    role_name, prompt + _TYPED_JUDGER_NOTE + body,
+                    call_variables)
+        except OSError as error:
+            raise TypedJudgerTransportError(
+                "restricted typed Judger process failed") from error
 
 
 @contextmanager
@@ -209,36 +219,74 @@ def restricted_typed_judger_backend(
     if getattr(CodexBackend, "AUTHORITY_HOOKS_VERSION", None) != 1:
         raise TypedJudgerTransportError(
             "Codex no-tools hooks are unavailable")
-    try:
-        with tempfile.TemporaryDirectory(prefix="gv-typed-judger-") as scratch:
-            scratch = os.path.realpath(scratch)
-            model_spec = backend.model + "".join(
-                f";{name}={model}" for name, model in
-                sorted(backend.model_overrides.items()))
-            isolated = _TypedJudgerCodexBackend(
-                roles=backend.roles,
-                # Keep observer usage at the original verifier state while
-                # _execution_cwd places the new process in empty scratch.
-                cwd=backend.cwd,
-                model=model_spec,
-                effort=backend.effort,
-                timeout=backend.timeout,
-                service_tier=backend.service_tier,
-                compact_inspection=backend.compact_inspection,
-                judger_prefetch=False,
-            )
-            # Clone captured run instructions rather than mutable module
-            # defaults. The packet note is the sole new instruction channel.
-            isolated._artifact_address_note = backend._artifact_address_note
-            isolated._compact_inspection_note = backend._compact_inspection_note
-            isolated._judger_prefetch_note = ""
-            isolated._judger_prefetch_protocol = None
-            isolated._typed_judger_scratch = scratch
+    bound_scratch = backend.restricted_judger_cwd is not None
+
+    @contextmanager
+    def scratch_directory():
+        if not bound_scratch:
             try:
-                yield isolated
+                temporary = tempfile.TemporaryDirectory(
+                    prefix="gv-typed-judger-")
             except OSError as error:
                 raise TypedJudgerTransportError(
-                    "restricted typed Judger process failed") from error
-    except OSError as error:
-        raise TypedJudgerTransportError(
-            "restricted typed Judger scratch is unavailable") from error
+                    "restricted typed Judger scratch is unavailable") from error
+            active_error = False
+            try:
+                yield os.path.realpath(temporary.name)
+            except BaseException:
+                active_error = True
+                raise
+            finally:
+                try:
+                    temporary.cleanup()
+                except OSError as error:
+                    if not active_error:
+                        raise TypedJudgerTransportError(
+                            "restricted typed Judger scratch cleanup failed"
+                        ) from error
+            return
+        try:
+            scratch = backend._restricted_judger_execution_cwd()
+        except RoleError as error:
+            raise TypedJudgerTransportError(
+                "restricted typed Judger scratch is unavailable") from error
+        active_error = False
+        try:
+            yield scratch
+        except BaseException:
+            active_error = True
+            raise
+        finally:
+            try:
+                backend._revalidate_restricted_judger_cwd()
+            except RoleError as error:
+                if not active_error:
+                    raise TypedJudgerTransportError(
+                        "restricted typed Judger scratch changed") from error
+
+    with scratch_directory() as scratch:
+        model_spec = backend.model + "".join(
+            f";{name}={model}" for name, model in
+            sorted(backend.model_overrides.items()))
+        isolated = _TypedJudgerCodexBackend(
+            roles=backend.roles,
+            # Keep observer usage at the original verifier state while
+            # _execution_cwd places the new process in empty scratch.
+            cwd=backend.cwd,
+            model=model_spec,
+            effort=backend.effort,
+            timeout=backend.timeout,
+            service_tier=backend.service_tier,
+            compact_inspection=backend.compact_inspection,
+            judger_prefetch=False,
+        )
+        # Clone captured run instructions rather than mutable module defaults.
+        # The packet note is the sole new instruction channel.
+        isolated._artifact_address_note = backend._artifact_address_note
+        isolated._compact_inspection_note = backend._compact_inspection_note
+        isolated._judger_prefetch_note = ""
+        isolated._judger_prefetch_protocol = None
+        isolated._typed_judger_scratch = scratch
+        isolated._typed_judger_source_backend = (
+            backend if bound_scratch else None)
+        yield isolated
