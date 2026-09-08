@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
@@ -865,6 +867,7 @@ def _scan_ledger_tool_call_strings(
     payload_equals: Any,
     matches: Callable[[str], Optional[bool]],
     retain_limit: int,
+    event_source=None,
 ) -> Dict[str, Any]:
     """Scan one bounded ledger range for the string-query adapters.
 
@@ -922,8 +925,9 @@ def _scan_ledger_tool_call_strings(
     matching_items = []
     differing_items = []
 
-    for event, prefix_bytes in _bounded_ledger_prefix(
-            context.log, through_seq):
+    events = (event_source if event_source is not None
+              else _bounded_ledger_prefix(context.log, through_seq))
+    for event, prefix_bytes in events:
         event_digest = EventLog.event_digest(event)
         prefix_digests.append(event_digest)
         if event["seq"] <= after_seq:
@@ -1243,24 +1247,13 @@ class LedgerToolCallStringAdapterV2(LedgerToolCallStringAdapter):
             return len(value) > 0
         return bool(value.strip())
 
-    def execute(self, invocation, obligation, context):
-        self.exact_arguments(
-            invocation.arguments,
-            ("selector", "value_pointer", "through_seq", "predicate"),
-            ("after_seq", "expected", "tool_names", "payload_equals"),
-        )
-        arguments = invocation.arguments
-        selector = arguments["selector"]
-        pointer = _validate_ledger_pointer(
-            arguments["value_pointer"], "value_pointer")
-        through_seq = arguments["through_seq"]
-        after_seq = arguments.get("after_seq", 0)
-        tool_names = arguments.get("tool_names")
-        payload_equals = arguments.get("payload_equals", {})
-        predicate = arguments["predicate"]
-        expected_present = "expected" in arguments
-        expected = arguments.get("expected")
-
+    @staticmethod
+    def _validate_query(
+        selector: Any,
+        predicate: Any,
+        expected_present: bool,
+        expected: Any,
+    ) -> None:
         if selector not in {"first", "last", "any", "all"}:
             raise AdapterNotApplicable(
                 "invalid ledger.tool-call-string selector")
@@ -1278,19 +1271,18 @@ class LedgerToolCallStringAdapterV2(LedgerToolCallStringAdapter):
             raise AdapterNotApplicable(
                 "expected is permitted only for predicate=equals")
 
-        def predicate_matches(value: str) -> bool:
-            return self._matches(predicate, value, expected)
-        scan = _scan_ledger_tool_call_strings(
-            invocation,
-            context,
-            pointer=pointer,
-            through_seq=through_seq,
-            after_seq=after_seq,
-            tool_names=tool_names,
-            payload_equals=payload_equals,
-            matches=predicate_matches,
-            retain_limit=1,
-        )
+    def _execute_scan(
+        self,
+        obligation: Obligation,
+        scan: Mapping[str, Any],
+        *,
+        selector: str,
+        predicate: str,
+        expected_present: bool,
+        expected: Any,
+        scope: Optional[str] = None,
+    ) -> AdapterExecution:
+        """Apply the unchanged v2 predicate/selector algebra to one scan."""
         candidate_count = scan["candidate_count"]
         match_count = scan["match_count"]
         first_item = scan["first_item"]
@@ -1329,9 +1321,9 @@ class LedgerToolCallStringAdapterV2(LedgerToolCallStringAdapter):
         observation = {
             "predicate": predicate,
             "selector": selector,
-            "value_pointer": pointer,
-            "tool_names": tool_names,
-            "payload_equals": payload_equals,
+            "value_pointer": scan["pointer"],
+            "tool_names": scan["tool_names"],
+            "payload_equals": scan["payload_equals"],
             "expected_present": expected_present,
             "expected": _bounded_json(expected) if expected_present else None,
             "witness": {
@@ -1344,19 +1336,29 @@ class LedgerToolCallStringAdapterV2(LedgerToolCallStringAdapter):
             },
             "snapshot": snapshot,
         }
+        if scope is not None:
+            observation["scope"] = scope
 
         if candidate_count == 0:
             observation["matches"] = False
             if obligation.refutable_by_absence:
+                witness = {
+                    "reason": "no in-scope string record exists",
+                    "predicate": predicate,
+                    "selector": selector,
+                    "through_seq": scan["through_seq"],
+                }
+                if scope is not None:
+                    witness["scope"] = scope
                 return AdapterExecution(
-                    OUTCOME_REFUTED,
-                    {"reason": "no in-scope string record exists",
-                     "predicate": predicate, "selector": selector,
-                     "through_seq": through_seq},
-                    WITNESS_ABSENCE, observation, (snapshot,))
+                    OUTCOME_REFUTED, witness, WITNESS_ABSENCE,
+                    observation, (snapshot,))
             raise AdapterNotApplicable(
                 "absence cannot settle this obligation; the agent executor "
                 "must interpret the empty string selection")
+
+        def predicate_matches(value: str) -> bool:
+            return self._matches(predicate, value, expected)
 
         if selector == "first":
             matches = predicate_matches(first_item["value"])
@@ -1376,8 +1378,10 @@ class LedgerToolCallStringAdapterV2(LedgerToolCallStringAdapter):
                 witness = {
                     "reason": "no in-scope string satisfies the predicate",
                     "predicate": predicate,
-                    "through_seq": through_seq,
+                    "through_seq": scan["through_seq"],
                 }
+                if scope is not None:
+                    witness["scope"] = scope
                 if expected_present:
                     witness["expected"] = _bounded_json(expected)
                 return AdapterExecution(
@@ -1393,11 +1397,444 @@ class LedgerToolCallStringAdapterV2(LedgerToolCallStringAdapter):
             "selector": selector,
             "selected": retained,
         }
+        if scope is not None:
+            witness["scope"] = scope
         if expected_present:
             witness["expected"] = _bounded_json(expected)
         return AdapterExecution(
             OUTCOME_REFUTED, witness, WITNESS_RECORD_CONTRADICTION,
             observation, (snapshot,))
+
+    def execute(self, invocation, obligation, context):
+        self.exact_arguments(
+            invocation.arguments,
+            ("selector", "value_pointer", "through_seq", "predicate"),
+            ("after_seq", "expected", "tool_names", "payload_equals"),
+        )
+        arguments = invocation.arguments
+        selector = arguments["selector"]
+        pointer = _validate_ledger_pointer(
+            arguments["value_pointer"], "value_pointer")
+        through_seq = arguments["through_seq"]
+        after_seq = arguments.get("after_seq", 0)
+        tool_names = arguments.get("tool_names")
+        payload_equals = arguments.get("payload_equals", {})
+        predicate = arguments["predicate"]
+        expected_present = "expected" in arguments
+        expected = arguments.get("expected")
+
+        self._validate_query(
+            selector, predicate, expected_present, expected)
+
+        def predicate_matches(value: str) -> bool:
+            return self._matches(predicate, value, expected)
+        scan = _scan_ledger_tool_call_strings(
+            invocation,
+            context,
+            pointer=pointer,
+            through_seq=through_seq,
+            after_seq=after_seq,
+            tool_names=tool_names,
+            payload_equals=payload_equals,
+            matches=predicate_matches,
+            retain_limit=1,
+        )
+        return self._execute_scan(
+            obligation,
+            scan,
+            selector=selector,
+            predicate=predicate,
+            expected_present=expected_present,
+            expected=expected,
+        )
+
+
+def _finite_ledger_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number")
+    return parsed
+
+
+def _ledger_file_identity(info: os.stat_result) -> Tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_uid,
+        info.st_gid,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _open_ledger_parent(path: str) -> Tuple[int, str]:
+    """Open every parent component without following a symlink."""
+    if not os.path.isabs(path) or os.path.normpath(path) != path:
+        raise AdapterNotApplicable(
+            "observed-eof ledger path must be normalized and absolute")
+    name = os.path.basename(path)
+    if not name or name in {".", ".."}:
+        raise AdapterNotApplicable("observed-eof ledger name is invalid")
+    flags = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+             | getattr(os, "O_CLOEXEC", 0))
+    try:
+        descriptor = os.open(os.path.sep, flags)
+    except OSError as error:
+        raise AdapterNotApplicable(
+            f"cannot open the observed-eof filesystem root: {error}") from error
+    try:
+        parent = os.path.dirname(path)
+        for component in parent.split(os.path.sep):
+            if not component:
+                continue
+            if component in {".", ".."} or os.path.sep in component:
+                raise AdapterNotApplicable(
+                    "observed-eof ledger parent is invalid")
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except OSError as error:
+                raise AdapterNotApplicable(
+                    "cannot open an observed-eof ledger parent without "
+                    f"following links: {error}") from error
+            try:
+                if not stat.S_ISDIR(os.fstat(child).st_mode):
+                    raise AdapterNotApplicable(
+                        "observed-eof ledger parent is not a directory")
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(descriptor)
+            descriptor = child
+        return descriptor, name
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_stable_ledger_eof(log: EventLog) -> Dict[str, Any]:
+    """Read and validate one complete bounded ledger observation.
+
+    This establishes only the bytes present at the returned observation time.
+    It does not freeze an online ledger or claim that no later append occurs.
+    """
+    required_flags = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    if any(not hasattr(os, name) for name in required_flags):
+        raise AdapterNotApplicable(
+            "observed-eof requires directory, nofollow, and nonblocking support")
+    if (os.open not in getattr(os, "supports_dir_fd", ())
+            or os.stat not in getattr(os, "supports_dir_fd", ())
+            or os.stat not in getattr(os, "supports_follow_symlinks", ())):
+        raise AdapterNotApplicable(
+            "observed-eof requires relative nofollow stat support")
+    observation_started_at_unix_ns = time.time_ns()
+    observation_started_monotonic_ns = time.monotonic_ns()
+    raw_path = os.fspath(log.path)
+    if not isinstance(raw_path, str) or ".." in raw_path.split(os.path.sep):
+        raise AdapterNotApplicable(
+            "observed-eof ledger path must not contain '..' components")
+    path = os.path.abspath(raw_path)
+    parent_fd, name = _open_ledger_parent(path)
+    try:
+        expected = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as error:
+        os.close(parent_fd)
+        raise AdapterNotApplicable(
+            f"cannot inspect the observed-eof ledger: {error}") from error
+    if not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1:
+        os.close(parent_fd)
+        raise AdapterNotApplicable(
+            "observed-eof ledger must be a private regular file")
+    if expected.st_size > MAX_LEDGER_BYTES:
+        os.close(parent_fd)
+        raise AdapterNotApplicable(
+            f"observed-eof ledger exceeds {MAX_LEDGER_BYTES} bytes")
+
+    flags = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+             | getattr(os, "O_CLOEXEC", 0))
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as error:
+        os.close(parent_fd)
+        raise AdapterNotApplicable(
+            f"cannot open the observed-eof ledger: {error}") from error
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or _ledger_file_identity(before)
+                != _ledger_file_identity(expected)):
+            raise AdapterNotApplicable(
+                "observed-eof ledger changed before reading")
+        chunks = []
+        total = 0
+        while True:
+            try:
+                chunk = os.read(
+                    fd, min(1024 * 1024, MAX_LEDGER_BYTES + 1 - total))
+            except OSError as error:
+                raise AdapterNotApplicable(
+                    f"cannot read the observed-eof ledger: {error}") from error
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_LEDGER_BYTES:
+                raise AdapterNotApplicable(
+                    f"observed-eof ledger exceeds {MAX_LEDGER_BYTES} bytes")
+        raw = b"".join(chunks)
+        if raw and not raw.endswith(b"\n"):
+            raise AdapterNotApplicable(
+                "observed-eof ledger has an incomplete final line")
+
+        events = []
+        event_digests = []
+        bytes_read = 0
+        for raw_line in raw.splitlines(keepends=True):
+            bytes_read += len(raw_line)
+            if not raw_line.strip():
+                raise AdapterNotApplicable(
+                    "observed-eof ledger contains a blank JSONL record")
+            try:
+                event = json.loads(
+                    raw_line.decode("utf-8"),
+                    object_pairs_hook=_object_without_duplicates,
+                    parse_constant=_no_json_constants,
+                    parse_float=_finite_ledger_float,
+                )
+            except (UnicodeDecodeError, ValueError, json.JSONDecodeError,
+                    RecursionError, OverflowError) as error:
+                raise AdapterNotApplicable(
+                    f"observed-eof ledger is not strict UTF-8 JSONL: {error}"
+                ) from error
+            if not isinstance(event, dict):
+                raise AdapterNotApplicable(
+                    "observed-eof ledger event must be an object")
+            expected_seq = len(events) + 1
+            if expected_seq > MAX_LEDGER_EVENTS:
+                raise AdapterNotApplicable(
+                    f"observed-eof ledger exceeds {MAX_LEDGER_EVENTS} events")
+            seq = event.get("seq")
+            if (isinstance(seq, bool) or not isinstance(seq, int)
+                    or seq != expected_seq
+                    or not isinstance(event.get("type"), str)
+                    or "payload" not in event):
+                raise AdapterNotApplicable(
+                    f"observed-eof ledger has invalid event {expected_seq}")
+            events.append((event, bytes_read))
+            try:
+                event_digests.append(EventLog.event_digest(event))
+            except (TypeError, ValueError, RecursionError,
+                    OverflowError) as error:
+                raise AdapterNotApplicable(
+                    "observed-eof ledger event cannot be digested"
+                ) from error
+
+        after = os.fstat(fd)
+        try:
+            current = os.stat(
+                name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as error:
+            raise AdapterNotApplicable(
+                f"cannot revalidate the observed-eof ledger: {error}") from error
+        identity = _ledger_file_identity(before)
+        if (_ledger_file_identity(after) != identity
+                or _ledger_file_identity(current) != identity
+                or len(raw) != before.st_size):
+            raise AdapterNotApplicable(
+                "observed-eof ledger changed while it was read")
+
+        rebound_fd, rebound_name = _open_ledger_parent(path)
+        try:
+            rebound_parent = os.fstat(rebound_fd)
+            original_parent = os.fstat(parent_fd)
+            rebound_file = os.stat(
+                rebound_name, dir_fd=rebound_fd, follow_symlinks=False)
+        except OSError as error:
+            raise AdapterNotApplicable(
+                f"cannot rebind the observed-eof ledger path: {error}") from error
+        finally:
+            os.close(rebound_fd)
+        if ((rebound_parent.st_dev, rebound_parent.st_ino)
+                != (original_parent.st_dev, original_parent.st_ino)
+                or _ledger_file_identity(rebound_file) != identity):
+            raise AdapterNotApplicable(
+                "observed-eof ledger path changed while it was read")
+        observation_completed_monotonic_ns = time.monotonic_ns()
+        observation_completed_at_unix_ns = time.time_ns()
+    finally:
+        os.close(fd)
+        os.close(parent_fd)
+
+    return {
+        "events": tuple(events),
+        "raw_sha256": hashlib.sha256(raw).hexdigest(),
+        "events_digest": content_hash(event_digests),
+        "resolved_through_seq": len(events),
+        "event_count": len(events),
+        "byte_count": len(raw),
+        "observation_started_at_unix_ns": observation_started_at_unix_ns,
+        "observation_completed_at_unix_ns": observation_completed_at_unix_ns,
+        "observation_started_monotonic_ns": observation_started_monotonic_ns,
+        "observation_completed_monotonic_ns": (
+            observation_completed_monotonic_ns),
+        "monotonic_clock_scope": "process-local; not cross-process comparable",
+        "file_identity": {
+            "path": path,
+            "device": before.st_dev,
+            "inode": before.st_ino,
+            "mode": before.st_mode,
+            "links": before.st_nlink,
+            "uid": before.st_uid,
+            "gid": before.st_gid,
+            "bytes": before.st_size,
+            "mtime_ns": before.st_mtime_ns,
+            "ctime_ns": before.st_ctime_ns,
+        },
+    }
+
+
+class LedgerToolCallStringAdapterV3(LedgerToolCallStringAdapterV2):
+    """Evaluate a v2 predicate over a prefix or stable observed EOF."""
+
+    version = 3
+    accepted_method_reuse = False
+    summary = (
+        "Evaluate the v2 string predicates over either an explicit ledger "
+        "prefix or one complete, bounded, stable observed ledger file. An "
+        "observed EOF is only a point-in-time observation and never proves "
+        "future ledger closure; values are never parsed or executed."
+    )
+    arguments = {
+        "scope": "prefix|observed-eof",
+        "selector": (
+            "first|last|any|all over a non-empty selection of in-scope "
+            "string values; exists permits only any"
+        ),
+        "value_pointer": _LEDGER_PAYLOAD_POINTER_DESCRIPTION,
+        "through_seq": (
+            "required inclusive integer watermark for scope=prefix; "
+            "forbidden for scope=observed-eof"
+        ),
+        "after_seq": "optional exclusive lower watermark, default 0",
+        "tool_names": "optional non-empty list of exact tool-name strings",
+        "payload_equals": (
+            "optional object from RFC 6901 pointers rooted at event.payload "
+            "to exact JSON values"
+        ),
+        "predicate": (
+            "exists|equals|nonempty|nonblank; nonblank uses Unicode str.strip"
+        ),
+        "expected": "required exact string for equals; forbidden otherwise",
+    }
+
+    def catalog_entry(self) -> Dict[str, Any]:
+        entry = super().catalog_entry()
+        entry["input_contract"] = (
+            "declare ref=ledger:events, provenance=ledger, role=subject; "
+            "scope=prefix consumes only (after_seq, through_seq], while "
+            "scope=observed-eof consumes the complete stable file visible at "
+            "one observation time and does not prove future closure"
+        )
+        return entry
+
+    def execute(self, invocation, obligation, context):
+        self.exact_arguments(
+            invocation.arguments,
+            ("scope", "selector", "value_pointer", "predicate"),
+            ("through_seq", "after_seq", "expected", "tool_names",
+             "payload_equals"),
+        )
+        arguments = invocation.arguments
+        scope = arguments["scope"]
+        through_present = "through_seq" in arguments
+        if scope not in {"prefix", "observed-eof"}:
+            raise AdapterNotApplicable(
+                "invalid ledger.tool-call-string scope")
+        if scope == "prefix" and not through_present:
+            raise AdapterNotApplicable(
+                "scope=prefix requires through_seq")
+        if scope == "observed-eof" and through_present:
+            raise AdapterNotApplicable(
+                "scope=observed-eof forbids through_seq")
+
+        selector = arguments["selector"]
+        pointer = _validate_ledger_pointer(
+            arguments["value_pointer"], "value_pointer")
+        after_seq = arguments.get("after_seq", 0)
+        tool_names = arguments.get("tool_names")
+        payload_equals = arguments.get("payload_equals", {})
+        predicate = arguments["predicate"]
+        expected_present = "expected" in arguments
+        expected = arguments.get("expected")
+        self._validate_query(
+            selector, predicate, expected_present, expected)
+        self.require_subject(
+            invocation, "ledger:events", (PROVENANCE_LEDGER,))
+
+        def predicate_matches(value: str) -> bool:
+            return self._matches(predicate, value, expected)
+
+        if scope == "observed-eof":
+            eof = _read_stable_ledger_eof(context.log)
+            through_seq = eof["resolved_through_seq"]
+            event_source = eof["events"]
+        else:
+            eof = None
+            through_seq = arguments["through_seq"]
+            event_source = None
+        scan = _scan_ledger_tool_call_strings(
+            invocation,
+            context,
+            pointer=pointer,
+            through_seq=through_seq,
+            after_seq=after_seq,
+            tool_names=tool_names,
+            payload_equals=payload_equals,
+            matches=predicate_matches,
+            retain_limit=1,
+            event_source=event_source,
+        )
+        snapshot = scan["snapshot"]
+        snapshot["scope"] = scope
+        if eof is not None:
+            if (snapshot["prefix_event_count"] != eof["event_count"]
+                    or snapshot["prefix_bytes"] != eof["byte_count"]
+                    or snapshot["prefix_events_digest"]
+                    != eof["events_digest"]):
+                raise AdapterNotApplicable(
+                    "observed-eof scan does not cover the stable ledger")
+            snapshot["observed_eof"] = {
+                key: eof[key] for key in (
+                    "raw_sha256", "events_digest", "resolved_through_seq",
+                    "event_count", "byte_count",
+                    "observation_started_at_unix_ns",
+                    "observation_completed_at_unix_ns",
+                    "observation_started_monotonic_ns",
+                    "observation_completed_monotonic_ns",
+                    "monotonic_clock_scope", "file_identity",
+                )
+            }
+            snapshot["observed_eof"].update({
+                "complete_file_at_observation": True,
+                "proves_future_closure": False,
+                "scope_statement": (
+                    "complete stable ledger file at observation time only; "
+                    "later appends are outside this observation"
+                ),
+            })
+
+        return self._execute_scan(
+            obligation,
+            scan,
+            selector=selector,
+            predicate=predicate,
+            expected_present=expected_present,
+            expected=expected,
+            scope=scope,
+        )
 
 
 class BrowserHtmlAdapter(MethodAdapter):
@@ -1903,6 +2340,7 @@ def default_adapter_registry(
         LedgerEventAdapter(),
         LedgerToolCallStringAdapter(),
         LedgerToolCallStringAdapterV2(),
+        LedgerToolCallStringAdapterV3(),
     ]
     if browser_observer is not None:
         adapters.append(BrowserHtmlAdapter(browser_observer))

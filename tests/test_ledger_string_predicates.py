@@ -643,12 +643,12 @@ def test_v1_behavior_is_unchanged_and_v2_fields_are_not_v1_aliases(tmp_path):
     assert len(fallback.calls) == 1
 
 
-def test_default_catalog_registers_both_versions_without_method_reuse():
+def test_default_catalog_registers_all_versions_without_method_reuse():
     catalog = json.loads(default_adapter_registry().catalog())
     entries = [entry for entry in catalog
                if entry["name"] == "ledger.tool-call-string"]
 
-    assert {entry["version"] for entry in entries} == {1, 2}
+    assert {entry["version"] for entry in entries} == {1, 2, 3}
     assert all(entry["accepted_method_reuse"] is False for entry in entries)
     v2 = next(entry for entry in entries if entry["version"] == 2)
     assert set(v2["arguments"]) == {
