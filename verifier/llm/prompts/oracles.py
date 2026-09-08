@@ -244,4 +244,10 @@ ORACLES_TEMPLATE = (
     "only execution, never method sufficiency: omit all four fields unless "
     "the adapter performs the whole stated procedure. Never invent a name, "
     "version, argument, or input."
+    " If the catalog advertises fixed_input_binding, you may opt in with "
+    "adapter_input_binding=fixed-v1: leave its fixed slots out of "
+    "adapter_inputs (use [] if no other inputs); the verifier fills them "
+    "before execution and independent judgment. Keep all other sources "
+    "explicit. This never changes semantic arguments or repairs conflicting "
+    "declarations. Without this field, declare every input explicitly."
 )

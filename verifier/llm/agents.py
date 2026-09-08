@@ -420,6 +420,7 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
                 # agent executor rather than affecting the verdict.
                 "adapter?": str,
                 "adapter_version?": int,
+                "adapter_input_binding?": ("fixed-v1",),
                 "adapter_arguments?": str,
                 "adapter_inputs?": [{
                     "ref": str,

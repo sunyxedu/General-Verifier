@@ -64,6 +64,7 @@ from .instruments import ArtifactStore
 
 ADAPTER_SCHEMA = "gv-method-adapter-v1"
 EVIDENCE_SCHEMA = "gv-adapter-evidence-v1"
+FIXED_INPUT_BINDING = "fixed-v1"
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ADAPTER_FIELDS = (
@@ -131,12 +132,16 @@ class AdapterInvocation:
     version: int
     arguments: Dict[str, Any]
     inputs: Tuple[Dict[str, str], ...]
+    input_binding: Optional[str] = None
 
     @classmethod
     def from_method(cls, method: Mapping[str, Any]) \
             -> Optional["AdapterInvocation"]:
         present = [field in method for field in _ADAPTER_FIELDS]
-        if not any(present):
+        binding = method.get("adapter_input_binding")
+        if "adapter_input_binding" in method and binding != FIXED_INPUT_BINDING:
+            raise AdapterNotApplicable("unsupported adapter_input_binding")
+        if not any(present) and binding is None:
             return None
         if not all(present):
             missing = [field for field, seen in zip(_ADAPTER_FIELDS, present)
@@ -180,7 +185,7 @@ class AdapterInvocation:
                     f"adapter_inputs[{index}] has invalid role")
             inputs.append({key: item[key]
                            for key in ("ref", "provenance", "role")})
-        return cls(name, version, _strict_object(raw_arguments), tuple(inputs))
+        return cls(name, version, _strict_object(raw_arguments), tuple(inputs), binding)
 
     def public(self) -> Dict[str, Any]:
         return {
@@ -189,6 +194,8 @@ class AdapterInvocation:
             "version": self.version,
             "arguments": self.arguments,
             "inputs": list(self.inputs),
+            **({"input_binding": self.input_binding}
+               if self.input_binding is not None else {}),
         }
 
 
@@ -266,6 +273,46 @@ class AdapterContext:
                                view.mode, view.scheme)
 
 
+@dataclass(frozen=True)
+class FixedAdapterInput:
+    """A trusted instrument's source slot, never inferred from task text.
+
+    A slot is either literal or a reference prefix followed by one exact
+    positive-integer argument. It cannot interpolate paths or execute code.
+    """
+
+    ref: str
+    provenance: str
+    role: str = ROLE_SUBJECT
+    integer_argument: Optional[str] = None
+
+    def __post_init__(self):
+        if (not isinstance(self.ref, str) or not self.ref
+                or len(self.ref) > MAX_INPUT_REF_CHARS
+                or self.provenance not in PROVENANCES or self.role != ROLE_SUBJECT
+                or (self.integer_argument is not None and (
+                    not isinstance(self.integer_argument, str)
+                    or not self.integer_argument))):
+            raise ValueError("invalid verifier-owned fixed input descriptor")
+
+    def public(self):
+        return {"ref": self.ref, "provenance": self.provenance, "role": self.role,
+                **({"append_positive_integer_argument": self.integer_argument}
+                   if self.integer_argument is not None else {})}
+
+    def resolve(self, arguments):
+        ref = self.ref
+        if self.integer_argument is not None:
+            value = arguments.get(self.integer_argument)
+            if type(value) is not int or value < 1:
+                raise AdapterNotApplicable(
+                    f"fixed input requires positive integer {self.integer_argument}")
+            ref += str(value)
+        if len(ref) > MAX_INPUT_REF_CHARS:
+            raise AdapterNotApplicable("fixed input reference is too long")
+        return {"ref": ref, "provenance": self.provenance, "role": self.role}
+
+
 class MethodAdapter:
     """Base contract implemented by every certified adapter."""
 
@@ -277,6 +324,7 @@ class MethodAdapter:
     # New instruments opt in only after their whole execution contract is
     # reproducible from MethodIR and the current declared inputs.
     accepted_method_reuse = False
+    fixed_inputs: Tuple[FixedAdapterInput, ...] = ()
 
     @property
     def identity(self) -> str:
@@ -682,6 +730,8 @@ class LedgerEventAdapter(MethodAdapter):
         "event_seq": "positive integer", "event_type": "optional string",
         "payload_contains": "optional JSON object",
     }
+    fixed_inputs = (FixedAdapterInput(
+        "event:", PROVENANCE_LEDGER, integer_argument="event_seq"),)
 
     def execute(self, invocation, obligation, context):
         self.exact_arguments(invocation.arguments, ("event_seq",),
@@ -986,6 +1036,7 @@ class LedgerToolCallStringAdapter(MethodAdapter):
 
     name = "ledger.tool-call-string"
     basis = BASIS_RECORD
+    fixed_inputs = (FixedAdapterInput("ledger:events", PROVENANCE_LEDGER),)
     summary = (
         "Within an explicit ledger sequence boundary, select a string at an "
         "RFC 6901 payload pointer from exactly scoped tool_call records and "
@@ -1616,6 +1667,7 @@ class AdapterRegistry:
 
     def __init__(self, adapters: Iterable[MethodAdapter] = ()):
         self._adapters: Dict[Tuple[str, int], MethodAdapter] = {}
+        self._fixed_inputs: Dict[Tuple[str, int], Tuple[FixedAdapterInput, ...]] = {}
         for adapter in adapters:
             key = (adapter.name, adapter.version)
             if key in self._adapters:
@@ -1623,14 +1675,75 @@ class AdapterRegistry:
             if not _NAME.fullmatch(adapter.name):
                 raise ValueError(f"invalid registered adapter name {adapter.name!r}")
             self._adapters[key] = adapter
+            # Snapshot this new contract, including for extension adapters.
+            # Catalog identity and materialization must not diverge if a
+            # class-level descriptor tuple is replaced after registration.
+            if any(type(item) is not FixedAdapterInput for item in adapter.fixed_inputs):
+                raise ValueError("fixed inputs must be immutable descriptors")
+            self._fixed_inputs[key] = tuple(FixedAdapterInput(
+                item.ref, item.provenance, item.role, item.integer_argument)
+                for item in adapter.fixed_inputs)
 
     def catalog(self) -> str:
-        entries = [adapter.catalog_entry()
-                   for _, adapter in sorted(self._adapters.items())]
+        entries = []
+        for key, adapter in sorted(self._adapters.items()):
+            entry = adapter.catalog_entry()
+            entry.pop("fixed_input_binding", None)
+            if self._fixed_inputs[key]:
+                entry["fixed_input_binding"] = {
+                    "mode": FIXED_INPUT_BINDING,
+                    "inputs": [item.public() for item in self._fixed_inputs[key]],
+                }
+            entries.append(entry)
         return json.dumps(entries, ensure_ascii=False, sort_keys=True,
                           separators=(",", ":"))
 
+    def bind_inputs(self, method: Mapping[str, Any]) -> Dict[str, Any]:
+        """Lower an explicitly opted-in method without repairing model claims.
+
+        No source is opened. Conflicting declarations, unknown instruments,
+        and missing semantic arguments remain errors for ordinary fallback.
+        """
+        if "adapter_input_binding" not in method:
+            return dict(method)
+        invocation = AdapterInvocation.from_method(method)
+        key = (invocation.name, invocation.version)
+        adapter = self._adapters.get(key)
+        descriptors = self._fixed_inputs.get(key, ())
+        if adapter is None or not descriptors:
+            raise AdapterNotApplicable("adapter has no verifier-owned fixed inputs")
+        MethodAdapter.validate(adapter, invocation, method)
+        fixed = [item.resolve(invocation.arguments) for item in descriptors]
+        if len({item["ref"] for item in fixed}) != len(fixed):
+            raise AdapterNotApplicable("fixed input descriptors have duplicate references")
+        inputs = list(invocation.inputs)
+        for item in inputs:
+            same_ref = [slot for slot in fixed if slot["ref"] == item["ref"]]
+            if same_ref and item != same_ref[0]:
+                raise AdapterNotApplicable("declared input conflicts with a fixed slot")
+            if item["role"] == ROLE_SUBJECT and item not in fixed:
+                raise AdapterNotApplicable("undeclared subject in fixed-input method")
+        for slot in fixed:
+            if inputs.count(slot) > 1:
+                raise AdapterNotApplicable("duplicate fixed input declaration")
+            if slot not in inputs:
+                inputs.append(slot)
+        if len(inputs) > MAX_DECLARED_INPUTS:
+            raise AdapterNotApplicable("materialized adapter_inputs exceeds entry limit")
+        bound = {**method, "adapter_inputs": inputs}
+        # Extension validators may require their subject slot. Validate the
+        # complete method, not the deliberately unmaterialized model output.
+        adapter.validate(AdapterInvocation.from_method(bound), bound)
+        return bound
+
+    def _require_bound_inputs(self, method):
+        if "adapter_input_binding" in method and self.bind_inputs(method) != method:
+            raise AdapterNotApplicable(
+                "fixed inputs must be materialized before execution and judgment")
+
     def supports_method_reuse(self, method: Mapping[str, Any]) -> bool:
+        if "adapter_input_binding" in method:
+            return False  # This new binding protocol requires fresh review.
         try:
             invocation = AdapterInvocation.from_method(method)
             if invocation is None:
@@ -1643,6 +1756,7 @@ class AdapterRegistry:
     def execute(self, method: Mapping[str, Any], row: Mapping[str, Any],
                 obligation: Obligation, context: AdapterContext,
                 artifacts: ArtifactStore) -> Optional[DischargeResult]:
+        self._require_bound_inputs(method)
         invocation = AdapterInvocation.from_method(method)
         if invocation is None:
             return None
@@ -1706,6 +1820,7 @@ class AdapterRegistry:
         full Oracle/executor/Judger path remains available.
         """
         try:
+            self._require_bound_inputs(method)
             invocation = AdapterInvocation.from_method(method)
             if invocation is None:
                 return False, "method has no typed adapter binding"
@@ -1807,6 +1922,14 @@ class AdapterRoutingDischarger:
     def adapter_catalog(self) -> str:
         return self.registry.catalog()
 
+    def prepare_method(self, method):
+        try:
+            return self.registry.bind_inputs(method)
+        except AdapterNotApplicable:
+            # Execution repeats the mechanical check and routes failures to
+            # the existing agent executor with its diagnostic, not a verdict.
+            return method
+
     def supports_method_reuse(self, method) -> bool:
         return self.registry.supports_method_reuse(method)
 
@@ -1876,14 +1999,19 @@ class AdapterRoutingDischarger:
             "claim": row["id"], "obligation": obligation.id,
             "adapter": result.instrument.removeprefix("adapter:"),
             "outcome": result.outcome, "artifact": result.artifact,
+            **({"adapter_input_binding": method["adapter_input_binding"]}
+               if "adapter_input_binding" in method else {}),
         })
         return result
 
     def _fallback_event(self, row, obligation, method, reason):
-        if not any(field in method for field in _ADAPTER_FIELDS):
+        if (not any(field in method for field in _ADAPTER_FIELDS)
+                and "adapter_input_binding" not in method):
             return
         self.log.append("adapter_fallback", {
             "claim": row["id"], "obligation": obligation.id,
             "adapter": str(method.get("adapter", ""))[:80],
             "reason": reason[:500],
+            **({"adapter_input_binding": method["adapter_input_binding"]}
+               if "adapter_input_binding" in method else {}),
         })

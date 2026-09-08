@@ -1196,7 +1196,8 @@ class BindingGame:
                 "world_map": world_map(state, live_world=self.live_world),
                 },
             )
-        methods = payload["methods"]
+        prepare = getattr(self.discharger, "prepare_method", lambda method: method)
+        methods = [prepare(method) for method in payload["methods"]]
         event = {
             "claim": row["id"],
             "obligation": obligation.id,
@@ -1207,7 +1208,9 @@ class BindingGame:
                          "strength": _method_strength(m),
                          **({"adapter": m["adapter"],
                              "adapter_version": m.get("adapter_version")}
-                            if "adapter" in m else {})}
+                            if "adapter" in m else {}),
+                         **({"adapter_input_binding": m["adapter_input_binding"]}
+                            if "adapter_input_binding" in m else {})}
                         for m in methods],
         }
         if method_feedback != "(none)":
