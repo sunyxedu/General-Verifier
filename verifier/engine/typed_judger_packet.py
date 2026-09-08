@@ -29,6 +29,11 @@ from ..execution.adapters import (
     AdapterRoutingDischarger,
 )
 from ..execution.discharge import DischargeResult
+from ..execution.evidence_program import LANGUAGE as EVIDENCE_PROGRAM_LANGUAGE
+from ..execution.evidence_program import (
+    MAX_CUMULATIVE_ALLOCATION_BYTES as EVIDENCE_PROGRAM_MAX_ALLOCATION,
+)
+from ..execution.evidence_program import MAX_FUEL as EVIDENCE_PROGRAM_MAX_FUEL
 from ..execution.instruments import authoritative_task_context
 from .judger_prefetch import (
     JudgerEvidencePacket,
@@ -37,7 +42,7 @@ from .judger_prefetch import (
 
 
 TYPED_JUDGER_PACKET_PROTOCOL = (
-    "gv-typed-adapter-judger-packet-v4;"
+    "gv-typed-adapter-judger-packet-v5;"
     "evidence-cap=16384;render-cap=131072;fresh-replay=before+after;"
     "transport=no-tools-v1"
 )
@@ -54,10 +59,134 @@ ELIGIBLE_ADAPTERS = frozenset({
     ("document.json-predicate", 2),
     ("document.json-value", 1),
     ("document.text", 1),
+    ("evidence.program", 1),
     ("ledger.event", 1),
     ("ledger.tool-call-string", 1),
     ("ledger.tool-call-string", 2),
 })
+
+
+def _contains_truncation(value: Any) -> bool:
+    if isinstance(value, dict):
+        return value.get("truncated") is True or any(
+            _contains_truncation(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_truncation(item) for item in value)
+    return False
+
+
+def _is_sha256(value: Any) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def _is_slot_list(value: Any, count: int) -> bool:
+    return (isinstance(value, list)
+            and all(type(slot) is int and 0 <= slot < count for slot in value)
+            and value == sorted(value)
+            and len(value) == len(set(value)))
+
+
+def _adapter_specific_gate(invocation: AdapterInvocation, evidence: dict,
+                           result_identity: Mapping[str, Any]) -> bool:
+    """Extra packet invariants for general instruments with a larger TCB."""
+    if (invocation.name, invocation.version) != ("evidence.program", 1):
+        return True
+    if (result_identity.get("outcome") != "holds"
+            or result_identity.get("witness") is not None
+            or result_identity.get("witness_kind") != "none"):
+        return False
+    execution = evidence.get("execution")
+    if not isinstance(execution, dict):
+        return False
+    observation = execution.get("observation")
+    if not isinstance(observation, dict) or set(observation) != {
+            "language", "source_sha256", "source_chars", "input_slots",
+            "assertions", "observations", "fuel_limit", "fuel_used",
+            "allocation_limit_bytes", "allocation_reserved_bytes",
+            "used_input_slots",
+    } or _contains_truncation(observation):
+        return False
+    source = invocation.arguments.get("source")
+    if (not isinstance(source, str)
+            or observation.get("language") != EVIDENCE_PROGRAM_LANGUAGE
+            or observation.get("source_chars") != len(source)
+            or observation.get("source_sha256") != hashlib.sha256(
+                source.encode("utf-8")).hexdigest()
+            or observation.get("fuel_limit") != EVIDENCE_PROGRAM_MAX_FUEL
+            or type(observation.get("fuel_used")) is not int
+            or not 0 < observation["fuel_used"] <= EVIDENCE_PROGRAM_MAX_FUEL
+            or observation.get("allocation_limit_bytes")
+            != EVIDENCE_PROGRAM_MAX_ALLOCATION
+            or type(observation.get("allocation_reserved_bytes")) is not int
+            or not 0 <= observation["allocation_reserved_bytes"]
+            <= EVIDENCE_PROGRAM_MAX_ALLOCATION):
+        return False
+
+    execution_inputs = [
+        item for item in invocation.inputs if item.get("role") != "authority"]
+    subject_slots = {
+        index for index, item in enumerate(execution_inputs)
+        if item.get("role") == "subject"
+    }
+    input_slots = observation.get("input_slots")
+    if (not isinstance(input_slots, list)
+            or len(input_slots) != len(execution_inputs)
+            or observation.get("used_input_slots") != list(range(len(execution_inputs)))):
+        return False
+    for index, (slot, declared) in enumerate(zip(input_slots, execution_inputs)):
+        if (not isinstance(slot, dict) or set(slot) != {
+                "slot", "ref", "provenance", "role", "bytes", "sha256"}
+                or slot.get("slot") != index
+                or {key: slot.get(key) for key in ("ref", "provenance", "role")}
+                != declared
+                or type(slot.get("bytes")) is not int or slot["bytes"] < 0
+                or not _is_sha256(slot.get("sha256"))):
+            return False
+    assertions = observation.get("assertions")
+    observations = observation.get("observations")
+    if (not isinstance(assertions, list) or not assertions
+            or not isinstance(observations, list)):
+        return False
+    for assertion in assertions:
+        if (not isinstance(assertion, dict)
+                or set(assertion) != {
+                    "label", "expression_sha256", "holds", "input_slots",
+                    "subject_slots", "observed", "observed_input_slots",
+                    "observed_subject_slots"}
+                or assertion.get("holds") is not True
+                or not isinstance(assertion.get("label"), str)
+                or not assertion["label"]
+                or not _is_sha256(assertion.get("expression_sha256"))
+                or not _is_slot_list(
+                    assertion.get("input_slots"), len(execution_inputs))
+                or not _is_slot_list(
+                    assertion.get("subject_slots"), len(execution_inputs))
+                or not _is_slot_list(
+                    assertion.get("observed_input_slots"), len(execution_inputs))
+                or not _is_slot_list(
+                    assertion.get("observed_subject_slots"), len(execution_inputs))
+                or not assertion["subject_slots"]
+                or any(slot not in subject_slots for slot in assertion["subject_slots"])
+                or any(slot not in subject_slots
+                       for slot in assertion["observed_subject_slots"])
+                or set(assertion["subject_slots"])
+                != set(assertion["input_slots"]) & subject_slots
+                or set(assertion["observed_subject_slots"])
+                != set(assertion["observed_input_slots"]) & subject_slots):
+            return False
+        if (not set(assertion["subject_slots"])
+                <= set(assertion["observed_subject_slots"])
+                or not set(assertion["observed_subject_slots"])
+                <= set(assertion["observed_input_slots"])):
+            return False
+    for observation_item in observations:
+        if (not isinstance(observation_item, dict)
+                or set(observation_item) != {"label", "value"}
+                or not isinstance(observation_item.get("label"), str)
+                or not observation_item["label"]):
+            return False
+    return True
 
 
 def _reject_constant(value: str) -> None:
@@ -364,7 +493,8 @@ class TypedAdapterJudgerPacket:
         evidence = _strict_json(raw_evidence)
         coverage = (_source_slot_coverage(invocation, evidence, task_context)
                     if isinstance(evidence, dict) else None)
-        if coverage is None:
+        if coverage is None or not _adapter_specific_gate(
+                invocation, evidence, result_identity):
             raise ValueError("typed-adapter source coverage mismatch")
 
         catalog_sha256 = hashlib.sha256(
@@ -503,6 +633,7 @@ def build_typed_adapter_judger_packet(
         expected_instrument = f"adapter:{invocation.name}@{invocation.version}"
         if result.instrument != expected_instrument or result.assumed_premises:
             return None
+        result_identity = _result_identity(result)
 
         state_dir = os.path.abspath(discharger.context.state_dir)
         task_context = authoritative_task_context(state_dir)
@@ -533,7 +664,8 @@ def build_typed_adapter_judger_packet(
         coverage = (_source_slot_coverage(
             invocation, evidence, task_context_document)
             if isinstance(evidence, dict) else None)
-        if coverage is None:
+        if coverage is None or not _adapter_specific_gate(
+                invocation, evidence, result_identity):
             return None
 
         catalog_json = discharger.adapter_catalog()
@@ -546,7 +678,6 @@ def build_typed_adapter_judger_packet(
         obligation_document = _obligation_document(obligation)
         method_document = _strict_json(canonical(dict(method)))
         result_document = _result_document(result)
-        result_identity = _result_identity(result)
         replay = _fresh_replay(
             discharger,
             artifacts,

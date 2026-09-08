@@ -140,6 +140,7 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         ("document.json-predicate", 2),
         ("document.json-value", 1),
         ("document.text", 1),
+        ("evidence.program", 1),
         ("ledger.event", 1),
         ("ledger.tool-call-string", 1),
         ("ledger.tool-call-string", 2),

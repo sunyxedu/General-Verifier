@@ -21,6 +21,7 @@ describe available operations; the model prompts remain domain independent.
 | `document.json-value@1` | Exact, type-sensitive JSON Pointer comparison | Strict UTF-8 JSON only |
 | `document.json-predicate@1` | Bounded structural equality, array membership/length, and array-item shape/type predicates | Closed algebra over strict UTF-8 JSON only |
 | `document.json-predicate@2` | The same bounded predicates, with object-member presence independent of optional type constraints | Explicit JSON Pointer required, including `""` for the root |
+| `evidence.program@1` | A bounded pure program checks relations across declared world files | Holds-only; any false check, unsupported syntax, or limit falls back |
 | `ledger.event@1` | One retained event's type and payload subset | Establishes record facts only |
 | `ledger.tool-call-string@1` | Exact string selection within an explicit ledger interval | Cannot interpret or execute command text |
 | `ledger.tool-call-string@2` | Explicit existence, equality, nonempty or nonblank string predicate | Record facts only; no command-language interpretation |
@@ -83,6 +84,33 @@ Neither version silently repairs or defaults a missing pointer.
 For example, `/input/cmd` and `/input/keystrokes` are different explicit
 record dialects. A raw program containing a nested tool invocation needs the
 agent executor; this adapter does not infer what the program executes.
+
+## Pure evidence programs
+
+`evidence.program@1` is a task-independent executor for relations that the
+fixed adapters cannot express. The Oracle supplies a small Python-shaped
+program and an ordered list of declared world files. The verifier parses and
+interprets that language itself; it never invokes Python execution. Imports,
+attributes, ambient paths, commands, processes, network, time, randomness,
+exceptions, mutation, `eval`, and `exec` do not exist. The complete AST is
+validated before execution, including unreachable branches and unused
+functions.
+
+The language provides bounded byte, strict UTF-8, strict JSON, indexing,
+slicing, loops, pure functions, checked arithmetic, endian decoding, SHA-256,
+and type-sensitive comparisons. Every declared runtime file must be freshly
+read. Every successful `require` must dynamically depend on a declared subject;
+hard-coded truth, labels, and observations cannot manufacture that dependency.
+All resource caps are published in the adapter catalog.
+
+The adapter is deliberately holds-only. A false requirement, malformed input,
+unsupported construct, incomplete read, or exhausted cap makes it inapplicable
+and routes to the unchanged agent executor. A successful receipt is still only
+evidence: the fresh independent Judger checks whether the Oracle's program is
+sufficient for the obligation and faithful to the task. Restricted typed
+transport additionally requires a complete, untruncated observation for every
+requirement, exact declared/consumed input binding, and fresh replay before and
+after the Judger call.
 
 ## Optional browser observer
 
