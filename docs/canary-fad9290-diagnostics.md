@@ -60,3 +60,62 @@ The harness must not infer that every path in a captured tree is `delivered`.
 A captured tree may also contain genuine task-given inputs, particularly when
 no baseline exists. Any future mechanical provenance filling or validation
 must use explicit source evidence rather than path membership alone.
+
+## Completed control, before treatment completion
+
+The two-candidate control process subsequently completed with exit code 0,
+no result-audit errors, and complete usage accounting. End-to-end wall time was
+**3,274.664 seconds (54.6 minutes)**, including both candidates and the cold
+toolchain fill. There were 55 recorded CLI model attempts, all with successful
+provider returns. This does not mean their contracts or evidence passed audit:
+
+| Role | Attempts | Accumulated model seconds |
+| --- | ---: | ---: |
+| Extract | 3 | 129.90 |
+| Obligation Compiler | 10 | 133.96 |
+| Critic | 10 | 227.60 |
+| Oracle Compiler | 8 | 195.33 |
+| Discharge | 13 | 3,189.36 |
+| Judger | 11 | 1,033.51 |
+
+Usage totals were 1,701,698 uncached input tokens, 13,385,984 cached input
+tokens, and 202,604 output tokens. These are token counts, not a dollar price.
+Discharge and Judger together represented approximately 86% of accumulated
+model time. Parallel accumulated time is not wall time or a causal critical
+path. Treatment is still running; **there is no completed A/B ratio yet**.
+
+Before this control finished, one trace's final task-contract verdict had
+already settled while auxiliary support-claim verification continued for at
+least another 24 minutes. The frozen source lacks a per-call claim/attempt
+join, so individual Compiler/Critic token totals cannot safely be attributed
+by temporal ordering under parallel execution. This motivates operator-only
+model spans; it does not authorize skipping the support audit.
+
+## Follow-up selection: coverage, not adapter count
+
+Read-only inspection of 40 complete Oracle method emissions from the older
+two-task A/B and five emissions from this canary found little incremental
+coverage for another small expression interpreter. Two canary emissions were
+only truncated projections and remain unknown. A bounded JSON/integer/string
+expression IR would add 4 of the 45 emissions, all repaired variants of one
+file-length requirement; line-splitting would add one more. No IR or Wasm
+runtime was installed or implemented.
+
+A closer review of 24 record-like older method emissions found ten faithfully
+expressible with sufficient retained evidence. Eight already fit existing
+ledger adapters. A new call/result join would cover only two additional
+methods, and only one would produce a decisive result in those records. Four
+other methods require missing response boundaries; ten require semantics
+outside a closed record algebra. Treating these as supported would change the
+verification standard. A broader ledger interpreter is therefore not the
+current priority.
+
+The concrete repair-context gap is narrower: production execution snapshots
+scratch into the artifact store and then removes scratch; the redo receives
+the rejection reasons but no direct locator for its previous snapshot. The
+completed trace's scratch and workspace were empty, while four executions of
+one method retained different rebuilt scripts. Supplying the latest snapshot
+as **untrusted repair material** can help locate defects and reuse scaffolding.
+It cannot supply an absent authoritative grammar or make an unfaithful method
+faithful. Fresh execution and independent auditing remain required; savings
+from this follow-up are not yet measured.

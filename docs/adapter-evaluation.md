@@ -199,6 +199,25 @@ sandbox fixture passed 12 checks covering shared and cold toolchain execution,
 Judger read-only enforcement, and external cache/sibling-state read denial.
 These fixtures do not establish performance or complete native-tool isolation.
 
+Two later, general follow-ups retain the same verification stages:
+
+- `068872d` adds operator-only model spans, joining claim/obligation/repair
+  metadata to existing usage `call_id`s. Schema, provider, and outer Judger
+  retries remain distinct, and seat queueing is timed. Metadata never enters
+  the prompt, authority view, or existing cost rows. Missing telemetry remains
+  an attribution gap rather than a successful zero-cost operation.
+- `178f9ee` gives a redo a bounded locator for its immediately preceding
+  artifact. This is rejected, untrusted building material, not an accepted
+  verdict. Every redo still executes and faces a fresh independent Judger.
+  Invalid/missing snapshots fall back to the old context; custom dischargers
+  remain compatible, and ordinary executions gain no prompt tokens.
+
+At `178f9ee`, regression verification produced **809 passed, 4 skipped, 4
+subtests passed**, with the same missing optional module excluded. The frozen
+video control has now completed in 54.6 minutes with complete usage, but its
+treatment is still running. Neither these tests nor that control-only result
+establishes a 10x improvement. Full intermediate/support auditing remains enabled.
+
 ### Optimization direction
 
 OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
