@@ -239,3 +239,34 @@ adapter receipt and does not impose a new subject snapshot or online epoch.
 An isolated four-case Judger diagnostic must check both accepted and rejected
 directions before a new full BindingGame/Terminal-Bench evaluation. Prompt
 consistency and fixture tests alone do not prove model-level parity or speedup.
+
+### Frozen Judger-only gate: four directions
+
+Runs: `experiments/terminal_bench/results/gv-judger-direction-runs.W3s4RO/`.
+Control `17b87e7` and treatment `b577be0` differ at runtime only in the two
+Judger instructions above. Each case/arm used a fresh isolated process and
+state, identical MethodIR and content-addressed adapter evidence, Luna
+medium/standard, and compact inspection disabled. Eight jobs completed with
+one billed Judger attempt each; source/input seals, artifact hashes and all
+usage/span hashes passed the retained `audit_matrix.py` postflight.
+
+| Prefix evidence offered for full scope | Expected sufficient | Control | Treatment |
+| --- | --- | --- | --- |
+| One existential witness | yes | no | yes |
+| No existential witness in a prefix | no | no | no |
+| All prefix members satisfy a universal | no | no | no |
+| One universal counterexample | yes | yes | yes |
+
+Both accepted treatment cases also returned `faithful=yes`. Both versions
+returned `faithful=no` for the existential-prefix absence case, despite noting
+that its bounded query/artifact was delivered. Rejection was safe, but the
+direction gate alone does not establish correct separation of fidelity and
+sufficiency for every rejected method.
+
+Aggregate uncached/cached/output tokens were 103,161/172,288/8,145 for control
+and 79,637/180,480/8,648 for treatment. Token categories move in different
+directions; no monetary tariff or cost speedup is inferred. Case pairs
+overlapped, so their wall times are not a latency A/B. This is a single
+synthetic Judger-only observation, excluding extraction, both compilers,
+Critic and model execution. It does not establish original-main result
+equivalence, full offline/online performance, or 10× improvement.
