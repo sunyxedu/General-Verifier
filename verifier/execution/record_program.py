@@ -381,14 +381,21 @@ class RecordProgramAdapter(MethodAdapter):
                 "ledger:events provenance=ledger subject slot; an optional sole "
                 "task_given authority is not a runtime slot"
             ),
-            "typed_transport": {
-                "requirement": (
-                    "every require uses require(bool,label,observed), where observed "
-                    "is exactly {event_refs,facts,scope}; refs must match retained "
-                    "events and scope must bind the complete projection"
-                ),
-                "fallback": "any weaker observation uses the ordinary fresh Judger",
-            },
+            "judgment_transport": (
+                "always the ordinary fresh toolful Judger; an arbitrary record "
+                "program and sparse event references never qualify for the "
+                "restricted no-tools packet"
+            ),
+            "example": (
+                "record = input_json(0)\n"
+                "found = False\n"
+                "for event in record[\"events\"]:\n"
+                "    if event[\"type\"] == \"tool_call\" and "
+                "event[\"invocation\"][\"status\"] == \"decoded\" and "
+                "event[\"correlation\"][\"status\"] == \"paired\":\n"
+                "        found = True\n"
+                "require(found, \"one structurally paired invocation exists\")"
+            ),
             "resource_limits": {
                 "source_chars": MAX_SOURCE_CHARS,
                 "ast_nodes": MAX_AST_NODES,

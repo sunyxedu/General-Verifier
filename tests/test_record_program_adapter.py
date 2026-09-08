@@ -151,6 +151,8 @@ def test_catalog_and_fixed_binding_are_record_only(tmp_path):
     }
     assert "no shell parsing" in entry["normalization"]["invocations"]
     assert "future closure" in entry["normalization"]["observed_eof"]
+    assert "ordinary fresh toolful Judger" in entry["judgment_transport"]
+    assert "task" not in entry["example"]
 
 
 @pytest.mark.parametrize("scope", ["prefix", "observed-eof"])
