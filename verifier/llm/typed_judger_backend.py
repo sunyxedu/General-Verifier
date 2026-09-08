@@ -14,6 +14,7 @@ is returned normally and never triggers that fallback.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 from contextlib import contextmanager
@@ -38,6 +39,7 @@ from .schema import RoleError
 
 
 TYPED_JUDGER_BOUNDARY_VERSION = "gv-typed-judger-no-tools-v1"
+_TYPED_JUDGER_SCRATCH_IDENTITY = "/__gv_typed_judger_scratch__"
 _ADDITIONAL_DISABLED_FEATURES = (
     # Keep this list explicit. These newer integration gates are not all in
     # the shared authority profile on older releases, while current Codex
@@ -78,6 +80,20 @@ def typed_judger_policy_args(scratch_dir: str) -> list[str]:
             for item in ("-c", f"features.{feature}=false")
         ],
     ]
+
+
+def _typed_judger_policy_identity() -> str:
+    """Stable identity for the exact policy, independent of fresh cwd names."""
+    rendered = json.dumps(
+        typed_judger_policy_args(_TYPED_JUDGER_SCRATCH_IDENTITY),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+TYPED_JUDGER_POLICY_IDENTITY = _typed_judger_policy_identity()
 
 
 def validate_typed_judger_stream(stdout: str) -> None:
@@ -130,9 +146,15 @@ class _TypedJudgerCodexBackend(CodexBackend):
     @property
     def runtime_instruction_identity(self) -> str:
         original = super().runtime_instruction_identity
+        identity = json.dumps({
+            "base_runtime_instruction_identity": original,
+            "boundary": TYPED_JUDGER_BOUNDARY_VERSION,
+            "no_tools_policy_identity": TYPED_JUDGER_POLICY_IDENTITY,
+            "typed_judger_note_sha256": hashlib.sha256(
+                _TYPED_JUDGER_NOTE.encode("utf-8")).hexdigest(),
+        }, sort_keys=True, separators=(",", ":"), allow_nan=False)
         return hashlib.sha256(
-            (original + TYPED_JUDGER_BOUNDARY_VERSION + _TYPED_JUDGER_NOTE)
-            .encode("utf-8")
+            identity.encode("utf-8")
         ).hexdigest()
 
     def complete(self, role_name: str, prompt: str,

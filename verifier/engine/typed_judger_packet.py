@@ -224,10 +224,12 @@ class TypedAdapterJudgerPacket:
     _artifacts: Any
     _state_dir: str
     _claim_id: str
+    _task_context_json: str
     _obligation_json: str
     _method_json: str
     _result_json: str
     _catalog_json: str
+    _degradation_record: str
     _evidence_source: JudgerEvidencePacket
     _rendered: str
 
@@ -235,20 +237,194 @@ class TypedAdapterJudgerPacket:
         if (type(self._discharger) is not AdapterRoutingDischarger
                 or type(self._discharger.registry) is not AdapterRegistry
                 or type(self._evidence_source) is not JudgerEvidencePacket
+                or not all(isinstance(value, str) for value in (
+                    self.adapter_identity,
+                    self.artifact_digest,
+                    self.replay_digest,
+                    self._state_dir,
+                    self._claim_id,
+                    self._task_context_json,
+                    self._obligation_json,
+                    self._method_json,
+                    self._result_json,
+                    self._catalog_json,
+                    self._degradation_record,
+                ))
                 or not isinstance(self._rendered, str)
                 or len(self._rendered.encode("utf-8"))
                 > MAX_TYPED_JUDGER_PACKET_BYTES):
             raise ValueError("invalid typed-adapter Judger packet")
+        try:
+            if self._canonical_rendered() != self._rendered:
+                raise ValueError("typed-adapter Judger packet is not canonical")
+        except (OSError, TypeError, ValueError, KeyError, UnicodeError,
+                json.JSONDecodeError, RecursionError, OverflowError) as error:
+            raise ValueError("invalid typed-adapter Judger packet") from error
+
+    def _canonical_rendered(self) -> str:
+        """Rebuild every model-visible byte from replay-owned packet state."""
+        task_context = _strict_json(self._task_context_json)
+        obligation = _strict_json(self._obligation_json)
+        method = _strict_json(self._method_json)
+        result_identity = _strict_json(self._result_json)
+        catalog = _strict_json(self._catalog_json)
+        evidence_source = _strict_json(self._evidence_source.render())
+        if (not isinstance(task_context, dict)
+                or not isinstance(obligation, dict)
+                or not isinstance(method, dict)
+                or not isinstance(result_identity, dict)
+                or not isinstance(catalog, list)
+                or not isinstance(evidence_source, dict)
+                or canonical(obligation) != self._obligation_json
+                or canonical(method) != self._method_json
+                or canonical(result_identity) != self._result_json
+                or canonical(catalog) != self._catalog_json):
+            raise ValueError("non-canonical typed-adapter packet state")
+
+        obligation_value = _obligation_from_document(obligation)
+        if (set(obligation) != {
+                "id", "claim_id", "text", "required_basis", "severity",
+                "clause", "refutable_by_absence", "premise_scope",
+            }
+                or obligation_value.id != obligation["id"]
+                or obligation_value.claim_id != self._claim_id):
+            raise ValueError("typed-adapter obligation identity mismatch")
+        if set(result_identity) != {
+                "outcome", "witness", "artifact_digest", "assumed_premises",
+                "witness_kind", "declared_inputs", "instrument", "basis",
+                "strength", "bridges",
+            }:
+            raise ValueError("typed-adapter result identity mismatch")
+
+        invocation = AdapterInvocation.from_method(method)
+        if (invocation is None
+                or (invocation.name, invocation.version) not in ELIGIBLE_ADAPTERS):
+            raise ValueError("typed-adapter invocation identity mismatch")
+        adapter_identity = f"{invocation.name}@{invocation.version}"
+        expected_instrument = f"adapter:{adapter_identity}"
+        if (self.adapter_identity != adapter_identity
+                or result_identity["instrument"] != expected_instrument
+                or result_identity["artifact_digest"] != self.artifact_digest
+                or self._evidence_source.artifact_digest != self.artifact_digest
+                or result_identity["assumed_premises"]):
+            raise ValueError("typed-adapter public identity mismatch")
+        expected_replay_digest = content_hash(result_identity)
+        if self.replay_digest != expected_replay_digest:
+            raise ValueError("typed-adapter replay identity mismatch")
+
+        catalog_entry = _one_catalog_entry(
+            catalog, invocation.name, invocation.version)
+        sources = evidence_source.get("sources")
+        if not isinstance(sources, dict) or set(sources) != {"artifact"}:
+            raise ValueError("typed-adapter evidence source mismatch")
+        artifact_source = sources["artifact"]
+        if not isinstance(artifact_source, dict):
+            raise ValueError("typed-adapter artifact source mismatch")
+        raw_evidence = artifact_source.get("raw_json_text")
+        raw_sha256 = artifact_source.get("raw_sha256")
+        byte_count = artifact_source.get("byte_count")
+        if (not isinstance(raw_evidence, str)
+                or not isinstance(raw_sha256, str)
+                or not isinstance(byte_count, int)
+                or byte_count != len(raw_evidence.encode("utf-8"))
+                or raw_sha256 != hashlib.sha256(
+                    raw_evidence.encode("utf-8")).hexdigest()):
+            raise ValueError("typed-adapter artifact bytes mismatch")
+        evidence = _strict_json(raw_evidence)
+        if (not isinstance(evidence, dict)
+                or not _source_slots_complete(invocation, evidence)):
+            raise ValueError("typed-adapter source coverage mismatch")
+
+        catalog_sha256 = hashlib.sha256(
+            self._catalog_json.encode("utf-8")).hexdigest()
+        bindings = {
+            "task_context": content_hash(self._task_context_json),
+            "obligation": content_hash(obligation),
+            "method_ir": content_hash(method),
+            "degradation_record": content_hash(self._degradation_record),
+            "result": expected_replay_digest,
+            "adapter_catalog": catalog_sha256,
+            "evidence": self.artifact_digest,
+            "fresh_replay": self.replay_digest,
+        }
+        result_document = {
+            key: result_identity[key]
+            for key in (
+                "outcome", "witness", "artifact_digest", "assumed_premises",
+                "witness_kind", "declared_inputs",
+            )
+        }
+        document = {
+            "schema": TYPED_JUDGER_PACKET_PROTOCOL,
+            "semantics": (
+                "Complete bounded discharge evidence envelope for a new "
+                "independent Judger. Original world-file and ledger-prefix "
+                "bytes are not attached. The packet authenticates transport "
+                "and deterministic source re-reading, not method sufficiency, "
+                "execution fidelity, or a verdict."
+            ),
+            "task_context": self._task_context_json,
+            "obligation": obligation,
+            "method_ir": method,
+            "degradation_record": self._degradation_record,
+            "adapter_contract": {
+                "identity": adapter_identity,
+                "invocation": invocation.public(),
+                "catalog_entry": catalog_entry,
+                "catalog_sha256": catalog_sha256,
+            },
+            "result": result_document,
+            "source_slot_coverage": {
+                "all_declared_inputs_freshly_read": True,
+                "original_source_bytes_attached": False,
+                "declared_inputs": list(invocation.inputs),
+                "evidence_declared_inputs": evidence["execution"][
+                    "declared_inputs"],
+                "consumed_identities": evidence["execution"]["consumed"],
+            },
+            "content_addressed_evidence": {
+                "digest": self.artifact_digest,
+                "raw_sha256": raw_sha256,
+                "byte_count": byte_count,
+                "raw_json_text": raw_evidence,
+            },
+            "verifier_execution_receipt": {
+                "instrument": expected_instrument,
+                "observation": evidence["execution"]["observation"],
+                "consumed_identities": evidence["execution"]["consumed"],
+                "fresh_exact_replay_digest": self.replay_digest,
+            },
+            "bindings": bindings,
+        }
+        rendered = json.dumps(
+            document,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(rendered.encode("utf-8")) > MAX_TYPED_JUDGER_PACKET_BYTES:
+            raise ValueError("typed-adapter Judger packet exceeds its cap")
+        return rendered
 
     def render(self) -> str:
         """Return one complete, bounded, inert JSON document."""
-        return self._rendered
+        try:
+            rendered = self._canonical_rendered()
+            if rendered != self._rendered:
+                raise ValueError("typed-adapter Judger packet binding changed")
+            return rendered
+        except (OSError, TypeError, ValueError, KeyError, UnicodeError,
+                json.JSONDecodeError, RecursionError, OverflowError) as error:
+            raise ValueError("typed-adapter Judger packet binding changed") from error
 
     def revalidate(self) -> bool:
         """Rebind authority/catalog/evidence and replay after the Judger."""
         try:
-            if authoritative_task_context(self._state_dir) != _strict_json(
-                    self._rendered)["task_context"]:
+            if self._canonical_rendered() != self._rendered:
+                return False
+            if authoritative_task_context(
+                    self._state_dir) != self._task_context_json:
                 return False
             if self._discharger.adapter_catalog() != self._catalog_json:
                 return False
@@ -425,10 +601,12 @@ def build_typed_adapter_judger_packet(
             _artifacts=artifacts,
             _state_dir=state_dir,
             _claim_id=claim_id,
+            _task_context_json=task_context,
             _obligation_json=canonical(obligation_document),
             _method_json=canonical(method_document),
             _result_json=canonical(result_identity),
             _catalog_json=catalog_json,
+            _degradation_record=degradation_record,
             _evidence_source=evidence_source,
             _rendered=rendered,
         )

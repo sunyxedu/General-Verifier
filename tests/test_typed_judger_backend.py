@@ -27,6 +27,7 @@ from verifier.execution.adapters import (
 )
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm import codex_backend as cb
+from verifier.llm import typed_judger_backend as tjb
 from verifier.llm.agents import AgentRole
 from verifier.llm.codex_backend import (
     CodexBackend,
@@ -34,6 +35,7 @@ from verifier.llm.codex_backend import (
 )
 from verifier.llm.schema import RoleError
 from verifier.llm.typed_judger_backend import (
+    TYPED_JUDGER_POLICY_IDENTITY,
     _TypedJudgerCodexBackend,
     TypedJudgerTransportError,
     restricted_typed_judger_backend,
@@ -113,7 +115,7 @@ def _stream(*middle):
     ))
 
 
-def test_policy_denies_every_external_and_tool_channel(tmp_path):
+def test_policy_denies_every_external_and_tool_channel(tmp_path, monkeypatch):
     args = typed_judger_policy_args(str(tmp_path))
     assert {"--strict-config", "--ignore-user-config", "--ignore-rules",
             "--ephemeral"} <= set(args)
@@ -136,6 +138,17 @@ def test_policy_denies_every_external_and_tool_channel(tmp_path):
         "in_app_local_automation", "recommended_plugins",
     ):
         assert config["features"][feature] is False
+
+    canonical_policy = json.dumps(
+        typed_judger_policy_args("/__gv_typed_judger_scratch__"),
+        ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    assert TYPED_JUDGER_POLICY_IDENTITY == hashlib.sha256(
+        canonical_policy.encode("utf-8")).hexdigest()
+    runtime_backend = _TypedJudgerCodexBackend()
+    original_runtime_identity = runtime_backend.runtime_instruction_identity
+    monkeypatch.setattr(tjb, "TYPED_JUDGER_POLICY_IDENTITY", "0" * 64)
+    assert runtime_backend.runtime_instruction_identity \
+        != original_runtime_identity
 
 
 def test_stream_accepts_reasoning_and_one_message_but_rejects_tool_attempts():
@@ -171,6 +184,8 @@ def test_context_preserves_seat_identity_and_uses_fresh_scratch(tmp_path):
         cwd=str(tmp_path), model="gpt-5.6-luna;judger=gpt-5.6-luna",
         effort="medium", service_tier="standard", timeout=321,
         compact_inspection=True, judger_prefetch=True)
+    runtime_identities = []
+    execution_cwds = []
     with restricted_typed_judger_backend(backend) as restricted:
         assert type(restricted) is _TypedJudgerCodexBackend
         assert restricted.roles == backend.roles
@@ -185,6 +200,14 @@ def test_context_preserves_seat_identity_and_uses_fresh_scratch(tmp_path):
         assert restricted._execution_cwd("judger", {}) != backend.cwd
         assert os.path.isdir(restricted._execution_cwd("judger", {}))
         assert restricted.judger_prefetch is False
+        runtime_identities.append(restricted.runtime_instruction_identity)
+        execution_cwds.append(restricted._execution_cwd("judger", {}))
+
+    with restricted_typed_judger_backend(backend) as restricted:
+        runtime_identities.append(restricted.runtime_instruction_identity)
+        execution_cwds.append(restricted._execution_cwd("judger", {}))
+    assert len(set(execution_cwds)) == 2
+    assert len(set(runtime_identities)) == 1
 
     class Child(CodexBackend):
         pass
@@ -260,6 +283,8 @@ def test_native_and_observer_attempts_bind_one_packet_without_leaking(
             context_by_cwd=context):
         with cb.codex_usage_ledger(str(native_path), context):
             with restricted_typed_judger_backend(backend) as restricted:
+                expected_runtime_identity = (
+                    restricted.runtime_instruction_identity)
                 assert restricted.complete("judger", "fixed prompt", {
                     "_typed_adapter_judger_packet": packet,
                 }) == {"ok": True}
@@ -281,6 +306,8 @@ def test_native_and_observer_attempts_bind_one_packet_without_leaking(
         assert row["typed_judger_packet_sha256"] == expected_sha
     assert native[0]["runtime_instruction_identity"] \
         == observed[0]["runtime_instruction_identity"]
+    assert native[0]["runtime_instruction_identity"] \
+        == expected_runtime_identity
     assert native[0]["runtime_instruction_identity"] \
         != native[1]["runtime_instruction_identity"]
     for row in (native[1], observed[1]):

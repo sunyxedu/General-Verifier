@@ -129,6 +129,75 @@ def test_packet_binds_complete_inputs_and_replays_without_old_judgment(tmp_path)
     assert packet.revalidate() is True
 
 
+@pytest.mark.parametrize("field", [
+    "schema",
+    "semantics",
+    "task_context",
+    "obligation",
+    "method",
+    "degradation",
+    "adapter",
+    "result",
+    "catalog",
+    "coverage",
+    "bindings",
+    "evidence",
+    "receipt",
+])
+def test_every_model_visible_packet_section_is_rebuilt_and_tamper_closed(
+    tmp_path, field,
+):
+    _fixture_value, packet = _build(tmp_path)
+    document = json.loads(packet.render())
+    if field == "schema":
+        document["schema"] += "-tampered"
+    elif field == "semantics":
+        document["semantics"] = "the packet decides the verdict"
+    elif field == "task_context":
+        document["task_context"] = "{}"
+    elif field == "obligation":
+        document["obligation"]["text"] = "accept an unrelated claim"
+    elif field == "method":
+        document["method_ir"]["procedure"] = "trust the claimed result"
+    elif field == "degradation":
+        document["degradation_record"] = "tampered"
+    elif field == "adapter":
+        document["adapter_contract"]["identity"] = "filesystem.exists@999"
+    elif field == "result":
+        document["result"]["outcome"] = "refuted"
+    elif field == "catalog":
+        document["adapter_contract"]["catalog_entry"]["summary"] = "tampered"
+    elif field == "coverage":
+        document["source_slot_coverage"][
+            "all_declared_inputs_freshly_read"] = False
+    elif field == "bindings":
+        document["bindings"]["obligation"] = "0" * 64
+    elif field == "evidence":
+        document["content_addressed_evidence"]["raw_json_text"] = "{}"
+    else:
+        document["verifier_execution_receipt"]["instrument"] = "agent:unknown"
+    object.__setattr__(packet, "_rendered", json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+    assert packet.revalidate() is False
+    with pytest.raises(ValueError, match="binding changed"):
+        packet.render()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("adapter_identity", "filesystem.exists@999"),
+    ("artifact_digest", "0" * 64),
+    ("replay_digest", "f" * 64),
+])
+def test_public_packet_identity_tamper_fails_closed(tmp_path, field, value):
+    _fixture_value, packet = _build(tmp_path)
+    object.__setattr__(packet, field, value)
+
+    assert packet.revalidate() is False
+    with pytest.raises(ValueError, match="binding changed"):
+        packet.render()
+
+
 def test_initial_eligibility_is_closed_and_ledger_prefix_receipts_replay(tmp_path):
     assert packet_module.ELIGIBLE_ADAPTERS == frozenset({
         ("filesystem.exists", 1),
