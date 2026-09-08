@@ -272,6 +272,7 @@ def test_environment_clears_ambient_and_changes_only_arm_flags(
         repository_tmp, monkeypatch, arm, typed):
     plan = _plan(repository_tmp)
     plan["arm"] = arm
+    monkeypatch.setattr(worker.os, "environ", dict(worker.os.environ))
     monkeypatch.setenv("GV_SHARED_DIR", "/untrusted")
     monkeypatch.setenv("GV_TYPED_ADAPTERS", "wrong")
     monkeypatch.setenv("PYTHONSTARTUP", "/untrusted/start.py")

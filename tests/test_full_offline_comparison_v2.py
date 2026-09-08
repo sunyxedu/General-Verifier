@@ -338,6 +338,7 @@ def test_worker_truth_eligibility_accepts_only_settled_verdicts(verdict):
 def test_worker_environment_changes_only_general_optimization_flags(
         arm, flag, tmp_path, monkeypatch):
     plan = _worker_plan(tmp_path, monkeypatch, arm)
+    monkeypatch.setattr(worker.os, "environ", dict(worker.os.environ))
     monkeypatch.setenv("GV_TYPED_ADAPTERS", "ambient")
     monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "ambient")
     worker._environment(plan)
