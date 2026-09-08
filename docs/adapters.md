@@ -21,6 +21,7 @@ describe available operations; the model prompts remain domain independent.
 | `document.json-value@1` | Exact, type-sensitive JSON Pointer comparison | Strict UTF-8 JSON only |
 | `ledger.event@1` | One retained event's type and payload subset | Establishes record facts only |
 | `ledger.tool-call-string@1` | Exact string selection within an explicit ledger interval | Cannot interpret or execute command text |
+| `ledger.tool-call-string@2` | Explicit existence, equality, nonempty or nonblank string predicate | Record facts only; no command-language interpretation |
 | `browser.html@1` | Dialog, console and DOM observations within a finite time window | Optional pinned backend; standalone documents only |
 
 `ledger.tool-call-string` requires `selector`, `value_pointer`, and
@@ -30,6 +31,21 @@ The scope is `(after_seq, through_seq]`. Its subject declaration is
 `{"ref":"ledger:events","provenance":"ledger","role":"subject"}`.
 A matching tool call with an unreadable value invalidates the fast path.
 Failure to find an existential match is absence, not a positive contradiction.
+
+Version 2 additionally requires `predicate`: `exists`, `equals`, `nonempty`,
+or `nonblank`. `equals` requires a string `expected`; the other predicates
+forbid that field. `exists` requires `selector=any`. `nonempty` means length
+greater than zero; `nonblank` means Python's Unicode-aware `str.strip()` leaves
+at least one character. Neither proves that a string is a valid command or
+that the command succeeded. These distinctions remain for the Oracle and
+independent Judger to assess against the obligation.
+
+Version 2 retains one witness for a successful existential query, or one
+counterexample for a failed universal query. It still scans the full declared
+interval and records its counts and digests; a witness is not presented as a
+complete listing. Version 1 keeps its original semantics and receipt format.
+Both versions require fresh execution and an independent Judger; neither is
+eligible for accepted-method reuse.
 
 `filesystem.exists` reports `address`, `exists`, `actual_kind`,
 `expected_kind`, and `world_mode` for every substantive result. A missing

@@ -139,6 +139,7 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         ("document.json-value", 1),
         ("ledger.event", 1),
         ("ledger.tool-call-string", 1),
+        ("ledger.tool-call-string", 2),
     }
     command = next(item for item in catalog
                    if item["name"] == "ledger.tool-call-string")

@@ -19,7 +19,7 @@ import os
 import re
 import stat
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from ..core.events import EventLog
 from ..core.model import (
@@ -802,6 +802,178 @@ def _bounded_ledger_prefix(log: EventLog, through_seq: int):
             os.close(fd)
 
 
+def _scan_ledger_tool_call_strings(
+    invocation: AdapterInvocation,
+    context: AdapterContext,
+    *,
+    pointer: str,
+    through_seq: int,
+    after_seq: int,
+    tool_names: Any,
+    payload_equals: Any,
+    matches: Callable[[str], Optional[bool]],
+    retain_limit: int,
+) -> Dict[str, Any]:
+    """Scan one bounded ledger range for the string-query adapters.
+
+    Predicate interpretation and selector semantics deliberately remain in
+    the versioned adapters.  This helper only validates the shared record
+    scope and returns authenticated candidates plus bounded representatives.
+    """
+    for field, value in (("through_seq", through_seq),
+                         ("after_seq", after_seq)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise AdapterNotApplicable(
+                f"{field} must be a non-negative integer")
+    if after_seq > through_seq:
+        raise AdapterNotApplicable("after_seq must not exceed through_seq")
+    if through_seq > MAX_LEDGER_EVENTS:
+        raise AdapterNotApplicable(
+            f"through_seq exceeds {MAX_LEDGER_EVENTS} events")
+
+    if tool_names is not None:
+        if not isinstance(tool_names, list) or not tool_names \
+                or len(tool_names) > MAX_LEDGER_TOOL_NAMES \
+                or any(not isinstance(item, str) or not item
+                       or len(item) > MAX_LEDGER_TOOL_NAME_CHARS
+                       for item in tool_names) \
+                or len(set(tool_names)) != len(tool_names):
+            raise AdapterNotApplicable(
+                "tool_names must be a bounded, non-empty unique string list")
+        allowed_tools = frozenset(tool_names)
+    else:
+        allowed_tools = None
+
+    if not isinstance(payload_equals, dict) \
+            or len(payload_equals) > MAX_LEDGER_SCOPE_PREDICATES:
+        raise AdapterNotApplicable(
+            "payload_equals must be a bounded object")
+    checked_scope = tuple(
+        (_validate_ledger_pointer(scope_pointer, "payload_equals pointer"),
+         canonical(scope_expected))
+        for scope_pointer, scope_expected in payload_equals.items()
+    )
+
+    ref = "ledger:events"
+    MethodAdapter.require_subject(
+        invocation, ref, (PROVENANCE_LEDGER,))
+    prefix_digests = []
+    range_digests = []
+    candidate_digests = []
+    prefix_bytes = 0
+    candidate_count = 0
+    candidate_value_bytes = 0
+    match_count = 0
+    first_item = None
+    last_item = None
+    first_items = []
+    matching_items = []
+    differing_items = []
+
+    for event, prefix_bytes in _bounded_ledger_prefix(
+            context.log, through_seq):
+        event_digest = EventLog.event_digest(event)
+        prefix_digests.append(event_digest)
+        if event["seq"] <= after_seq:
+            continue
+        range_digests.append(event_digest)
+        if event["type"] != "tool_call":
+            continue
+        payload = event["payload"]
+        if not isinstance(payload, dict):
+            raise AdapterNotApplicable(
+                "in-range tool_call payload must be an object")
+        tool = payload.get("tool")
+        if not isinstance(tool, str) or not tool \
+                or len(tool) > MAX_LEDGER_TOOL_NAME_CHARS:
+            raise AdapterNotApplicable(
+                "in-range tool_call must retain a bounded tool name")
+        if allowed_tools is not None and tool not in allowed_tools:
+            continue
+
+        in_scope = True
+        for scope_pointer, canonical_expected in checked_scope:
+            try:
+                scope_actual = _json_pointer(payload, scope_pointer)
+            except LookupError:
+                in_scope = False
+                break
+            if canonical(scope_actual) != canonical_expected:
+                in_scope = False
+                break
+        if not in_scope:
+            continue
+
+        candidate_digests.append(event_digest)
+        try:
+            value = _json_pointer(payload, pointer)
+        except LookupError as error:
+            raise AdapterNotApplicable(
+                "an in-scope tool_call lacks value_pointer") from error
+        if not isinstance(value, str):
+            raise AdapterNotApplicable(
+                "an in-scope tool_call value is not a string")
+        value_bytes = len(value.encode("utf-8"))
+        if value_bytes > MAX_LEDGER_VALUE_BYTES:
+            raise AdapterNotApplicable(
+                f"in-scope string exceeds {MAX_LEDGER_VALUE_BYTES} bytes")
+        candidate_value_bytes += value_bytes
+        if candidate_value_bytes > MAX_LEDGER_VALUE_BYTES_TOTAL:
+            raise AdapterNotApplicable(
+                "in-scope strings exceed the cumulative byte limit")
+
+        item = {
+            "seq": event["seq"],
+            "tool": tool,
+            "value": value,
+            "event_digest": event_digest,
+        }
+        candidate_count += 1
+        if first_item is None:
+            first_item = item
+        last_item = item
+        if len(first_items) < retain_limit:
+            first_items.append(item)
+        matched = matches(value)
+        if matched is True:
+            match_count += 1
+            if len(matching_items) < retain_limit:
+                matching_items.append(item)
+        elif matched is False and len(differing_items) < retain_limit:
+            differing_items.append(item)
+
+    snapshot = {
+        "ref": ref,
+        "after_seq": after_seq,
+        "through_seq": through_seq,
+        "prefix_bytes": prefix_bytes,
+        "prefix_event_count": len(prefix_digests),
+        "prefix_events_digest": content_hash(prefix_digests),
+        "range_event_count": len(range_digests),
+        "range_events_digest": content_hash(range_digests),
+        "candidate_event_count": len(candidate_digests),
+        "candidate_events_digest": content_hash(candidate_digests),
+        "candidate_string_count": candidate_count,
+        "candidate_string_bytes": candidate_value_bytes,
+    }
+    return {
+        "ref": ref,
+        "pointer": pointer,
+        "through_seq": through_seq,
+        "after_seq": after_seq,
+        "tool_names": tool_names,
+        "payload_equals": payload_equals,
+        "candidate_count": candidate_count,
+        "match_count": match_count,
+        "first_item": first_item,
+        "last_item": last_item,
+        "first_items": first_items,
+        "matching_items": matching_items,
+        "differing_items": differing_items,
+        "snapshot": snapshot,
+    }
+
+
 class LedgerToolCallStringAdapter(MethodAdapter):
     """Select exact string fields from scoped, immutable tool-call records."""
 
@@ -871,141 +1043,27 @@ class LedgerToolCallStringAdapter(MethodAdapter):
         if expected_present and not isinstance(expected, str):
             raise AdapterNotApplicable(
                 "ledger.tool-call-string expected must be a string")
-        for field, value in (("through_seq", through_seq),
-                             ("after_seq", after_seq)):
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise AdapterNotApplicable(
-                    f"{field} must be a non-negative integer")
-        if after_seq > through_seq:
-            raise AdapterNotApplicable("after_seq must not exceed through_seq")
-        if through_seq > MAX_LEDGER_EVENTS:
-            raise AdapterNotApplicable(
-                f"through_seq exceeds {MAX_LEDGER_EVENTS} events")
-
-        if tool_names is not None:
-            if not isinstance(tool_names, list) or not tool_names \
-                    or len(tool_names) > MAX_LEDGER_TOOL_NAMES \
-                    or any(not isinstance(item, str) or not item
-                           or len(item) > MAX_LEDGER_TOOL_NAME_CHARS
-                           for item in tool_names) \
-                    or len(set(tool_names)) != len(tool_names):
-                raise AdapterNotApplicable(
-                    "tool_names must be a bounded, non-empty unique string list")
-            allowed_tools = frozenset(tool_names)
-        else:
-            allowed_tools = None
-
-        if not isinstance(payload_equals, dict) \
-                or len(payload_equals) > MAX_LEDGER_SCOPE_PREDICATES:
-            raise AdapterNotApplicable(
-                "payload_equals must be a bounded object")
-        checked_scope = tuple(
-            (_validate_ledger_pointer(scope_pointer, "payload_equals pointer"),
-             canonical(scope_expected))
-            for scope_pointer, scope_expected in payload_equals.items()
+        scan = _scan_ledger_tool_call_strings(
+            invocation,
+            context,
+            pointer=pointer,
+            through_seq=through_seq,
+            after_seq=after_seq,
+            tool_names=tool_names,
+            payload_equals=payload_equals,
+            matches=(lambda value: (
+                value == expected if expected_present else None)),
+            retain_limit=MAX_RETAINED_LEDGER_VALUES,
         )
-
-        ref = "ledger:events"
-        self.require_subject(invocation, ref, (PROVENANCE_LEDGER,))
-        prefix_digests = []
-        range_digests = []
-        candidate_digests = []
-        prefix_bytes = 0
-        candidate_count = 0
-        candidate_value_bytes = 0
-        match_count = 0
-        first_item = None
-        last_item = None
-        first_items = []
-        matching_items = []
-        differing_items = []
-
-        for event, prefix_bytes in _bounded_ledger_prefix(
-                context.log, through_seq):
-            event_digest = EventLog.event_digest(event)
-            prefix_digests.append(event_digest)
-            if event["seq"] <= after_seq:
-                continue
-            range_digests.append(event_digest)
-            if event["type"] != "tool_call":
-                continue
-            payload = event["payload"]
-            if not isinstance(payload, dict):
-                raise AdapterNotApplicable(
-                    "in-range tool_call payload must be an object")
-            tool = payload.get("tool")
-            if not isinstance(tool, str) or not tool \
-                    or len(tool) > MAX_LEDGER_TOOL_NAME_CHARS:
-                raise AdapterNotApplicable(
-                    "in-range tool_call must retain a bounded tool name")
-            if allowed_tools is not None and tool not in allowed_tools:
-                continue
-
-            in_scope = True
-            for scope_pointer, canonical_expected in checked_scope:
-                try:
-                    scope_actual = _json_pointer(payload, scope_pointer)
-                except LookupError:
-                    in_scope = False
-                    break
-                if canonical(scope_actual) != canonical_expected:
-                    in_scope = False
-                    break
-            if not in_scope:
-                continue
-
-            candidate_digests.append(event_digest)
-            try:
-                value = _json_pointer(payload, pointer)
-            except LookupError as error:
-                raise AdapterNotApplicable(
-                    "an in-scope tool_call lacks value_pointer") from error
-            if not isinstance(value, str):
-                raise AdapterNotApplicable(
-                    "an in-scope tool_call value is not a string")
-            value_bytes = len(value.encode("utf-8"))
-            if value_bytes > MAX_LEDGER_VALUE_BYTES:
-                raise AdapterNotApplicable(
-                    f"in-scope string exceeds {MAX_LEDGER_VALUE_BYTES} bytes")
-            candidate_value_bytes += value_bytes
-            if candidate_value_bytes > MAX_LEDGER_VALUE_BYTES_TOTAL:
-                raise AdapterNotApplicable(
-                    "in-scope strings exceed the cumulative byte limit")
-
-            item = {
-                "seq": event["seq"],
-                "tool": tool,
-                "value": value,
-                "event_digest": event_digest,
-            }
-            candidate_count += 1
-            if first_item is None:
-                first_item = item
-            last_item = item
-            if len(first_items) < MAX_RETAINED_LEDGER_VALUES:
-                first_items.append(item)
-            if expected_present and value == expected:
-                match_count += 1
-                if len(matching_items) < MAX_RETAINED_LEDGER_VALUES:
-                    matching_items.append(item)
-            elif expected_present \
-                    and len(differing_items) < MAX_RETAINED_LEDGER_VALUES:
-                differing_items.append(item)
-
-        snapshot = {
-            "ref": ref,
-            "after_seq": after_seq,
-            "through_seq": through_seq,
-            "prefix_bytes": prefix_bytes,
-            "prefix_event_count": len(prefix_digests),
-            "prefix_events_digest": content_hash(prefix_digests),
-            "range_event_count": len(range_digests),
-            "range_events_digest": content_hash(range_digests),
-            "candidate_event_count": len(candidate_digests),
-            "candidate_events_digest": content_hash(candidate_digests),
-            "candidate_string_count": candidate_count,
-            "candidate_string_bytes": candidate_value_bytes,
-        }
+        ref = scan["ref"]
+        candidate_count = scan["candidate_count"]
+        match_count = scan["match_count"]
+        first_item = scan["first_item"]
+        last_item = scan["last_item"]
+        first_items = scan["first_items"]
+        matching_items = scan["matching_items"]
+        differing_items = scan["differing_items"]
+        snapshot = scan["snapshot"]
 
         if selector == "first":
             selected_count = min(candidate_count, 1)
@@ -1081,6 +1139,203 @@ class LedgerToolCallStringAdapter(MethodAdapter):
              "selector": selector, "expected": _bounded_json(expected),
              "selected": retained},
             WITNESS_RECORD_CONTRADICTION, observation, (snapshot,))
+
+
+class LedgerToolCallStringAdapterV2(LedgerToolCallStringAdapter):
+    """Evaluate one explicit unary predicate over scoped ledger strings."""
+
+    version = 2
+    accepted_method_reuse = False
+    summary = (
+        "Within an explicit ledger sequence boundary, select strings from one "
+        "exactly scoped set of tools and evaluate an explicit exists, equals, "
+        "nonempty, or nonblank predicate. Values are never parsed or executed; "
+        "the receipt retains a compact witness and digests the complete "
+        "bounded prefix."
+    )
+    arguments = {
+        "selector": (
+            "first|last|any|all over a non-empty selection of in-scope "
+            "string values; exists permits only any"
+        ),
+        "value_pointer": "RFC 6901 pointer applied to each event payload",
+        "through_seq": "required inclusive ledger watermark, integer >= 0",
+        "after_seq": "optional exclusive lower watermark, default 0",
+        "tool_names": "optional non-empty list of exact tool-name strings",
+        "payload_equals": (
+            "optional object from RFC 6901 payload pointers to exact JSON values"
+        ),
+        "predicate": (
+            "exists|equals|nonempty|nonblank; nonblank uses Unicode str.strip"
+        ),
+        "expected": "required exact string for equals; forbidden otherwise",
+    }
+
+    @staticmethod
+    def _matches(predicate: str, value: str, expected: Any) -> bool:
+        if predicate == "exists":
+            return True
+        if predicate == "equals":
+            return value == expected
+        if predicate == "nonempty":
+            return len(value) > 0
+        return bool(value.strip())
+
+    def execute(self, invocation, obligation, context):
+        self.exact_arguments(
+            invocation.arguments,
+            ("selector", "value_pointer", "through_seq", "predicate"),
+            ("after_seq", "expected", "tool_names", "payload_equals"),
+        )
+        arguments = invocation.arguments
+        selector = arguments["selector"]
+        pointer = _validate_ledger_pointer(
+            arguments["value_pointer"], "value_pointer")
+        through_seq = arguments["through_seq"]
+        after_seq = arguments.get("after_seq", 0)
+        tool_names = arguments.get("tool_names")
+        payload_equals = arguments.get("payload_equals", {})
+        predicate = arguments["predicate"]
+        expected_present = "expected" in arguments
+        expected = arguments.get("expected")
+
+        if selector not in {"first", "last", "any", "all"}:
+            raise AdapterNotApplicable(
+                "invalid ledger.tool-call-string selector")
+        if predicate not in {"exists", "equals", "nonempty", "nonblank"}:
+            raise AdapterNotApplicable(
+                "invalid ledger.tool-call-string predicate")
+        if predicate == "exists" and selector != "any":
+            raise AdapterNotApplicable(
+                "exists queries require selector=any")
+        if predicate == "equals":
+            if not expected_present or not isinstance(expected, str):
+                raise AdapterNotApplicable(
+                    "equals requires expected to be a string")
+        elif expected_present:
+            raise AdapterNotApplicable(
+                "expected is permitted only for predicate=equals")
+
+        def predicate_matches(value: str) -> bool:
+            return self._matches(predicate, value, expected)
+        scan = _scan_ledger_tool_call_strings(
+            invocation,
+            context,
+            pointer=pointer,
+            through_seq=through_seq,
+            after_seq=after_seq,
+            tool_names=tool_names,
+            payload_equals=payload_equals,
+            matches=predicate_matches,
+            retain_limit=1,
+        )
+        candidate_count = scan["candidate_count"]
+        match_count = scan["match_count"]
+        first_item = scan["first_item"]
+        last_item = scan["last_item"]
+        matching_items = scan["matching_items"]
+        differing_items = scan["differing_items"]
+        snapshot = scan["snapshot"]
+
+        if candidate_count == 0:
+            selector_domain_count = 0
+            selected_source = []
+            witness_selection = "none"
+        elif selector == "first":
+            selector_domain_count = 1
+            selected_source = [first_item] if first_item is not None else []
+            witness_selection = "first_candidate"
+        elif selector == "last":
+            selector_domain_count = 1
+            selected_source = [last_item] if last_item is not None else []
+            witness_selection = "last_candidate"
+        elif selector == "any" and match_count:
+            selector_domain_count = candidate_count
+            selected_source = matching_items
+            witness_selection = "first_match"
+        elif selector == "all" and match_count != candidate_count:
+            selector_domain_count = candidate_count
+            selected_source = differing_items
+            witness_selection = "first_counterexample"
+        else:
+            selector_domain_count = candidate_count
+            selected_source = matching_items or differing_items
+            witness_selection = (
+                "first_match" if matching_items else "first_counterexample")
+
+        retained = self._retained(selected_source[:1])
+        observation = {
+            "predicate": predicate,
+            "selector": selector,
+            "value_pointer": pointer,
+            "tool_names": tool_names,
+            "payload_equals": payload_equals,
+            "expected_present": expected_present,
+            "expected": _bounded_json(expected) if expected_present else None,
+            "witness": {
+                "predicate": predicate,
+                "selection": witness_selection,
+                "items": retained,
+                "candidate_count": candidate_count,
+                "selector_domain_count": selector_domain_count,
+                "predicate_match_count": match_count,
+            },
+            "snapshot": snapshot,
+        }
+
+        if candidate_count == 0:
+            observation["matches"] = False
+            if obligation.refutable_by_absence:
+                return AdapterExecution(
+                    OUTCOME_REFUTED,
+                    {"reason": "no in-scope string record exists",
+                     "predicate": predicate, "selector": selector,
+                     "through_seq": through_seq},
+                    WITNESS_ABSENCE, observation, (snapshot,))
+            raise AdapterNotApplicable(
+                "absence cannot settle this obligation; the agent executor "
+                "must interpret the empty string selection")
+
+        if selector == "first":
+            matches = predicate_matches(first_item["value"])
+        elif selector == "last":
+            matches = predicate_matches(last_item["value"])
+        elif selector == "any":
+            matches = match_count > 0
+        else:
+            matches = match_count == candidate_count
+        observation["matches"] = matches
+        if matches:
+            return AdapterExecution(
+                OUTCOME_HOLDS, None, WITNESS_NONE,
+                observation, (snapshot,))
+        if selector == "any":
+            if obligation.refutable_by_absence:
+                witness = {
+                    "reason": "no in-scope string satisfies the predicate",
+                    "predicate": predicate,
+                    "through_seq": through_seq,
+                }
+                if expected_present:
+                    witness["expected"] = _bounded_json(expected)
+                return AdapterExecution(
+                    OUTCOME_REFUTED, witness, WITNESS_ABSENCE,
+                    observation, (snapshot,))
+            raise AdapterNotApplicable(
+                "failure of an existential predicate is absence evidence; "
+                "the obligation does not permit absence refutation")
+
+        witness = {
+            "reason": "retained string selection contradicts the predicate",
+            "predicate": predicate,
+            "selector": selector,
+            "selected": retained,
+        }
+        if expected_present:
+            witness["expected"] = _bounded_json(expected)
+        return AdapterExecution(
+            OUTCOME_REFUTED, witness, WITNESS_RECORD_CONTRADICTION,
+            observation, (snapshot,))
 
 
 class BrowserHtmlAdapter(MethodAdapter):
@@ -1521,6 +1776,7 @@ def default_adapter_registry(
         JsonValueAdapter(),
         LedgerEventAdapter(),
         LedgerToolCallStringAdapter(),
+        LedgerToolCallStringAdapterV2(),
     ]
     if browser_observer is not None:
         adapters.append(BrowserHtmlAdapter(browser_observer))
