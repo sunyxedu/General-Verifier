@@ -127,3 +127,46 @@ The matrix also prospectively specifies a synthetic negative pair: only the
 copied video feed's tool identity is renamed, preserving other payloads and
 the original archive. That counterfactual checks tool-identity handling; it
 is not an authentic Terminal Bench trajectory or a whole-task score.
+
+## Negative pair: equivalence gate failed
+
+Both prospective arms completed with unchanged source/case pins and complete
+attempted-call accounting. Nevertheless, the final results **disagreed**:
+
+| Synthetic renamed-identity input | Untyped control | Corrected typed |
+| --- | ---: | ---: |
+| Outcome | refuted | holds |
+| Process wall seconds | 488.612 | 98.930 |
+| Attempted model calls | 6 | 2 |
+| Uncached input tokens | 234,148 | 72,249 |
+| Cached input tokens | 983,552 | 122,112 |
+| Output tokens | 18,382 | 4,057 |
+| Successful adapter executions | 0 | 1 |
+
+The apparent speed reduction is **not an accepted optimization result**.
+The control's first method treated any nonblank command-bearing record as
+sufficient; its Judger rejected the missing tool-identity relation. The normal
+repair then checked explicit identity and returned refuted with an admissible
+absence witness. All six calls, including the rejected method, are counted.
+
+The corrected typed Oracle selected the renamed identity and a nonblank-string
+predicate. The adapter faithfully returned holds for that narrower predicate.
+Its fresh Judger accepted the unstated equivalence between that observation
+and the required action. Thus mechanical receipt validity and a separate model
+audit did not establish model-level result preservation. No task-name routing,
+identity alias table, or acceptance override is introduced to fix this case.
+
+There is an important gold-label limit: the operator expected refuted under
+exact retained tool identity, but the natural task can also be read as referring
+to the underlying execution behavior. That behavior is not established by an
+opaque tool name plus command text. The pair establishes a reproducible input
+with **observed A/B disagreement**, not a proven false positive under every
+possible task reading. Benchmark reward provides no gold for this obligation.
+Future controls must distinguish an explicitly exact identity predicate from
+an identity-independent content predicate before attributing the disagreement
+to a specific optimization change. Neither this single bundle comparison nor
+fixture-only tests isolate causality or justify rollout.
+
+After the architecture guards, the local regression command completed with
+1,311 passed, 4 skipped, and 4 subtests passed. It retained the existing exclusion
+of `tests/test_score_llm_verifier.py` for its unavailable optional dependency.
