@@ -974,6 +974,13 @@ def _scan_ledger_tool_call_strings(
     }
 
 
+_LEDGER_PAYLOAD_POINTER_DESCRIPTION = (
+    "RFC 6901 pointer rooted at event.payload, not the outer event: /key "
+    "means event.payload['key']; an initial /payload is a real nested key, "
+    "never an automatic wrapper prefix. Derive keys from the retained payload."
+)
+
+
 class LedgerToolCallStringAdapter(MethodAdapter):
     """Select exact string fields from scoped, immutable tool-call records."""
 
@@ -989,7 +996,7 @@ class LedgerToolCallStringAdapter(MethodAdapter):
             "first|last|any|all over a non-empty selection of in-scope "
             "string values"
         ),
-        "value_pointer": "RFC 6901 pointer applied to each event payload",
+        "value_pointer": _LEDGER_PAYLOAD_POINTER_DESCRIPTION,
         "through_seq": "required inclusive ledger watermark, integer >= 0",
         "after_seq": "optional exclusive lower watermark, default 0",
         "expected": (
@@ -998,7 +1005,8 @@ class LedgerToolCallStringAdapter(MethodAdapter):
         ),
         "tool_names": "optional non-empty list of exact tool-name strings",
         "payload_equals": (
-            "optional object from RFC 6901 payload pointers to exact JSON values"
+            "optional object from RFC 6901 pointers rooted at event.payload "
+            "to exact JSON values"
         ),
     }
 
@@ -1158,12 +1166,13 @@ class LedgerToolCallStringAdapterV2(LedgerToolCallStringAdapter):
             "first|last|any|all over a non-empty selection of in-scope "
             "string values; exists permits only any"
         ),
-        "value_pointer": "RFC 6901 pointer applied to each event payload",
+        "value_pointer": _LEDGER_PAYLOAD_POINTER_DESCRIPTION,
         "through_seq": "required inclusive ledger watermark, integer >= 0",
         "after_seq": "optional exclusive lower watermark, default 0",
         "tool_names": "optional non-empty list of exact tool-name strings",
         "payload_equals": (
-            "optional object from RFC 6901 payload pointers to exact JSON values"
+            "optional object from RFC 6901 pointers rooted at event.payload "
+            "to exact JSON values"
         ),
         "predicate": (
             "exists|equals|nonempty|nonblank; nonblank uses Unicode str.strip"

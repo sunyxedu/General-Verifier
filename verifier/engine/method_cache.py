@@ -129,7 +129,7 @@ def _backend_identity(backend) -> Optional[Dict[str, Any]]:
     }
     found = False
     for name in ("model", "model_overrides", "effort", "service_tier",
-                 "permission_mode"):
+                 "permission_mode", "runtime_instruction_identity"):
         if hasattr(backend, name):
             value = getattr(backend, name)
             if isinstance(value, dict):

@@ -125,6 +125,23 @@ _EXECUTION_DIAGNOSTIC_ITEM_TYPES = (
     "agent_message", "reasoning", "command_execution", "file_change",
     "mcp_tool_call", "web_search", "image_generation", "todo_list", "error",
 )
+_ARTIFACT_DIGEST_EXPRESSION = (
+    "hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, "
+    "separators=(',', ':')).encode('utf-8')).hexdigest()"
+)
+_ARTIFACT_ADDRESS_NOTE = (
+    "\n\nARTIFACT TRANSPORT CONTRACT (gv-canonical-json-v1): when checking "
+    "artifact_digest, parse the complete artifact file as JSON into value. "
+    "The exact reference calculation, using Python's standard json and "
+    "hashlib modules, is: " + _ARTIFACT_DIGEST_EXPRESSION + ". "
+    "Hash exactly that encoded byte string; a display program's final "
+    "newline is not part of it. Do not omit or rewrite fields before "
+    "hashing. This specifies content addressing only, not a verification "
+    "outcome. Inspect the actual artifact and independently audit method "
+    "sufficiency, scope, provenance and faithful execution. A genuine "
+    "mismatch remains a defect; a matching digest never proves semantic "
+    "correctness."
+)
 _USAGE_CAPTURE_LOCK = threading.Lock()
 _USAGE_WRITE_LOCK = threading.Lock()
 _USAGE_CAPTURE: Optional["_UsageCapture"] = None
@@ -1171,6 +1188,9 @@ class CodexBackend:
         self.effort = effort
         self.service_tier = normalize_service_tier(service_tier)
         self.timeout = timeout
+        # A run-scoped transport specification, not a task-dependent rule or
+        # automatic artifact approval. Keep it in method-cache identity too.
+        self._artifact_address_note = _ARTIFACT_ADDRESS_NOTE
         # These roots come only from verifier/operator construction.  Role
         # variables may name the same roots so prompts can use them, but may
         # never add or replace a filesystem grant.
@@ -1190,6 +1210,11 @@ class CodexBackend:
         self._image_cache: Dict[tuple[str, ...], tuple[_CapturedImage, ...]] = {}
         self._image_blobs: Dict[tuple[str, str], _CapturedImage] = {}
         self._image_blob_bytes = 0
+
+    @property
+    def runtime_instruction_identity(self) -> str:
+        return hashlib.sha256(
+            self._artifact_address_note.encode("utf-8")).hexdigest()
 
     def _execution_cwd(self, role_name: str,
                        variables: Mapping[str, Any]) -> Optional[str]:
@@ -1728,6 +1753,7 @@ class CodexBackend:
         instruction = (
             (role.system + "\n\n" if role.system else "")
             + prompt
+            + (self._artifact_address_note if role_name == "judger" else "")
             + (_SEARCH_NOTE if self._search_enabled(role_name) else "")
             + image_note
             + "\n\nYour FINAL message must be exactly one JSON object "

@@ -566,6 +566,28 @@ def test_explicit_ledger_prefix_has_online_offline_parity_and_fresh_suffix(
     assert fallback.calls == []
 
 
+@pytest.mark.parametrize("version", [1, 2])
+def test_pointer_root_is_payload_and_never_silently_strips_a_nested_key(tmp_path, version):
+    _, artifacts, log, fallback, routing = harness(tmp_path)
+    event = log.append("tool_call", {
+        "tool": "opaque-runtime.v7", "key": "outer value",
+        "payload": {"key": "nested value"},
+    })
+    common = {"selector": "any", "through_seq": event["seq"],
+              "tool_names": ["opaque-runtime.v7"]}
+    if version == 2:
+        common["predicate"] = "equals"
+    for pointer, expected in (("/key", "outer value"), ("/payload/key", "nested value")):
+        result = discharge(routing, {
+            **common, "value_pointer": pointer, "expected": expected}, version=version)
+        assert result.outcome == OUTCOME_HOLDS
+        assert execution(artifacts, result)["observation"]["value_pointer"] == pointer
+    # The wrapper-looking path is not an alias for the valid /tool path.
+    discharge(routing, {**common, "value_pointer": "/payload/tool",
+                        "expected": "opaque-runtime.v7"}, version=version)
+    assert len(fallback.calls) == 1
+
+
 def test_through_seq_is_exact_and_corrupt_future_suffix_is_not_parsed(tmp_path):
     _, _, log, fallback, routing = harness(tmp_path)
     wanted = append_value(log, "kept")
