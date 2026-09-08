@@ -316,6 +316,56 @@ def test_missing_or_invalid_usage_never_becomes_zero(tmp_path, stdout, status):
         assert row[field] is None
 
 
+def test_nested_duplicate_in_non_usage_event_does_not_hide_terminal_usage(
+        tmp_path):
+    state = _state(tmp_path)
+    lines = _stream().splitlines()
+    lines.insert(2, (
+        '{"type":"item.completed","item":{"id":"tool-1",'
+        '"type":"command_execution","metadata":{"value":1,"value":2}}}'
+    ))
+    proc = subprocess.CompletedProcess(
+        _command(), 0, "\n".join(lines) + "\n", "")
+    module = _module(state, RUN_CODEX_PROCESS_SEAM,
+                     lambda *args, **kwargs: proc)
+    ledger = tmp_path / "nested-duplicate.jsonl"
+
+    with observe_codex_attempts(
+            module, ledger, seam=RUN_CODEX_PROCESS_SEAM,
+            context_by_cwd={str(state): {"trial": "nested-duplicate"}}):
+        module.CodexBackend(state).complete("judger", "private", {})
+
+    row = _by_type(ledger, "codex_cli_attempt_finished")[0]
+    assert row["usage_status"] == "complete"
+    assert row["input_tokens"] == 100
+
+
+def test_duplicate_top_level_type_keeps_usage_incomplete(tmp_path):
+    state = _state(tmp_path)
+    lines = _stream().splitlines()
+    lines.insert(2, (
+        '{"type":"turn.completed","type":"item.completed",'
+        '"item":{"id":"tool-1","type":"command_execution"},'
+        '"usage":{"input_tokens":1,"cached_input_tokens":0,'
+        '"output_tokens":1,"reasoning_output_tokens":0}}'
+    ))
+    proc = subprocess.CompletedProcess(
+        _command(), 0, "\n".join(lines) + "\n", "")
+    module = _module(state, RUN_CODEX_PROCESS_SEAM,
+                     lambda *args, **kwargs: proc)
+    ledger = tmp_path / "duplicate-type.jsonl"
+
+    with observe_codex_attempts(
+            module, ledger, seam=RUN_CODEX_PROCESS_SEAM,
+            context_by_cwd={str(state): {"trial": "duplicate-type"}}):
+        module.CodexBackend(state).complete("judger", "private", {})
+
+    row = _by_type(ledger, "codex_cli_attempt_finished")[0]
+    assert row["usage_status"] == "invalid"
+    assert row["usage_complete"] is False
+    assert row["input_tokens"] is None
+
+
 def test_threaded_calls_keep_role_and_candidate_context_separate(tmp_path):
     first = tmp_path / "candidate-a"
     second = tmp_path / "candidate-b"

@@ -826,6 +826,38 @@ def _reject_constant(_value):
     raise ValueError("non-finite JSON value")
 
 
+class _ObjectPairs(list):
+    """Distinguish a decoded JSON object from an ordinary JSON array."""
+
+
+def _preserve_object_pairs(pairs):
+    return _ObjectPairs(pairs)
+
+
+def _usage_event_type(raw: str) -> Optional[str]:
+    """Read one unambiguous top-level event type without policing payloads.
+
+    Usage is carried only by ``thread.started`` and ``turn.completed``.  Codex
+    tool-result payloads are unrelated to those counters and may themselves
+    contain duplicate object fields.  Preserve their pairs so a nested
+    duplicate cannot erase otherwise valid terminal accounting, while still
+    rejecting an ambiguous top-level ``type`` that could hide another usage
+    event.  The two accounting events are decoded strictly below.
+    """
+    event = json.loads(
+        raw, object_pairs_hook=_preserve_object_pairs,
+        parse_constant=_reject_constant,
+    )
+    if not isinstance(event, _ObjectPairs):
+        raise ValueError("Codex JSONL event is not an object")
+    event_types = [value for key, value in event if key == "type"]
+    if len(event_types) > 1:
+        raise ValueError("Codex JSONL event has duplicate type fields")
+    if not event_types or not isinstance(event_types[0], str):
+        return None
+    return event_types[0]
+
+
 def _parse_usage(text: Optional[str]) -> _Usage:
     empty = _incomplete_usage("unknown" if text == "" else "invalid")
     if text is None:
@@ -838,18 +870,19 @@ def _parse_usage(text: Optional[str]) -> _Usage:
         for raw in text.splitlines():
             if not raw.strip():
                 continue
+            event_type = _usage_event_type(raw)
+            if event_type not in {"thread.started", "turn.completed"}:
+                continue
             event = json.loads(
                 raw, object_pairs_hook=_unique_json_object,
                 parse_constant=_reject_constant,
             )
-            if not isinstance(event, dict):
-                return empty
-            if event.get("type") == "thread.started":
+            if event_type == "thread.started":
                 thread_id = event.get("thread_id")
                 if not isinstance(thread_id, str) or not thread_id:
                     return empty
                 threads.append(thread_id)
-            elif event.get("type") == "turn.completed":
+            else:
                 completions.append(event.get("usage"))
     except (ValueError, TypeError, RecursionError):
         return empty
