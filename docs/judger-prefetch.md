@@ -109,3 +109,43 @@ including `ctime`. The endpoint comparison does not prove that an intermediate
 write-and-restore never occurred. No verdict rule, role, permission or retry
 budget changes; the failed paid measurements above are not retroactively
 relabeled as results for this fix.
+
+## Fixed-metadata paid diagnostic: faster, acceptance still incomplete
+
+The same eight serial jobs were repeated from a fresh frozen archive of
+`cdff97243bf6bb6b237d3f7a9771fd5ddafb5906`, before the observed-EOF adapter
+was included. This isolates the prefetch profile from that separate instrument.
+All source/input/artifact/usage/span integrity checks passed. Every prefetched
+call received the complete small artifact and ledger and passed endpoint
+revalidation, with no discarded verdict or retry.
+
+| Four-case total | Default | Prefetch |
+|---|---:|---:|
+| Process wall time | 263.3 s | 93.5 s |
+| Billed CLI attempts | 4 | 4 |
+| Uncached input tokens | 97,420 | 54,391 |
+| Cached input tokens | 288,000 | 11,520 |
+| Output tokens | 9,435 | 4,342 |
+| Completed command items | 17 | 0 |
+| Observed expected directions | 3/4 | 4/4 |
+| Passed original probe gates | 3/4 | 3/4 |
+
+This small Judger-only sample is **2.82× faster**, with lower totals in all
+three billed token buckets. It is not a dollar-price calculation, a 10× result
+or a full-E2E measurement. Larger ledgers may not fit the prefetch cap.
+
+The default arm rejected the valid `exists-alpha` positive certificate. The
+prefetched `exists-beta` arm correctly rejected the insufficient negative
+certificate, but returned `degradation="unjustified"`; this probe requires
+`"n/a"` to mark a run complete. Its recorded status remains **inconclusive**,
+exit code 2, despite the observed direction matching. Neither this original
+gate nor its historical result has been relaxed or relabeled. There is no
+claim of stable no-loss quality from these four single observations.
+
+Retained run: `experiments/terminal_bench/results/gv-judger-prefetch-fixed-runs.Pawf3w`.
+The read-only audit separates integrity, original gate completion and observed
+direction results, and includes all eight bills. The profile remains default
+off pending broader fresh-Oracle and full online/offline comparisons. Runtime
+settings and token-bucket reporting also follow the
+[official OpenAI evaluation checklist](https://developers.openai.com/api/docs/guides/deployment-checklist#choose-a-gpt-56-model);
+the requested Luna model and effective effort are unchanged.
