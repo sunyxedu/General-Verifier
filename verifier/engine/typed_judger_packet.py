@@ -37,8 +37,9 @@ from .judger_prefetch import (
 
 
 TYPED_JUDGER_PACKET_PROTOCOL = (
-    "gv-typed-adapter-judger-packet-v1;"
-    "evidence-cap=16384;render-cap=131072;fresh-replay=before+after"
+    "gv-typed-adapter-judger-packet-v2;"
+    "evidence-cap=16384;render-cap=131072;fresh-replay=before+after;"
+    "transport=no-tools-v1"
 )
 MAX_TYPED_JUDGER_PACKET_BYTES = 128 * 1024
 
@@ -50,6 +51,7 @@ ELIGIBLE_ADAPTERS = frozenset({
     ("filesystem.exists", 1),
     ("filesystem.sha256", 1),
     ("document.json-value", 1),
+    ("document.text", 1),
     ("ledger.event", 1),
     ("ledger.tool-call-string", 1),
     ("ledger.tool-call-string", 2),

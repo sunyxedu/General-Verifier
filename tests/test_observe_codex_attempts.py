@@ -157,6 +157,10 @@ def test_success_records_content_free_attempt_and_preserves_result(
     assert terminal["command_model"] == "gpt-5.6-luna"
     assert terminal["command_effort"] == "medium"
     assert terminal["command_service_tier"] == "standard"
+    assert terminal["runtime_instruction_identity"] is None
+    assert terminal["typed_judger_transport"] is False
+    assert terminal["typed_judger_protocol"] is None
+    assert terminal["typed_judger_packet_sha256"] is None
     assert terminal["context"] == context[str(state)]
     encoded = ledger.read_text()
     assert "private prompt" not in encoded

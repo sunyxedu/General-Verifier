@@ -134,6 +134,7 @@ def test_initial_eligibility_is_closed_and_ledger_prefix_receipts_replay(tmp_pat
         ("filesystem.exists", 1),
         ("filesystem.sha256", 1),
         ("document.json-value", 1),
+        ("document.text", 1),
         ("ledger.event", 1),
         ("ledger.tool-call-string", 1),
         ("ledger.tool-call-string", 2),
@@ -183,6 +184,87 @@ def test_initial_eligibility_is_closed_and_ledger_prefix_receipts_replay(tmp_pat
         assert packet is not None and packet.revalidate() is True
         receipt = json.loads(packet.render())["verifier_execution_receipt"]
         assert receipt["observation"]["matches"] is True
+
+
+@pytest.mark.parametrize(("predicate", "expected", "outcome", "matched"), [
+    ("contains", "alp", "holds", True),
+    ("contains", "omega", "refuted", False),
+])
+def test_text_literal_positive_and_negative_results_are_freshly_replayable(
+    tmp_path, predicate, expected, outcome, matched,
+):
+    fixture = _fixture(tmp_path)
+    _state, target, _log, artifacts, route, obligation = fixture[:6]
+    method = {
+        "procedure": "apply the exact literal predicate to the whole file",
+        "artifact": "a bounded deterministic text predicate receipt",
+        "level": "deterministic",
+        "basis": BASIS_WORLD,
+        "strength": "decisive",
+        "bridges": [],
+        "adapter": "document.text",
+        "adapter_version": 1,
+        "adapter_arguments": json.dumps({
+            "address": str(target), "predicate": predicate,
+            "expected": expected,
+        }, sort_keys=True),
+        "adapter_inputs": [{
+            "ref": str(target), "provenance": "delivered",
+            "role": "subject",
+        }],
+    }
+    result = route.discharge(
+        {"id": obligation.claim_id}, obligation, method)
+    assert result.outcome == outcome
+    packet = packet_module.build_typed_adapter_judger_packet(
+        route, artifacts, obligation, method, result, "decisive")
+    assert packet is not None and packet.revalidate() is True
+    document = json.loads(packet.render())
+    assert document["adapter_contract"]["identity"] == "document.text@1"
+    observation = document["verifier_execution_receipt"]["observation"]
+    assert observation["matched"] is matched
+    assert observation["identity"]["sha256"]
+    assert observation["text_characters"] == len(target.read_text())
+    assert "actual" not in observation
+
+    target.write_text("changed after packet", encoding="utf-8")
+    assert packet.revalidate() is False
+
+
+def test_text_absence_without_consumed_identity_stays_on_original_path(tmp_path):
+    fixture = _fixture(tmp_path)
+    _state, target, _log, artifacts, route, old_obligation = fixture[:6]
+    target.unlink()
+    obligation = Obligation(
+        old_obligation.claim_id,
+        "the required literal is present in the delivered file",
+        BASIS_WORLD,
+        clause="literal must be present",
+        refutable_by_absence=True,
+    )
+    method = {
+        "procedure": "apply the exact literal predicate to the whole file",
+        "artifact": "a bounded deterministic text predicate receipt",
+        "level": "deterministic",
+        "basis": BASIS_WORLD,
+        "strength": "decisive",
+        "bridges": [],
+        "adapter": "document.text",
+        "adapter_version": 1,
+        "adapter_arguments": json.dumps({
+            "address": str(target), "predicate": "contains",
+            "expected": "alpha",
+        }, sort_keys=True),
+        "adapter_inputs": [{
+            "ref": str(target), "provenance": "delivered",
+            "role": "subject",
+        }],
+    }
+    result = route.discharge(
+        {"id": obligation.claim_id}, obligation, method)
+    assert result.outcome == "refuted"
+    assert packet_module.build_typed_adapter_judger_packet(
+        route, artifacts, obligation, method, result, "decisive") is None
 
 
 def test_world_or_task_change_fails_post_call_replay(tmp_path):

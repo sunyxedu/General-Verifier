@@ -45,6 +45,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Mapping, Optional
 
@@ -176,6 +177,45 @@ _JUDGER_PREFETCH_NOTE = (
 _USAGE_CAPTURE_LOCK = threading.Lock()
 _USAGE_WRITE_LOCK = threading.Lock()
 _USAGE_CAPTURE: Optional["_UsageCapture"] = None
+_TYPED_JUDGER_ATTEMPT: ContextVar[Optional[tuple[str, str]]] = ContextVar(
+    "gv_typed_judger_attempt", default=None)
+
+
+def _typed_judger_attempt_fields() -> Dict[str, Any]:
+    """Return immutable per-call transport attribution for attempt ledgers."""
+    profile = _TYPED_JUDGER_ATTEMPT.get()
+    if profile is None:
+        return {
+            "typed_judger_transport": False,
+            "typed_judger_protocol": None,
+            "typed_judger_packet_sha256": None,
+        }
+    protocol, digest = profile
+    return {
+        "typed_judger_transport": True,
+        "typed_judger_protocol": protocol,
+        "typed_judger_packet_sha256": digest,
+    }
+
+
+@contextmanager
+def _typed_judger_attempt_scope(
+    protocol: str,
+    packet_sha256: str,
+) -> Iterator[None]:
+    """Bind one rendered packet to one logical call without shared mutation."""
+    if (not isinstance(protocol, str) or not protocol
+            or len(protocol) > 512
+            or not isinstance(packet_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", packet_sha256) is None):
+        raise RoleError("invalid typed Judger attempt identity")
+    if _TYPED_JUDGER_ATTEMPT.get() is not None:
+        raise RoleError("nested typed Judger attempt identity")
+    token = _TYPED_JUDGER_ATTEMPT.set((protocol, packet_sha256))
+    try:
+        yield
+    finally:
+        _TYPED_JUDGER_ATTEMPT.reset(token)
 
 
 @dataclass(frozen=True)
@@ -1393,6 +1433,19 @@ class CodexBackend:
     def judger_prefetch(self) -> bool:
         return bool(self._judger_prefetch_note)
 
+    @property
+    def typed_judger_transport(self) -> bool:
+        return _typed_judger_attempt_fields()["typed_judger_transport"]
+
+    @property
+    def typed_judger_protocol(self) -> Optional[str]:
+        return _typed_judger_attempt_fields()["typed_judger_protocol"]
+
+    @property
+    def typed_judger_packet_sha256(self) -> Optional[str]:
+        return _typed_judger_attempt_fields()[
+            "typed_judger_packet_sha256"]
+
     def _execution_cwd(self, role_name: str,
                        variables: Mapping[str, Any]) -> Optional[str]:
         if self._is_offline_execution(role_name, variables):
@@ -1962,6 +2015,7 @@ class CodexBackend:
             "judger_prefetch_packet_sha256": (
                 hashlib.sha256(prefetch_body.encode("utf-8")).hexdigest()
                 if prefetch_body else None),
+            **_typed_judger_attempt_fields(),
             "runtime_instruction_identity": self.runtime_instruction_identity,
             "state_dir": (
                 os.path.realpath(os.path.abspath(self.cwd))

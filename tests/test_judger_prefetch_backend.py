@@ -122,6 +122,9 @@ def test_schema_retry_bills_include_actual_prefetch_identity(tmp_path, monkeypat
     for row in rows:
         assert row["judger_prefetch"] is True
         assert row["judger_prefetch_attached"] is True
+        assert row["typed_judger_transport"] is False
+        assert row["typed_judger_protocol"] is None
+        assert row["typed_judger_packet_sha256"] is None
         assert row["runtime_instruction_identity"] == backend.runtime_instruction_identity
         assert row["judger_prefetch_packet_sha256"] == hashlib.sha256(
             packet.render().encode()).hexdigest()

@@ -62,6 +62,10 @@ class _CallFrame:
     model: Optional[str]
     effort: Optional[str]
     service_tier: Optional[str]
+    runtime_instruction_identity: Optional[str]
+    typed_judger_transport: Any
+    typed_judger_protocol: Any
+    typed_judger_packet_sha256: Any
     state_dir: Optional[str]
     attribution: str
     context: Mapping[str, Any]
@@ -277,6 +281,11 @@ class ObservationSession:
             "model": frame.model,
             "effort": frame.effort,
             "service_tier": frame.service_tier,
+            "runtime_instruction_identity": frame.runtime_instruction_identity,
+            "typed_judger_transport": frame.typed_judger_transport,
+            "typed_judger_protocol": frame.typed_judger_protocol,
+            "typed_judger_packet_sha256": (
+                frame.typed_judger_packet_sha256),
             "state_dir": frame.state_dir,
             "attribution": frame.attribution,
             "context": dict(frame.context),
@@ -305,6 +314,17 @@ class ObservationSession:
                           if isinstance(
                               getattr(backend, "service_tier", None), str)
                           else None),
+            runtime_instruction_identity=(
+                getattr(backend, "runtime_instruction_identity", None)
+                if isinstance(getattr(
+                    backend, "runtime_instruction_identity", None), str)
+                else None),
+            typed_judger_transport=getattr(
+                backend, "typed_judger_transport", False),
+            typed_judger_protocol=getattr(
+                backend, "typed_judger_protocol", None),
+            typed_judger_packet_sha256=getattr(
+                backend, "typed_judger_packet_sha256", None),
             state_dir=state_dir,
             attribution=attribution,
             context=context,
@@ -407,6 +427,10 @@ class ObservationSession:
             model=actual[0],
             effort=None,
             service_tier=None,
+            runtime_instruction_identity=None,
+            typed_judger_transport=False,
+            typed_judger_protocol=None,
+            typed_judger_packet_sha256=None,
             state_dir=_canonical_path(cwd),
             attribution="unattributed",
             context={},

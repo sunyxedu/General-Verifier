@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -75,6 +76,7 @@ from ..core.model import (
     WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm.schema import RoleError
+from ..llm.typed_judger_backend import restricted_typed_judger_backend
 from .method_cache import AcceptedMethod, build_method_cache_key
 from .judger_prefetch import build_judger_evidence_packet
 from .typed_judger_packet import build_typed_adapter_judger_packet
@@ -1346,8 +1348,20 @@ class BindingGame:
                         stage="judger", method_attempt=method_attempt,
                         redo=redo, judger_retry_index=call_no,
                         independent_judger=independent_judger):
-                    verdict = self.judger_role.call(
-                        self.backend, call_variables)
+                    # For an eligible typed packet, only the exact shipped
+                    # Codex backend changes transport: the same independent
+                    # Judger runs in a fresh no-tools session. Unsupported
+                    # backends keep their established call path. A transport
+                    # failure enters this existing retry loop; a semantic
+                    # ``no`` verdict returns normally and never falls back.
+                    transport = (
+                        restricted_typed_judger_backend(self.backend)
+                        if typed_packet is not None and call_no == 1
+                        else nullcontext(self.backend)
+                    )
+                    with transport as judger_backend:
+                        verdict = self.judger_role.call(
+                            judger_backend, call_variables)
                     if (packet is not None and call_no == 1
                             and not packet.revalidate()):
                         raise RoleError(
