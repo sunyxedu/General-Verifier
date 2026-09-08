@@ -7,6 +7,14 @@ zero result loss has been established. Do not treat adapter unit-test speedups
 as whole-pipeline performance, or matching final verdicts as identical internal
 verification results.
 
+The latest [cold shared-contract diagnostic](cold-14a4fa1-diagnostic.md)
+measures **1.54x total charged latency improvement**, with uncached/cached/
+output token ratios **0.594/0.605/0.692**. Its final labels match but a final
+obligation and supporting-claim status differ, so it fails the no-loss gate.
+The separately gated [append-only Compiler repair](append-only-delta.md)
+addresses an observed regeneration waste; paid validation of that option is
+still pending and it remains off by default.
+
 ## Paired offline pilot
 
 Source revision: `eccefb9`; pipeline fingerprint: `35e435a6ae5535bf`.
