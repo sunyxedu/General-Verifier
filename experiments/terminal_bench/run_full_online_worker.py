@@ -44,6 +44,7 @@ _PLAN_KEYS = {
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ATTEMPT = re.compile(r"[0-9a-f]{32}\Z")
+_TYPED_SCRATCH = re.compile(r"gv-typed-judger-[a-z0-9_]{8}\Z")
 _TASK_CAP = 1024 * 1024
 _INPUT_FILE_CAP = 32 * 1024 * 1024
 _INPUT_TOTAL_CAP = 128 * 1024 * 1024
@@ -524,6 +525,37 @@ def _read_jsonl_identity(path: Path, cap=_EVENT_CAP) -> tuple[list[dict], str]:
     if not rows or any(type(row) is not dict for row in rows):
         raise ValueError("audit ledger must contain objects")
     return rows, _sha_bytes(raw)
+
+
+def _accounting_execution_cwds(output: Path, state: Path, arm: str,
+                               profile: dict) -> dict:
+    """Bind analyzer cwd grants to the worker's fixed restricted transport."""
+    if type(profile) is not dict:
+        raise ValueError("transport profile is unavailable for cwd accounting")
+    state_path = str(state)
+    permitted = {state_path}
+    for row in _read_jsonl(output / "observer.jsonl"):
+        if row.get("record_type") != "codex_cli_attempt_finished":
+            continue
+        cwd = row.get("cwd")
+        if row.get("typed_judger_transport") is not True:
+            if cwd != state_path:
+                raise ValueError("ordinary attempt escaped the state cwd")
+            continue
+        path = Path(cwd) if isinstance(cwd, str) else None
+        if (arm != "treatment" or path is None or not path.is_absolute()
+                or os.path.realpath(cwd) != cwd
+                or path.parent != Path("/private/tmp")
+                or not _TYPED_SCRATCH.fullmatch(path.name)
+                or row.get("role") != "judger"
+                or row.get("runtime_instruction_identity")
+                != profile.get("restricted_runtime_instruction_identity")
+                or row.get("typed_judger_protocol") != profile.get("protocol")
+                or not isinstance(row.get("typed_judger_packet_sha256"), str)
+                or not _HASH.fullmatch(row["typed_judger_packet_sha256"])):
+            raise ValueError("restricted attempt cwd is not operator-bound")
+        permitted.add(cwd)
+    return {state_path: (state_path, *sorted(permitted - {state_path}))}
 
 
 def _artifact(state: Path, digest: str) -> tuple[dict, str]:
@@ -1890,6 +1922,7 @@ def run_worker(plan):
     }
     _write_new(output / "worker-start.json", start)
     observation = overlay = chain = accounting = execution_audit = None
+    transport_profile = None
     pre_inputs = post_inputs = artifacts = None
     failures, caught = [], None
     try:
@@ -1941,7 +1974,9 @@ def run_worker(plan):
             else:
                 accounting = analyzer.analyze_file(
                     output / "observer.jsonl", context_by_cwd=context,
-                    **RUNTIME, session_summary=observation.summary())
+                    **RUNTIME, session_summary=observation.summary(),
+                    execution_cwds_by_state=_accounting_execution_cwds(
+                        output, state, plan["arm"], transport_profile))
                 if accounting.get("accounting_complete") is not True:
                     failures.append("AccountingIncomplete")
             post_inputs = input_snapshot(state, runtime_state=True)

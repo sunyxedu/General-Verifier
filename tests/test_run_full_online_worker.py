@@ -589,6 +589,63 @@ def test_execution_audit_rejects_unbound_threadless_timeout(
         worker._audit_execution(output, state_path, "control", cert, protocol)
 
 
+def test_accounting_cwds_bind_only_restricted_judger_scratch(tmp_path):
+    output, state = tmp_path / "output", tmp_path / "state"
+    output.mkdir()
+    state.mkdir()
+    profile = {
+        "protocol": "typed-v1",
+        "restricted_runtime_instruction_identity": "e" * 64,
+    }
+    scratch = "/private/tmp/gv-typed-judger-a1_b2c3d"
+    _write_jsonl(output / "observer.jsonl", [{
+        "record_type": "codex_cli_attempt_finished",
+        "cwd": str(state), "typed_judger_transport": False,
+    }, {
+        "record_type": "codex_cli_attempt_finished", "cwd": scratch,
+        "typed_judger_transport": True, "role": "judger",
+        "runtime_instruction_identity": "e" * 64,
+        "typed_judger_protocol": "typed-v1",
+        "typed_judger_packet_sha256": "a" * 64,
+    }])
+
+    assert worker._accounting_execution_cwds(
+        output, state, "treatment", profile) == {
+            str(state): (str(state), scratch)}
+
+
+@pytest.mark.parametrize("defect", ["ordinary", "prefix", "identity", "arm"])
+def test_accounting_cwds_reject_unbound_paths(defect, tmp_path):
+    output, state = tmp_path / "output", tmp_path / "state"
+    output.mkdir()
+    state.mkdir()
+    profile = {
+        "protocol": "typed-v1",
+        "restricted_runtime_instruction_identity": "e" * 64,
+    }
+    row = {
+        "record_type": "codex_cli_attempt_finished",
+        "cwd": "/private/tmp/gv-typed-judger-a1_b2c3d",
+        "typed_judger_transport": True, "role": "judger",
+        "runtime_instruction_identity": "e" * 64,
+        "typed_judger_protocol": "typed-v1",
+        "typed_judger_packet_sha256": "a" * 64,
+    }
+    arm = "treatment"
+    if defect == "ordinary":
+        row["typed_judger_transport"] = False
+    elif defect == "prefix":
+        row["cwd"] = "/private/tmp/unbound-a1_b2c3d"
+    elif defect == "identity":
+        row["runtime_instruction_identity"] = "f" * 64
+    else:
+        arm = "control"
+    _write_jsonl(output / "observer.jsonl", [row])
+
+    with pytest.raises(ValueError, match="escaped|operator-bound"):
+        worker._accounting_execution_cwds(output, state, arm, profile)
+
+
 def test_event_audit_accepts_retry_noise_and_parallel_obligations(
         tmp_path, monkeypatch):
     output, state_path, cert, protocol = _audit_files(

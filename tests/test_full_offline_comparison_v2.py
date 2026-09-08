@@ -252,6 +252,50 @@ def test_unknown_cost_makes_ten_x_gate_indeterminate():
     assert comparison._ten_x_gate(False, cost, latency) is False
 
 
+def test_offline_accounting_cwds_bind_restricted_scratch(tmp_path):
+    output, state = tmp_path / "output", tmp_path / "state"
+    output.mkdir()
+    state.mkdir()
+    scratch = "/private/tmp/gv-typed-judger-a1_b2c3d"
+    rows = [{
+        "record_type": "codex_cli_attempt_finished",
+        "cwd": str(state), "typed_judger_transport": False,
+    }, {
+        "record_type": "codex_cli_attempt_finished", "cwd": scratch,
+        "typed_judger_transport": True, "role": "judger",
+        "runtime_instruction_identity": "e" * 64,
+        "typed_judger_protocol": "typed-v1",
+        "typed_judger_packet_sha256": "a" * 64,
+    }]
+    (output / "observer.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows))
+
+    assert worker._accounting_execution_cwds(
+        output, state, "treatment", {
+            "restricted": "e" * 64, "typed_protocol": "typed-v1",
+        }) == {str(state): (str(state), scratch)}
+
+
+def test_offline_accounting_cwds_reject_observed_self_authorization(tmp_path):
+    output, state = tmp_path / "output", tmp_path / "state"
+    output.mkdir()
+    state.mkdir()
+    row = {
+        "record_type": "codex_cli_attempt_finished",
+        "cwd": "/private/tmp/arbitrary", "typed_judger_transport": True,
+        "role": "judger", "runtime_instruction_identity": "e" * 64,
+        "typed_judger_protocol": "typed-v1",
+        "typed_judger_packet_sha256": "a" * 64,
+    }
+    (output / "observer.jsonl").write_text(json.dumps(row) + "\n")
+
+    with pytest.raises(ValueError, match="operator-bound"):
+        worker._accounting_execution_cwds(
+            output, state, "treatment", {
+                "restricted": "e" * 64, "typed_protocol": "typed-v1",
+            })
+
+
 def test_stratum_does_not_drop_a_missing_candidate(monkeypatch):
     monkeypatch.setattr(comparison._accounting, "_accounting_summary",
                         lambda jobs, expected_jobs: {

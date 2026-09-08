@@ -45,6 +45,7 @@ _PLAN_KEYS = {
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ATTEMPT = re.compile(r"[0-9a-f]{32}\Z")
+_TYPED_SCRATCH = re.compile(r"gv-typed-judger-[a-z0-9_]{8}\Z")
 _ROLES = frozenset({
     "extract", "obligations", "critic", "oracles", "discharge", "judger",
 })
@@ -636,6 +637,39 @@ def _attempt_threads_agree(native, observed):
     return True
 
 
+def _accounting_execution_cwds(output: Path, state: Path, arm: str,
+                               profile: dict) -> dict:
+    """Bind analyzer cwd grants to the worker's fixed restricted transport."""
+    if type(profile) is not dict:
+        raise ValueError("transport profile is unavailable for cwd accounting")
+    state_path = str(state)
+    permitted = {state_path}
+    rows, _digest = _read_jsonl(output / "observer.jsonl")
+    for row in rows:
+        if row.get("record_type") != "codex_cli_attempt_finished":
+            continue
+        cwd = row.get("cwd")
+        if row.get("typed_judger_transport") is not True:
+            if cwd != state_path:
+                raise ValueError("ordinary attempt escaped the state cwd")
+            continue
+        path = Path(cwd) if isinstance(cwd, str) else None
+        if (arm != "treatment" or path is None or not path.is_absolute()
+                or os.path.realpath(cwd) != cwd
+                or path.parent != Path("/private/tmp")
+                or not _TYPED_SCRATCH.fullmatch(path.name)
+                or row.get("role") != "judger"
+                or row.get("runtime_instruction_identity")
+                != profile.get("restricted")
+                or row.get("typed_judger_protocol")
+                != profile.get("typed_protocol")
+                or not isinstance(row.get("typed_judger_packet_sha256"), str)
+                or not _HASH.fullmatch(row["typed_judger_packet_sha256"])):
+            raise ValueError("restricted attempt cwd is not operator-bound")
+        permitted.add(cwd)
+    return {state_path: (state_path, *sorted(permitted - {state_path}))}
+
+
 def _audit_attempts(output: Path, arm: str, profile: dict) -> dict:
     observer, observer_sha = _read_jsonl(output / "observer.jsonl")
     roles, role_order, attempts = set(), [], []
@@ -760,6 +794,7 @@ def run_worker(plan):
     }
     _write_new(output / "worker-start.json", start)
     observation = overlay = accounting = features = certificate = None
+    transport = None
     architecture = attempt_audit = None
     failures, caught = [], None
     try:
@@ -807,7 +842,9 @@ def run_worker(plan):
             else:
                 accounting = analyzer.analyze_file(
                     output / "observer.jsonl", context_by_cwd=context,
-                    **RUNTIME, session_summary=observation.summary())
+                    **RUNTIME, session_summary=observation.summary(),
+                    execution_cwds_by_state=_accounting_execution_cwds(
+                        output, state, plan["arm"], transport))
                 if accounting.get("accounting_complete") is not True:
                     failures.append("AccountingIncomplete")
             if (offline.verify_immutable_input_anchor(str(inputs))
