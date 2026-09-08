@@ -307,8 +307,29 @@ These are protocol-stub tests, not paid measurements. Regression: **1085
 passed, 4 skipped, 4 subtests passed**, with the same optional module excluded.
 Parent setup wall excludes initial preflight and final terminal-record/pin
 writes; full process timing is still required from the eventual coordinator.
-Paid-run admission/orchestration and warm lineage remain unfinished;
-`adapter-isolation --execute` remains disabled. No new performance claim.
+The separate `run_cold_adapter_diagnostic` entry point now coordinates one
+cold candidate in three fresh processes. Planning is read-only; execution
+requires both `--execute` and `--confirm-paid GPT-5.6-Luna`. Source and input
+pins, complete setup admission, per-arm billing hashes, and terminal flags
+are rechecked by the parent. Each charged arm includes the entire setup
+process wall; physical cost includes setup only once. `comparison_complete`
+means the measurement finished, not that the results matched: inspect the
+separate `result_equivalent` and detailed contract/outcome comparison.
+Judger explanation wording is retained but not treated as a changed decision.
+Matching this single diagnostic still does not establish zero loss.
+
+Cold means fresh local verifier state/cache, not an erased provider prefix
+cache. Cached tokens remain explicitly charged. Abrupt cancellation records
+`cleanup_complete=false`: model CLIs use separate process sessions, so the
+outer worker kill alone cannot prove every remote attempt stopped; inspect
+remaining processes before any new run. Failed or unknown bills are retained
+and never estimated as zero. There is no automatic process retry.
+
+Broad manifest integration and warm lineage remain unfinished;
+the old `adapter-isolation --execute` remains disabled. No new performance claim.
+The single-candidate coordinator revision passes **1110 tests, 4 skipped,
+4 subtests passed**, with the same optional module excluded. Its 25 added
+tests exercise local protocol stubs and damaged records, not paid performance.
 
 ### Optimization direction
 
