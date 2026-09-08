@@ -132,6 +132,8 @@ def test_legacy_methods_keep_strict_explicit_input_behavior():
             _ledger_query(inputs=[{"ref": "ledger:events"}]),
             "wrong shape",
         ),
+        (_ledger_query(inputs=[_subject("ledger:events", {})]), "invalid provenance"),
+        (_ledger_query(inputs=[_input("ledger:events", "ledger", [])]), "invalid role"),
     ],
 )
 def test_fixed_binding_does_not_repair_partial_or_malformed_method_ir(

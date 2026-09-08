@@ -177,10 +177,11 @@ class AdapterInvocation:
                 raise AdapterNotApplicable(
                     f"adapter_inputs[{index}].ref must be non-empty and at "
                     f"most {MAX_INPUT_REF_CHARS} characters")
-            if item["provenance"] not in PROVENANCES:
+            if (not isinstance(item["provenance"], str)
+                    or item["provenance"] not in PROVENANCES):
                 raise AdapterNotApplicable(
                     f"adapter_inputs[{index}] has invalid provenance")
-            if item["role"] not in INPUT_ROLES:
+            if not isinstance(item["role"], str) or item["role"] not in INPUT_ROLES:
                 raise AdapterNotApplicable(
                     f"adapter_inputs[{index}] has invalid role")
             inputs.append({key: item[key]
@@ -289,6 +290,7 @@ class FixedAdapterInput:
     def __post_init__(self):
         if (not isinstance(self.ref, str) or not self.ref
                 or len(self.ref) > MAX_INPUT_REF_CHARS
+                or not isinstance(self.provenance, str)
                 or self.provenance not in PROVENANCES or self.role != ROLE_SUBJECT
                 or (self.integer_argument is not None and (
                     not isinstance(self.integer_argument, str)
