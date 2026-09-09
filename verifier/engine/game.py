@@ -1129,6 +1129,16 @@ class BindingGame:
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
         catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
+        oracle_catalog = catalog
+        catalog_view = getattr(
+            self.discharger, "oracle_adapter_catalog", None)
+        if callable(catalog_view):
+            try:
+                candidate = catalog_view(catalog, obligation.required_basis)
+                if isinstance(candidate, str):
+                    oracle_catalog = candidate
+            except Exception:
+                oracle_catalog = catalog
         state = os.path.dirname(os.path.abspath(self.log.path))
         world_mode, world, manifest = world_evidence_context(
             state, live_world=self.live_world)
@@ -1148,7 +1158,7 @@ class BindingGame:
                 "task_context": authoritative_task_context(state),
                 "features": _features(row),
                 "registry": registry,
-                "adapter_catalog": catalog,
+                "adapter_catalog": oracle_catalog,
                 "method_feedback": method_feedback,
                 "ledger_path": os.path.abspath(self.log.path),
                 "artifact_root": os.path.abspath(self.artifacts.root),

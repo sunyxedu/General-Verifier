@@ -12,6 +12,7 @@ from verifier.engine.game import Attempt, BindingGame
 from verifier.engine import typed_judger_packet as packet_module
 from verifier.execution.adapters import (
     AdapterRoutingDischarger,
+    FileExistsAdapter,
     default_adapter_registry,
 )
 from verifier.execution.discharge import DischargeResult
@@ -211,6 +212,7 @@ def test_initial_eligibility_is_closed_and_ledger_prefix_receipts_replay(tmp_pat
         ("evidence.program", 1),
         ("ledger.event", 1),
         ("ledger.sequence", 1),
+        ("ledger.sequence", 2),
         ("ledger.tool-call-string", 1),
         ("ledger.tool-call-string", 2),
     })
@@ -259,6 +261,26 @@ def test_initial_eligibility_is_closed_and_ledger_prefix_receipts_replay(tmp_pat
         assert packet is not None and packet.revalidate() is True
         receipt = json.loads(packet.render())["verifier_execution_receipt"]
         assert receipt["observation"]["matches"] is True
+
+
+def test_restricted_packet_requires_the_exact_shipped_adapter_class(tmp_path):
+    class PretendFileExistsAdapter(FileExistsAdapter):
+        pass
+
+    fixture, packet = _build(tmp_path)
+    (_state, _target, _log, artifacts, route,
+     obligation, method, result) = fixture
+    assert packet is not None
+    route.registry._adapters[("filesystem.exists", 1)] = \
+        PretendFileExistsAdapter()
+
+    # Matching self-description and inherited behavior are insufficient: the
+    # restricted transport trusts only the verifier-owned implementation.
+    assert packet.revalidate() is False
+    assert packet_module.build_typed_adapter_judger_packet(
+        route, artifacts, obligation, method, result,
+        "(none — decisive method)",
+    ) is None
 
 
 @pytest.mark.parametrize(("predicate", "expected", "outcome", "matched"), [

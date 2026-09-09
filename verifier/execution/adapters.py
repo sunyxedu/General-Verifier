@@ -42,6 +42,7 @@ from ..core.model import (
     WITNESS_RECORD_CONTRADICTION,
     WITNESS_WORLD_STATE,
     Obligation,
+    basis_satisfies,
     canonical,
     content_hash,
 )
@@ -66,6 +67,7 @@ from .instruments import ArtifactStore
 
 ADAPTER_SCHEMA = "gv-method-adapter-v1"
 EVIDENCE_SCHEMA = "gv-adapter-evidence-v1"
+ORACLE_CATALOG_SLICE_SCHEMA = "gv-oracle-adapter-catalog-slice-v1"
 FIXED_INPUT_BINDING = "fixed-v1"
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -2822,6 +2824,92 @@ class AdapterRegistry:
         return json.dumps(entries, ensure_ascii=False, sort_keys=True,
                           separators=(",", ":"))
 
+    def has_exact_adapter_type(
+        self, name: str, version: int, expected_type: type,
+    ) -> bool:
+        """Authenticate a built-in implementation, not its self-description."""
+        return (isinstance(expected_type, type)
+                and type(self._adapters.get((name, version))) is expected_type)
+
+    def oracle_catalog_view(
+        self, full_catalog: str, required_basis: str,
+    ) -> str:
+        """Return a lossless identity index plus only basis-eligible contracts.
+
+        This is a display optimization for Oracle, never the registry identity
+        used by execution, caches, or Judger replay.  The record floor admits
+        both bases and therefore deliberately returns the original bytes.
+        Every validation or size doubt also returns those original bytes.
+        """
+        if (not isinstance(full_catalog, str)
+                or required_basis not in {BASIS_RECORD, BASIS_WORLD}
+                or required_basis != BASIS_WORLD):
+            return full_catalog
+        try:
+            entries = json.loads(
+                full_catalog,
+                object_pairs_hook=_object_without_duplicates,
+                parse_constant=_no_json_constants,
+            )
+            if not isinstance(entries, list):
+                return full_catalog
+            expected = set(self._adapters)
+            seen = set()
+            index = []
+            included = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    return full_catalog
+                name = entry.get("name")
+                version = entry.get("version")
+                basis = entry.get("basis")
+                if (not isinstance(name, str) or type(version) is not int
+                        or basis not in {BASIS_RECORD, BASIS_WORLD}):
+                    return full_catalog
+                identity = (name, version)
+                adapter = self._adapters.get(identity)
+                if (identity in seen or adapter is None
+                        or adapter.name != name or adapter.version != version
+                        or adapter.basis != basis):
+                    return full_catalog
+                seen.add(identity)
+                eligible = basis_satisfies(basis, required_basis)
+                index.append({
+                    "name": name,
+                    "version": version,
+                    "basis": basis,
+                    "descriptor": (
+                        "included" if eligible else "excluded-below-floor"),
+                })
+                if eligible:
+                    included.append(entry)
+            if seen != expected:
+                return full_catalog
+            document = {
+                "schema": ORACLE_CATALOG_SLICE_SCHEMA,
+                "full_catalog_sha256": hashlib.sha256(
+                    full_catalog.encode("utf-8", errors="strict")).hexdigest(),
+                "selection": {
+                    "required_basis": required_basis,
+                    "rule": "basis-floor-v1",
+                },
+                "index": index,
+                "adapters": included,
+            }
+            rendered = json.dumps(
+                document,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            if len(rendered.encode("utf-8")) >= len(full_catalog.encode("utf-8")):
+                return full_catalog
+            return rendered
+        except (TypeError, ValueError, UnicodeError, RecursionError,
+                MemoryError, OverflowError):
+            return full_catalog
+
     def bind_inputs(self, method: Mapping[str, Any]) -> Dict[str, Any]:
         """Lower an explicitly opted-in method without repairing model claims.
 
@@ -3019,7 +3107,10 @@ def default_adapter_registry(
     # Imported lazily so the pure VM can reuse the closed adapter protocol
     # without making this module's definitions depend on import order.
     from .evidence_program import EvidenceProgramAdapter
-    from .ledger_sequence import LedgerSequenceAdapter
+    from .ledger_sequence import (
+        LedgerSequenceAdapter,
+        LedgerSequenceCompleteAuditAdapter,
+    )
     from .record_program import RecordProgramAdapter
 
     if browser_observer is None:
@@ -3037,6 +3128,7 @@ def default_adapter_registry(
         LedgerToolCallStringAdapterV3(),
         EvidenceProgramAdapter(),
         LedgerSequenceAdapter(),
+        LedgerSequenceCompleteAuditAdapter(),
         RecordProgramAdapter(),
     ]
     if browser_observer is not None:
@@ -3058,6 +3150,17 @@ class AdapterRoutingDischarger:
 
     def adapter_catalog(self) -> str:
         return self.registry.catalog()
+
+    def oracle_adapter_catalog(
+        self, full_catalog: str, required_basis: str,
+    ) -> str:
+        """Fail open to the exact full catalog on any display-view failure."""
+        try:
+            rendered = self.registry.oracle_catalog_view(
+                full_catalog, required_basis)
+            return rendered if isinstance(rendered, str) else full_catalog
+        except Exception:
+            return full_catalog
 
     def prepare_method(self, method):
         try:

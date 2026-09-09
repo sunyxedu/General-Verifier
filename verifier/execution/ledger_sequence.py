@@ -1,14 +1,16 @@
 """A bounded declarative sequence query over the immutable event ledger.
 
-``ledger.sequence@1`` is deliberately less expressive than
+``ledger.sequence`` is deliberately less expressive than
 ``record.program``.  It can establish only the existence of a short ordered
 sequence of exact record shapes and string predicates.  Recorded invocations
 may be normalized by the frozen ``record.program@1`` decoder, but neither the
 selected strings nor decoded command arguments are parsed or executed.
 
-The adapter is holds-only.  Absence, ambiguity, malformed input, a resource
-boundary, or a racing ledger makes the adapter inapplicable so the ordinary
-executor and fresh Judger remain authoritative.
+Version 1 is holds-only and falls back on every no-match. Version 2 keeps the
+same positive evidence contract, but a complete, stable, bounded observed-EOF
+no-match is a method failure rather than an excuse to repeat the query with an
+agent. It is never an obligation verdict. Prefix no-match, malformed input, a
+resource boundary, or a racing ledger remains inapplicable in both versions.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from typing import Any, Dict, Mapping, Sequence
 from ..core.events import EVENT_TYPES, EventLog
 from ..core.model import (
     BASIS_RECORD,
+    OUTCOME_FAILED,
     OUTCOME_HOLDS,
     PROVENANCE_LEDGER,
     PROVENANCE_TASK_GIVEN,
@@ -553,6 +556,8 @@ def _choose(
     relations: Sequence[_Relation],
     events: Sequence[Mapping[str, Any]],
     terminal: _Terminal | None,
+    *,
+    complete_no_match: bool = False,
 ) -> tuple[Dict[str, Mapping[str, Any]], list[Dict[str, Any]], int]:
     paired_relations = [item for item in relations if item.kind == "paired"]
     shared_pair_groups = (
@@ -591,9 +596,65 @@ def _choose(
 
     found = visit(0, -1)
     if found is None:
+        if complete_no_match:
+            return {}, [], states
         raise AdapterNotApplicable(
             "no unambiguous ordered ledger sequence satisfies the declaration")
     return found[0], found[1], states
+
+
+def _source_snapshot(
+    all_events: Sequence[Mapping[str, Any]],
+    in_range: Sequence[Mapping[str, Any]],
+    *,
+    scope: str,
+    after_seq: int,
+    resolved_through: int,
+) -> Dict[str, Any]:
+    prefix_digests = [EventLog.event_digest(event) for event in all_events]
+    range_digests = [EventLog.event_digest(event) for event in in_range]
+    projection = [{
+        "seq": event["seq"],
+        "type": event["type"],
+        "event_digest": digest,
+    } for event, digest in zip(in_range, range_digests)]
+    return {
+        "ref": "ledger:events",
+        "source_projection_schema": SOURCE_PROJECTION_SCHEMA,
+        "source_event_types": sorted(SOURCE_EVENT_TYPES),
+        "scope": scope,
+        "after_seq": after_seq,
+        **({"through_seq": resolved_through} if scope == "prefix" else {}),
+        "source_event_count": len(prefix_digests),
+        "source_events_digest": content_hash(prefix_digests),
+        "resolved_source_through_seq": (
+            all_events[-1]["seq"] if all_events else 0),
+        "range_source_event_count": len(range_digests),
+        "range_source_events_digest": content_hash(range_digests),
+        "projection_digest": content_hash(projection),
+        **({"complete_through_boundary": True}
+           if scope == "prefix"
+           else {"complete_file_at_observation": True}),
+        "proves_future_closure": False,
+    }
+
+
+def _consumed_snapshot(snapshot: Mapping[str, Any]) -> tuple[Dict[str, Any], ...]:
+    return ({
+        key: snapshot[key]
+        for key in (
+            "ref", "source_projection_schema", "source_event_types",
+            "scope", "after_seq",
+            *(("through_seq",) if snapshot["scope"] == "prefix" else ()),
+            "source_event_count", "source_events_digest",
+            "resolved_source_through_seq", "range_source_event_count",
+            "range_source_events_digest", "projection_digest",
+            *(("complete_through_boundary",)
+              if snapshot["scope"] == "prefix"
+              else ("complete_file_at_observation",)),
+            "proves_future_closure",
+        )
+    },)
 
 
 class LedgerSequenceAdapter(MethodAdapter):
@@ -604,6 +665,7 @@ class LedgerSequenceAdapter(MethodAdapter):
     basis = BASIS_RECORD
     accepted_method_reuse = False
     fixed_inputs = (FixedAdapterInput("ledger:events", PROVENANCE_LEDGER),)
+    complete_no_match = False
     summary = (
         "Find 1..8 ordered existential ledger clauses using exact event and "
         "metadata selectors, RFC 6901 string predicates, structured ordering "
@@ -824,7 +886,11 @@ class LedgerSequenceAdapter(MethodAdapter):
         in_range = [event for event in all_events if event["seq"] > after_seq]
 
         examined_bytes = [0]
+        snapshot = _source_snapshot(
+            all_events, in_range, scope=scope, after_seq=after_seq,
+            resolved_through=resolved_through)
         candidates: Dict[str, list[Mapping[str, Any]]] = {}
+        missing = []
         for clause in clauses:
             matched = []
             for event in in_range:
@@ -833,13 +899,56 @@ class LedgerSequenceAdapter(MethodAdapter):
                     if len(matched) > MAX_CANDIDATES_PER_CLAUSE:
                         raise AdapterNotApplicable(
                             f"clause {clause.identifier!r} exceeds the candidate cap")
-            if not matched:
+            if not matched and not self.complete_no_match:
                 raise AdapterNotApplicable(
                     f"clause {clause.identifier!r} has no matching ledger event")
+            if not matched:
+                missing.append(clause.identifier)
             candidates[clause.identifier] = matched
 
-        selected, observed_relations, search_states = _choose(
-            clauses, candidates, relations, all_events, terminal)
+        selected_result = _choose(
+            clauses, candidates, relations, all_events, terminal,
+            complete_no_match=self.complete_no_match)
+        if selected_result is None or not selected_result[0]:
+            if scope != "observed-eof":
+                raise AdapterNotApplicable(
+                    "complete no-match requires a stable observed-eof scan")
+            failure_kind = (
+                "clause-no-match" if missing else "sequence-no-match")
+            observation = {
+                "schema": "gv-ledger-sequence-complete-audit-v1",
+                "matched": False,
+                "audit_complete": True,
+                "failure_kind": failure_kind,
+                "query_digest": content_hash(arguments),
+                "clause_order": [clause.identifier for clause in clauses],
+                "missing_clauses": missing,
+                "candidate_counts": [{
+                    "clause": clause.identifier,
+                    "count": len(candidates[clause.identifier]),
+                } for clause in clauses],
+                "search_states": (
+                    selected_result[2] if selected_result is not None else 0),
+                "examined_string_bytes": examined_bytes[0],
+                "snapshot": snapshot,
+            }
+            if len(canonical(observation).encode("utf-8", errors="strict")) \
+                    > MAX_RECEIPT_BYTES:
+                raise AdapterNotApplicable(
+                    f"ledger sequence receipt exceeds {MAX_RECEIPT_BYTES} bytes")
+            return AdapterExecution(
+                OUTCOME_FAILED,
+                {
+                    "reason": (
+                        "complete sequence audit produced no substantive "
+                        "witness"),
+                    "failure_kind": failure_kind,
+                },
+                WITNESS_NONE,
+                observation,
+                _consumed_snapshot(snapshot),
+            )
+        selected, observed_relations, search_states = selected_result
         witness_events = []
         for clause in clauses:
             event = selected[clause.identifier]
@@ -857,33 +966,6 @@ class LedgerSequenceAdapter(MethodAdapter):
                 "evaluation": evaluation,
             }
             witness_events.append(retained)
-
-        prefix_digests = [EventLog.event_digest(event) for event in all_events]
-        range_digests = [EventLog.event_digest(event) for event in in_range]
-        projection = [{
-            "seq": event["seq"],
-            "type": event["type"],
-            "event_digest": digest,
-        } for event, digest in zip(in_range, range_digests)]
-        snapshot = {
-            "ref": "ledger:events",
-            "source_projection_schema": SOURCE_PROJECTION_SCHEMA,
-            "source_event_types": sorted(SOURCE_EVENT_TYPES),
-            "scope": scope,
-            "after_seq": after_seq,
-            **({"through_seq": resolved_through} if scope == "prefix" else {}),
-            "source_event_count": len(prefix_digests),
-            "source_events_digest": content_hash(prefix_digests),
-            "resolved_source_through_seq": (
-                all_events[-1]["seq"] if all_events else 0),
-            "range_source_event_count": len(range_digests),
-            "range_source_events_digest": content_hash(range_digests),
-            "projection_digest": content_hash(projection),
-            **({"complete_through_boundary": True}
-               if scope == "prefix"
-               else {"complete_file_at_observation": True}),
-            "proves_future_closure": False,
-        }
 
         terminal_observation = None
         if terminal is not None:
@@ -927,29 +1009,70 @@ class LedgerSequenceAdapter(MethodAdapter):
                 > MAX_RECEIPT_BYTES:
             raise AdapterNotApplicable(
                 f"ledger sequence receipt exceeds {MAX_RECEIPT_BYTES} bytes")
-        consumed = ({
-            "ref": "ledger:events",
-            "source_projection_schema": SOURCE_PROJECTION_SCHEMA,
-            "source_event_types": sorted(SOURCE_EVENT_TYPES),
-            "scope": scope,
-            "after_seq": after_seq,
-            **({"through_seq": resolved_through} if scope == "prefix" else {}),
-            "source_event_count": snapshot["source_event_count"],
-            "source_events_digest": snapshot["source_events_digest"],
-            "resolved_source_through_seq": snapshot[
-                "resolved_source_through_seq"],
-            "range_source_event_count": snapshot[
-                "range_source_event_count"],
-            "range_source_events_digest": snapshot[
-                "range_source_events_digest"],
-            "projection_digest": snapshot["projection_digest"],
-            **({"complete_through_boundary": True}
-               if scope == "prefix"
-               else {"complete_file_at_observation": True}),
-            "proves_future_closure": False,
-        },)
         return AdapterExecution(
-            OUTCOME_HOLDS, None, WITNESS_NONE, observation, consumed)
+            OUTCOME_HOLDS, None, WITNESS_NONE, observation,
+            _consumed_snapshot(snapshot))
+
+
+class LedgerSequenceCompleteAuditAdapter(LedgerSequenceAdapter):
+    """Versioned sequence query whose complete no-match is method failure."""
+
+    version = 2
+    complete_no_match = True
+    summary = (
+        "Run the same bounded ordered existential ledger query as version 1. "
+        "A positive match produces the same holds evidence. A fully scanned, "
+        "stable and untruncated observed-EOF no-match produces only failed "
+        "(never holds or refuted), so the existing Oracle repair may choose "
+        "another method. Prefix no-match, invalid input, races and resource "
+        "boundaries still fall back."
+    )
+
+    def catalog_entry(self) -> Dict[str, Any]:
+        entry = super().catalog_entry()
+        entry["direction"] = (
+            "holds-only; complete valid observed-eof no-match => failed; "
+            "prefix no-match/invalid/incomplete/race/error/limit => fallback"
+        )
+        entry["complete_audit"] = {
+            "positive": "same complete holds receipt as ledger.sequence@1",
+            "no_match": (
+                "method execution failed without an obligation verdict; "
+                "never absence evidence and never a refutation"
+            ),
+            "future_closure": False,
+            "method_contract": (
+                "adapter arguments must exhaust the declared method; do not "
+                "bind a procedure with an unrepresented alternate branch"
+            ),
+        }
+        entry["examples"].append({
+            "purpose": (
+                "one-direction record certificate whose exact positive "
+                "match entails the obligation; complete no-match only fails "
+                "this method"
+            ),
+            "adapter_arguments": {
+                "scope": "observed-eof",
+                "clauses": [{
+                    "id": "positive-witness",
+                    "event_type": "tool_call",
+                    "record_program": {
+                        "decoder": _DECODER,
+                        "profile": "codex-exec-wrapper-v1",
+                        "strings": [{
+                            "pointer": "/arguments/cmd",
+                            "predicate": "contains",
+                            "expected": (
+                                "<exact record fragment whose presence "
+                                "entails the obligation>"
+                            ),
+                        }],
+                    },
+                }],
+            },
+        })
+        return entry
 
 
 def typed_sequence_observation_is_complete(
@@ -968,13 +1091,17 @@ def typed_sequence_observation_is_complete(
     recomputation.
     """
     try:
-        if ((invocation.name, invocation.version) != ("ledger.sequence", 1)
+        if ((invocation.name, invocation.version) not in {
+                    ("ledger.sequence", 1), ("ledger.sequence", 2)}
                 or result_identity.get("outcome") != OUTCOME_HOLDS
                 or result_identity.get("witness") is not None
                 or result_identity.get("witness_kind") != WITNESS_NONE
                 or invocation.input_binding != FIXED_INPUT_BINDING):
             return False
-        LedgerSequenceAdapter().validate(invocation, {"basis": BASIS_RECORD})
+        adapter = (LedgerSequenceAdapter()
+                   if invocation.version == 1
+                   else LedgerSequenceCompleteAuditAdapter())
+        adapter.validate(invocation, {"basis": BASIS_RECORD})
         execution = evidence.get("execution")
         if not isinstance(execution, dict):
             return False

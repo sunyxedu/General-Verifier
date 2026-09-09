@@ -25,6 +25,8 @@ describe available operations; the model prompts remain domain independent.
 | `ledger.event@1` | One retained event's type and payload subset | Establishes record facts only |
 | `ledger.tool-call-string@1` | Exact string selection within an explicit ledger interval | Cannot interpret or execute command text |
 | `ledger.tool-call-string@2` | Explicit existence, equality, nonempty or nonblank string predicate | Record facts only; no command-language interpretation |
+| `ledger.sequence@1` | A bounded ordered sequence of exact source-event predicates and relations | Holds-only; every no-match falls back |
+| `ledger.sequence@2` | The same positive receipt, with a stable complete no-match recorded as method failure | Never converts no-match into an obligation verdict |
 | `browser.html@1` | Dialog, console and DOM observations within a finite time window | Optional pinned backend; standalone documents only |
 
 `ledger.tool-call-string` requires `selector`, `value_pointer`, and
@@ -49,6 +51,24 @@ interval and records its counts and digests; a witness is not presented as a
 complete listing. Version 1 keeps its original semantics and receipt format.
 Both versions require fresh execution and an independent Judger; neither is
 eligible for accepted-method reuse.
+
+`ledger.sequence` scans a fixed source-event protocol and may apply the frozen
+`record.program@1` decoder to inert command envelopes. Version 1 remains
+unchanged. Version 2 returns `failed` only when a stable, bounded observed-EOF
+scan proves that its declared positive sequence has no witness. It never
+returns `refuted` for that condition, and prefix no-match, malformed ledgers,
+races, ambiguity, or any resource cap still use the agent fallback. The normal
+single Oracle repair remains available after failure; every positive result
+still receives a fresh independent Judger.
+
+For a world-basis obligation, the Oracle may receive a smaller catalog view:
+all world contracts remain complete, while record-only identities remain in a
+non-bindable index with the full-catalog digest. Those record methods are below
+the engine's mechanical basis floor and could not execute. Record-basis
+obligations receive the original catalog byte for byte because either basis may
+satisfy their floor. Any malformed or non-smaller view fails open to the full
+catalog. Execution, cache identity, and typed Judger replay always bind the full
+registry, never this display view.
 
 `filesystem.exists` reports `address`, `exists`, `actual_kind`,
 `expected_kind`, and `world_mode` for every substantive result. A missing

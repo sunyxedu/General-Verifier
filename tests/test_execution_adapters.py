@@ -23,9 +23,12 @@ from verifier.engine.game import BindingGame
 from verifier.engine.method_cache import AcceptedMethodCache
 from verifier.execution.adapters import (
     EVIDENCE_SCHEMA,
+    ORACLE_CATALOG_SLICE_SCHEMA,
     AdapterInvocation,
     AdapterNotApplicable,
+    AdapterRegistry,
     AdapterRoutingDischarger,
+    MethodAdapter,
     default_adapter_registry,
 )
 from verifier.execution.browser import (
@@ -144,6 +147,7 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         ("record.program", 1),
         ("ledger.event", 1),
         ("ledger.sequence", 1),
+        ("ledger.sequence", 2),
         ("ledger.tool-call-string", 1),
         ("ledger.tool-call-string", 2),
         ("ledger.tool-call-string", 3),
@@ -157,6 +161,84 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
     assert not any(item["basis"] == BASIS_WORLD
                    and "command" in item["name"] for item in catalog)
     assert not any(item["name"] == "browser.html" for item in catalog)
+
+
+def test_oracle_catalog_slices_only_mechanically_ineligible_record_contracts():
+    registry = default_adapter_registry()
+    full = registry.catalog()
+
+    world_view = registry.oracle_catalog_view(full, BASIS_WORLD)
+    document = json.loads(world_view)
+    assert document["schema"] == ORACLE_CATALOG_SLICE_SCHEMA
+    assert document["selection"] == {
+        "required_basis": BASIS_WORLD, "rule": "basis-floor-v1"}
+    assert all(entry["basis"] == BASIS_WORLD
+               for entry in document["adapters"])
+    assert {(entry["name"], entry["version"])
+            for entry in document["adapters"]} == {
+        (entry["name"], entry["version"])
+        for entry in json.loads(full) if entry["basis"] == BASIS_WORLD
+    }
+    assert {(entry["name"], entry["version"])
+            for entry in document["index"]} == {
+        (entry["name"], entry["version"]) for entry in json.loads(full)
+    }
+    assert all(
+        entry["descriptor"] == (
+            "included" if entry["basis"] == BASIS_WORLD
+            else "excluded-below-floor")
+        for entry in document["index"])
+    assert len(world_view.encode("utf-8")) < len(full.encode("utf-8"))
+    assert registry.oracle_catalog_view(full, BASIS_RECORD) == full
+
+
+def test_oracle_catalog_slice_fails_open_to_exact_supplied_catalog():
+    registry = default_adapter_registry()
+    full = registry.catalog()
+    cases = [
+        "not json",
+        "{}",
+        json.dumps(json.loads(full)[:-1], sort_keys=True, separators=(",", ":")),
+        json.dumps(
+            [json.loads(full)[0], *json.loads(full)],
+            sort_keys=True, separators=(",", ":")),
+    ]
+    for malformed in cases:
+        assert registry.oracle_catalog_view(malformed, BASIS_WORLD) == malformed
+    assert registry.oracle_catalog_view(full, "unknown") == full
+
+    class MisdeclaredCatalogAdapter(MethodAdapter):
+        name = "test.misdeclared"
+        basis = BASIS_WORLD
+
+        def catalog_entry(self):
+            return {**super().catalog_entry(), "basis": BASIS_RECORD}
+
+    dishonest = AdapterRegistry([MisdeclaredCatalogAdapter()])
+    dishonest_full = dishonest.catalog()
+    assert dishonest.oracle_catalog_view(
+        dishonest_full, BASIS_WORLD) == dishonest_full
+
+
+def test_binding_game_uses_same_world_catalog_view_for_initial_and_repair(
+    tmp_path,
+):
+    _state, _world, artifacts, log, _fallback, routing = captured(tmp_path)
+    full_catalog = routing.adapter_catalog()
+    backend = FixtureBackend({"oracles": {"methods": []}})
+    game = BindingGame(
+        backend, artifacts, log, routing, live_world=False)
+    obligation = Obligation(
+        "c1", "a world fact needs an independent decision", BASIS_WORLD)
+
+    result = game.run(ROW, obligation)
+
+    assert result.outcome != OUTCOME_HOLDS
+    assert [call["role"] for call in backend.calls] == ["oracles", "oracles"]
+    views = [call["variables"]["adapter_catalog"] for call in backend.calls]
+    assert views[0] == views[1]
+    assert json.loads(views[0])["schema"] == ORACLE_CATALOG_SLICE_SCHEMA
+    assert routing.adapter_catalog() == full_catalog
 
 
 def test_file_exists_adapter_emits_auditable_world_evidence(tmp_path):

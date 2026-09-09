@@ -9,7 +9,13 @@ import pytest
 
 import verifier.execution.ledger_sequence as ledger_sequence
 from verifier.core.events import EventLog
-from verifier.core.model import BASIS_RECORD, OUTCOME_HOLDS, WITNESS_NONE, Obligation
+from verifier.core.model import (
+    BASIS_RECORD,
+    OUTCOME_FAILED,
+    OUTCOME_HOLDS,
+    WITNESS_NONE,
+    Obligation,
+)
 from verifier.engine.game import BindingGame
 from verifier.engine.typed_judger_packet import (
     TypedAdapterJudgerPacket,
@@ -25,12 +31,13 @@ from verifier.execution.adapters import (
 from verifier.execution.instruments import ArtifactStore
 from verifier.execution.ledger_sequence import (
     LedgerSequenceAdapter,
+    LedgerSequenceCompleteAuditAdapter,
     typed_sequence_observation_is_complete,
 )
 from verifier.llm.schema import FixtureBackend
 
 
-def _method(arguments):
+def _method(arguments, *, version=1):
     return {
         "procedure": "inspect one declared ordered record sequence",
         "artifact": "a bounded canonical ledger receipt",
@@ -39,7 +46,7 @@ def _method(arguments):
         "strength": "decisive",
         "bridges": [],
         "adapter": "ledger.sequence",
-        "adapter_version": 1,
+        "adapter_version": version,
         "adapter_input_binding": "fixed-v1",
         "adapter_arguments": json.dumps(
             arguments, ensure_ascii=False, sort_keys=True),
@@ -71,6 +78,18 @@ def _execute(context, arguments):
     adapter.validate(invocation, method)
     obligation = Obligation(
         "neutral", "the declared record relation holds", BASIS_RECORD)
+    return adapter.execute(invocation, obligation, context)
+
+
+def _execute_complete_audit(context, arguments, *, refutable=False):
+    adapter = LedgerSequenceCompleteAuditAdapter()
+    method = _method(arguments, version=2)
+    invocation = AdapterInvocation.from_method(method)
+    assert invocation is not None
+    adapter.validate(invocation, method)
+    obligation = Obligation(
+        "neutral", "the declared record relation holds", BASIS_RECORD,
+        refutable_by_absence=refutable)
     return adapter.execute(invocation, obligation, context)
 
 
@@ -549,6 +568,125 @@ def test_absence_is_always_inapplicable_even_for_refutable_obligation(tmp_path):
         })
 
 
+@pytest.mark.parametrize("refutable", [False, True])
+def test_complete_audit_no_match_is_failed_never_a_verdict(
+    tmp_path, refutable,
+):
+    log, context = _environment(tmp_path)
+    event = log.append("message", {"text": "different"})
+    arguments = {
+        "scope": "observed-eof",
+        "clauses": [{
+            "id": "wanted", "event_type": "message",
+            "payload_strings": [{
+                "pointer": "/text", "predicate": "equals",
+                "expected": "not present",
+            }],
+        }],
+    }
+
+    result = _execute_complete_audit(
+        context, arguments, refutable=refutable)
+
+    assert result.outcome == OUTCOME_FAILED
+    assert result.witness_kind == WITNESS_NONE
+    assert result.observation == {
+        "schema": "gv-ledger-sequence-complete-audit-v1",
+        "matched": False,
+        "audit_complete": True,
+        "failure_kind": "clause-no-match",
+        "query_digest": ledger_sequence.content_hash(arguments),
+        "clause_order": ["wanted"],
+        "missing_clauses": ["wanted"],
+        "candidate_counts": [{"clause": "wanted", "count": 0}],
+        "search_states": 0,
+        "examined_string_bytes": len("different"),
+        "snapshot": result.consumed[0],
+    }
+    assert result.consumed[0]["source_event_count"] == 1
+    assert result.consumed[0]["resolved_source_through_seq"] == event["seq"]
+    assert result.consumed[0]["complete_file_at_observation"] is True
+    assert "absence" not in json.dumps(
+        {"witness": result.witness, "observation": result.observation})
+
+
+def test_complete_audit_exhausts_relations_before_failed(tmp_path):
+    log, context = _environment(tmp_path)
+    result_event = log.append("tool_result", {
+        "tool": "exec", "tool_use_id": "call-1", "session": "s1",
+        "agent": None, "excerpt": "完成 雪",
+    })
+    call = log.append("tool_call", {
+        "tool": "exec", "tool_use_id": "call-1", "session": "s1",
+        "agent": None, "input": _wrapper("printf 雪"), "label": "café 雪",
+    })
+
+    result = _execute_complete_audit(
+        context, _paired_arguments("observed-eof"))
+
+    assert result.outcome == OUTCOME_FAILED
+    assert result.observation["failure_kind"] == "sequence-no-match"
+    assert result.observation["candidate_counts"] == [
+        {"clause": "invoke", "count": 1},
+        {"clause": "result", "count": 1},
+    ]
+    assert result.observation["search_states"] > 0
+    assert result_event["seq"] < call["seq"]
+
+
+def test_complete_audit_does_not_hide_a_later_clause_resource_limit(
+    tmp_path, monkeypatch,
+):
+    log, context = _environment(tmp_path)
+    log.append("message", {"text": "one"})
+    last = log.append("message", {"text": "two"})
+    monkeypatch.setattr(ledger_sequence, "MAX_CANDIDATES_PER_CLAUSE", 1)
+
+    with pytest.raises(AdapterNotApplicable, match="candidate cap"):
+        _execute_complete_audit(context, {
+            "scope": "prefix", "through_seq": last["seq"],
+            "clauses": [{
+                "id": "missing", "event_type": "commit",
+            }, {
+                "id": "too-many", "event_type": "message",
+                "payload_strings": [{
+                    "pointer": "/text", "predicate": "nonempty",
+                }],
+            }],
+        })
+
+
+def test_complete_audit_prefix_no_match_still_falls_back(tmp_path):
+    log, context = _environment(tmp_path)
+    event = log.append("message", {"text": "different"})
+
+    with pytest.raises(AdapterNotApplicable, match="stable observed-eof"):
+        _execute_complete_audit(context, {
+            "scope": "prefix", "through_seq": event["seq"],
+            "clauses": [{
+                "id": "wanted", "event_type": "message",
+                "payload_strings": [{
+                    "pointer": "/text", "predicate": "equals",
+                    "expected": "not present",
+                }],
+            }],
+        })
+
+
+def test_complete_audit_missing_clause_still_checks_global_pair_boundaries(
+    tmp_path,
+):
+    log, context = _environment(tmp_path)
+    _pair(log, call_id="x" * (ledger_sequence.MAX_IDENTIFIER_BYTES + 1))
+    arguments = _paired_arguments("observed-eof")
+    arguments["clauses"].append({
+        "id": "missing", "event_type": "commit",
+    })
+
+    with pytest.raises(AdapterNotApplicable, match="pair identifier exceeds"):
+        _execute_complete_audit(context, arguments)
+
+
 def test_caps_fail_closed_without_truncating_candidates_or_clauses(
     tmp_path, monkeypatch,
 ):
@@ -611,11 +749,24 @@ def test_module_contract_is_record_only_fixed_input_and_task_agnostic(tmp_path):
     assert "subprocess" not in text
     assert "shell=True" not in text
 
+    complete = LedgerSequenceCompleteAuditAdapter()
+    complete_entry = complete.catalog_entry()
+    assert complete.identity == "ledger.sequence@2"
+    assert complete.complete_no_match is True
+    assert ("complete valid observed-eof no-match => failed"
+            in complete_entry["direction"])
+    assert complete_entry["complete_audit"]["future_closure"] is False
+    assert "never a refutation" in complete_entry["complete_audit"]["no_match"]
+
 
 def test_default_registry_publishes_and_materializes_fixed_sequence_input():
     registry = default_adapter_registry()
-    entry = next(item for item in json.loads(registry.catalog())
-                 if item["name"] == "ledger.sequence")
+    sequence_entries = [
+        item for item in json.loads(registry.catalog())
+        if item["name"] == "ledger.sequence"
+    ]
+    assert [item["version"] for item in sequence_entries] == [1, 2]
+    entry = sequence_entries[0]
     assert entry["version"] == 1
     assert entry["fixed_input_binding"] == {
         "mode": "fixed-v1",
@@ -633,7 +784,110 @@ def test_default_registry_publishes_and_materializes_fixed_sequence_input():
     assert bound["adapter_inputs"] == entry["fixed_input_binding"]["inputs"]
 
 
-def _typed_sequence_fixture(tmp_path):
+def test_complete_audit_failed_routes_without_agent_fallback(tmp_path):
+    log, context = _environment(tmp_path)
+    log.append("message", {"text": "different"})
+    state = Path(context.state_dir)
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    route = AdapterRoutingDischarger(
+        _NoFallback(), default_adapter_registry(), artifacts, log,
+        str(state), live_world=False)
+    arguments = {
+        "scope": "observed-eof",
+        "clauses": [{
+            "id": "wanted", "event_type": "message",
+            "payload_strings": [{
+                "pointer": "/text", "predicate": "equals",
+                "expected": "wanted",
+            }],
+        }],
+    }
+    method = _method(arguments, version=2)
+    obligation = Obligation(
+        "sequence-claim", "the declared relation is recorded", BASIS_RECORD)
+
+    result = route.discharge(
+        {"id": obligation.claim_id, "kind": "final"}, obligation, method)
+
+    assert result.outcome == OUTCOME_FAILED
+    evidence = artifacts.get(result.artifact)
+    assert evidence["execution"]["outcome"] == OUTCOME_FAILED
+    assert evidence["execution"]["observation"]["audit_complete"] is True
+    adapter_events = [event for event in log.replay()
+                      if event["type"] == "adapter_discharge"]
+    assert len(adapter_events) == 1
+    assert adapter_events[0]["payload"]["adapter"] == "ledger.sequence@2"
+    assert not [event for event in log.replay()
+                if event["type"] == "adapter_fallback"]
+
+
+@pytest.mark.parametrize("live_world", [False, True])
+def test_complete_audit_failure_keeps_existing_oracle_repair_and_judger_flow(
+    tmp_path, live_world,
+):
+    log, context = _environment(tmp_path)
+    log.append("message", {"text": "present"})
+    state = Path(context.state_dir)
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    route = AdapterRoutingDischarger(
+        _NoFallback(), default_adapter_registry(), artifacts, log,
+        str(state), live_world=live_world)
+    missing = _method({
+        "scope": "observed-eof",
+        "clauses": [{
+            "id": "message", "event_type": "message",
+            "payload_strings": [{
+                "pointer": "/text", "predicate": "equals",
+                "expected": "missing",
+            }],
+        }],
+    }, version=2)
+    present = _method({
+        "scope": "observed-eof",
+        "clauses": [{
+            "id": "message", "event_type": "message",
+            "payload_strings": [{
+                "pointer": "/text", "predicate": "equals",
+                "expected": "present",
+            }],
+        }],
+    })
+    present["procedure"] = "inspect the repaired exact record query"
+    calls = 0
+
+    def oracle(_variables):
+        nonlocal calls
+        calls += 1
+        return {"methods": [missing] if calls == 1 else [present]}
+
+    backend = FixtureBackend({
+        "oracles": oracle,
+        "judger": {
+            "sufficient": "yes", "faithful": "yes", "degradation": "n/a",
+            "reason": "the fresh positive sequence receipt is complete",
+        },
+    })
+    game = BindingGame(
+        backend, artifacts, log, route, live_world=live_world)
+    obligation = Obligation(
+        "sequence-claim", "the present message is recorded", BASIS_RECORD)
+
+    result = game.run(
+        {"id": obligation.claim_id, "kind": "final", "text": "recorded"},
+        obligation,
+    )
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert [call["role"] for call in backend.calls] == [
+        "oracles", "oracles", "judger"]
+    assert [event["payload"]["outcome"] for event in log.replay()
+            if event["type"] == "adapter_discharge"] == [
+                OUTCOME_FAILED, OUTCOME_HOLDS]
+    assert len([event for event in log.replay()
+                if event["type"] == "judger_verdict"]) == 1
+
+
+def _typed_sequence_fixture(tmp_path, *, version=1):
     log, context = _environment(tmp_path)
     _pair(log)
     state = Path(context.state_dir)
@@ -644,7 +898,8 @@ def _typed_sequence_fixture(tmp_path):
     obligation = Obligation(
         "sequence-claim", "the declared completed exchange is recorded",
         BASIS_RECORD)
-    method = _method(_paired_arguments("observed-eof", terminal=True))
+    method = _method(
+        _paired_arguments("observed-eof", terminal=True), version=version)
     result = route.discharge(
         {"id": obligation.claim_id, "kind": "final"}, obligation, method)
     evidence = artifacts.get(result.artifact)
@@ -659,9 +914,13 @@ def _typed_sequence_fixture(tmp_path):
         invocation, result_identity
 
 
-def test_complete_sequence_receipt_uses_fresh_typed_judger_packet(tmp_path):
+@pytest.mark.parametrize("version", [1, 2])
+def test_complete_sequence_receipt_uses_fresh_typed_judger_packet(
+    tmp_path, version,
+):
     (log, artifacts, route, obligation, method, result, evidence,
-     invocation, result_identity) = _typed_sequence_fixture(tmp_path)
+     invocation, result_identity) = _typed_sequence_fixture(
+         tmp_path, version=version)
 
     assert typed_sequence_observation_is_complete(
         invocation, evidence, result_identity)

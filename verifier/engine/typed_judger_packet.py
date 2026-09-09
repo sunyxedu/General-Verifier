@@ -27,9 +27,21 @@ from ..execution.adapters import (
     AdapterInvocation,
     AdapterRegistry,
     AdapterRoutingDischarger,
+    FileExistsAdapter,
+    FileSha256Adapter,
+    JsonPredicateAdapter,
+    JsonPredicateAdapterV2,
+    JsonValueAdapter,
+    LedgerEventAdapter,
+    LedgerToolCallStringAdapter,
+    LedgerToolCallStringAdapterV2,
+    TextValueAdapter,
 )
 from ..execution.discharge import DischargeResult
-from ..execution.evidence_program import LANGUAGE as EVIDENCE_PROGRAM_LANGUAGE
+from ..execution.evidence_program import (
+    EvidenceProgramAdapter,
+    LANGUAGE as EVIDENCE_PROGRAM_LANGUAGE,
+)
 from ..execution.evidence_program import (
     MAX_CUMULATIVE_ALLOCATION_BYTES as EVIDENCE_PROGRAM_MAX_ALLOCATION,
 )
@@ -62,9 +74,44 @@ ELIGIBLE_ADAPTERS = frozenset({
     ("evidence.program", 1),
     ("ledger.event", 1),
     ("ledger.sequence", 1),
+    ("ledger.sequence", 2),
     ("ledger.tool-call-string", 1),
     ("ledger.tool-call-string", 2),
 })
+
+
+def _shipped_adapter_type(identity: tuple[str, int]) -> type | None:
+    """Return the verifier-owned class for one restricted transport identity."""
+    if identity in {("ledger.sequence", 1), ("ledger.sequence", 2)}:
+        # Keep the larger ledger module lazy at this import boundary.
+        from ..execution.ledger_sequence import (
+            LedgerSequenceAdapter,
+            LedgerSequenceCompleteAuditAdapter,
+        )
+        return {
+            ("ledger.sequence", 1): LedgerSequenceAdapter,
+            ("ledger.sequence", 2): LedgerSequenceCompleteAuditAdapter,
+        }[identity]
+    return {
+        ("filesystem.exists", 1): FileExistsAdapter,
+        ("filesystem.sha256", 1): FileSha256Adapter,
+        ("document.json-predicate", 1): JsonPredicateAdapter,
+        ("document.json-predicate", 2): JsonPredicateAdapterV2,
+        ("document.json-value", 1): JsonValueAdapter,
+        ("document.text", 1): TextValueAdapter,
+        ("evidence.program", 1): EvidenceProgramAdapter,
+        ("ledger.event", 1): LedgerEventAdapter,
+        ("ledger.tool-call-string", 1): LedgerToolCallStringAdapter,
+        ("ledger.tool-call-string", 2): LedgerToolCallStringAdapterV2,
+    }.get(identity)
+
+
+def _uses_exact_shipped_adapter(
+    registry: AdapterRegistry, invocation: AdapterInvocation,
+) -> bool:
+    expected = _shipped_adapter_type((invocation.name, invocation.version))
+    return bool(expected and registry.has_exact_adapter_type(
+        invocation.name, invocation.version, expected))
 
 
 def _contains_truncation(value: Any) -> bool:
@@ -92,7 +139,7 @@ def _adapter_specific_gate(invocation: AdapterInvocation, evidence: dict,
                            result_identity: Mapping[str, Any]) -> bool:
     """Extra packet invariants for general instruments with a larger TCB."""
     identity = (invocation.name, invocation.version)
-    if identity == ("ledger.sequence", 1):
+    if identity in {("ledger.sequence", 1), ("ledger.sequence", 2)}:
         # Lazy import avoids a module cycle: the adapter itself reuses the
         # registry protocol defined in adapters.py.
         from ..execution.ledger_sequence import (
@@ -468,7 +515,9 @@ class TypedAdapterJudgerPacket:
 
         invocation = AdapterInvocation.from_method(method)
         if (invocation is None
-                or (invocation.name, invocation.version) not in ELIGIBLE_ADAPTERS):
+                or (invocation.name, invocation.version) not in ELIGIBLE_ADAPTERS
+                or not _uses_exact_shipped_adapter(
+                    self._discharger.registry, invocation)):
             raise ValueError("typed-adapter invocation identity mismatch")
         adapter_identity = f"{invocation.name}@{invocation.version}"
         expected_instrument = f"adapter:{adapter_identity}"
@@ -638,7 +687,9 @@ def build_typed_adapter_judger_packet(
             return None
         invocation = AdapterInvocation.from_method(method)
         if invocation is None \
-                or (invocation.name, invocation.version) not in ELIGIBLE_ADAPTERS:
+                or (invocation.name, invocation.version) not in ELIGIBLE_ADAPTERS \
+                or not _uses_exact_shipped_adapter(
+                    discharger.registry, invocation):
             return None
         expected_instrument = f"adapter:{invocation.name}@{invocation.version}"
         if result.instrument != expected_instrument or result.assumed_premises:
