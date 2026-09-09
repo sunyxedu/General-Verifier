@@ -96,7 +96,8 @@ def test_direct_producer_uses_real_roles_and_does_not_run_evidence(tmp_path, mon
     assert receipt["accounting_scope"] == "one_claim_excludes_extraction_and_replay"
     assert (tmp_path / "prepare" / "prepare-receipt.json").exists()
     assert not (tmp_path / "prepare" / "state" / "prepare-receipt.json").exists()
-    assert {e["type"] for e in h.services[0].log.replay()} == {"tool_call", "tool_result", "commit"}
+    assert {e["type"] for e in h.services[0].log.replay()} == {
+        "tool_call", "tool_result", "message", "extracted_commit"}
     kernel = h.services[-1].kernel
     assert kernel.store.db.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == 0
     assert kernel.store.db.execute("SELECT COUNT(*) FROM obligation_edges").fetchone()[0] == 0

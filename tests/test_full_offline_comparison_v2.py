@@ -463,7 +463,7 @@ def _architecture_fixture(tmp_path):
         }]}],
     }
     events = [
-        {"type": "commit", "payload": {
+        {"type": "extracted_commit", "payload": {
             "label": "final", "kind": "final", "text": final_text,
             "deps": []}},
         {"type": "decomposition_attacked", "payload": {

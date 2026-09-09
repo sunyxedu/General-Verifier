@@ -22,6 +22,7 @@ describe available operations; the model prompts remain domain independent.
 | `document.json-predicate@1` | Bounded structural equality, array membership/length, and array-item shape/type predicates | Closed algebra over strict UTF-8 JSON only |
 | `document.json-predicate@2` | The same bounded predicates, with object-member presence independent of optional type constraints | Explicit JSON Pointer required, including `""` for the root |
 | `evidence.program@1` | A bounded pure program checks relations across declared world files | Holds-only; any false check, unsupported syntax, or limit falls back |
+| `evidence.program@2` | The same pure program over a stable complete vector of private regular-file snapshots | A valid false `require` fails only the method; it is never a refutation |
 | `ledger.event@1` | One retained event's type and payload subset | Establishes record facts only |
 | `ledger.tool-call-string@1` | Exact string selection within an explicit ledger interval | Cannot interpret or execute command text |
 | `ledger.tool-call-string@2` | Explicit existence, equality, nonempty or nonblank string predicate | Record facts only; no command-language interpretation |
@@ -123,14 +124,32 @@ read. Every successful `require` must dynamically depend on a declared subject;
 hard-coded truth, labels, and observations cannot manufacture that dependency.
 All resource caps are published in the adapter catalog.
 
-The adapter is deliberately holds-only. A false requirement, malformed input,
+Version 1 is deliberately holds-only. A false requirement, malformed input,
 unsupported construct, incomplete read, or exhausted cap makes it inapplicable
-and routes to the unchanged agent executor. A successful receipt is still only
-evidence: the fresh independent Judger checks whether the Oracle's program is
-sufficient for the obligation and faithful to the task. Restricted typed
-transport additionally requires a complete, untruncated observation for every
-requirement, exact declared/consumed input binding, and fresh replay before and
-after the Judger call.
+and routes to the unchanged agent executor.
+
+Version 2 changes only a fully validated false requirement. It opens every
+declared runtime input as a distinct, private regular file without following
+path symlinks, reads every file to EOF under per-file and aggregate byte caps,
+and keeps the files open while the pure program runs. Before and after the
+program it rebinds every path and checks the file and world-view identities.
+Every `require` must have a bounded third `observed` argument covering the
+subject slots used by its predicate, and every declared runtime slot must have
+been read before a requirement may fail. Under those conditions the first
+false `require` returns method `failed`. This means only that the exact MethodIR
+did not establish the obligation; it is never `refuted`, never an absence
+witness, and proves neither directory completeness nor future closure. Any
+invalid input, unsafe alias, race, malformed program, or resource boundary
+still falls back to the ordinary executor.
+
+A successful receipt from either version is still only evidence: the fresh
+independent Judger checks whether the Oracle's program is sufficient for the
+obligation and faithful to the task. Restricted typed transport additionally
+requires a complete, untruncated observation for every requirement, exact
+declared/consumed input binding, and fresh replay before and after the Judger
+call. Phase 1 deliberately leaves `evidence.program@2` outside that restricted
+transport allowlist, so its positive receipts use the ordinary fresh toolful
+Judger.
 
 ## Optional browser observer
 

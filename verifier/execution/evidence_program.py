@@ -6,10 +6,13 @@ shaped language and evaluates the syntax itself.  It never calls ``eval`` or
 ``exec`` and exposes no filesystem, process, network, clock, randomness,
 imports, attributes, or ambient environment.
 
-The adapter is holds-direction only.  A false requirement, malformed program,
-runtime error, or exhausted resource bound makes the adapter inapplicable and
-routes to the existing agent executor.  A successful run remains evidence for
-the fresh independent Judger, not a verifier verdict shortcut.
+Version 1 is holds-direction only and routes every false requirement or error
+to the existing agent executor. Version 2 reads a stable, complete, bounded
+vector of private regular-file snapshots. A fully validated false requirement
+then fails only that exact method; it never refutes the obligation. Malformed
+programs, runtime errors, races, and resource boundaries still fall back. A
+successful run in either version remains evidence for the fresh independent
+Judger, not a verifier verdict shortcut.
 """
 from __future__ import annotations
 
@@ -17,12 +20,24 @@ import ast
 import hashlib
 import json
 import math
+import os
+import stat
 import struct
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Sequence
 
-from ..core.model import BASIS_WORLD, OUTCOME_HOLDS, ROLE_SUBJECT, WITNESS_NONE, canonical
+from ..core.model import (
+    BASIS_WORLD,
+    OUTCOME_FAILED,
+    OUTCOME_HOLDS,
+    ROLE_AUTHORITY,
+    ROLE_SUBJECT,
+    WITNESS_NONE,
+    canonical,
+    content_hash,
+)
+from ..core.world import load_world_view
 from .adapters import (
     WORLD_FILE_PROVENANCES,
     AdapterExecution,
@@ -53,6 +68,11 @@ MAX_CALL_DEPTH = 8
 MAX_ASSERTIONS = 64
 MAX_OBSERVATIONS = 32
 MAX_RETAINED_OBSERVATION_CHARS = 4_096
+MAX_RECEIPT_BYTES = 48_000
+COMPLETE_AUDIT_OBSERVATION_SCHEMA = (
+    "gv-pure-evidence-program-complete-audit-v1"
+)
+WORLD_INPUT_SNAPSHOT_SCHEMA = "gv-world-input-vector-snapshot-v1"
 
 _BUILTINS = frozenset({
     "input_bytes", "input_text", "input_json", "len", "range",
@@ -90,6 +110,13 @@ class _Break(Exception):
 
 class _Continue(Exception):
     pass
+
+
+class _RequirementFalse(Exception):
+    """Internal control flow for one fully validated false requirement."""
+
+    def __init__(self, assertion_index: int):
+        self.assertion_index = assertion_index
 
 
 @dataclass(frozen=True)
@@ -453,16 +480,284 @@ def _retained_json_upper_bound(value: Any) -> int:
     return total
 
 
+def _snapshot_stat_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_uid,
+        info.st_gid,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _open_snapshot_parent(path: str) -> tuple[int, str]:
+    """Open an absolute parent path one no-follow component at a time."""
+    required_flags = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    if any(not hasattr(os, name) for name in required_flags):
+        raise AdapterNotApplicable(
+            "complete world snapshots require directory, nofollow, and "
+            "nonblocking support")
+    if (os.open not in getattr(os, "supports_dir_fd", ())
+            or os.stat not in getattr(os, "supports_dir_fd", ())
+            or os.stat not in getattr(os, "supports_follow_symlinks", ())):
+        raise AdapterNotApplicable(
+            "complete world snapshots require relative nofollow stat support")
+    if not isinstance(path, str) or not os.path.isabs(path) \
+            or os.path.normpath(path) != path:
+        raise AdapterNotApplicable(
+            "complete world snapshot paths must be normalized and absolute")
+    name = os.path.basename(path)
+    if not name or name in {".", ".."}:
+        raise AdapterNotApplicable("complete world snapshot file name is invalid")
+    flags = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+             | getattr(os, "O_CLOEXEC", 0))
+    try:
+        descriptor = os.open(os.path.sep, flags)
+    except OSError as error:
+        raise AdapterNotApplicable(
+            f"cannot open the world filesystem root: {error}") from error
+    try:
+        for component in os.path.dirname(path).split(os.path.sep):
+            if not component:
+                continue
+            if component in {".", ".."} or os.path.sep in component:
+                raise AdapterNotApplicable(
+                    "complete world snapshot parent is invalid")
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except OSError as error:
+                raise AdapterNotApplicable(
+                    "cannot open a world input parent without following "
+                    f"links: {error}") from error
+            try:
+                if not stat.S_ISDIR(os.fstat(child).st_mode):
+                    raise AdapterNotApplicable(
+                        "complete world snapshot parent is not a directory")
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(descriptor)
+            descriptor = child
+        return descriptor, name
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+@dataclass
+class _OpenWorldInput:
+    resolved: Any
+    path: str
+    name: str
+    parent_fd: int
+    fd: int
+    before: os.stat_result
+    data: bytes
+    identity: Dict[str, Any]
+
+
+def _snapshot_input_identity(resolved, info: os.stat_result,
+                             data: bytes) -> Dict[str, Any]:
+    return {
+        "ref": resolved.address,
+        "mode": resolved.mode,
+        "scheme": resolved.scheme,
+        "kind": "file",
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "file_identity": {
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "file_mode": info.st_mode,
+            "links": info.st_nlink,
+            "uid": info.st_uid,
+            "gid": info.st_gid,
+            "mtime_ns": info.st_mtime_ns,
+            "ctime_ns": info.st_ctime_ns,
+        },
+    }
+
+
+def _revalidate_open_world_input(item: _OpenWorldInput) -> None:
+    expected = _snapshot_stat_identity(item.before)
+    try:
+        after = os.fstat(item.fd)
+        current = os.stat(
+            item.name, dir_fd=item.parent_fd, follow_symlinks=False)
+    except OSError as error:
+        raise AdapterNotApplicable(
+            f"cannot revalidate world input {item.resolved.address!r}: "
+            f"{error}") from error
+    if (_snapshot_stat_identity(after) != expected
+            or _snapshot_stat_identity(current) != expected
+            or len(item.data) != item.before.st_size):
+        raise AdapterNotApplicable(
+            f"world input {item.resolved.address!r} changed during snapshot")
+
+    rebound_fd, rebound_name = _open_snapshot_parent(item.path)
+    try:
+        rebound_parent = os.fstat(rebound_fd)
+        original_parent = os.fstat(item.parent_fd)
+        rebound_file = os.stat(
+            rebound_name, dir_fd=rebound_fd, follow_symlinks=False)
+    except OSError as error:
+        raise AdapterNotApplicable(
+            f"cannot rebind world input {item.resolved.address!r}: "
+            f"{error}") from error
+    finally:
+        os.close(rebound_fd)
+    if ((rebound_parent.st_dev, rebound_parent.st_ino)
+            != (original_parent.st_dev, original_parent.st_ino)
+            or _snapshot_stat_identity(rebound_file) != expected):
+        raise AdapterNotApplicable(
+            f"world input {item.resolved.address!r} path changed during snapshot")
+
+
+@contextmanager
+def _stable_world_input_vector(context, execution_inputs):
+    """Yield complete private bytes for one common stable observation window."""
+    try:
+        cached_world = canonical(context.world.describe())
+        current_world = canonical(load_world_view(
+            context.state_dir, live_world=context.live_world).describe())
+    except (OSError, TypeError, ValueError, UnicodeError,
+            RecursionError, MemoryError, OverflowError) as error:
+        raise AdapterNotApplicable(
+            f"cannot bind the current world view: {error}") from error
+    if current_world != cached_world:
+        raise AdapterNotApplicable(
+            "world view changed before the complete input snapshot")
+
+    opened: list[_OpenWorldInput] = []
+    total = 0
+    physical_identities: set[tuple[int, int]] = set()
+    try:
+        for item in execution_inputs:
+            resolved = context.resolve(item["ref"])
+            path = os.path.abspath(resolved.host_path)
+            parent_fd, name = _open_snapshot_parent(path)
+            fd = -1
+            try:
+                expected = os.stat(
+                    name, dir_fd=parent_fd, follow_symlinks=False)
+                if not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1:
+                    raise AdapterNotApplicable(
+                        "complete world inputs must be private regular files")
+                remaining = MAX_TOTAL_INPUT_BYTES - total
+                if expected.st_size > MAX_INPUT_BYTES \
+                        or expected.st_size > remaining:
+                    raise AdapterNotApplicable(
+                        "complete world inputs exceed their byte boundary")
+                flags = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                         | getattr(os, "O_CLOEXEC", 0))
+                fd = os.open(name, flags, dir_fd=parent_fd)
+                before = os.fstat(fd)
+                if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                        or _snapshot_stat_identity(before)
+                        != _snapshot_stat_identity(expected)):
+                    raise AdapterNotApplicable(
+                        "world input changed before its complete snapshot")
+                physical = (before.st_dev, before.st_ino)
+                if physical in physical_identities:
+                    raise AdapterNotApplicable(
+                        "world input slots must name distinct physical files")
+                physical_identities.add(physical)
+
+                chunks = []
+                size = 0
+                limit = min(MAX_INPUT_BYTES, remaining)
+                while True:
+                    chunk = os.read(
+                        fd, min(1024 * 1024, limit + 1 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > limit:
+                        raise AdapterNotApplicable(
+                            "complete world inputs exceed their byte boundary")
+                data = b"".join(chunks)
+                identity = _snapshot_input_identity(resolved, before, data)
+                opened.append(_OpenWorldInput(
+                    resolved, path, name, parent_fd, fd, before, data, identity))
+                parent_fd = -1
+                fd = -1
+                total += len(data)
+            except OSError as error:
+                raise AdapterNotApplicable(
+                    f"cannot read complete world input {item['ref']!r}: "
+                    f"{error}") from error
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+                if parent_fd >= 0:
+                    os.close(parent_fd)
+
+        for item in opened:
+            _revalidate_open_world_input(item)
+        identities = [item.identity for item in opened]
+        snapshot = {
+            "schema": WORLD_INPUT_SNAPSHOT_SCHEMA,
+            "model": (
+                "ordered declared-file byte vector stable across one common "
+                "observation window"
+            ),
+            "complete_regular_files": True,
+            "distinct_private_files": True,
+            "input_count": len(opened),
+            "total_bytes": total,
+            "input_vector_sha256": content_hash([{
+                "slot": index,
+                "ref": identity["ref"],
+                "bytes": identity["bytes"],
+                "sha256": identity["sha256"],
+            } for index, identity in enumerate(identities)]),
+            "proves_directory_completeness": False,
+            "proves_future_closure": False,
+        }
+        yield [item.data for item in opened], identities, snapshot
+
+        for item in opened:
+            _revalidate_open_world_input(item)
+        try:
+            rebound_world = canonical(load_world_view(
+                context.state_dir, live_world=context.live_world).describe())
+        except (OSError, TypeError, ValueError, UnicodeError,
+                RecursionError, MemoryError, OverflowError) as error:
+            raise AdapterNotApplicable(
+                f"cannot revalidate the current world view: {error}") from error
+        if rebound_world != cached_world:
+            raise AdapterNotApplicable(
+                "world view changed during the complete input snapshot")
+    finally:
+        for item in reversed(opened):
+            os.close(item.fd)
+            os.close(item.parent_fd)
+
+
 class _Interpreter:
     """Closed evaluator for ``LANGUAGE``; all operations consume fuel."""
 
-    def __init__(self, source: str, inputs: Sequence[bytes], subject_slots: set[int]):
+    def __init__(self, source: str, inputs: Sequence[bytes],
+                 subject_slots: set[int], *, complete_audit: bool = False):
         try:
             self.module = ast.parse(source, mode="exec")
         except (SyntaxError, ValueError, TypeError, MemoryError) as error:
             raise AdapterNotApplicable("evidence program syntax is invalid") from error
         _tree_shape(self.module)
         _validate_ast(self.module)
+        if complete_audit and any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "require"
+                and len(node.args) != 3
+                for node in ast.walk(self.module)):
+            raise AdapterNotApplicable(
+                "complete evidence programs require three-argument require calls")
         self.source = source
         self.inputs = tuple(inputs)
         self.input_cache: Dict[tuple[str, int], Any] = {}
@@ -478,6 +773,7 @@ class _Interpreter:
         self.functions: Dict[str, _Function] = {}
         self.assertions: list[dict] = []
         self.observations: list[dict] = []
+        self.complete_audit = complete_audit
 
     def _burn(self, amount: int = 1) -> None:
         if type(amount) is not int or amount < 1 or self.fuel < amount:
@@ -567,14 +863,22 @@ class _Interpreter:
         for statement in self.module.body:
             if isinstance(statement, ast.FunctionDef):
                 self._define(statement)
-        for statement in self.module.body:
-            if not isinstance(statement, ast.FunctionDef):
-                self._statement(statement, self.env, in_function=False, in_loop=False)
+        failed_requirement = None
+        try:
+            for statement in self.module.body:
+                if not isinstance(statement, ast.FunctionDef):
+                    self._statement(
+                        statement, self.env, in_function=False, in_loop=False)
+        except _RequirementFalse as failure:
+            if not self.complete_audit:
+                raise RuntimeError(
+                    "legacy evidence program leaked complete-audit control flow")
+            failed_requirement = failure.assertion_index
         if not self.assertions:
             raise AdapterNotApplicable("evidence program must make at least one requirement")
         if self.used_slots != set(range(len(self.inputs))):
             raise AdapterNotApplicable("evidence program did not read every declared input slot")
-        return {
+        result = {
             "assertions": self.assertions,
             "observations": self.observations,
             "fuel_limit": MAX_FUEL,
@@ -583,6 +887,19 @@ class _Interpreter:
             "allocation_reserved_bytes": self.allocated_bytes,
             "used_input_slots": sorted(self.used_slots),
         }
+        if self.complete_audit:
+            result["complete_audit"] = {
+                "audit_complete": True,
+                "program_outcome": (
+                    "require-false" if failed_requirement is not None
+                    else "all-requirements-held"
+                ),
+                "failed_assertion_index": failed_requirement,
+                "require_is_terminal": True,
+                "obligation_verdict": False,
+                "proves_future_closure": False,
+            }
+        return result
 
     def _define(self, node: ast.FunctionDef) -> None:
         self._burn()
@@ -1060,7 +1377,7 @@ class _Interpreter:
             if type(passed) is not bool or type(label) is not str \
                     or not label or len(label.encode("utf-8", errors="strict")) > 256:
                 raise AdapterNotApplicable("evidence program requirement is invalid")
-            if not passed:
+            if not passed and not self.complete_audit:
                 raise AdapterNotApplicable("evidence program requirement did not hold")
             # Only the predicate, including its control dependencies,
             # authenticates the requirement.  A tainted label or observed
@@ -1075,7 +1392,7 @@ class _Interpreter:
             item = {
                 "label": label,
                 "expression_sha256": _node_digest(node.args[0]),
-                "holds": True,
+                "holds": passed,
                 "input_slots": sorted(dependency_slots),
                 "subject_slots": sorted(subject_dependencies),
             }
@@ -1085,7 +1402,18 @@ class _Interpreter:
                 item["observed_input_slots"] = sorted(observed_slots)
                 item["observed_subject_slots"] = sorted(
                     observed_slots & self.subject_slots)
+                if self.complete_audit and not subject_dependencies <= \
+                        observed_slots & self.subject_slots:
+                    raise AdapterNotApplicable(
+                        "complete evidence program observation does not cover "
+                        "the requirement's subject inputs")
             self.assertions.append(item)
+            if not passed:
+                if self.used_slots != set(range(len(self.inputs))):
+                    raise AdapterNotApplicable(
+                        "complete evidence program failed before reading every "
+                        "declared input slot")
+                raise _RequirementFalse(len(self.assertions) - 1)
             return None
         if name == "observe" and len(args) == 2 and type(args[0]) is str:
             label = args[0]
@@ -1273,6 +1601,154 @@ class EvidenceProgramAdapter(MethodAdapter):
         return AdapterExecution(
             OUTCOME_HOLDS,
             None,
+            WITNESS_NONE,
+            observation,
+            tuple(consumed),
+        )
+
+
+class EvidenceProgramCompleteAuditAdapter(EvidenceProgramAdapter):
+    """Versioned complete method audit over stable declared-file snapshots."""
+
+    version = 2
+    summary = (
+        "Interpret the same bounded pure evidence language over a stable, "
+        "complete vector of declared regular-file bytes. All requirements "
+        "held reports holds. One fully validated false requirement reports "
+        "only method failed, never refuted; every invalid, racing, incomplete, "
+        "or resource-limited execution falls back."
+    )
+
+    def catalog_entry(self) -> Dict[str, Any]:
+        entry = super().catalog_entry()
+        entry["language"] = {
+            **entry["language"],
+            "statements": [
+                statement.replace(
+                    "require(bool,label,observed?)",
+                    "require(bool,label,observed)",
+                )
+                for statement in entry["language"]["statements"]
+            ],
+        }
+        entry.update({
+            "direction": (
+                "holds-only; complete valid require-false => method failed; "
+                "invalid/incomplete/race/error/limit => ordinary executor fallback"
+            ),
+            "input_contract": (
+                "declare 1..8 unique private regular world files in exact slot "
+                "order with no non-runtime authority slots; every declared slot "
+                "must be read before require can fail; all files remain open and "
+                "are rebound across one common observation window"
+            ),
+            "complete_audit": {
+                "false_requirement": (
+                    "failed execution of this exact MethodIR only; never an "
+                    "obligation verdict, refutation, or absence witness"
+                ),
+                "require_contract": (
+                    "every require has exactly three arguments; its predicate "
+                    "depends on a subject and its bounded observed value covers "
+                    "those subject slots"
+                ),
+                "method_contract": (
+                    "the pure program must exhaust the declared method; require "
+                    "is terminal at the first false predicate and no unrepresented "
+                    "alternate procedure is implied"
+                ),
+                "snapshot": WORLD_INPUT_SNAPSHOT_SCHEMA,
+                "directory_completeness": False,
+                "future_closure": False,
+            },
+            "typed_transport": {
+                "eligible": False,
+                "reason": (
+                    "phase 1 keeps evidence.program@2 on the ordinary fresh "
+                    "toolful Judger path; failed methods are not judged"
+                ),
+            },
+            "resource_limits": {
+                **entry["resource_limits"],
+                "receipt_bytes": MAX_RECEIPT_BYTES,
+            },
+        })
+        return entry
+
+    def validate(self, invocation: AdapterInvocation,
+                 method: Mapping[str, Any]) -> None:
+        super().validate(invocation, method)
+        if any(item["role"] == ROLE_AUTHORITY for item in invocation.inputs):
+            raise AdapterNotApplicable(
+                "complete evidence program requires every declared input to be "
+                "a runtime-read file slot")
+
+    def execute(self, invocation: AdapterInvocation, obligation,
+                context) -> AdapterExecution:
+        self.validate(invocation, {"basis": self.basis})
+        execution_inputs = [item for item in invocation.inputs
+                            if item["role"] != ROLE_AUTHORITY]
+        source = invocation.arguments["source"]
+        with _stable_world_input_vector(
+                context, execution_inputs) as (data, consumed, snapshot):
+            subject_slots = {
+                index for index, item in enumerate(execution_inputs)
+                if item["role"] == ROLE_SUBJECT
+            }
+            try:
+                result = _Interpreter(
+                    source, data, subject_slots, complete_audit=True).run()
+            except (RecursionError, MemoryError) as error:
+                raise AdapterNotApplicable(
+                    "complete evidence program exceeded a host safety boundary"
+                ) from error
+
+        input_slots = []
+        for index, (declared, identity) in enumerate(
+                zip(execution_inputs, consumed)):
+            input_slots.append({
+                "slot": index,
+                "ref": declared["ref"],
+                "provenance": declared["provenance"],
+                "role": declared["role"],
+                "bytes": identity["bytes"],
+                "sha256": identity["sha256"],
+                "file_identity": identity["file_identity"],
+            })
+        observation = {
+            "schema": COMPLETE_AUDIT_OBSERVATION_SCHEMA,
+            "language": LANGUAGE,
+            "source_sha256": _source_digest(source),
+            "source_chars": len(source),
+            "input_slots": input_slots,
+            "snapshot": snapshot,
+            **result,
+        }
+        if len(canonical(observation).encode("utf-8", errors="strict")) \
+                > MAX_RECEIPT_BYTES:
+            raise AdapterNotApplicable(
+                "complete evidence program receipt exceeds its byte bound")
+
+        audit = result["complete_audit"]
+        failed_index = audit["failed_assertion_index"]
+        if failed_index is None:
+            return AdapterExecution(
+                OUTCOME_HOLDS, None, WITNESS_NONE, observation,
+                tuple(consumed))
+        failed = result["assertions"][failed_index]
+        return AdapterExecution(
+            OUTCOME_FAILED,
+            {
+                "reason": (
+                    "the exact complete evidence program terminated at a "
+                    "false requirement; this is not an obligation verdict"
+                ),
+                "failure_kind": "require-false",
+                "failed_requirement": {
+                    "label": failed["label"],
+                    "expression_sha256": failed["expression_sha256"],
+                },
+            },
             WITNESS_NONE,
             observation,
             tuple(consumed),

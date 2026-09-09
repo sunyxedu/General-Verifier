@@ -134,7 +134,7 @@ def test_rebuild_graph_keeps_effect_identity_and_has_no_verification_state(tmp_p
     assert stamp["config"] != offline.config_fields()["config"]
     assert stamp["rounds"] == 1
     assert {e["type"] for e in second.log.replay()} == {
-        "tool_call", "tool_result", "commit"}
+        "tool_call", "tool_result", "message", "extracted_commit"}
     assert not (destination / "verification.json").exists()
 
 

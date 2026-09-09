@@ -106,7 +106,12 @@ def test_extract_writes_a_replayable_graph(tmp_path):
     variables = backend.calls[0]["variables"]
     assert variables["task"] == "print the answer"
     assert "echo 42" in variables["events_index"]
+    assert "FINAL ANSWER: 42" in variables["events_index"]
     assert variables["feedback"] == ""
+    responses = [event for event in log.replay()
+                 if offline.is_offline_final_response(event)]
+    assert [event["payload"]["text"] for event in responses] == [
+        "FINAL ANSWER: 42"]
 
 
 def test_structural_error_feeds_back_and_retries(tmp_path):
@@ -723,7 +728,7 @@ def test_claim_store_is_rebuilt_without_replacing_live_commits(tmp_path, change)
             "payload"]["excerpt"] = "43"
         (tmp_path / "gv" / "events.jsonl").write_text(
             "".join(json.dumps(e) + "\n" for e in events))
-    commits = [e for e in log.replay() if e["type"] == "commit"]
+    commits = [e for e in log.replay() if e["type"] == "extracted_commit"]
     checks = StubDischarger("failed")
 
     def factory(sc):
@@ -735,4 +740,5 @@ def test_claim_store_is_rebuilt_without_replacing_live_commits(tmp_path, change)
 
     assert features["verdict"] == "unverified"
     assert checks.seen
-    assert [e for e in log.replay() if e["type"] == "commit"] == commits
+    assert [e for e in log.replay()
+            if e["type"] == "extracted_commit"] == commits

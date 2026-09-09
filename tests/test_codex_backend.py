@@ -437,6 +437,39 @@ def test_usage_ledger_records_exact_repeated_seat_calls(
         assert "secret prompt" not in json.dumps(row)
 
 
+def test_oracle_gets_compile_boundary_instead_of_execution_inspection(
+        tmp_path, monkeypatch):
+    role = SimpleNamespace(system="seat", schema={"ok": bool})
+    backend = CodexBackend(
+        roles={"oracles": role, "discharge": role}, cwd=str(tmp_path),
+        compact_inspection=True,
+    )
+    instructions = {}
+
+    def fake_run(cmd, **_kwargs):
+        role_name = "oracles" if "ORACLE COMPILE/EXECUTE BOUNDARY" in cmd[-1] \
+            else "discharge"
+        instructions[role_name] = cmd[-1]
+        output = cmd[cmd.index("-o") + 1]
+        with open(output, "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=_complete_usage_stream(f"thread-{role_name}"),
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "verifier.llm.codex_backend._run_codex_process", fake_run)
+    assert backend.complete("oracles", "prompt", {}) == {"ok": True}
+    assert backend.complete("discharge", "prompt", {}) == {"ok": True}
+
+    assert "ORACLE COMPILE/EXECUTE BOUNDARY" in instructions["oracles"]
+    assert "LOCAL EVIDENCE INSPECTION" not in instructions["oracles"]
+    assert "LOCAL EVIDENCE INSPECTION" in instructions["discharge"]
+    assert "ORACLE COMPILE/EXECUTE BOUNDARY" not in instructions["discharge"]
+
+
 def test_service_tier_args_explicitly_override_user_config():
     assert service_tier_cli_args("standard") == [
         "-c", 'service_tier="default"', "--disable", "fast_mode",

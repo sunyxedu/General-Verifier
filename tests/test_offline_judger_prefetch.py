@@ -99,7 +99,7 @@ def test_extractor_and_kernel_backends_receive_same_flag(
         seen[1].runtime_instruction_identity
 
 
-def test_extractor_and_kernel_receive_same_restricted_cwd(
+def test_only_kernel_backend_receives_restricted_judger_cwd(
         tmp_path, monkeypatch):
     from verifier import mcp_server
 
@@ -138,7 +138,8 @@ def test_extractor_and_kernel_receive_same_restricted_cwd(
             restricted_judger_cwd=str(scratch))
 
     assert len(seen) == 2 and seen[0] is not seen[1]
-    assert all(item.restricted_judger_cwd == str(scratch) for item in seen)
+    assert seen[0].restricted_judger_cwd is None
+    assert seen[1].restricted_judger_cwd == str(scratch)
 
 
 def test_score_many_forwards_flag(tmp_path, monkeypatch):

@@ -142,6 +142,20 @@ def test_strength_ladder_contract_survives():
     assert "VERDICT-DIRECTION AT EXECUTION" in prompts.DISCHARGE_SYSTEM
 
 
+def test_oracle_compiles_methods_without_executing_their_evidence_checks():
+    system = prompts.ORACLES_SYSTEM
+    template = prompts.ORACLES_TEMPLATE
+    assert "ORACLE COMPILES; THE ADAPTER/EXECUTOR OBSERVES" in system
+    assert "compile that audit without performing it" in system
+    assert "inspect the whole record before listing methods" not in system
+    assert "must not determine the method's predicates or expected values" \
+        in system
+    assert "omit the adapter binding" in system
+    assert "a repair must never guess a new version" in template
+    assert "holds-only adapter replaces only" in template
+    assert "never refuted" in template
+
+
 def test_plain_reading_gate_is_refutation_only():
     """The careful-reader gate downgrades refutations only: discharge owns
     it, the judger mirrors it, and it must not spread to the seats that

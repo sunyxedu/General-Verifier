@@ -346,7 +346,7 @@ def _committed_claim_identities(events) -> dict[int, str]:
     try:
         for event in events:
             builder.feed(event)
-            if event["type"] != "commit":
+            if event["type"] not in ("commit", "extracted_commit"):
                 continue
             payload = event["payload"]
             label = payload.get("label")
@@ -387,7 +387,8 @@ def _audit_architecture(state: Path, certificate: dict,
             or not finals[0]["obligations"]:
         raise ValueError("certificate has no unique nonempty final contract")
     commit_identities = _committed_claim_identities(events)
-    commits = [event for event in events if event["type"] == "commit"
+    commits = [event for event in events
+               if event["type"] == "extracted_commit"
                and commit_identities.get(event["seq"]) == final]
     if (len(commits) != 1 or commits[0]["payload"].get("kind") != "final"
             or finals[0].get("kind") != "final"
@@ -780,7 +781,10 @@ def run_worker(plan):
             cwd=str(state), **RUNTIME,
             compact_inspection=plan["arm"] == "treatment",
             judger_prefetch=plan["arm"] == "treatment",
-            restricted_judger_cwd=restricted_judger_cwd)
+            # This instance only derives immutable transport identities.  It
+            # never executes a Judger, so the live Kernel remains the sole
+            # owner of the operator-bound Judger scratch.
+            restricted_judger_cwd=None)
         transport = _transport_profile(modules, backend, plan["arm"])
         binding = policy.OfflinePolicyBinding(
             state_dir=str(state),

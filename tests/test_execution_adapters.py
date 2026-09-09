@@ -144,6 +144,7 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         ("document.json-value", 1),
         ("document.text", 1),
         ("evidence.program", 1),
+        ("evidence.program", 2),
         ("record.program", 1),
         ("ledger.event", 1),
         ("ledger.sequence", 1),
@@ -152,6 +153,10 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         ("ledger.tool-call-string", 2),
         ("ledger.tool-call-string", 3),
     }
+    assert all(item["identity_contract"] == {
+        "selection": "exact-registered-name-version-only",
+        "repair_version_inference": "forbidden",
+    } for item in catalog)
     command = next(item for item in catalog
                    if item["name"] == "ledger.tool-call-string")
     text = next(item for item in catalog if item["name"] == "document.text")

@@ -153,6 +153,31 @@ def test_catalog_and_fixed_binding_are_record_only(tmp_path):
     assert "future closure" in entry["normalization"]["observed_eof"]
     assert "ordinary fresh toolful Judger" in entry["judgment_transport"]
     assert "task" not in entry["example"]
+    assert entry["normalized_document_shape"]["schema"] \
+        == record_program.NORMALIZATION_SCHEMA
+    assert entry["field_applicability"]["invocation"]["tool_call"] \
+        ["statuses"] == ["decoded", "opaque"]
+    assert entry["field_applicability"]["invocation"] \
+        ["all_other_source_events"]["status"] == "not-applicable"
+    assert entry["field_applicability"]["correlation"] \
+        ["tool_call_and_tool_result"]["statuses"] == [
+            "paired", "unpaired", "ambiguous"]
+    assert {recipe["operation"] for recipe in entry["recipes"]} == {
+        "any-paired-decoded-invocation",
+        "prefix-call-result-pair",
+        "last-decoded-command-equals",
+        "tool-result-string-equals",
+        "aggregate-source-event-count",
+    }
+    prefix_pair = next(
+        recipe for recipe in entry["recipes"]
+        if recipe["operation"] == "prefix-call-result-pair")
+    assert "correlation" in prefix_pair["source"]
+    last_command = next(
+        recipe for recipe in entry["recipes"]
+        if recipe["operation"] == "last-decoded-command-equals")
+    assert "invocation" in last_command["source"]
+    assert "terminal" not in last_command["source"]
 
 
 @pytest.mark.parametrize("scope", ["prefix", "observed-eof"])

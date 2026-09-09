@@ -176,6 +176,16 @@ _COMPACT_INSPECTION_NOTE = (
     "omit evidence, trust a reported outcome or re-execute a historical "
     "action for a record obligation."
 )
+_ORACLE_COMPILE_NOTE = (
+    "\n\nORACLE COMPILE/EXECUTE BOUNDARY: local ledger, world, artifact, "
+    "and source-evidence paths are runtime evidence subjects, not "
+    "adapter-discovery inputs. Do not open them to select or populate a "
+    "registered adapter. If the obligation, clause, task context, and "
+    "catalog do not determine every semantic argument, omit the adapter "
+    "binding and leave observation to the custom executor. Web research "
+    "remains available only for task-independent method semantics, never "
+    "evidence availability or result discovery."
+)
 _COMPACT_REPORT_NOTE = (
     "\n\nCOMPLETE BUT COMPACT REPORTING: perform every analysis, attack, "
     "coverage check, and independence check required by this role before "
@@ -1642,7 +1652,7 @@ class CodexBackend:
     def runtime_instruction_identity(self) -> str:
         return hashlib.sha256(
             (self._artifact_address_note + self._compact_inspection_note
-             + self._compact_report_note
+             + _ORACLE_COMPILE_NOTE + self._compact_report_note
              + self._judger_prefetch_note)
             .encode("utf-8")).hexdigest()
 
@@ -2218,7 +2228,9 @@ class CodexBackend:
             (role.system + "\n\n" if role.system else "")
             + prompt
             + (self._artifact_address_note if role_name == "judger" else "")
-            + (self._compact_inspection_note
+            + (_ORACLE_COMPILE_NOTE
+               if role_name == "oracles"
+               else self._compact_inspection_note
                if role_name != "extract" else "")
             + self._compact_report_note
             + (_SEARCH_NOTE if self._search_enabled(role_name) else "")

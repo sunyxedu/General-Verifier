@@ -33,6 +33,12 @@ MAX_SOURCE_LEDGER_EVENTS = 20_000
 EVENT_TYPES = (
     *SOURCE_EVENT_TYPES,
 
+    # Declarative claims reconstructed by the offline Extractor.  These feed
+    # the same graph builder as live commits, but are verifier output rather
+    # than candidate/source actions and therefore must not enter a source
+    # evidence projection.
+    "extracted_commit",
+
     # scheduling
     "verify_request",
     "status_change",

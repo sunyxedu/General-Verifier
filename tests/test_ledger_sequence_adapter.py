@@ -235,6 +235,24 @@ def test_observed_eof_retains_stable_source_projection_identity(tmp_path):
         _execute(context, _paired_arguments("observed-eof", terminal=True))
 
 
+def test_offline_extractor_graph_does_not_create_a_later_solver_action(
+        tmp_path):
+    log, context = _environment(tmp_path)
+    _call, result_event = _pair(log)
+    log.append("extracted_commit", {
+        "label": "F", "kind": "final", "text": "reconstructed graph",
+        "deps": [],
+    })
+
+    result = _execute(
+        context, _paired_arguments("observed-eof", terminal=True))
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert result.observation["snapshot"]["resolved_source_through_seq"] \
+        == result_event["seq"]
+    assert result.observation["terminal"]["later_solver_action_count"] == 0
+
+
 def test_observed_eof_source_append_changes_replay_identity(tmp_path):
     log, context = _environment(tmp_path)
     log.append("message", {"text": "selected"})
@@ -738,6 +756,14 @@ def test_module_contract_is_record_only_fixed_input_and_task_agnostic(tmp_path):
         "ref": "ledger:events", "provenance": "ledger", "role": "subject",
     }
     assert entry["direction"].startswith("holds-only")
+    assert "terminal-solver-action" in entry["capabilities"]
+    assert "terminal-is-not-last-decoded-command" in entry["limitations"]
+    terminal_example = next(
+        example for example in entry["examples"]
+        if "terminal solver action" in example["purpose"])
+    assert "final recorded command" not in terminal_example["purpose"]
+    assert "stronger than proving the last decoded command" \
+        in terminal_example["warning"]
     assert set(entry["source_projection"]["event_types"]) == {
         "session_start", "tool_call", "tool_result", "message", "commit", "stop",
     }

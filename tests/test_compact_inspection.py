@@ -46,7 +46,9 @@ def test_opt_in_compacts_reports_and_all_post_extract_roles_get_inspection_note(
     (base, base_args), (opt, opt_args) = calls
     assert cb._COMPACT_INSPECTION_NOTE not in base[-1]
     assert cb._COMPACT_REPORT_NOTE not in base[-1]
-    expected = role_name != "extract"
+    assert (cb._ORACLE_COMPILE_NOTE in base[-1]) is (role_name == "oracles")
+    assert (cb._ORACLE_COMPILE_NOTE in opt[-1]) is (role_name == "oracles")
+    expected = role_name not in {"extract", "oracles"}
     assert (cb._COMPACT_INSPECTION_NOTE in opt[-1]) is expected
     assert cb._COMPACT_REPORT_NOTE in opt[-1]
     assert opt[-1].replace(cb._COMPACT_INSPECTION_NOTE, "").replace(
@@ -67,7 +69,8 @@ def test_default_keeps_previous_identity_and_profiles_never_share(monkeypatch):
     opt = cb.CodexBackend(compact_inspection=True)
     assert base.compact_inspection is False
     assert base.runtime_instruction_identity == hashlib.sha256(
-        cb._ARTIFACT_ADDRESS_NOTE.encode()).hexdigest()
+        (cb._ARTIFACT_ADDRESS_NOTE + cb._ORACLE_COMPILE_NOTE).encode()
+    ).hexdigest()
     assert _backend_identity(base) != _backend_identity(opt)
     before = _backend_identity(opt)
     monkeypatch.setattr(cb, "_COMPACT_INSPECTION_NOTE", "changed runtime note")

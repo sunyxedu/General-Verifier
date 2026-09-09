@@ -9,7 +9,8 @@ claim graph in three steps, each reusing the online machinery unchanged:
 
   1. ingest   — feed lines become seq-numbered ledger events (the same
                 conversion the MCP server's drain_hooks performs);
-  2. extract  — an LLM role reconstructs the commit events the solver
+  2. extract  — an LLM role reconstructs declarative `extracted_commit`
+                events that the solver
                 never made; validated LLM-free by replaying through
                 Builder, with structural errors (and ONLY structural
                 errors) fed back for a bounded retry. The extractor is
@@ -36,7 +37,7 @@ import stat
 import tempfile
 from typing import Any, Dict, List, Optional
 
-from .core.events import EventLog
+from .core.events import EventLog, SOURCE_EVENT_TYPES
 from .core.model import canonical, content_hash
 from .core.store import ClaimStore, TRIGGER_ON_FIRST_DEPENDENT, UnknownDependency
 from .engine.certificate import request_certificate
@@ -45,6 +46,7 @@ from .llm.schema import RoleError
 from .stream.builder import Builder, TraceError
 
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
+OFFLINE_FINAL_MESSAGE_SOURCE = "offline_final"
 SNIPPET_CHARS = 160
 INDEX_MAX_EVENTS = 500
 
@@ -457,6 +459,32 @@ def ingest_feed(feed_path: str, log: EventLog) -> int:
     return count
 
 
+def append_final_response(log: EventLog, final_answer: str) -> Dict[str, Any]:
+    """Retain the sealed vanilla solver response as ordinary source evidence."""
+    if not isinstance(final_answer, str):
+        raise ValueError("offline final response must be text")
+    return log.append("message", {
+        "role": "assistant",
+        "text": final_answer,
+        "source": OFFLINE_FINAL_MESSAGE_SOURCE,
+    })
+
+
+def is_offline_final_response(event: Dict[str, Any]) -> bool:
+    if type(event) is not dict or event.get("type") != "message" \
+            or type(event.get("payload")) is not dict:
+        return False
+    payload = event["payload"]
+    return (
+        isinstance(payload.get("text"), str)
+        and payload == {
+            "role": "assistant",
+            "text": payload["text"],
+            "source": OFFLINE_FINAL_MESSAGE_SOURCE,
+        }
+    )
+
+
 def events_index(log: EventLog) -> str:
     """
     Compact one-line-per-event rendering for the extractor's prompt;
@@ -469,6 +497,7 @@ def events_index(log: EventLog) -> str:
             break
         payload = event["payload"]
         body = payload.get("input") if event["type"] == "tool_call" \
+            else payload.get("text") if event["type"] == "message" \
             else payload.get("excerpt")
         snippet = canonical(body)[:SNIPPET_CHARS] if body is not None else ""
         lines.append(
@@ -476,12 +505,18 @@ def events_index(log: EventLog) -> str:
     return "\n".join(lines) if lines else "(empty ledger)"
 
 
-def _apply_commits(log: EventLog, commits: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_commits(log: EventLog, commits: List[Dict[str, Any]], *,
+                   event_type: str = "extracted_commit") -> Optional[str]:
     """
     Append the extractor's commits to the candidate log, validating
     LLM-free through a trigger-less Builder replay. Returns the first
     structural error as text, or None on success.
+
+    ``event_type`` exists only so diagnostic replay can retain the identity of
+    legacy snapshots whose extractor output was recorded as ``commit``.
     """
+    if event_type not in ("commit", "extracted_commit"):
+        raise ValueError("invalid extracted commit event type")
     builder = Builder(log, ClaimStore())
     for event in log.replay():
         builder.feed(event)
@@ -496,7 +531,7 @@ def _apply_commits(log: EventLog, commits: List[Dict[str, Any]]) -> Optional[str
         if commit.get("revises"):
             payload["revises"] = commit["revises"]
         try:
-            builder.feed(log.append("commit", payload))
+            builder.feed(log.append(event_type, payload))
         except (TraceError, UnknownDependency, ValueError) as err:
             return f"commit {commit['label']!r}: {err}"
         if commit["kind"] == "final":
@@ -512,7 +547,7 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             max_rounds: int = 3,
             stamp: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Reconstruct commit events for the trace in `state_dir` and write
+    Reconstruct extracted-commit events for the trace in `state_dir` and write
     the full events.jsonl. Retries feed back structural errors only.
     Never verification results. Raises ExtractionError when every round
     fails. On success returns (and persists to extract.json) the meta;
@@ -538,6 +573,7 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             os.remove(candidate)
         log = EventLog(candidate)
         ingest_feed(feed, log)
+        append_final_response(log, final_answer)
         variables = {
             "task": task,
             "final_answer": final_answer,
@@ -573,7 +609,8 @@ def _has_commits(events_path: str) -> bool:
     with open(events_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line and json.loads(line)["type"] == "commit":
+            if line and json.loads(line)["type"] in (
+                    "commit", "extracted_commit"):
                 return True
     return False
 
@@ -869,9 +906,14 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         raise ValueError(
             "provided backend judger_prefetch does not match the "
             "offline scoring config")
+    backend_was_injected = backend is not None
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
         if backend is None:
+            # The extraction backend never runs a Judger.  Do not give that
+            # earlier stage a handle to the operator-bound Judger-only
+            # scratch directory; the Kernel backend below binds it when the
+            # fresh independent Judger can actually be selected.
             backend = CodexBackend(cwd=state_dir, model=model,
                                    effort=cfg["effort"],
                                    service_tier=cfg["service_tier"],
@@ -879,7 +921,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                                    judger_prefetch=cfg["judger_prefetch"],
                                    offline_toolchain_dir=toolchain_dir,
                                    offline_shared_cache_dir=cache_dir,
-                                   restricted_judger_cwd=restricted_judger_cwd)
+                                   restricted_judger_cwd=None)
         elif (isinstance(backend, CodexBackend)
               and backend.service_tier != cfg["service_tier"]):
             raise ValueError(
@@ -891,7 +933,13 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         actual_restricted_cwd = (
             backend._revalidate_restricted_judger_cwd()
             if type(backend) is CodexBackend else None)
-        if actual_restricted_cwd != expected_restricted_cwd:
+        # An injected backend is an operator authority and must still carry
+        # the exact declared binding.  An internally-created extraction
+        # backend is deliberately unbound; the built-in Kernel factory is
+        # the only consumer of the requested Judger scratch.
+        expected_backend_cwd = (
+            expected_restricted_cwd if backend_was_injected else None)
+        if actual_restricted_cwd != expected_backend_cwd:
             raise ValueError(
                 "provided backend does not carry the exact restricted "
                 "Judger cwd binding")
@@ -988,12 +1036,14 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         else:
             extract_rounds = meta.get("rounds", 0)
 
-        # Live protocol commits are source data and survive config changes.
-        # Their materialized judgments still need the same input/config
-        # identity as extracted traces, including interrupted verification.
+        # Bind verification state to the exact declarative graph as well as
+        # candidate hooks.  Offline reconstructed claims are deliberately not
+        # source evidence, but tampering with them must still invalidate any
+        # materialized judgment.
         trace_hash = hashlib.sha256()
         for event in EventLog(events_path).replay():
-            if event["type"] in (*HOOK_EVENT_TYPES, "commit"):
+            if (event["type"] in SOURCE_EVENT_TYPES
+                    or event["type"] == "extracted_commit"):
                 trace_hash.update(canonical(event).encode("utf-8"))
                 trace_hash.update(b"\n")
         verification_stamp = {**stamp, "source_trace": trace_hash.hexdigest()}

@@ -92,7 +92,8 @@ def test_disabled_identity_unchanged_and_enabled_identity_captured(monkeypatch):
     base = cb.CodexBackend()
     assert base.judger_prefetch is False
     assert base.runtime_instruction_identity == hashlib.sha256(
-        cb._ARTIFACT_ADDRESS_NOTE.encode()).hexdigest()
+        (cb._ARTIFACT_ADDRESS_NOTE + cb._ORACLE_COMPILE_NOTE).encode()
+    ).hexdigest()
     enabled = cb.CodexBackend(judger_prefetch=True)
     identity = _backend_identity(enabled)
     assert identity != _backend_identity(base)

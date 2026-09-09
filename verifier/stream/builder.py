@@ -64,7 +64,7 @@ class Builder:
             claim = Claim(CLAIM_EFFECT, effect_text(event, tool))
             self.store.add_claim(claim)
             self.labels[f"effect:{event['seq']}"] = claim.id
-        elif etype == "commit":
+        elif etype in ("commit", "extracted_commit"):
             payload = event["payload"]
             deps = tuple(self.resolve(r) for r in payload.get("deps", []))
             revises = payload.get("revises")

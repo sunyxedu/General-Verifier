@@ -105,14 +105,23 @@ def clone_extracted_inputs(source: str | Path, destination: str | Path) -> dict[
         raise ReplaySetupError("extracted source log must be a private regular file")
     if info.st_size > MAX_SOURCE_LOG_BYTES:
         raise ReplaySetupError("extracted source log exceeds the size cap")
-    events, commits, saw_commit = [], [], False
+    events, commits, commit_type, saw_commit = [], [], None, False
+    final_response = None
     for event in EventLog(os.fspath(events_path)).replay():
         if len(events) >= MAX_SOURCE_EVENTS:
             raise ReplaySetupError("extracted source log exceeds the event cap")
-        if event["type"] == "commit":
+        if event["type"] in ("commit", "extracted_commit"):
+            if commit_type is None:
+                commit_type = event["type"]
+            elif event["type"] != commit_type:
+                raise ReplaySetupError("source mixes extracted commit encodings")
             saw_commit = True
             commits.append(copy.deepcopy(event["payload"]))
-        elif event["type"] not in offline.HOOK_EVENT_TYPES or saw_commit:
+        elif offline.is_offline_final_response(event) and not saw_commit \
+                and final_response is None:
+            final_response = event["payload"]["text"]
+        elif event["type"] not in offline.HOOK_EVENT_TYPES or saw_commit \
+                or final_response is not None:
             raise ReplaySetupError("source is not a fresh post-extraction ledger")
         events.append({key: copy.deepcopy(event[key])
                        for key in ("seq", "type", "payload")})
@@ -132,7 +141,12 @@ def clone_extracted_inputs(source: str | Path, destination: str | Path) -> dict[
         {"diagnostic_only": SNAPSHOT_POLICY})
     log = EventLog(os.fspath(destination / "events.jsonl"))
     offline.ingest_feed(os.fspath(destination / "hook_feed.jsonl"), log)
-    error = offline._apply_commits(log, commits)
+    if final_response is not None:
+        if offline._read(os.fspath(destination / "final.txt")) != final_response:
+            raise ReplaySetupError(
+                "retained final response differs from sealed final input")
+        offline.append_final_response(log, final_response)
+    error = offline._apply_commits(log, commits, event_type=commit_type)
     if error:
         raise ReplaySetupError(f"extracted commit graph is invalid: {error}")
     actual = [{key: event[key] for key in ("seq", "type", "payload")}
@@ -219,8 +233,13 @@ def fresh_graph_snapshot(kernel, final_id: str) -> dict[str, Any]:
     for index, event in enumerate(kernel.log.replay()):
         if index >= MAX_SOURCE_EVENTS:
             raise ReplaySetupError("snapshot source ledger exceeds the event cap")
-        if event["type"] not in (*offline.HOOK_EVENT_TYPES, "commit"):
+        if event["type"] not in (
+                *offline.HOOK_EVENT_TYPES, "message", "commit",
+                "extracted_commit"):
             raise ReplaySetupError("snapshot ledger contains verifier-generated context")
+        if event["type"] == "message" \
+                and not offline.is_offline_final_response(event):
+            raise ReplaySetupError("snapshot contains an invalid offline response")
     for table in ("evidence", "obligation_edges"):
         if kernel.store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]:
             raise ReplaySetupError("snapshot contains prior verification state")

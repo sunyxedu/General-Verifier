@@ -695,6 +695,21 @@ class LedgerSequenceAdapter(MethodAdapter):
         entry = super().catalog_entry()
         entry.update({
             "direction": "holds-only; absence/ambiguity/error/limit => fallback",
+            "capabilities": [
+                "ordered-existential-source-events",
+                "exact-event-metadata-selectors",
+                "payload-string-predicates",
+                "decoded-tool-call-string-predicates",
+                "globally-unique-observed-eof-call-result-pair",
+                "terminal-solver-action",
+            ],
+            "limitations": [
+                "no-prefix-call-result-pair",
+                "terminal-is-not-last-decoded-command",
+                "terminal-counts-the-fixed-solver-action-event-set",
+                "no-future-closure",
+                "no-regex-or-cross-clause-value-binding",
+            ],
             "input_contract": (
                 "adapter_input_binding=fixed-v1 materializes exactly one "
                 "ref=ledger:events, provenance=ledger, role=subject; prefix "
@@ -734,7 +749,9 @@ class LedgerSequenceAdapter(MethodAdapter):
                     }],
                 },
             }, {
-                "purpose": "prove an exact final recorded command argument",
+                "purpose": (
+                    "prove an exact command that is the terminal solver action"
+                ),
                 "adapter_arguments": {
                     "scope": "observed-eof",
                     "clauses": [{
@@ -754,6 +771,12 @@ class LedgerSequenceAdapter(MethodAdapter):
                         "source": "final-call", "policy": _TERMINAL_POLICY,
                     },
                 },
+                "warning": (
+                    "This is stronger than proving the last decoded command: "
+                    "any later event in the fixed solver-action set fails the "
+                    "terminal relation. Use record.program for last-command "
+                    "selection."
+                ),
             }],
         })
         return entry

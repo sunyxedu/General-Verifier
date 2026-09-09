@@ -95,10 +95,15 @@ def _graph(prefix):
     try:
         builder = Builder(None, store)  # feed-only: no log replay/writes.
         saw_commit = False
+        saw_final_response = False
         for event in prefix:
-            if event["type"] == "commit":
+            if event["type"] in ("commit", "extracted_commit"):
                 saw_commit = True
-            elif event["type"] not in offline.HOOK_EVENT_TYPES or saw_commit:
+            elif offline.is_offline_final_response(event) and not saw_commit \
+                    and not saw_final_response:
+                saw_final_response = True
+            elif event["type"] not in offline.HOOK_EVENT_TYPES or saw_commit \
+                    or saw_final_response:
                 raise ValueError("prefix contains verifier-generated context")
             builder.feed(event)
         if len(builder.finals) != 1:
@@ -137,9 +142,16 @@ def _check_sealed_hooks(state, prefix):
                 expected.append({"seq": len(expected) + 1, "type": event["type"],
                                  "payload": event.get("payload", {})})
     actual = [{key: event[key] for key in ("seq", "type", "payload")}
-              for event in prefix if event["type"] != "commit"]
+              for event in prefix if event["type"] not in (
+                  "message", "commit", "extracted_commit")]
     if not _exact_equal(actual, expected):
         raise ValueError("prefix hook context differs from sealed solver input")
+    responses = [event for event in prefix
+                 if offline.is_offline_final_response(event)]
+    if len(responses) != 1 or responses[0]["payload"]["text"] != \
+            _private_read(state / "final.txt", MAX_SOURCE_LOG_BYTES).decode(
+                "utf-8", errors="strict"):
+        raise ValueError("prefix final response differs from sealed solver input")
 
 
 def _check_store(path, expected_rows, expected_deps):

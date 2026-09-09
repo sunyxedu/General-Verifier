@@ -136,6 +136,22 @@ def test_verifier_append_reuses_view_but_source_append_invalidates_it(tmp_path):
     assert build_source_evidence_view(log).view_id != view.view_id
 
 
+def test_offline_extractor_commits_are_not_candidate_source_evidence(tmp_path):
+    log = _log(tmp_path)
+    source = log.append("tool_result", {"excerpt": "solver output"})
+    log.append("extracted_commit", {
+        "label": "F", "kind": "final", "text": "reconstructed",
+        "deps": [],
+    })
+
+    projection = log.source_projection()
+
+    assert [event["seq"] for event in projection] == [source["seq"]]
+    manifest, event = _first_event(build_source_evidence_view(log))
+    assert manifest["event_count"] == 1
+    assert event["type"] == "tool_result"
+
+
 def test_large_utf8_leaf_is_exactly_reconstructable(tmp_path):
     log = _log(tmp_path)
     exact = "世界/🙂\n" * 500

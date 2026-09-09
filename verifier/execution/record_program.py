@@ -357,6 +357,24 @@ class RecordProgramAdapter(MethodAdapter):
         entry = super().catalog_entry()
         entry.update({
             "direction": "holds-only; false/error/limit => ordinary executor fallback",
+            "capabilities": [
+                "bounded-pure-record-predicate",
+                "canonical-source-event-projection",
+                "prefix-boundary",
+                "stable-observed-eof",
+                "normalized-tool-invocation",
+                "unique-call-result-correlation",
+                "tool-result-payload-inspection",
+                "aggregation",
+                "last-decoded-command",
+            ],
+            "limitations": [
+                "holds-only",
+                "no-future-closure",
+                "invocation-decoding-applies-only-to-tool-call",
+                "no-command-execution",
+                "not-eligible-for-restricted-no-tools-judgment",
+            ],
             "language": {
                 "identity": LANGUAGE,
                 "reuse": "the exact evidence.program@1 interpreter",
@@ -378,6 +396,66 @@ class RecordProgramAdapter(MethodAdapter):
                     "future closure"
                 ),
             },
+            "normalized_document_shape": {
+                "schema": NORMALIZATION_SCHEMA,
+                "scope": {
+                    "prefix": {
+                        "kind": "prefix",
+                        "through_seq": "positive raw-ledger watermark",
+                        "complete_through_boundary": True,
+                        "proves_future_closure": False,
+                    },
+                    "observed_eof": {
+                        "kind": "observed-eof",
+                        "complete_file_at_observation": True,
+                        "proves_future_closure": False,
+                    },
+                },
+                "source_event_count": "non-negative integer",
+                "source_events_digest": "content hash of ordered event digests",
+                "events": "ordered list of normalized event items",
+                "event_item": {
+                    "required_fields": [
+                        "seq", "type", "payload", "event_sha256",
+                        "correlation", "invocation",
+                    ],
+                    "seq": "positive raw-ledger sequence integer",
+                    "type": {"enum": sorted(SOURCE_EVENT_TYPES)},
+                    "payload": "exact canonical source-event payload object",
+                    "event_sha256": "immutable event digest",
+                    "correlation": "shape described by field_applicability",
+                    "invocation": "shape described by field_applicability",
+                },
+            },
+            "field_applicability": {
+                "invocation": {
+                    "tool_call": {
+                        "statuses": ["decoded", "opaque"],
+                        "decoded_fields": [
+                            "status", "profile", "operation", "command",
+                            "arguments",
+                        ],
+                        "opaque_fields": ["status"],
+                    },
+                    "all_other_source_events": {
+                        "status": "not-applicable",
+                        "fields": ["status"],
+                    },
+                },
+                "correlation": {
+                    "tool_call_and_tool_result": {
+                        "statuses": ["paired", "unpaired", "ambiguous"],
+                        "paired_fields": [
+                            "status", "peer_seq", "peer_sha256",
+                        ],
+                        "other_status_fields": ["status"],
+                    },
+                    "all_other_source_events": {
+                        "status": "not-applicable",
+                        "fields": ["status"],
+                    },
+                },
+            },
             "input_contract": (
                 "adapter_input_binding=fixed-v1 materializes exactly one "
                 "ledger:events provenance=ledger subject slot; an optional sole "
@@ -398,6 +476,83 @@ class RecordProgramAdapter(MethodAdapter):
                 "        found = True\n"
                 "require(found, \"one structurally paired invocation exists\")"
             ),
+            "recipes": [{
+                "operation": "any-paired-decoded-invocation",
+                "scope": "observed-eof or prefix",
+                "source": (
+                    "record = input_json(0)\n"
+                    "found = False\n"
+                    "for event in record[\"events\"]:\n"
+                    "    if event[\"type\"] == \"tool_call\" and "
+                    "event[\"invocation\"][\"status\"] == \"decoded\" and "
+                    "event[\"correlation\"][\"status\"] == \"paired\":\n"
+                    "        found = True\n"
+                    "require(found, \"one paired decoded invocation exists\")"
+                ),
+            }, {
+                "operation": "prefix-call-result-pair",
+                "scope": "prefix with through_seq",
+                "source": (
+                    "record = input_json(0)\n"
+                    "call = None\n"
+                    "for event in record[\"events\"]:\n"
+                    "    if event[\"type\"] == \"tool_call\" and "
+                    "event[\"correlation\"][\"status\"] == \"paired\":\n"
+                    "        call = event\n"
+                    "require(call is not None, "
+                    "\"one prefix-bounded call/result pair exists\")"
+                ),
+                "note": (
+                    "paired status already authenticates the unique later "
+                    "tool_result at correlation.peer_seq inside the projected "
+                    "prefix"
+                ),
+            }, {
+                "operation": "last-decoded-command-equals",
+                "scope": "observed-eof or prefix",
+                "replace_example_literals": True,
+                "source": (
+                    "record = input_json(0)\n"
+                    "last = None\n"
+                    "for event in record[\"events\"]:\n"
+                    "    if event[\"type\"] == \"tool_call\" and "
+                    "event[\"invocation\"][\"status\"] == \"decoded\":\n"
+                    "        last = event\n"
+                    "expected = \"<exact command from the obligation>\"\n"
+                    "require(last is not None and "
+                    "last[\"invocation\"][\"command\"] == expected, "
+                    "\"the last decoded command has the exact value\")"
+                ),
+            }, {
+                "operation": "tool-result-string-equals",
+                "scope": "observed-eof or prefix",
+                "replace_example_literals": True,
+                "source": (
+                    "record = input_json(0)\n"
+                    "found = False\n"
+                    "expected = \"<exact retained result string>\"\n"
+                    "for event in record[\"events\"]:\n"
+                    "    if event[\"type\"] == \"tool_result\" and "
+                    "\"excerpt\" in event[\"payload\"] and "
+                    "event[\"payload\"][\"excerpt\"] == expected:\n"
+                    "        found = True\n"
+                    "require(found, \"one exact tool result string exists\")"
+                ),
+            }, {
+                "operation": "aggregate-source-event-count",
+                "scope": "observed-eof or prefix",
+                "replace_example_literals": True,
+                "source": (
+                    "record = input_json(0)\n"
+                    "count = 0\n"
+                    "for event in record[\"events\"]:\n"
+                    "    if event[\"type\"] == \"tool_call\":\n"
+                    "        count = count + 1\n"
+                    "expected_count = 1\n"
+                    "require(count == expected_count, "
+                    "\"the source-event count has the exact value\")"
+                ),
+            }],
             "resource_limits": {
                 "source_chars": MAX_SOURCE_CHARS,
                 "ast_nodes": MAX_AST_NODES,

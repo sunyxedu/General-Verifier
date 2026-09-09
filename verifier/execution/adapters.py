@@ -361,6 +361,10 @@ class MethodAdapter:
         return {
             "name": self.name,
             "version": self.version,
+            "identity_contract": {
+                "selection": "exact-registered-name-version-only",
+                "repair_version_inference": "forbidden",
+            },
             "basis": self.basis,
             "read_only": True,
             "accepted_method_reuse": self.accepted_method_reuse,
@@ -3106,7 +3110,10 @@ def default_adapter_registry(
 ) -> AdapterRegistry:
     # Imported lazily so the pure VM can reuse the closed adapter protocol
     # without making this module's definitions depend on import order.
-    from .evidence_program import EvidenceProgramAdapter
+    from .evidence_program import (
+        EvidenceProgramAdapter,
+        EvidenceProgramCompleteAuditAdapter,
+    )
     from .ledger_sequence import (
         LedgerSequenceAdapter,
         LedgerSequenceCompleteAuditAdapter,
@@ -3127,6 +3134,7 @@ def default_adapter_registry(
         LedgerToolCallStringAdapterV2(),
         LedgerToolCallStringAdapterV3(),
         EvidenceProgramAdapter(),
+        EvidenceProgramCompleteAuditAdapter(),
         LedgerSequenceAdapter(),
         LedgerSequenceCompleteAuditAdapter(),
         RecordProgramAdapter(),
