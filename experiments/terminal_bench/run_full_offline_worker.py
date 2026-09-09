@@ -163,6 +163,8 @@ def _environment(plan):
         # built typed-adapter packet in a no-tools session; the control
         # source predates the flag and ignores it.
         "GV_TYPED_JUDGER_PACKET": "1" if treatment else "0",
+        # Audit an agent method's sufficiency before executing it.
+        "GV_SUFFICIENCY_PREAUDIT": "1" if treatment else "0",
         "GV_CONTRACT_CACHE": "0", "GV_APPEND_ONLY_DELTAS": "0",
         "GV_MAX_CONCURRENT_SEATS": "12",
         "GV_OFFLINE_RUNTIME_READ_ROOTS": json.dumps(plan["runtime_read_roots"]),

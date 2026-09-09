@@ -270,6 +270,7 @@ def _default_kernel(sc: Service, model, backend=None,
         ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
     )
     from .execution.config import (
+        sufficiency_preaudit_enabled,
         typed_adapters_enabled,
         typed_judger_packet_enabled,
     )
@@ -328,7 +329,10 @@ def _default_kernel(sc: Service, model, backend=None,
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                          memory=sc.memory, live_world=sc.live_world,
                          method_cache=method_cache,
-                         typed_adapter_judger_packet=typed_judger_packet)
+                         typed_adapter_judger_packet=typed_judger_packet,
+                         sufficiency_role=(
+                             roles["sufficiency"]
+                             if sufficiency_preaudit_enabled() else None))
     if parallel_obligations is None:
         parallel_obligations = getattr(sc, "parallel_obligations", None)
     if parallel_claims is None:

@@ -53,6 +53,10 @@ from .judger import (
     JUDGER_SYSTEM,
     JUDGER_TEMPLATE,
 )
+from .sufficiency import (
+    SUFFICIENCY_SYSTEM,
+    SUFFICIENCY_TEMPLATE,
+)
 from .extract import (
     EXTRACT_SYSTEM,
     EXTRACT_TEMPLATE,

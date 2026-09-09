@@ -145,10 +145,14 @@ class BindingGame:
         judger_error_retries: int = 1,
         method_cache=None,
         typed_adapter_judger_packet: bool = False,
+        sufficiency_role=None,
     ):
         if type(typed_adapter_judger_packet) is not bool:
             raise ValueError("typed_adapter_judger_packet must be a bool")
         self.backend = backend
+        # Optional pre-execution sufficiency audit of agent-executed methods.
+        # None keeps the established Oracle/executor/Judger sequence.
+        self.sufficiency_role = sufficiency_role
         self.artifacts = artifacts
         self.log = log
         self.discharger = discharger
@@ -838,6 +842,21 @@ class BindingGame:
             attempts.append(attempt)
 
             method_attempt = len(attempts)
+            preaudit = self._preaudit(row, obligation, method, method_attempt)
+            if preaudit is not None and preaudit.get("sufficient") == "no":
+                # The Judger's first question, asked before the executor
+                # spends its budget.  Same repair semantics as a post-hoc
+                # sufficient=no: the Oracle may replace the method once.
+                if repair_used:
+                    failed_seen = True
+                structural_feedback.append({
+                    "procedure": procedure,
+                    "reason": preaudit["reason"],
+                })
+                reason = f"sufficiency pre-audit: {preaudit['reason']}"
+                self._reject(row, obligation, method, reason)
+                attempt.rejected = reason
+                continue
             with model_scope(
                     stage="discharge", method_attempt=method_attempt, redo=0):
                 result = self.discharger.discharge(
@@ -1435,6 +1454,54 @@ class BindingGame:
         return result
 
     # settlement
+    def _preaudit(self, row, obligation, method, method_attempt: int):
+        """Audit a proposed agent method's sufficiency before execution.
+
+        Typed adapter methods execute in milliseconds and are audited by
+        the fresh Judger afterwards, so only agent-executed methods are
+        asked.  A seat failure never blocks execution: the established
+        post-execution audit still runs.
+        """
+        if self.sufficiency_role is None or "adapter" in method:
+            return None
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        world_mode, _world, _manifest = world_evidence_context(
+            state, live_world=self.live_world)
+        variables = {
+            "obligation_text": obligation.text,
+            "required_basis": obligation.required_basis,
+            "severity": obligation.severity,
+            "clause": obligation.clause,
+            "refutable_by_absence": obligation.refutable_by_absence,
+            "task_context": authoritative_task_context(state),
+            "world_mode": world_mode,
+            "world_map": world_map(state, live_world=self.live_world),
+            "procedure": method.get("procedure", ""),
+            "promised_artifact": method.get("artifact", ""),
+            "basis": method.get("basis", ""),
+            "declared_strength": _method_strength(method),
+            "bridges": json.dumps(method.get("bridges", []),
+                                  ensure_ascii=False),
+        }
+        try:
+            with model_scope(stage="sufficiency_preaudit",
+                             method_attempt=method_attempt):
+                verdict = self.sufficiency_role.call(self.backend, variables)
+        except RoleError as error:
+            self.log.append("sufficiency_audited", {
+                "claim": row["id"], "obligation": obligation.id,
+                "procedure": method.get("procedure", "")[:80],
+                "method_attempt": method_attempt,
+                "error": str(error)[:300]})
+            return None
+        self.log.append("sufficiency_audited", {
+            "claim": row["id"], "obligation": obligation.id,
+            "procedure": method.get("procedure", "")[:80],
+            "method_attempt": method_attempt,
+            "sufficient": verdict["sufficient"],
+            "reason": verdict["reason"][:500]})
+        return verdict
+
     def _reject(self, row, obligation, method, reason: str) -> None:
         self.log.append(
             "method_rejected",

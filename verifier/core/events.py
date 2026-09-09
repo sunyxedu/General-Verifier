@@ -65,6 +65,7 @@ EVENT_TYPES = (
     
     # binding game
     "methods_enumerated",
+    "sufficiency_audited",
     "judger_call_failed",
     "judger_verdict",
     "method_rejected",

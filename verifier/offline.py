@@ -377,10 +377,12 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         APPEND_ONLY_DELTA_PROTOCOL,
         append_only_deltas_enabled,
         offline_runtime_read_roots,
+        sufficiency_preaudit_enabled,
         typed_adapters_enabled,
         typed_judger_packet_enabled,
     )
     fields["typed_adapters"] = typed_adapters_enabled()
+    fields["sufficiency_preaudit"] = sufficiency_preaudit_enabled()
     fields["typed_adapter_judger_packet"] = typed_judger_packet_enabled()
     if fields["typed_adapter_judger_packet"] and not fields["typed_adapters"]:
         raise ValueError(

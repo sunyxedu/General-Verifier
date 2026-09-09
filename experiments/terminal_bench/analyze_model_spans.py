@@ -41,11 +41,12 @@ MAX_LEDGER_BYTES = 256 * 1024 * 1024
 MAX_LEDGER_ROWS = 1_000_000
 MAX_LINE_CHARS = 2 * 1024 * 1024
 ROLES = frozenset({
-    "extract", "obligations", "critic", "oracles", "discharge", "judger",
+    "extract", "obligations", "critic", "oracles", "sufficiency",
+    "discharge", "judger",
 })
 STAGES = frozenset({
     "extract", "contract_compile", "contract_critic", "oracle_enumerate",
-    "oracle_repair", "discharge", "judger",
+    "oracle_repair", "sufficiency_preaudit", "discharge", "judger",
 })
 CLAIM_KINDS = frozenset({"assertion", "effect", "final"})
 LOCI = frozenset({"candidate_extract", "support", "final_task"})

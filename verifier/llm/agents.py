@@ -675,12 +675,28 @@ EXTRACT_CLAIMS_AGENT = AgentRole(
     max_turns=30,                     # long ledgers take reading room
 )
 
+# Pre-execution sufficiency audit of one proposed method: the Judger's
+# first question asked before the executor spends minutes on it.  Tool-less
+# and single-turn by design; it never sees or settles evidence.
+SUFFICIENCY_AGENT = AgentRole(
+    name="sufficiency",
+    system=prompts.SUFFICIENCY_SYSTEM,
+    template=prompts.SUFFICIENCY_TEMPLATE,
+    schema={
+        "sufficient": ("yes", "no"),
+        "reason": str,
+    },
+    tools=[],
+    max_turns=1,
+)
+
 ALL_AGENT_ROLES = {
     role.name: role
     for role in (
         COMPILE_OBLIGATIONS_AGENT,
         CRITIC_AGENT,
         ENUMERATE_ORACLES_AGENT,
+        SUFFICIENCY_AGENT,
         DISCHARGE_AGENT,
         JUDGER_AGENT,
         EXTRACT_CLAIMS_AGENT,

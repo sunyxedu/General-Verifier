@@ -46,6 +46,8 @@ SURFACES = {
     "DISCHARGE_TEMPLATE": prompts.DISCHARGE_TEMPLATE,
     "JUDGER_SYSTEM": prompts.JUDGER_SYSTEM,
     "JUDGER_TEMPLATE": prompts.JUDGER_TEMPLATE,
+    "SUFFICIENCY_SYSTEM": prompts.SUFFICIENCY_SYSTEM,
+    "SUFFICIENCY_TEMPLATE": prompts.SUFFICIENCY_TEMPLATE,
     "EXTRACT_SYSTEM": prompts.EXTRACT_SYSTEM,
     "EXTRACT_TEMPLATE": prompts.EXTRACT_TEMPLATE,
 }
@@ -107,5 +109,6 @@ def test_prompt_corpus_stays_bounded():
     patches. Raise this bound deliberately, never incidentally."""
     total = sum(len(t.split()) for t in SURFACES.values())
     # Raised from 17,000 for the frozen-record boundary sentences in the
-    # executor and Judger templates: a mechanism description, not a case.
-    assert total <= 17_100, total
+    # executor and Judger templates, then to 17,800 for the pre-execution
+    # sufficiency seat: mechanism descriptions and a new seat, not cases.
+    assert total <= 17_800, total

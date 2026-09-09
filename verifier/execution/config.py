@@ -11,6 +11,7 @@ TYPED_ADAPTERS_ENV = "GV_TYPED_ADAPTERS"
 TYPED_JUDGER_PACKET_ENV = "GV_TYPED_JUDGER_PACKET"
 CONTRACT_CACHE_ENV = "GV_CONTRACT_CACHE"
 APPEND_ONLY_DELTAS_ENV = "GV_APPEND_ONLY_DELTAS"
+SUFFICIENCY_PREAUDIT_ENV = "GV_SUFFICIENCY_PREAUDIT"
 APPEND_ONLY_DELTA_PROTOCOL = "obligations-array-delta-v1"
 OFFLINE_RUNTIME_READ_ROOTS_ENV = "GV_OFFLINE_RUNTIME_READ_ROOTS"
 
@@ -150,3 +151,19 @@ def typed_judger_packet_enabled(
         raise ValueError(
             f"{TYPED_JUDGER_PACKET_ENV} must be exactly 0 or 1")
     return value == "1"
+
+
+def sufficiency_preaudit_enabled(
+    environ: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether a proposed agent method is audited for sufficiency before it
+    runs.  Explicit ``0``/``1`` only; disabled unless requested."""
+    values = os.environ if environ is None else environ
+    if SUFFICIENCY_PREAUDIT_ENV not in values:
+        return False
+    value = values[SUFFICIENCY_PREAUDIT_ENV]
+    if value == "1":
+        return True
+    if value == "0":
+        return False
+    raise ValueError(f"{SUFFICIENCY_PREAUDIT_ENV} must be 0 or 1")
