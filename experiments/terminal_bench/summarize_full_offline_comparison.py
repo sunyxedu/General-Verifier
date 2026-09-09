@@ -54,12 +54,27 @@ def _cost(rows):
     return total, complete, by_role, wall_by_role, calls_by_role
 
 
+def _event_counts(output):
+    counts = collections.Counter()
+    for row in _rows(output / "state" / "events.jsonl"):
+        counts[row.get("type")] += 1
+        if row.get("type") == "sufficiency_audited" \
+                and row.get("payload", {}).get("sufficient") == "no":
+            counts["sufficiency_no"] += 1
+    return counts
+
+
 def _job_record(candidate, arm, output, wall, verdict, final_obligations,
                 accounting_complete, worker_complete, labels):
     cost, complete, by_role, wall_by_role, calls = _cost(
         _rows(output / "native-usage.jsonl"))
     label = (labels or {}).get(candidate)
+    events = _event_counts(output)
     return {
+        "redos": events.get("method_redo", 0),
+        "sufficiency_no": events.get("sufficiency_no", 0),
+        "cache_hits": events.get("contract_cache_hit", 0)
+        + events.get("method_cache_hit", 0),
         "candidate": candidate, "arm": arm, "wall": wall,
         "cost": cost, "cost_complete": complete,
         "accounting_complete": accounting_complete,
@@ -136,12 +151,13 @@ def main():
         print(json.dumps(jobs, indent=1, sort_keys=True, default=dict))
         return 0
     print(f"{'candidate':34s} {'arm':9s} {'wall':>7s} {'cost':>7s} {'calls':>5s} "
-          f"{'verdict':10s} {'label':>5s} {'ok':>4s} complete")
+          f"{'redo':>4s} {'pre':>3s} {'verdict':10s} {'label':>5s} {'ok':>4s} complete")
     pairs = collections.defaultdict(dict)
     for job in jobs:
         pairs[job["candidate"]][job["arm"]] = job
         print(f"{job['candidate']:34s} {job['arm']:9s} "
               f"{(job['wall'] or 0):7.0f} {job['cost']:7.3f} {job['calls']:5d} "
+              f"{job['redos']:4d} {job['sufficiency_no']:3d} "
               f"{str(job['verdict']):10s} {str(job['label']):>5s} "
               f"{str(job['agrees']):>4s} "
               f"{'yes' if job['cost_complete'] and job['worker_complete'] else 'NO'}")
