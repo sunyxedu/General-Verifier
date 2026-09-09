@@ -222,11 +222,18 @@ def test_oracle_adapter_dispatch_is_basis_and_primitive_driven():
     assert "never by task name, domain, expected outcome" in template
     assert "does not cover the whole obligation" in template
     assert "DIRECT EFFECT-OUTPUT RECIPE" in template
+    assert "unqualified `effect N returned literal X` occurrence claim" \
+        in template
+    assert "no asserted source, operation, input, or transformation relation" \
+        in template
     assert "record.query@1 event-at" in template
     assert "source=payload" in template
     assert "/excerpt_truncated equals false" in template
     assert "Tests include source, pointer, predicate" in template
-    assert "Any producing verb/noun or described subject" in template
+    assert "Any asserted producing operation, input, transformation" \
+        in template
+    assert "instrument, or source relation instead requires paired-exchange" \
+        in template
     assert "paired-exchange with exact result seq=N" in template
     assert "full correlated call, never event-at" in template
     assert "already-selected call is fresh Judger evidence audit" in template
