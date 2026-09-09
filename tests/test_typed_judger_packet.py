@@ -210,6 +210,7 @@ def test_initial_eligibility_is_closed_and_ledger_prefix_receipts_replay(tmp_pat
         ("document.text", 1),
         ("evidence.program", 1),
         ("ledger.event", 1),
+        ("ledger.sequence", 1),
         ("ledger.tool-call-string", 1),
         ("ledger.tool-call-string", 2),
     })

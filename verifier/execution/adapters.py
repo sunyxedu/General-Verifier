@@ -640,7 +640,8 @@ def _json_pointer(value: Any, pointer: str) -> Any:
         part = raw.replace("~1", "/").replace("~0", "~")
         try:
             if isinstance(current, list):
-                if not part.isdigit() or (len(part) > 1 and part[0] == "0"):
+                if (not part.isascii() or not part.isdigit()
+                        or (len(part) > 1 and part[0] == "0")):
                     raise KeyError(part)
                 current = current[int(part)]
             elif isinstance(current, dict):
@@ -3018,6 +3019,7 @@ def default_adapter_registry(
     # Imported lazily so the pure VM can reuse the closed adapter protocol
     # without making this module's definitions depend on import order.
     from .evidence_program import EvidenceProgramAdapter
+    from .ledger_sequence import LedgerSequenceAdapter
     from .record_program import RecordProgramAdapter
 
     if browser_observer is None:
@@ -3034,6 +3036,7 @@ def default_adapter_registry(
         LedgerToolCallStringAdapterV2(),
         LedgerToolCallStringAdapterV3(),
         EvidenceProgramAdapter(),
+        LedgerSequenceAdapter(),
         RecordProgramAdapter(),
     ]
     if browser_observer is not None:

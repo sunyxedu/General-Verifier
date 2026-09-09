@@ -101,7 +101,7 @@ def test_online_and_offline_default_kernels_publish_the_same_adapter_catalog(
     ledger = [entry for entry in catalog
               if entry["name"].startswith("ledger.")]
     assert {entry["name"] for entry in ledger} == {
-        "ledger.event", "ledger.tool-call-string",
+        "ledger.event", "ledger.sequence", "ledger.tool-call-string",
     }
     assert all(entry["accepted_method_reuse"] is False for entry in ledger)
     assert online_kernel.discharger.context.world.mode == "live"

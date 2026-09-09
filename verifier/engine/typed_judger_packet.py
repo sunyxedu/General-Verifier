@@ -61,6 +61,7 @@ ELIGIBLE_ADAPTERS = frozenset({
     ("document.text", 1),
     ("evidence.program", 1),
     ("ledger.event", 1),
+    ("ledger.sequence", 1),
     ("ledger.tool-call-string", 1),
     ("ledger.tool-call-string", 2),
 })
@@ -90,7 +91,16 @@ def _is_slot_list(value: Any, count: int) -> bool:
 def _adapter_specific_gate(invocation: AdapterInvocation, evidence: dict,
                            result_identity: Mapping[str, Any]) -> bool:
     """Extra packet invariants for general instruments with a larger TCB."""
-    if (invocation.name, invocation.version) != ("evidence.program", 1):
+    identity = (invocation.name, invocation.version)
+    if identity == ("ledger.sequence", 1):
+        # Lazy import avoids a module cycle: the adapter itself reuses the
+        # registry protocol defined in adapters.py.
+        from ..execution.ledger_sequence import (
+            typed_sequence_observation_is_complete,
+        )
+        return typed_sequence_observation_is_complete(
+            invocation, evidence, result_identity)
+    if identity != ("evidence.program", 1):
         return True
     if (result_identity.get("outcome") != "holds"
             or result_identity.get("witness") is not None

@@ -143,6 +143,7 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         ("evidence.program", 1),
         ("record.program", 1),
         ("ledger.event", 1),
+        ("ledger.sequence", 1),
         ("ledger.tool-call-string", 1),
         ("ledger.tool-call-string", 2),
         ("ledger.tool-call-string", 3),
