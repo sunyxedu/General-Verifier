@@ -62,21 +62,43 @@ def _execution_roots(value, contexts):
     return result
 
 
+_AUTHORITY_SCRATCH_ROLES = frozenset({"obligations", "critic"})
+
+
+def _authority_scratch(value):
+    if value is None:
+        return None
+    if (not isinstance(value, str) or not os.path.isabs(value)
+            or not value.endswith("-")
+            or os.path.realpath(os.path.dirname(value)) != os.path.dirname(value)):
+        raise ValueError(
+            "authority scratch prefix must be a canonical absolute path prefix")
+    return value
+
+
 def analyze_rows(
     rows: Iterable[Mapping[str, Any]], *,
     context_by_cwd: Mapping[str, Mapping[str, Any]],
     model: str, effort: str, service_tier: str,
     session_summary: Mapping[str, Any] | None = None,
     execution_cwds_by_state: Mapping[str, Iterable[str]] | None = None,
+    authority_scratch_prefix: str | None = None,
 ) -> dict[str, Any]:
     """Reject missing lifecycle events, attribution and actual-CLI profile drift.
 
     ``context_by_cwd`` and the expected profile come from the operator's pinned
     run plan, never from the ledger being checked. A raised logical call does
     not erase its known token charges; missing usage never becomes zero.
+
+    ``authority_scratch_prefix`` names the operator's temporary-directory
+    prefix under which the verifier compiles a final contract through its
+    candidate-blind authority boundary; only compiler and Critic seats may
+    run there, each in a direct child of that prefix.
     """
     execution_cwds_by_state = _execution_roots(
         execution_cwds_by_state, context_by_cwd)
+    authority_scratch_prefix = _authority_scratch(authority_scratch_prefix)
+    authority_scratch_attempts = 0
     findings: set[str] = set()
     calls: dict[str, dict[str, tuple[int, Mapping[str, Any]]]] = {}
     attempts: dict[str, dict[str, tuple[int, Mapping[str, Any]]]] = {}
@@ -150,8 +172,18 @@ def analyze_rows(
             if execution_cwds_by_state is not None:
                 allowed_cwds = (execution_cwds_by_state.get(state, ())
                                 if isinstance(state, str) else ())
-            if (not isinstance(row.get("cwd"), str)
-                    or row["cwd"] not in allowed_cwds):
+            cwd = row.get("cwd")
+            in_authority_scratch = (
+                authority_scratch_prefix is not None
+                and isinstance(cwd, str)
+                and cwd.startswith(authority_scratch_prefix)
+                and "/" not in cwd[len(authority_scratch_prefix):]
+                and len(cwd) > len(authority_scratch_prefix)
+                and row.get("role") in _AUTHORITY_SCRATCH_ROLES)
+            if in_authority_scratch:
+                if kind.endswith("_started"):
+                    authority_scratch_attempts += 1
+            elif not isinstance(cwd, str) or cwd not in allowed_cwds:
                 findings.add("execution_cwd_not_operator_bound")
             if any(row.get("command_" + key) != expected
                    or "command_" + key not in row
@@ -302,6 +334,7 @@ def analyze_rows(
         "ledger_identity_complete": None,
         "findings": sorted(findings),
         "observed_event_counts": event_counts,
+        "authority_scratch_attempts": authority_scratch_attempts,
         "call_count": len(calls), "attempt_count": len(attempts),
         "unknown_usage_attempts": unknown_usage,
         "logical_calls_returned": returned, "logical_calls_raised": raised,

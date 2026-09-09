@@ -18,6 +18,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 import time
 import uuid
 
@@ -831,7 +832,10 @@ def run_worker(plan):
                     execution_cwds_by_state={str(state): (
                         (str(state), restricted_judger_cwd)
                         if restricted_judger_cwd is not None
-                        else (str(state),))})
+                        else (str(state),))},
+                    authority_scratch_prefix=os.path.join(
+                        os.path.realpath(tempfile.gettempdir()),
+                        "gv-authority-"))
                 if accounting.get("accounting_complete") is not True:
                     failures.append("AccountingIncomplete")
             if (offline.verify_immutable_input_anchor(str(inputs))

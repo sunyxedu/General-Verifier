@@ -290,3 +290,36 @@ def test_file_reader_rejects_partial_or_non_strict_json(tmp_path, raw):
     path.write_bytes(raw)
     with pytest.raises(ValueError):
         analyze_file(path, **PLAN)
+
+
+def test_authority_scratch_is_accepted_only_for_contract_seats_under_prefix():
+    prefix = "/private/tmp/gv-authority-"
+
+    def scratch_ledger(cwd, role):
+        rows = ledger()
+        for row in rows:
+            row["role"] = role
+        for row in rows[1:3]:
+            row["cwd"] = cwd
+        return rows
+
+    result = analyze_rows(scratch_ledger(prefix + "abc123", "critic"),
+                          authority_scratch_prefix=prefix, **PLAN)
+    assert result["accounting_complete"] is True
+    assert result["authority_scratch_attempts"] == 1
+    # a nested path, another role, or a missing prefix are not operator-bound
+    for cwd, role in ((prefix + "abc123/deeper", "critic"),
+                      (prefix + "abc123", "judger"),
+                      (prefix, "critic")):
+        findings = analyze_rows(
+            scratch_ledger(cwd, role), authority_scratch_prefix=prefix,
+            **PLAN)["findings"]
+        assert "execution_cwd_not_operator_bound" in findings, (cwd, role)
+    assert "execution_cwd_not_operator_bound" in analyze_rows(
+        scratch_ledger(prefix + "abc123", "critic"), **PLAN)["findings"]
+
+
+@pytest.mark.parametrize("prefix", ["relative-", "/private/tmp/gv-authority", 1])
+def test_bad_authority_scratch_prefix_fails_before_analysis(prefix):
+    with pytest.raises(ValueError, match="authority scratch"):
+        analyze_rows(ledger(), authority_scratch_prefix=prefix, **PLAN)

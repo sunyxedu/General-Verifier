@@ -18,6 +18,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 import time
 import uuid
 
@@ -454,7 +455,12 @@ def run_worker(plan):
             if observation is not None:
                 accounting = analyzer.analyze_file(
                     output / "observer.jsonl", context_by_cwd=contexts,
-                    **RUNTIME, session_summary=observation.summary())
+                    **RUNTIME, session_summary=observation.summary(),
+                    # the candidate-blind final contract compiles in a
+                    # verifier-owned temporary scratch, not the state
+                    authority_scratch_prefix=os.path.join(
+                        os.path.realpath(tempfile.gettempdir()),
+                        "gv-authority-"))
                 if not accounting["accounting_complete"]:
                     failures.append("AccountingIncomplete")
             else:
