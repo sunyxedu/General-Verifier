@@ -1,15 +1,23 @@
 """The native transport description must match the real content address."""
+import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from verifier.execution import instruments as instrument_module
 from verifier.core.model import canonical, content_hash
 from verifier.engine.method_cache import _backend_identity
-from verifier.execution.instruments import ArtifactStore
+from verifier.execution.instruments import ArtifactStore, validated_image_info
 from verifier.llm import codex_backend as cb
+
+
+VALID_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII=")
 
 
 @pytest.mark.parametrize("value", [
@@ -27,6 +35,51 @@ def test_documented_calculation_matches_real_artifact_store(tmp_path, value):
     parsed = json.loads((Path(store.root) / (digest + ".json")).read_bytes())
     assert content_hash(parsed) == digest
     assert hashlib.sha256((canonical(parsed) + "\n").encode()).hexdigest() != digest
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    (
+        VALID_PNG,
+        ("image/png", 1, 1),
+    ),
+    (
+        b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x01\x00\x01"
+        b"\x01\x01\x11\x00\xff\xd9",
+        ("image/jpeg", 1, 1),
+    ),
+    (b"GIF89a\x01\x00\x01\x00\x00\x00\x00", ("image/gif", 1, 1)),
+    (
+        b"RIFF\x16\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00"
+        + b"\x00" * 10,
+        ("image/webp", 1, 1),
+    ),
+])
+def test_allowlisted_image_headers_have_bounded_dimensions(raw, expected):
+    assert validated_image_info(raw) == expected
+
+
+def test_blob_publication_pins_directories_during_a_path_swap(
+        tmp_path, monkeypatch):
+    root = tmp_path / "artifacts"
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    store = ArtifactStore(str(root))
+    original_link = os.link
+    raced = False
+
+    def swap_then_link(source, destination, **kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            (root / "blobs").rename(root / "detached-blobs")
+            (root / "blobs").symlink_to(attacker, target_is_directory=True)
+        return original_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(instrument_module.os, "link", swap_then_link)
+
+    with pytest.raises(ValueError, match="directories changed"):
+        store.put_blob(b"fixed raw evidence")
+    assert list(attacker.iterdir()) == []
 
 
 @pytest.mark.parametrize("role_name", ["judger", "oracles", "discharge", "critic", "obligations"])

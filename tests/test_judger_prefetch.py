@@ -1,6 +1,7 @@
 """Mechanical boundaries for bounded, lossless Judger prefetch."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -44,6 +45,62 @@ def _standard_fixture(tmp_path, files, *, reported=None):
         "files": files,
     })
     return state, log, artifacts, digest
+
+
+def _image_fixture(tmp_path, count=1, *, reported_artifact="render-0.png"):
+    state = tmp_path / "state"
+    state.mkdir()
+    log = EventLog(str(state / "events.jsonl"))
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    binary = {}
+    raws = {}
+    raw = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+    for index in range(count):
+        name = f"render-{index}.png"
+        raws[name] = raw
+        binary[name] = artifacts.put_image_blob(raw, "image/png")
+    digest = artifacts.put({
+        "instrument": "agent:discharge",
+        "reported": {"artifact": reported_artifact},
+        "files": {"report.txt": "inspect raw pixels independently"},
+        "binary_files": binary,
+    })
+    return state, log, artifacts, digest, raws
+
+
+def test_image_packet_binds_exact_blob_and_detects_replacement(tmp_path):
+    state, log, artifacts, digest, raws = _image_fixture(tmp_path)
+    packet = prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_WORLD, digest)
+
+    assert packet is not None
+    (image,) = packet.image_attachments()
+    assert image.logical_path == "render-0.png"
+    assert image.data == raws["render-0.png"]
+    document = _document(packet)
+    assert document["raw_image_attachments"][0]["raw_sha256"] \
+        == hashlib.sha256(image.data).hexdigest()
+    assert "inspect raw pixels" in document["semantics"]
+
+    path = state / "artifacts" / "blobs" / f"{image.sha256}.blob"
+    replacement = path.with_suffix(".replacement")
+    replacement.write_bytes(b"\x89PNG\r\n\x1a\nmalformed replacement")
+    os.replace(replacement, path)
+    assert packet.revalidate() is False
+
+
+@pytest.mark.parametrize("reported", [
+    "report.txt", "render-0.png", "render-0.png,render-1.png",
+])
+def test_more_than_four_images_never_uses_report_text_as_a_selector(
+        tmp_path, reported):
+    _state, log, artifacts, digest, _raws = _image_fixture(
+        tmp_path, count=5, reported_artifact=reported)
+
+    assert prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_WORLD, digest) is None
 
 
 def _document(packet):

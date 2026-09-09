@@ -1,4 +1,5 @@
 """Prefetch transports bytes without changing role or capability contracts."""
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -25,6 +26,51 @@ def packet_at(tmp_path):
     return packet
 
 
+def image_packet_at(tmp_path, raw):
+    state = tmp_path.resolve()
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    reference = artifacts.put_image_blob(raw, "image/png")
+    digest = artifacts.put({
+        "instrument": "agent:discharge",
+        "reported": {
+            "outcome": "holds", "witness": "",
+            "artifact": "/scratch/render.png",
+        },
+        "files": {"report.txt": "raw image requires independent inspection"},
+        "binary_files": {"render.png": reference},
+    })
+    log = EventLog(str(state / "events.jsonl"))
+    packet = build_judger_evidence_packet(artifacts, log, "world", digest)
+    assert packet is not None
+    return packet
+
+
+def ineligible_image_packet_at(tmp_path, raw):
+    state = tmp_path.resolve()
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    identity = artifacts.put_blob(raw)
+    digest = artifacts.put({
+        "instrument": "agent:discharge",
+        "reported": {
+            "outcome": "holds", "witness": "",
+            "artifact": "/scratch/render.png",
+        },
+        "files": {"report.txt": "open the retained raw blob independently"},
+        "binary_files": {"render.png": {
+            "schema": "gv-raw-image-blob-ref-v1",
+            "complete": True,
+            **identity,
+            "media_type": "image/png",
+            "attachment_eligible": False,
+            "attachment_reason": "image header is malformed or incomplete",
+        }},
+    })
+    log = EventLog(str(state / "events.jsonl"))
+    packet = build_judger_evidence_packet(artifacts, log, "world", digest)
+    assert packet is not None
+    return packet
+
+
 def runner(calls, responses=None):
     responses = iter(responses or [{"ok": True}] * 30)
 
@@ -44,6 +90,165 @@ def runner(calls, responses=None):
         return SimpleNamespace(returncode=0, stderr="",
                                stdout="\n".join(map(json.dumps, events)))
     return run
+
+
+def test_executor_png_raw_bytes_are_attached_only_to_fresh_judger(
+        tmp_path, monkeypatch):
+    raw = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+    packet = image_packet_at(tmp_path, raw)
+    calls = []
+    role = SimpleNamespace(system="fixed", schema={"ok": bool})
+
+    def run(command, **kwargs):
+        image_paths = [
+            command[index + 1] for index, value in enumerate(command)
+            if value == "-i"
+        ]
+        calls.append({
+            "role_instruction": command[-1],
+            "image_bytes": [Path(path).read_bytes() for path in image_paths],
+        })
+        response = json.dumps({"ok": True})
+        Path(command[command.index("-o") + 1]).write_text(response)
+        events = [
+            {"type": "thread.started", "thread_id": "png-transport"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {
+                "id": "reply", "type": "agent_message", "text": response}},
+            {"type": "turn.completed", "usage": {
+                "input_tokens": 100, "cached_input_tokens": 20,
+                "output_tokens": 5, "reasoning_output_tokens": 2}},
+        ]
+        return SimpleNamespace(returncode=0, stderr="",
+                               stdout="\n".join(map(json.dumps, events)))
+
+    monkeypatch.setattr(cb, "_run_codex_process", run)
+    backend = cb.CodexBackend(
+        roles={"judger": role, "critic": role}, cwd=str(tmp_path),
+        judger_prefetch=True)
+    variables = {
+        "world_mode": "unavailable", "basis": "world",
+        "_judger_evidence_packet": packet,
+    }
+
+    assert backend.complete("critic", "fixed", variables) == {"ok": True}
+    assert backend.complete("judger", "fixed", variables) == {"ok": True}
+
+    assert calls[0]["image_bytes"] == []
+    assert calls[1]["image_bytes"] == [raw]
+    assert '"source": "discharge_artifact"' in calls[1]["role_instruction"]
+    assert packet.artifact_digest in calls[1]["role_instruction"]
+    assert "not any semantic conclusion" in calls[1]["role_instruction"]
+
+
+def test_ineligible_retained_png_is_prefetched_as_a_locator_not_attached(
+        tmp_path, monkeypatch):
+    packet = ineligible_image_packet_at(
+        tmp_path, b"\x89PNG\r\n\x1a\nnot-an-ihdr")
+    calls = []
+    monkeypatch.setattr(cb, "_run_codex_process", runner(calls))
+    role = SimpleNamespace(system="fixed", schema={"ok": bool})
+
+    backend = cb.CodexBackend(
+        roles={"judger": role}, cwd=str(tmp_path), judger_prefetch=True)
+    assert backend.complete("judger", "fixed", {
+        "world_mode": "unavailable", "basis": "world",
+        "_judger_evidence_packet": packet,
+    }) == {"ok": True}
+
+    (command, _kwargs), = calls
+    assert "-i" not in command
+    assert packet.render() in command[-1]
+    rendered = json.loads(packet.render())
+    raw_artifact = json.loads(
+        rendered["sources"]["artifact"]["raw_json_text"])
+    descriptor = raw_artifact["binary_files"]["render.png"]
+    assert descriptor["attachment_eligible"] is False
+    assert descriptor["store_relpath"].startswith("blobs/")
+
+
+def test_captured_and_discharge_images_fall_back_to_captured_only(
+        tmp_path, monkeypatch):
+    discharge_raw = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+    captured_raw = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
+        "/x8AAusB9Y9ZepAAAAAASUVORK5CYII=")
+    packet = image_packet_at(tmp_path, discharge_raw)
+    world = tmp_path / "world"
+    (world / "app").mkdir(parents=True)
+    (world / "app" / "input.png").write_bytes(captured_raw)
+    manifest = tmp_path / "world_manifest.json"
+    manifest.write_text(json.dumps({"captured_roots": ["/app"]}))
+    calls = []
+
+    def run(command, **kwargs):
+        image_paths = [
+            command[index + 1] for index, value in enumerate(command)
+            if value == "-i"
+        ]
+        calls.append({
+            "instruction": command[-1],
+            "images": [Path(path).read_bytes() for path in image_paths],
+        })
+        response = json.dumps({"ok": True})
+        Path(command[command.index("-o") + 1]).write_text(response)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(cb, "_run_codex_process", run)
+    role = SimpleNamespace(system="fixed", schema={"ok": bool})
+    backend = cb.CodexBackend(
+        roles={"judger": role}, cwd=str(tmp_path), judger_prefetch=True)
+
+    assert backend.complete("judger", "fixed", {
+        "world_mode": "captured", "basis": "world",
+        "world_path": str(world), "world_manifest": str(manifest),
+        "obligation_text": "inspect /app/input.png",
+        "procedure": "inspect /app/input.png independently",
+        "promised_artifact": "pixel observations",
+        "_judger_evidence_packet": packet,
+    }) == {"ok": True}
+
+    assert calls[0]["images"] == [captured_raw]
+    assert packet.render() not in calls[0]["instruction"]
+    assert cb._JUDGER_PREFETCH_NOTE not in calls[0]["instruction"]
+
+
+def test_failed_raw_image_transport_is_not_reused_by_role_retry(
+        tmp_path, monkeypatch):
+    valid = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+    # A bounded, valid IHDR but no image body: safe for the header resource
+    # gate, while a real multimodal decoder may reject it.
+    packet = image_packet_at(tmp_path, valid[:33])
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(list(command))
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=1, stderr="image body decode failed", stdout="")
+        response = json.dumps({"ok": True})
+        Path(command[command.index("-o") + 1]).write_text(response)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(cb, "_run_codex_process", run)
+    role = AgentRole("judger", "fixed", {"ok": bool}, system="fixed")
+    backend = cb.CodexBackend(
+        roles={"judger": role}, cwd=str(tmp_path), judger_prefetch=True)
+
+    assert role.call(backend, {
+        "world_mode": "unavailable", "basis": "world",
+        "_judger_evidence_packet": packet,
+    }) == {"ok": True}
+
+    assert len(calls) == 2
+    assert "-i" in calls[0] and packet.render() in calls[0][-1]
+    assert "-i" not in calls[1] and packet.render() not in calls[1][-1]
 
 
 @pytest.mark.parametrize("role_name", [

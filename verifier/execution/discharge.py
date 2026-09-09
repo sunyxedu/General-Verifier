@@ -20,8 +20,8 @@ from typing import Any, Dict, Optional
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
 from ..llm.prompts.discharge import DISCHARGE_REPAIR_CONTEXT
 from .instruments import (
-    ArtifactStore, authoritative_task_context, world_evidence_context,
-    world_map,
+    ArtifactStore, authoritative_task_context, image_media_type,
+    world_evidence_context, world_map,
 )
 from ..core.model import (
     BASIS_RECORD, Obligation, OUTCOME_FAILED, STRENGTH_ANALYTIC, STRENGTHS,
@@ -38,6 +38,8 @@ from ..llm.schema import RoleError
 SNAPSHOT_PER_FILE_CAP = 65_536
 SNAPSHOT_MAX_FILES = 200
 SNAPSHOT_MAX_TOTAL_CHARS = 2_000_000
+SNAPSHOT_IMAGE_PER_FILE_BYTES = 20 * 1024 * 1024
+SNAPSHOT_IMAGE_MAX_TOTAL_BYTES = 40 * 1024 * 1024
 # Repair material is optional. Oversized or invalid retained artifacts simply
 # leave the executor on its existing context-free redo path.
 REPAIR_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
@@ -357,21 +359,21 @@ class AgentDischarger:
         try:
             payload = self.role.call(self.backend, variables)
         except RoleError as err:
+            snapshot = _snapshot_envelope(workdir, self.artifacts)
             digest = self.artifacts.put(
                 {"instrument": self.instrument, "error": str(err),
-                 "files": _snapshot(workdir)}
+                 **snapshot}
             )
             self._maybe_cleanup(workdir)
             return DischargeResult(OUTCOME_FAILED, str(err), digest,
                                    self.instrument)
 
-        digest = self.artifacts.put(
-            {
-                "instrument": self.instrument,
-                "reported": payload,
-                "files": _snapshot(workdir),
-            }
-        )
+        snapshot = _snapshot_envelope(workdir, self.artifacts)
+        digest = self.artifacts.put({
+            "instrument": self.instrument,
+            "reported": payload,
+            **snapshot,
+        })
         self._maybe_cleanup(workdir)
         return DischargeResult(
             outcome=payload["outcome"],
@@ -443,3 +445,146 @@ def _snapshot(
     if skipped:
         files["<snapshot>"] = f"truncated: {skipped} files beyond caps"
     return files
+
+
+def _snapshot_envelope(
+    workdir: str,
+    artifacts: Optional[ArtifactStore],
+    per_file_cap: int = SNAPSHOT_PER_FILE_CAP,
+    max_files: int = SNAPSHOT_MAX_FILES,
+    max_total: int = SNAPSHOT_MAX_TOTAL_CHARS,
+) -> Dict[str, Any]:
+    """Capture text plus exact, content-addressed raster evidence.
+
+    Binary retention is additive and mechanical.  Header validation controls
+    only automatic model attachment: within the byte caps, even an ineligible
+    raster is retained losslessly for the ordinary toolful Judger.  A body
+    that cannot be retained is recorded as incomplete so no downstream seat
+    can mistake a partial body or its digest for semantic evidence.  The
+    public ``_snapshot`` wrapper preserves the established text-only helper
+    contract.
+    """
+    # Preserve the established snapshot byte-for-byte, including its handling
+    # of text symlinks, hardlinks, replacement decoding, and truncation. Raw
+    # image retention is a strictly additive second pass.
+    files = _snapshot(
+        workdir, per_file_cap=per_file_cap,
+        max_files=max_files, max_total=max_total)
+    binary_files: Dict[str, Dict[str, Any]] = {}
+    image_total = 0
+    for dirpath, dirnames, filenames, directory_fd in os.fwalk(
+            workdir, follow_symlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d not in SNAPSHOT_SKIP_DIRS)
+        for filename in sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, filename), workdir)
+            # The additive pass inherits the exact legacy file/count/total
+            # boundary: a path omitted by the text snapshot is not promoted
+            # back into the envelope merely because it looks like an image.
+            if rel not in files:
+                continue
+            try:
+                expected = os.stat(
+                    filename, dir_fd=directory_fd, follow_symlinks=False)
+                if (not stat.S_ISREG(expected.st_mode)
+                        or expected.st_nlink != 1):
+                    raise OSError("not a private regular file")
+                flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                         | getattr(os, "O_NONBLOCK", 0))
+                descriptor = os.open(filename, flags, dir_fd=directory_fd)
+                try:
+                    before = os.fstat(descriptor)
+                    if ((before.st_dev, before.st_ino)
+                            != (expected.st_dev, expected.st_ino)
+                            or not stat.S_ISREG(before.st_mode)
+                            or before.st_nlink != 1):
+                        raise OSError("file changed before snapshot")
+                    prefix = os.read(descriptor, 12)
+                    media_type = image_media_type(prefix)
+                    if media_type is None:
+                        continue
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    if (before.st_size > SNAPSHOT_IMAGE_PER_FILE_BYTES
+                            or image_total + before.st_size
+                            > SNAPSHOT_IMAGE_MAX_TOTAL_BYTES):
+                        binary_files[rel] = {
+                            "schema": "gv-raw-image-blob-ref-v1",
+                            "complete": False,
+                            "media_type": media_type,
+                            "byte_count": before.st_size,
+                            "attachment_eligible": False,
+                            "reason": "snapshot image capacity exceeded",
+                        }
+                        continue
+                    chunks = []
+                    read_total = 0
+                    while True:
+                        block = os.read(descriptor, 1024 * 1024)
+                        if not block:
+                            break
+                        chunks.append(block)
+                        read_total += len(block)
+                        if read_total > SNAPSHOT_IMAGE_PER_FILE_BYTES:
+                            raise OSError("snapshot image exceeded its byte cap")
+                    raw = b"".join(chunks)
+                    after = os.fstat(descriptor)
+                    current = os.stat(
+                        filename, dir_fd=directory_fd, follow_symlinks=False)
+                    identity = lambda value: (
+                        value.st_dev, value.st_ino, value.st_mode,
+                        value.st_nlink, value.st_size, value.st_mtime_ns,
+                        value.st_ctime_ns)
+                    if identity(before) != identity(after) \
+                            or identity(before) != identity(current):
+                        raise OSError("file changed during snapshot")
+                finally:
+                    os.close(descriptor)
+            except (OSError, UnicodeError, ValueError):
+                # Binary admission is optional. Never overwrite the legacy
+                # text snapshot when stricter no-link/stability checks fail.
+                continue
+            if artifacts is None:
+                continue
+            try:
+                binary_files[rel] = artifacts.put_image_blob(raw, media_type)
+            except ValueError as err:
+                # Header/dimension admission governs automatic model
+                # decoding, not evidence retention. Keep the exact raw
+                # body for the original toolful Judger.
+                try:
+                    identity = artifacts.put_blob(raw)
+                except (OSError, TypeError, ValueError) as store_err:
+                    binary_files[rel] = {
+                        "schema": "gv-raw-image-blob-ref-v1",
+                        "complete": False,
+                        "media_type": media_type,
+                        "byte_count": len(raw),
+                        "attachment_eligible": False,
+                        "reason": (
+                            "snapshot image retention failed: "
+                            + str(store_err)),
+                    }
+                else:
+                    binary_files[rel] = {
+                        "schema": "gv-raw-image-blob-ref-v1",
+                        "complete": True,
+                        **identity,
+                        "media_type": media_type,
+                        "attachment_eligible": False,
+                        "attachment_reason": str(err),
+                    }
+                    image_total += len(raw)
+            except (OSError, TypeError) as err:
+                binary_files[rel] = {
+                    "schema": "gv-raw-image-blob-ref-v1",
+                    "complete": False,
+                    "media_type": media_type,
+                    "byte_count": len(raw),
+                    "attachment_eligible": False,
+                    "reason": f"snapshot image retention failed: {err}",
+                }
+            else:
+                image_total += len(raw)
+    result: Dict[str, Any] = {"files": files}
+    if binary_files:
+        result["binary_files"] = binary_files
+    return result

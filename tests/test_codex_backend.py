@@ -2,6 +2,7 @@
 
 Real model calls are kept out of this unit suite.
 """
+import base64
 import hashlib
 import json
 import os
@@ -25,8 +26,12 @@ from verifier.llm.codex_backend import (
 from verifier.llm.schema import RoleError
 
 
-PNG_A = b"\x89PNG\r\n\x1a\nfirst-fixed-image"
-PNG_B = b"\x89PNG\r\n\x1a\nmutated-image"
+PNG_A = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+PNG_B = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
+    "/x8AAusB9Y9ZepAAAAAASUVORK5CYII=")
 
 
 def _usage_rows(path):
