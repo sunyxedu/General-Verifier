@@ -22,6 +22,8 @@ compiled contracts, inject a replacement kernel, or score old derived state.
 | Model / effort / tier | GPT-5.6-Luna / medium / standard | Same |
 | Typed adapters | Off | On |
 | Judger prefetch | Off | On; actual attachments audited separately |
+| Typed-adapter Judger packet | Off | On since `71d0a49`; restricted no-tools Judger rows audited separately |
+| Certificate scope | Full slice | `final` since `71d0a49`: only the final claim is settled; narration claims are exported open |
 | Contract cache / accepted-method reuse | Off / none | Off / none under fresh-prefetch profile |
 | Extraction retry bound | 3 | 3 |
 | Critic and backend retry bounds | Native defaults | Native defaults |
@@ -32,6 +34,16 @@ content-free attempt observer. This is an isolation-normalized original-source
 comparison, **not an untouched original runtime**. The policy overlay changes
 only the backend's offline CLI policy arguments; the observer preserves native
 launching, parsing, retries, return values and exceptions.
+
+Since `82bef17` the observer accounting also recognises the verifier-owned
+`gv-authority-*` temporary scratch in which the candidate-blind final contract
+is compiled; those compiler and Critic attempts are counted separately.
+
+Runs are built without hand-written plans by
+`experiments/terminal_bench/build_full_offline_comparison_plan.py`, which
+freezes both commits with `git archive`, copies a strict package set or a
+general evaluation package's model inputs, pins the support copies and writes
+balanced worker/comparison plans.
 
 The worker checks source and input seals, retains the certificate, requires
 observed compiler/Critic/Oracle/Judger role coverage, rejects cache-hit events,
