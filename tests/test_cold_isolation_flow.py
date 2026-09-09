@@ -15,11 +15,12 @@ from experiments.terminal_bench.shared_setup import charge_pair
 from test_contract_replay import COMMITS
 from test_prepare_contract_entry import harness, PAYLOAD, PASS
 from test_replay_prepared_contracts import ORACLE, JUDGER, _service_factory
+from verifier.llm.oracle_execution import raise_oracle_execution_payload
 from verifier import offline
 
 
 def test_complete_cold_setup_and_two_independent_evidence_arms_conserve_cost(tmp_path, monkeypatch):
-    responses = [{"commits": COMMITS}, PAYLOAD, PASS, PAYLOAD, PASS] + [ORACLE, JUDGER] * 4
+    responses = [{"commits": COMMITS}, PAYLOAD, PASS, PAYLOAD, PASS] + [raise_oracle_execution_payload(ORACLE), JUDGER] * 4
     h = harness(tmp_path, monkeypatch, responses=responses)
     config = offline.config_fields(model="gpt-5.6-luna", seats="codex", effort="medium", service_tier="standard")
     executors = []

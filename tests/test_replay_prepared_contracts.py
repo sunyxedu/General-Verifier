@@ -19,6 +19,7 @@ from verifier.execution.discharge import DischargeResult
 from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.schema import FixtureBackend
 from verifier.mcp_server import Service
+from verifier.llm.oracle_execution import raise_oracle_execution_payload
 
 
 CONFIG = {
@@ -151,7 +152,8 @@ def test_process_stub_replays_only_oracle_executor_judger_and_accounts_context(
     def process(command, **kwargs):
         instruction = command[-1]
         role = "judger" if '"sufficient"' in instruction else "oracles"
-        payload = JUDGER if role == "judger" else ORACLE
+        payload = (JUDGER if role == "judger"
+                   else raise_oracle_execution_payload(ORACLE))
         output = json.dumps(payload)
         Path(command[command.index("-o") + 1]).write_text(output)
         process_calls.append({"role": role, "cwd": kwargs["cwd"]})

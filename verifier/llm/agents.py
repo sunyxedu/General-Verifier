@@ -30,7 +30,7 @@ import contextlib
 import os
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import prompts
 from .model_spans import (
@@ -38,6 +38,10 @@ from .model_spans import (
     seat_wait_started, submit_with_context,
 )
 from .schema import RoleError, validate, field_name, optional_key
+from .oracle_execution import (
+    ORACLE_EXECUTION_WIRE_SCHEMA,
+    lower_oracle_execution_payload,
+)
 from ..engine.source_evidence import (
     SourceEvidenceView,
     refresh_source_evidence_variables,
@@ -172,6 +176,13 @@ class AgentRole:
     model: Optional[str] = None
     max_turns: int = 20
     system: str = ""
+    # schema remains the established downstream/replay contract. A role may
+    # expose a stricter model-facing shape and lower it atomically before
+    # anything downstream observes the payload.
+    wire_schema: Optional[Dict[str, Any]] = None
+    wire_lower: Optional[
+        Callable[[Dict[str, Any]], Dict[str, Any]]
+    ] = None
 
     def render(self, variables: Dict[str, Any]) -> str:
         return self.template.format(**variables)
@@ -324,6 +335,19 @@ class AgentRole:
                                 and not source_view.revalidate()):
                             raise RoleError(
                                 f"{self.name}: source evidence changed during audit")
+                        use_wire = (
+                            self.wire_schema is not None
+                            and getattr(
+                                backend, "uses_role_wire_schema", False,
+                            ) is True
+                        )
+                        if use_wire:
+                            validate(self.wire_schema, payload)
+                            if self.wire_lower is None:
+                                raise RoleError(
+                                    f"{self.name}: wire schema has no lowerer",
+                                )
+                            payload = self.wire_lower(payload)
                         validate(self.schema, payload)
                     return payload
                 except RoleError as err:
@@ -357,6 +381,7 @@ class AgentBackend:
         self.cwd = cwd
         self.model = model
         self.permission_mode = permission_mode
+        self.uses_role_wire_schema = True
         self.transcripts: List[Dict[str, Any]] = []
 
     def allows_lazy_oracle_catalog(
@@ -447,7 +472,8 @@ class AgentBackend:
 
         if result is not None and result.structured_output is not None and result.subtype == "success":
             payload = result.structured_output
-            validate(role.schema, payload)  # our gate, independent of the SDK's
+            validate(role.wire_schema or role.schema, payload)
+            # Our gate is independent of the SDK's structured-output gate.
             return payload
 
         status = getattr(result, "api_error_status", None)
@@ -487,7 +513,7 @@ class AgentBackend:
                                                # merges over os.environ)
             output_format={
                 "type": "json_schema",
-                "schema": to_json_schema(role.schema),
+                "schema": to_json_schema(role.wire_schema or role.schema),
             },
             max_buffer_size=64 * 1024 * 1024,  # default 1MB truncates long tool output
             stderr=stderr_cb,
@@ -580,6 +606,8 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
     },
     tools=["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
     max_turns=15,      # research takes room; still no Bash — no probing
+    wire_schema=ORACLE_EXECUTION_WIRE_SCHEMA,
+    wire_lower=lower_oracle_execution_payload,
 )
 
 DISCHARGE_AGENT = AgentRole(

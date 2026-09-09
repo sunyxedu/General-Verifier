@@ -1582,6 +1582,7 @@ class CodexBackend:
         if type(judger_prefetch) is not bool:
             raise ValueError("judger_prefetch must be a bool")
         self.roles = dict(roles) if roles is not None else dict(ALL_AGENT_ROLES)
+        self.uses_role_wire_schema = True
         self.cwd = cwd
         # Compound model spec: "base[;role=model...]" — e.g.
         # "gpt-5.6-luna;oracles=gpt-5.6-terra" runs every seat on luna
@@ -2328,7 +2329,10 @@ class CodexBackend:
                   "structured observations, and never treat a handwritten "
                   "region-to-label table as perceptual output."
             )
-        schema = json.dumps(to_json_schema(role.schema), ensure_ascii=False)
+        schema = json.dumps(
+            to_json_schema(getattr(role, "wire_schema", None) or role.schema),
+            ensure_ascii=False,
+        )
         instruction = (
             (role.system + "\n\n" if role.system else "")
             + prompt
@@ -2717,7 +2721,10 @@ class CodexBackend:
                         f"(rc={proc.returncode}, "
                         f"stderr={proc.stderr[-300:]!r})")
                 payload = extract_json(text)
-                validate(role.schema, payload)
+                validate(
+                    getattr(role, "wire_schema", None) or role.schema,
+                    payload,
+                )
             except RoleError:
                 if terminal_recorded:
                     raise

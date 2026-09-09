@@ -97,6 +97,12 @@ def test_mechanism_fields_are_asked_for_by_name():
     method_schema = agents.ENUMERATE_ORACLES_AGENT.schema["methods"][0]
     assert {"adapter?", "adapter_version?", "adapter_arguments?",
             "adapter_inputs?"} <= set(method_schema)
+    wire_method = agents.ENUMERATE_ORACLES_AGENT.wire_schema["methods"][0]
+    assert "execution" in wire_method
+    assert set(wire_method["execution"]) == {
+        "kind", "custom_gap_reason", "adapter", "adapter_version",
+        "adapter_input_binding", "adapter_arguments", "adapter_inputs",
+    }
     assert "adapter_catalog" in _vars(prompts.ORACLES_TEMPLATE)
 
 
@@ -107,7 +113,8 @@ def test_adapter_preference_is_conditional_and_preserves_verification_scope():
     assert "otherwise use the custom method" in text
     assert "preserve the obligation's full scope, provenance, absence rules" in text
     assert "retain every enumeration or observation the obligation actually requires" in text
-    assert "omit all four fields unless" in text
+    assert "Every method must include one complete execution object" in text
+    assert "specific non-empty custom_gap_reason" in text
     assert "never method sufficiency" in text
     assert "emit only the adapter-bound method" in text
     assert "binding that adapter is mandatory" in text
@@ -240,7 +247,8 @@ def test_oracle_adapter_dispatch_is_basis_and_primitive_driven():
     assert "Fresh Judger, not custom execution" in template
     assert "Use custom only for independent computation or evidence" \
         in template
-    assert "A custom method omits adapter_inputs too" in template
+    assert "kind=custom, a specific non-empty custom_gap_reason" in template
+    assert "adapter_version=0, adapter_input_binding=none" in template
 
     rendered = template.format(**{name: "x" for name in _vars(template)})
     match = re.search(r"adapter_arguments=`([^`]+)`", rendered)

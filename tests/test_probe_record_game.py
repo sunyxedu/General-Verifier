@@ -14,6 +14,7 @@ from verifier.core.model import content_hash
 from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
 from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.schema import FixtureBackend
+from verifier.llm.oracle_execution import raise_oracle_execution_payload
 
 
 USAGE = {"input_tokens": 100, "cached_input_tokens": 30,
@@ -98,7 +99,7 @@ def _run(tmp_path, monkeypatch, typed, *, compact_inspection=False,
          judger_prefetch=False, typed_judger_packet=False):
     source, case = _inputs(tmp_path)
     calls = []
-    responses = [{"methods": [METHOD]}]
+    responses = [raise_oracle_execution_payload({"methods": [METHOD]})]
     if not typed:
         responses.append(DISCHARGE)
     responses.append(JUDGE)

@@ -67,8 +67,14 @@ def _check(spec: Any, value: Any, path: str) -> None:
 class FixtureBackend:
     """Deterministic backend: role name -> payload or callable(vars)->payload. Used as a seam."""
 
-    def __init__(self, fixtures: Dict[str, Any]):
+    def __init__(self, fixtures: Dict[str, Any], *, wire_output: bool = False):
+        if type(wire_output) is not bool:
+            raise ValueError("wire_output must be a bool")
         self.fixtures = fixtures
+        # Existing fixtures replay downstream MethodIR. New wire-contract
+        # tests opt in explicitly instead of rewriting persisted fixtures.
+        self.wire_output = wire_output
+        self.uses_role_wire_schema = wire_output
         self.calls: List[Dict[str, Any]] = []
 
     def complete(self, role_name: str, prompt: str, variables: Dict[str, Any]) -> Any:
