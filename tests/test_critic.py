@@ -17,7 +17,7 @@ from verifier.core.model import (
     canonical, Claim, CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL,
 )
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
-from verifier.engine.kernel import Kernel
+from verifier.engine.kernel import Kernel, MAX_CRITIC_ROUNDS
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm import prompts
@@ -1158,3 +1158,73 @@ def test_append_repair_cannot_change_existing_judgment_conditions(
         "obligations", "critic", "obligations", "obligations", "critic"]
     assert len([e for e in ledger_events(log, "decomposition_attacked")
                 if e["payload"].get("source") == "mechanical_append_guard"]) == 1
+
+
+def test_unchanged_contract_on_append_demand_is_reviewed_not_deadlocked(tmp_path):
+    """A compiler that declines a demanded append by returning the contract
+    unchanged hands the decision back to the Critic instead of burning the
+    remaining repairs on the mechanical append guard."""
+    original = {
+        "obligations": [
+            {"text": "A", "required_basis": "world"},
+            {"text": "B", "required_basis": "record"},
+        ]
+    }
+    payloads = iter([original, json.loads(json.dumps(original))])
+    runner_attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "A and B hold but the runner protocol was skipped",
+        "missing_condition": "APPEND OBLIGATION: the candidate issued a command",
+    }
+    seen_histories = []
+
+    def critic(variables):
+        seen_histories.append(json.loads(variables["game_history"]))
+        return runner_attack if len(seen_histories) == 1 else PASS
+
+    store, log, backend, discharger = build(
+        tmp_path, {"obligations": lambda _v: next(payloads), "critic": critic})
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "A and B"))
+
+    assert store.status(cid) == "verified"
+    assert discharger.seen == ["A", "B"]
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "obligations", "critic",
+    ]
+    declined = ledger_events(log, "contract_repair_declined")
+    assert len(declined) == 1
+    assert declined[0]["payload"]["missing_condition"].startswith("APPEND OBLIGATION:")
+    assert not [
+        event for event in ledger_events(log, "decomposition_attacked")
+        if event["payload"].get("source") == "mechanical_append_guard"
+    ]
+    # the second review sees the unchanged contract and the refusal
+    assert seen_histories[1][-1]["repair"].startswith("declined:")
+    assert seen_histories[1][-1]["reviewed_obligations"] == original["obligations"]
+
+
+def test_declined_append_still_fails_closed_when_the_critic_insists(tmp_path):
+    original = {"obligations": [{"text": "A", "required_basis": "world"}]}
+    attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "A holds but the protocol was skipped",
+        "missing_condition": "APPEND OBLIGATION: the candidate issued a command",
+    }
+    store, log, backend, discharger = build(
+        tmp_path,
+        {"obligations": lambda _v: json.loads(json.dumps(original)),
+         "critic": attack},
+    )
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "A"))
+    assert store.status(cid) == "unverified"
+    assert discharger.seen == []
+    roles = [call["role"] for call in backend.calls]
+    # every review round saw the unchanged contract and insisted; the
+    # default critic budget bounds the game as before
+    assert roles.count("critic") == roles.count("obligations") == MAX_CRITIC_ROUNDS
+    assert len(ledger_events(log, "contract_repair_declined")) \
+        == MAX_CRITIC_ROUNDS - 1
+    status = [e for e in ledger_events(log, "status_change")
+              if e["payload"]["status"] == "unverified"]
+    assert "decomposition failed critic" in status[-1]["payload"]["reason"]

@@ -1055,6 +1055,7 @@ class Kernel:
                 missing_condition=verdict["missing_condition"],
             )
             repair_accepted = False
+            declined = False
             guard_feedback = ""
             while repair_calls < self.critic_rounds - 1:
                 repair_variables = dict(
@@ -1089,6 +1090,23 @@ class Kernel:
                     variables = repair_variables
                     repair_accepted = True
                     break
+                if (not append_delta
+                        and self._same_contract(payload, candidate)):
+                    # The compiler returned the contract unchanged: a
+                    # principled refusal of the demanded append (for example
+                    # a clause its own gates classify as runner interface),
+                    # not a malformed repair.  Burning the remaining repairs
+                    # on the mechanical guard could only deadlock; hand the
+                    # unchanged contract and the refusal back to the Critic,
+                    # which still fails the claim closed if it stands.
+                    declined = True
+                    self.log.append(
+                        "contract_repair_declined",
+                        {"claim": row["id"], "round": round_no,
+                         "repair_attempt": repair_calls,
+                         "missing_condition": verdict["missing_condition"]},
+                    )
+                    break
 
                 failure_counterexample = (
                     "MECHANICAL APPEND-ONLY VIOLATION: " + violation)
@@ -1113,6 +1131,13 @@ class Kernel:
                     rejected_obligations=json.dumps(
                         candidate["obligations"], ensure_ascii=False),
                 )
+            if declined:
+                history[-1]["repair"] = (
+                    "declined: the compiler returned the contract unchanged, "
+                    "judging the demanded append outside task acceptance; "
+                    "re-review the unchanged contract or name a different "
+                    "deficiency")
+                continue
             if not repair_accepted:
                 break
         # triage metadata only — an oscillating critic still fails closed
@@ -1140,6 +1165,18 @@ class Kernel:
             },
         )
         return None
+
+    @staticmethod
+    def _same_contract(previous: Dict, candidate: Dict) -> bool:
+        """Whether a repair returned exactly the previous obligation set."""
+        def contract(item):
+            return (item["text"], item.get("required_basis", BASIS_RECORD),
+                    item.get("severity", SEVERITY_MUST),
+                    item.get("clause", ""),
+                    item.get("refutable_by_absence", False))
+
+        return ([contract(item) for item in previous["obligations"]]
+                == [contract(item) for item in candidate["obligations"]])
 
     @staticmethod
     def _append_repair_violation(previous: Dict, candidate: Dict):

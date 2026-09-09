@@ -58,6 +58,7 @@ EVENT_TYPES = (
     "obligations_compiled",
     "obligations_residualized",
     "decomposition_attacked",
+    "contract_repair_declined",
     "contract_cache_miss",
     "contract_cache_hit",
     "contract_cache_published",
