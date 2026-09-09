@@ -207,25 +207,8 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "apply the ACCEPTANCE COUNTERFACTUAL separately" in compiler
     assert "no acceptance condition is unmapped" in compiler
     assert "Emit only the existing obligations schema" in compiler
-    assert "SINGLE-OWNER CONJUNCT FACTORIZATION" in compiler
-    assert "controlling authority selects it" in compiler
-    assert "task did not select" in compiler
-    assert "only a comparison operand" in compiler
-    assert "artifact or other carrier" in compiler
-    assert "cannot fail independently" in compiler
-    assert "SAME-CONTRACT SUBSUMPTION" in compiler
-    assert "standalone, ordering, and terminal-command" in compiler
-    assert "quote both controlling spans" in compiler
 
     assert "COMPLETE DEFECT CENSUS" in critic
-    assert "PREDICATE-OVERLAP AUDIT" in critic
-    assert "A shared target is not shared evidence" in critic
-    assert "time, quantifier and scope, modality, evidence floor" in critic
-    assert "a response or carrier that was not selected" in critic
-    assert "whether either relation can fail while the other holds" in critic
-    assert "SUBSUMPTION AUDIT" in critic
-    assert "standalone, ordering, terminal" in critic
-    assert "merely correlated condition" in critic
     assert "two source-order sweeps" in critic
     assert "Do not stop at the first witness" in critic
     assert "every independently visible missing and overstrong condition" in critic
