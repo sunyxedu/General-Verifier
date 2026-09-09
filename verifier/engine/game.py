@@ -81,6 +81,7 @@ from ..llm.schema import RoleError
 from ..llm.typed_judger_backend import restricted_typed_judger_backend
 from .method_cache import AcceptedMethod, build_method_cache_key
 from .judger_prefetch import build_judger_evidence_packet
+from ..execution.record_shape import record_shape_json
 
 
 class _RecordLedger:
@@ -1170,6 +1171,7 @@ class BindingGame:
                 "adapter_catalog": oracle_catalog,
                 "method_feedback": method_feedback,
                 "ledger_path": self.log.record_path_for(row["id"]),
+                "record_shape": record_shape_json(self.log),
                 "artifact_root": os.path.abspath(self.artifacts.root),
                 "world_mode": world_mode,
                 "world_path": world,
