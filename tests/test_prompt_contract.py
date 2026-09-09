@@ -173,9 +173,8 @@ def test_strength_ladder_contract_survives():
     assert "immediately return unobtainable" in prompts.DISCHARGE_SYSTEM
     assert "no tools/files and an empty artifact locator" \
         in prompts.DISCHARGE_SYSTEM
-    assert "never settles evidence" in prompts.DISCHARGE_SYSTEM
-    assert "excludes live, implicit, or ambiguous cases" \
-        in prompts.DISCHARGE_SYSTEM
+    assert "Never settling evidence" in prompts.DISCHARGE_SYSTEM
+    assert "inapplicable to live or ambiguous cases" in prompts.DISCHARGE_SYSTEM
     assert "LARGE-INPUT DISCIPLINE" in prompts.DISCHARGE_TEMPLATE
     assert "Never print or read an entire large source" \
         in prompts.DISCHARGE_TEMPLATE
@@ -224,7 +223,9 @@ def test_oracle_adapter_dispatch_is_basis_and_primitive_driven():
     assert "does not cover the whole obligation" in template
     assert "DIRECT EFFECT-OUTPUT RECIPE" in template
     assert "record.query@1 event-at" in template
+    assert "source=payload" in template
     assert "/excerpt_truncated equals false" in template
+    assert "Tests include source, pointer, predicate" in template
     assert "Any producing verb/noun or described subject" in template
     assert "paired-exchange with exact result seq=N" in template
     assert "full correlated call, never event-at" in template
