@@ -24,6 +24,9 @@ compiled contracts, inject a replacement kernel, or score old derived state.
 | Judger prefetch | Off | On; actual attachments audited separately |
 | Typed-adapter Judger packet | Off | On since `71d0a49`; restricted no-tools Judger rows audited separately |
 | Certificate scope | Full slice | `final` since `71d0a49`: only the final claim is settled; narration claims are exported open |
+| Sufficiency pre-audit | Off | On since `ef3e78c` (`GV_SUFFICIENCY_PREAUDIT=1`) |
+| Concurrent final-contract compile | Off | On since `5f0d8ad` (`GV_FINAL_CONTRACT_PRECOMPILE=1`) |
+| Warm reuse (`GV_CONTRACT_CACHE`, `GV_METHOD_CACHE`) | Off | Off in cold pairs; on only in `run_full_offline_warm_worker.py` batches |
 | Contract cache / accepted-method reuse | Off / none | Off / none under fresh-prefetch profile |
 | Extraction retry bound | 3 | 3 |
 | Critic and backend retry bounds | Native defaults | Native defaults |
