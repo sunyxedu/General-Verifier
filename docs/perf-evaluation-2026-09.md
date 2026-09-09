@@ -193,6 +193,36 @@ obligation ended `failed`. That is the Judger holding the same coverage
 standard against a weaker executor artifact, and it costs the positive its
 rank only when the negative also ends undecided.
 
+### 8-candidate cohort, treatment `cadcb31` cold (run `full-offline-cadcb31-tb8-20260909`)
+
+Same protocol; adds the prior-attempt briefing for the executor.
+
+| Candidate (label) | Control verdict / cost / wall | Treatment verdict / cost / wall | cost × | latency × |
+| --- | --- | --- | ---: | ---: |
+| sqlite `4JQh54h` (1) | verified / $1.211 / 2955 s | unverified / $0.048 / 150 s | 25.16 | 19.75 |
+| sqlite `hUXYSvy` (0) | refuted / $0.425 / 898 s | unverified / $0.042 / 138 s | 10.07 | 6.50 |
+| chess `xGt6Pve` (1) | unverified / $0.653 / 1224 s | unverified / $0.058 / 253 s | 11.32 | 4.85 |
+| chess `Da8xED4` (0) | refuted¹ / $0.848 / 1474 s | unverified / $0.070 / 228 s | 12.17 | 6.45 |
+| gcode `ELuvDeE` (1) | refuted² / $0.525 / 862 s | unverified / $0.034 / 134 s | 15.45 | 6.42 |
+| gcode `HFh2qJM` (0) | refuted / $0.276 / 707 s | refuted / $0.035 / 134 s | 7.81 | 5.28 |
+| video `KFN5iFo` (1) | compile failed³ / $0.194 / 593 s | partial / $0.063 / 230 s | 3.09 | 2.58 |
+| video `tJdCJ8R` (0) | unverified / $0.421 / 1321 s | refuted / $0.060 / 173 s | 7.06 | 7.62 |
+| **All eight** | **$4.553 / 10033 s** | **$0.410 / 1440 s** | **11.12** | **6.97** |
+
+The briefing fired once (video, no effect on the outcome). The latency
+difference from the `ee97910` run is not the briefing: on the sqlite and
+chess semantic obligations the pre-execution audit rejected both proposed
+methods this time, so no executor ran and the obligations ended `failed`
+within 150–250 s, where the previous run executed a method for 300–700 s
+before the Judger rejected its artifact. Both are the same standard applied
+to different Oracle proposals; the verdicts are identical (`unverified`).
+
+Three cold runs of this cohort at near-identical treatment code therefore
+give cost 8.57×, 7.72× and 11.12× and latency 4.27×, 3.50× and 6.97×. The
+cost ratio is stable above 5×; the latency ratio's spread comes from whether
+the executor is allowed to spend its budget on an obligation it cannot
+decide, which is a seat judgment, not a verifier mechanism.
+
 ## Mechanisms and where their savings come from
 
 | Mechanism | Removes | Doc |
