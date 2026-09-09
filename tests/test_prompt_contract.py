@@ -211,6 +211,7 @@ def test_harness_addendum_is_generic():
     assert "emit NO minimal-change" in add
     assert "CANDIDATE-CARRIER NORMAL FORM" in add
     assert "Never compare with a value copied from the final claim" in add
+    assert "merely that the carrier states" in add
     assert "the response is independently selected as a carrier" \
         in prompts.CRITIC_SYSTEM
 
@@ -225,8 +226,12 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "apply the ACCEPTANCE COUNTERFACTUAL separately" in compiler
     assert "no acceptance condition is unmapped" in compiler
     assert "Emit only the existing obligations schema" in compiler
+    assert "EXACT DOMINATION, NOT FUZZY DEDUP" in compiler
+    assert "ONE PROCESS EVENT" in compiler
 
     assert "COMPLETE DEFECT CENSUS" in critic
+    assert "EXACT DOMINATION AUDIT" in critic
+    assert "ONE PROCESS EVENT AUDIT" in critic
     assert "two source-order sweeps" in critic
     assert "Do not stop at the first witness" in critic
     assert "every independently visible missing and overstrong condition" in critic
