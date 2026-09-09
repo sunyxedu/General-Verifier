@@ -66,14 +66,22 @@ class _CritiqueContext:
         self.append_only_delta_protocol = append_only_delta_protocol
 
     def __getattr__(self, name):
-        # Static helpers of the kernel's critique loop (delta validation and
-        # merging) are borrowed unchanged.
+        # Helpers of the kernel's critique loop (append-guard validation and
+        # delta merging) are borrowed unchanged.  Look them up on the class
+        # dictionary so a staticmethod stays unbound: ``getattr(Kernel, ...)``
+        # would already have unwrapped it into a plain function and binding
+        # that to this context would shift its arguments.
         from .kernel import Kernel
-        attribute = getattr(Kernel, name)
-        if isinstance(attribute, staticmethod):
-            return attribute.__func__
-        if callable(attribute):
-            return attribute.__get__(self, _CritiqueContext)
+        for klass in Kernel.__mro__:
+            if name in vars(klass):
+                raw = vars(klass)[name]
+                if isinstance(raw, staticmethod):
+                    return raw.__func__
+                if isinstance(raw, classmethod):
+                    return raw.__func__.__get__(Kernel, type(Kernel))
+                if callable(raw):
+                    return raw.__get__(self, _CritiqueContext)
+                return raw
         raise AttributeError(name)
 
 

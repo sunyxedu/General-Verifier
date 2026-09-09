@@ -162,3 +162,38 @@ def test_critic_fail_closed_is_replayed_as_evidence(tmp_path, monkeypatch):
     assert service.store.evidence_for(final_id)
     assert all(a["claim"] == final_id
                for a in _events(service, "decomposition_attacked"))
+
+
+def test_precompile_runs_the_append_repair_loop(tmp_path, monkeypatch):
+    """The borrowed critique loop must reach its static append guard."""
+    state = _state(tmp_path)
+    fixtures = _fixtures()
+    contract = fixtures["obligations"]["obligations"]
+    appended = {"obligations": contract + [{
+        "text": "the command's result was observed", "required_basis": "record",
+        "severity": "must", "clause": "Observe the result.",
+        "refutable_by_absence": True}]}
+    compiles = iter([fixtures["obligations"], appended])
+    verdicts = iter([
+        {"verdict": "insufficient",
+         "counterexample_world": "the command ran but its result was never seen",
+         "missing_condition": "APPEND OBLIGATION: the result was observed"},
+        {"verdict": "pass", "counterexample_world": "n/a",
+         "missing_condition": "n/a"},
+    ])
+    fixtures["obligations"] = lambda _v: next(compiles)
+    fixtures["critic"] = lambda _v: next(verdicts)
+    backend = FixtureBackend(fixtures)
+    handle = _start(state, backend)
+    outcome = handle.wait()
+    assert outcome.error is None, repr(outcome.error)
+    assert outcome.payload == appended
+    assert [kind for kind, _p in outcome.events] == [
+        "decomposition_attacked", "decomposition_attacked"]
+    service = _service(state, backend, monkeypatch, handle)
+    certificate = request_certificate(
+        service.store, service.kernel, service.log, service.artifacts,
+        service.builder.finals[-1], scope=CERTIFICATE_SCOPE_FINAL)
+    assert certificate["verdict"] == "verified"
+    assert _events(service, "contract_precompiled")[0]["adopted"] is True
+    assert len(_events(service, "decomposition_attacked")) == 2
