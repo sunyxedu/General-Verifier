@@ -14,10 +14,12 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import tempfile
 
 RUNTIME = {"model": "gpt-5.6-luna", "effort": "medium",
            "service_tier": "standard"}
+# The evaluation workers pin TMPDIR to this host temporary root; verifier
+# scratch directories therefore live directly under it.
+WORKER_TMPDIR = "/private/tmp"
 
 
 def _analyzer():
@@ -28,7 +30,7 @@ def _analyzer():
     return module
 
 
-def reaccount(output: Path) -> dict:
+def reaccount(output: Path, tmpdir: str = WORKER_TMPDIR) -> dict:
     start = json.loads((output / "worker-start.json").read_text())
     plan = start["plan"]
     result_path = output / "worker-result.json"
@@ -37,7 +39,7 @@ def reaccount(output: Path) -> dict:
         summary = json.loads(result_path.read_text()).get("observer_summary")
     state = output / "state"
     contexts = {str(state): {"arm": plan["arm"], "worker_id": start["worker_id"]}}
-    temp = os.path.realpath(tempfile.gettempdir())
+    temp = os.path.realpath(tmpdir)
     return _analyzer().analyze_file(
         output / "observer.jsonl", context_by_cwd=contexts, **RUNTIME,
         session_summary=summary,
@@ -48,9 +50,11 @@ def reaccount(output: Path) -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("outputs", nargs="+")
+    parser.add_argument("--tmpdir", default=WORKER_TMPDIR,
+                        help="the TMPDIR the worker ran with")
     args = parser.parse_args()
     for output in args.outputs:
-        accounting = reaccount(Path(output))
+        accounting = reaccount(Path(output), args.tmpdir)
         print(json.dumps({
             "output": output,
             "accounting_complete": accounting.get("accounting_complete"),
