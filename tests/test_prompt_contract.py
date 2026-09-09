@@ -161,6 +161,20 @@ def test_strength_ladder_contract_survives():
         in prompts.DISCHARGE_SYSTEM
 
 
+def test_semantic_methods_are_operational_and_target_is_comparison_only():
+    assert "OPERATIONAL-PRIMITIVE AUDIT" in prompts.ORACLES_SYSTEM
+    assert "DERIVED-PERCEPTION BOTTLENECK" in prompts.ORACLES_SYSTEM
+    assert "SEMANTIC-SIGNATURE REPAIR" in prompts.ORACLES_TEMPLATE
+    assert "otherwise return methods=[]" in prompts.ORACLES_TEMPLATE
+
+    assert "TARGET-TAINT BOUNDARY" in prompts.DISCHARGE_SYSTEM
+    assert "report failed" in prompts.DISCHARGE_SYSTEM
+
+    assert "CONCRETE-STRONGER-ROUTE TEST" in prompts.JUDGER_SYSTEM
+    assert "TARGET-TAINT AUDIT" in prompts.JUDGER_SYSTEM
+    assert "faithful=no" in prompts.JUDGER_SYSTEM
+
+
 def test_oracle_compiles_methods_without_executing_their_evidence_checks():
     system = prompts.ORACLES_SYSTEM
     template = prompts.ORACLES_TEMPLATE
