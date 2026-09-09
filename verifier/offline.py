@@ -1023,8 +1023,14 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                     parallel_obligations=parallel_obligations,
                     parallel_claims=parallel_claims)
 
-            from .execution.config import final_contract_precompile_enabled
+            from .execution.config import (
+                contract_cache_enabled, final_contract_precompile_enabled,
+            )
+            # With the process-local contract cache the task's contract is
+            # compiled once by the first candidate's kernel; a second
+            # concurrent compile would only duplicate that work.
             if (final_contract_precompile_enabled()
+                    and not contract_cache_enabled()
                     and not _has_commits(
                         os.path.join(state_dir, "events.jsonl"))):
                 from .engine.precompile import PrecompiledFinalContract
