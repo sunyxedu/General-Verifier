@@ -146,6 +146,7 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         ("evidence.program", 1),
         ("evidence.program", 2),
         ("record.program", 1),
+        ("record.query", 1),
         ("ledger.event", 1),
         ("ledger.sequence", 1),
         ("ledger.sequence", 2),
@@ -157,10 +158,39 @@ def test_catalog_is_versioned_narrow_and_has_no_arbitrary_executor():
         "selection": "exact-registered-name-version-only",
         "repair_version_inference": "forbidden",
     } for item in catalog)
+    for item in catalog:
+        evidence = item["evidence_contract"]
+        assert evidence["schema"] == EVIDENCE_SCHEMA
+        assert evidence["content_address"] == "sha256(canonical-json)"
+        assert evidence["closed_fields"] == {
+            "receipt": [
+                "schema", "instrument", "claim", "obligation", "method",
+                "execution",
+            ],
+            "execution": [
+                "outcome", "witness", "witness_kind", "declared_inputs",
+                "consumed", "observation",
+            ],
+        }
     command = next(item for item in catalog
                    if item["name"] == "ledger.tool-call-string")
     text = next(item for item in catalog if item["name"] == "document.text")
     assert text["accepted_method_reuse"] is True
+    assert text["evidence_contract"]["retention_limits"] == {
+        "source_file_bytes_read_max": 8 * 1024 * 1024,
+        "expected_characters_max": 16_384,
+        "complete_decoded_text_retained": False,
+        "actual_text_sha256_retained_for_decoded_file": True,
+        "first_match_character_retained": True,
+    }
+    decoded = next(
+        variant for variant in text["evidence_contract"]["observation"][
+            "variants"]
+        if variant["name"] == "decoded-literal-predicate")
+    assert decoded["required_fields"] == [
+        "address", "identity", "encoding", "predicate", "expected",
+        "text_characters", "matched", "first_match_character",
+    ]
     assert command["basis"] == BASIS_RECORD
     assert "never parses or executes" in command["summary"]
     assert not any(item["basis"] == BASIS_WORLD
@@ -435,6 +465,16 @@ def test_text_adapter_applies_exact_utf8_literal_predicates(
         WITNESS_NONE if matched else WITNESS_WORLD_STATE)
     evidence = artifacts.get(result.artifact)
     observation = evidence["execution"]["observation"]
+    catalog = json.loads(routing.adapter_catalog())
+    text_contract = next(
+        item["evidence_contract"] for item in catalog
+        if (item["name"], item["version"]) == ("document.text", 1))
+    decoded = next(
+        variant for variant in text_contract["observation"]["variants"]
+        if variant["name"] == "decoded-literal-predicate")
+    assert set(observation) == set(decoded["required_fields"])
+    assert set(observation["identity"]) == set(
+        text_contract["observation"]["file_identity_fields"])
     assert observation["matched"] is matched
     assert observation["identity"]["sha256"]
     assert "actual" not in observation
@@ -442,7 +482,7 @@ def test_text_adapter_applies_exact_utf8_literal_predicates(
 
 
 def test_text_adapter_is_strict_and_absence_aware(tmp_path):
-    _, world, _, _, fallback, routing = captured(tmp_path)
+    _, world, artifacts, _, fallback, routing = captured(tmp_path)
     (world / "binary.txt").write_bytes(b"\xff")
     obligation = Obligation(
         "c1", "the required literal text exists", BASIS_WORLD,
@@ -465,6 +505,20 @@ def test_text_adapter_is_strict_and_absence_aware(tmp_path):
     assert invalid_utf8.witness_kind == WITNESS_WORLD_STATE
     assert absent.outcome == OUTCOME_REFUTED
     assert absent.witness_kind == WITNESS_ABSENCE
+    text_contract = next(
+        item["evidence_contract"] for item in json.loads(
+            routing.adapter_catalog())
+        if (item["name"], item["version"]) == ("document.text", 1))
+    variants = {
+        item["name"]: set(item["required_fields"])
+        for item in text_contract["observation"]["variants"]
+    }
+    invalid_observation = artifacts.get(invalid_utf8.artifact)["execution"][
+        "observation"]
+    absent_observation = artifacts.get(absent.artifact)["execution"][
+        "observation"]
+    assert set(invalid_observation) == variants["utf8-decode-error"]
+    assert set(absent_observation) == variants["address-absent"]
     assert fallback.calls == []
 
 

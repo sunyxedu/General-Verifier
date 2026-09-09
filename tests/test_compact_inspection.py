@@ -46,13 +46,17 @@ def test_opt_in_compacts_reports_and_all_post_extract_roles_get_inspection_note(
     (base, base_args), (opt, opt_args) = calls
     assert cb._COMPACT_INSPECTION_NOTE not in base[-1]
     assert cb._COMPACT_REPORT_NOTE not in base[-1]
+    assert cb._PLAN_FIRST_EXECUTION_NOTE not in base[-1]
     assert (cb._ORACLE_COMPILE_NOTE in base[-1]) is (role_name == "oracles")
     assert (cb._ORACLE_COMPILE_NOTE in opt[-1]) is (role_name == "oracles")
     expected = role_name not in {"extract", "oracles"}
     assert (cb._COMPACT_INSPECTION_NOTE in opt[-1]) is expected
     assert cb._COMPACT_REPORT_NOTE in opt[-1]
+    assert (cb._PLAN_FIRST_EXECUTION_NOTE in opt[-1]) is (
+        role_name == "discharge")
     assert opt[-1].replace(cb._COMPACT_INSPECTION_NOTE, "").replace(
-        cb._COMPACT_REPORT_NOTE, "") == base[-1]
+        cb._COMPACT_REPORT_NOTE, "").replace(
+        cb._PLAN_FIRST_EXECUTION_NOTE, "") == base[-1]
     # The only command difference is prompt text and the fresh output path.
     def command_contract(command):
         command = list(command[:-1])
@@ -131,5 +135,19 @@ def test_compact_report_note_preserves_every_role_gate_and_failure():
         "sufficient=yes, faithful=yes, degradation=n/a",
         "every independently visible defect",
         "not permission to weaken a contract, skip a gate",
+    ):
+        assert invariant in note
+
+
+def test_plan_first_note_preserves_method_and_unavailability_contracts():
+    note = cb._PLAN_FIRST_EXECUTION_NOTE
+    for invariant in (
+        "ordering only",
+        "Explicit bridges remain assumptions",
+        "Planning is not evidence",
+        "uncertainty is not unavailability",
+        "existing real obtain-attempt rule",
+        "Never substitute a proxy, subset, approximation",
+        "method choice remains the Oracle's",
     ):
         assert invariant in note

@@ -36,6 +36,8 @@ from ..llm.schema import RoleError
 # character budget rather than an on-disk byte budget.  Keep the executor's
 # contract mechanically tied to the value used by _snapshot().
 SNAPSHOT_PER_FILE_CAP = 65_536
+SNAPSHOT_MAX_FILES = 200
+SNAPSHOT_MAX_TOTAL_CHARS = 2_000_000
 # Repair material is optional. Oversized or invalid retained artifacts simply
 # leave the executor on its existing context-free redo path.
 REPAIR_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
@@ -342,6 +344,8 @@ class AgentDischarger:
             "world_map": world_map(self.state_dir,
                                    live_world=self.live_world),
             "snapshot_per_file_cap": SNAPSHOT_PER_FILE_CAP,
+            "snapshot_max_files": SNAPSHOT_MAX_FILES,
+            "snapshot_max_total_chars": SNAPSHOT_MAX_TOTAL_CHARS,
         }
         if self.log is not None:
             variables = bind_source_evidence_variables(
@@ -404,8 +408,12 @@ SNAPSHOT_SKIP_DIRS = {
 }
 
 
-def _snapshot(workdir: str, per_file_cap: int = SNAPSHOT_PER_FILE_CAP,
-              max_files: int = 200, max_total: int = 2_000_000) -> Dict[str, str]:
+def _snapshot(
+    workdir: str,
+    per_file_cap: int = SNAPSHOT_PER_FILE_CAP,
+    max_files: int = SNAPSHOT_MAX_FILES,
+    max_total: int = SNAPSHOT_MAX_TOTAL_CHARS,
+) -> Dict[str, str]:
     """
     Bounded content snapshot of what the agent left on disk. 
     Caps are mechanical: decoded characters per file, file count, and total

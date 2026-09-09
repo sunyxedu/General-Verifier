@@ -8,6 +8,8 @@ import pytest
 
 from verifier.core.model import Obligation
 from verifier.execution.discharge import (
+    SNAPSHOT_MAX_FILES,
+    SNAPSHOT_MAX_TOTAL_CHARS,
     SNAPSHOT_PER_FILE_CAP,
     AgentDischarger,
     _snapshot,
@@ -78,6 +80,8 @@ def test_discharge_receives_offline_unavailable_context(tmp_path):
     assert variables["required_basis"] == "world"
     assert variables["redo_feedback"] == "(none)"
     assert variables["snapshot_per_file_cap"] == SNAPSHOT_PER_FILE_CAP
+    assert variables["snapshot_max_files"] == SNAPSHOT_MAX_FILES
+    assert variables["snapshot_max_total_chars"] == SNAPSHOT_MAX_TOTAL_CHARS
     assert json.loads(variables["task_context"]) == {
         "path": str(task),
         "text": "Count every item, not one component.",

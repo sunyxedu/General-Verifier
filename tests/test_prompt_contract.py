@@ -57,7 +57,8 @@ def test_templates_render_exactly_the_variables_the_engine_supplies():
         "severity", "clause",
         "refutable_by_absence", "workdir", "toolchain_dir",
         "workspace_dir", "workspace_index", "world_map",
-        "snapshot_per_file_cap", "redo_feedback", "adapter_method"}
+        "snapshot_per_file_cap", "snapshot_max_files",
+        "snapshot_max_total_chars", "redo_feedback", "adapter_method"}
     assert _vars(prompts.JUDGER_TEMPLATE) >= {
         "obligation_text", "severity", "clause", "refutable_by_absence",
         "procedure", "basis", "declared_strength", "bridges",
@@ -107,6 +108,12 @@ def test_adapter_preference_is_conditional_and_preserves_verification_scope():
     assert "retain every enumeration or observation the obligation actually requires" in text
     assert "omit all four fields unless" in text
     assert "never method sufficiency" in text
+    assert "emit only the adapter-bound method" in text
+    assert "do not put an equivalent unbound executor first" in text
+    assert "decision procedure or evidence coverage materially differs" in text
+    assert "lists only retained guarantees" in text
+    assert "never infer further guarantees" in text
+    assert "must not claim original bytes, complete text, listings" in text
 
 
 def test_game_and_locus_contract_survive():
@@ -176,3 +183,23 @@ def test_harness_addendum_is_generic():
     assert "declarative pointers to named documentation" in add
     assert "MINIMAL-CHANGE" in add
     assert "emit NO minimal-change" in add
+
+
+def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
+    compiler = prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM
+    critic = prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM
+
+    assert "INITIAL COMPLETION COVERAGE LEDGER" in compiler
+    assert "critic feedback is empty" in compiler
+    assert "independently falsifiable semantic and process conditions" in compiler
+    assert "apply the ACCEPTANCE COUNTERFACTUAL separately" in compiler
+    assert "no acceptance condition is unmapped" in compiler
+    assert "Emit only the existing obligations schema" in compiler
+
+    assert "COMPLETE DEFECT CENSUS" in critic
+    assert "two source-order sweeps" in critic
+    assert "Do not stop at the first witness" in critic
+    assert "every independently visible missing and overstrong condition" in critic
+    assert "do not defer a visible defect to a later round" in critic
+    assert "one `APPEND OBLIGATION:` prefix" in critic
+    assert "use `REWRITE BOTH:`" in critic

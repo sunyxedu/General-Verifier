@@ -465,9 +465,12 @@ def test_oracle_gets_compile_boundary_instead_of_execution_inspection(
     assert backend.complete("discharge", "prompt", {}) == {"ok": True}
 
     assert "ORACLE COMPILE/EXECUTE BOUNDARY" in instructions["oracles"]
+    assert "CUSTOM METHOD COMPLETENESS" in instructions["oracles"]
     assert "LOCAL EVIDENCE INSPECTION" not in instructions["oracles"]
     assert "LOCAL EVIDENCE INSPECTION" in instructions["discharge"]
+    assert "PLAN-FIRST EXECUTION" in instructions["discharge"]
     assert "ORACLE COMPILE/EXECUTE BOUNDARY" not in instructions["discharge"]
+    assert "PLAN-FIRST EXECUTION" not in instructions["oracles"]
 
 
 def test_service_tier_args_explicitly_override_user_config():

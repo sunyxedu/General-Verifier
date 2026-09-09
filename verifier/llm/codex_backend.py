@@ -184,7 +184,30 @@ _ORACLE_COMPILE_NOTE = (
     "catalog do not determine every semantic argument, omit the adapter "
     "binding and leave observation to the custom executor. Web research "
     "remains available only for task-independent method semantics, never "
-    "evidence availability or result discovery."
+    "evidence availability or result discovery.\n\n"
+    "CUSTOM METHOD COMPLETENESS: precommit every load-bearing semantic "
+    "interface: authoritative inputs and time boundary; population, "
+    "inclusion, exclusion and aggregation rules; governing semantics; "
+    "decision rule; and the minimum replayable artifact with coverage "
+    "reconciliation. Leave incidental commands, layout and tool choice to "
+    "the executor. If authority does not determine a load-bearing choice, "
+    "expose it as a bridge permitted by the declared strength or omit the "
+    "method; never leave the executor to invent a subset, approximation, "
+    "calibration or mapping."
+)
+_PLAN_FIRST_EXECUTION_NOTE = (
+    "\n\nPLAN-FIRST EXECUTION (ordering only): before expensive scans, "
+    "installs, rendering or large writes, privately expand the exact bound "
+    "method into a checklist of its inputs and time boundary, complete "
+    "scope and aggregation, governing semantics and decision rule, promised "
+    "artifact, and all snapshot caps. Explicit bridges remain assumptions "
+    "at the declared strength. Planning is not evidence, and uncertainty is "
+    "not unavailability; the existing real obtain-attempt rule still "
+    "applies. If feasible, execute one least-work faithful implementation. "
+    "Never substitute a proxy, subset, approximation, ad-hoc calibration, "
+    "or output that cannot be retained. If the exact method cannot run, stop "
+    "under the existing failed/unobtainable rules; method choice remains the "
+    "Oracle's."
 )
 _COMPACT_REPORT_NOTE = (
     "\n\nCOMPLETE BUT COMPACT REPORTING: perform every analysis, attack, "
@@ -1581,6 +1604,8 @@ class CodexBackend:
             _COMPACT_INSPECTION_NOTE if compact_inspection else "")
         self._compact_report_note = (
             _COMPACT_REPORT_NOTE if compact_inspection else "")
+        self._plan_first_execution_note = (
+            _PLAN_FIRST_EXECUTION_NOTE if compact_inspection else "")
         self._judger_prefetch_protocol = None
         self._judger_prefetch_note = ""
         if judger_prefetch:
@@ -1653,6 +1678,7 @@ class CodexBackend:
         return hashlib.sha256(
             (self._artifact_address_note + self._compact_inspection_note
              + _ORACLE_COMPILE_NOTE + self._compact_report_note
+             + self._plan_first_execution_note
              + self._judger_prefetch_note)
             .encode("utf-8")).hexdigest()
 
@@ -2232,6 +2258,8 @@ class CodexBackend:
                if role_name == "oracles"
                else self._compact_inspection_note
                if role_name != "extract" else "")
+            + (self._plan_first_execution_note
+               if role_name == "discharge" else "")
             + self._compact_report_note
             + (_SEARCH_NOTE if self._search_enabled(role_name) else "")
             + image_note

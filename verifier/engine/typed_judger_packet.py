@@ -54,7 +54,7 @@ from .judger_prefetch import (
 
 
 TYPED_JUDGER_PACKET_PROTOCOL = (
-    "gv-typed-adapter-judger-packet-v5;"
+    "gv-typed-adapter-judger-packet-v6;"
     "evidence-cap=16384;render-cap=131072;fresh-replay=before+after;"
     "transport=no-tools-v1"
 )
@@ -62,8 +62,9 @@ MAX_TYPED_JUDGER_PACKET_BYTES = 128 * 1024
 
 # These are the built-in, bounded, deterministic adapters whose full
 # observations are retained in their content-addressed evidence envelopes.
-# Browser output, observed EOF, and extension adapters stay on the existing
-# inspection path until separately justified.
+# Browser output and extension adapters stay on the existing inspection path.
+# An observed-EOF receipt is eligible only where an adapter-specific gate can
+# replay the exact stable source projection before and after the Judger.
 ELIGIBLE_ADAPTERS = frozenset({
     ("filesystem.exists", 1),
     ("filesystem.sha256", 1),
@@ -75,6 +76,7 @@ ELIGIBLE_ADAPTERS = frozenset({
     ("ledger.event", 1),
     ("ledger.sequence", 1),
     ("ledger.sequence", 2),
+    ("record.query", 1),
     ("ledger.tool-call-string", 1),
     ("ledger.tool-call-string", 2),
 })
@@ -82,6 +84,10 @@ ELIGIBLE_ADAPTERS = frozenset({
 
 def _shipped_adapter_type(identity: tuple[str, int]) -> type | None:
     """Return the verifier-owned class for one restricted transport identity."""
+    if identity == ("record.query", 1):
+        # Keep the record normalizer and query algebra lazy at this boundary.
+        from ..execution.record_query import RecordQueryAdapter
+        return RecordQueryAdapter
     if identity in {("ledger.sequence", 1), ("ledger.sequence", 2)}:
         # Keep the larger ledger module lazy at this import boundary.
         from ..execution.ledger_sequence import (
@@ -146,6 +152,12 @@ def _adapter_specific_gate(invocation: AdapterInvocation, evidence: dict,
             typed_sequence_observation_is_complete,
         )
         return typed_sequence_observation_is_complete(
+            invocation, evidence, result_identity)
+    if identity == ("record.query", 1):
+        from ..execution.record_query import (
+            typed_record_query_observation_is_complete,
+        )
+        return typed_record_query_observation_is_complete(
             invocation, evidence, result_identity)
     if identity != ("evidence.program", 1):
         return True

@@ -357,6 +357,29 @@ class MethodAdapter:
     def identity(self) -> str:
         return f"{self.name}@{self.version}"
 
+    def evidence_contract(self) -> Dict[str, Any]:
+        """Describe the exact shared receipt envelope exposed to reviewers.
+
+        The adapter-specific observation remains version-owned.  Concrete
+        adapters that retain a closed observation shape override this method
+        and add that shape and its limits; the common envelope is identical
+        for every adapter and is enforced again by ``validate_evidence``.
+        """
+        return {
+            "schema": EVIDENCE_SCHEMA,
+            "content_address": "sha256(canonical-json)",
+            "closed_fields": {
+                "receipt": [
+                    "schema", "instrument", "claim", "obligation",
+                    "method", "execution",
+                ],
+                "execution": [
+                    "outcome", "witness", "witness_kind",
+                    "declared_inputs", "consumed", "observation",
+                ],
+            },
+        }
+
     def catalog_entry(self) -> Dict[str, Any]:
         return {
             "name": self.name,
@@ -370,6 +393,7 @@ class MethodAdapter:
             "accepted_method_reuse": self.accepted_method_reuse,
             "summary": self.summary,
             "arguments": self.arguments,
+            "evidence_contract": self.evidence_contract(),
             "input_contract": (
                 "declare every source consumed; the primary address/event "
                 "must appear as role=subject"),
@@ -1306,6 +1330,44 @@ class TextValueAdapter(MethodAdapter):
     }
     max_bytes = 8 * 1024 * 1024
     predicates = frozenset(("equals", "contains", "starts_with", "ends_with"))
+
+    def evidence_contract(self) -> Dict[str, Any]:
+        contract = super().evidence_contract()
+        contract.update({
+            "observation": {
+                "additional_fields": False,
+                "variants": [{
+                    "name": "address-absent",
+                    "required_fields": [
+                        "address", "exists", "world_mode",
+                    ],
+                }, {
+                    "name": "utf8-decode-error",
+                    "required_fields": [
+                        "address", "identity", "encoding", "decode_error",
+                    ],
+                }, {
+                    "name": "decoded-literal-predicate",
+                    "required_fields": [
+                        "address", "identity", "encoding", "predicate",
+                        "expected", "text_characters", "matched",
+                        "first_match_character",
+                    ],
+                }],
+                "file_identity_fields": [
+                    "ref", "mode", "scheme", "kind", "bytes",
+                    "mtime_ns", "sha256",
+                ],
+            },
+            "retention_limits": {
+                "source_file_bytes_read_max": self.max_bytes,
+                "expected_characters_max": MAX_RETAINED_VALUE_CHARS,
+                "complete_decoded_text_retained": False,
+                "actual_text_sha256_retained_for_decoded_file": True,
+                "first_match_character_retained": True,
+            },
+        })
+        return contract
 
     def execute(self, invocation, obligation, context):
         self.exact_arguments(
@@ -3119,6 +3181,7 @@ def default_adapter_registry(
         LedgerSequenceCompleteAuditAdapter,
     )
     from .record_program import RecordProgramAdapter
+    from .record_query import RecordQueryAdapter
 
     if browser_observer is None:
         browser_observer = configured_browser_observer()
@@ -3138,6 +3201,7 @@ def default_adapter_registry(
         LedgerSequenceAdapter(),
         LedgerSequenceCompleteAuditAdapter(),
         RecordProgramAdapter(),
+        RecordQueryAdapter(),
     ]
     if browser_observer is not None:
         adapters.append(BrowserHtmlAdapter(browser_observer))

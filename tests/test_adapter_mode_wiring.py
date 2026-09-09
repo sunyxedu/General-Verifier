@@ -103,6 +103,8 @@ def test_online_and_offline_default_kernels_publish_the_same_adapter_catalog(
     assert {entry["name"] for entry in ledger} == {
         "ledger.event", "ledger.sequence", "ledger.tool-call-string",
     }
+    assert sum(entry["name"] == "record.query" and entry["version"] == 1
+               for entry in catalog) == 1
     assert all(entry["accepted_method_reuse"] is False for entry in ledger)
     assert online_kernel.discharger.context.world.mode == "live"
     assert offline_kernel.discharger.context.world.mode == "captured"
