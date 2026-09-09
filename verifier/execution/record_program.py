@@ -19,7 +19,11 @@ import math
 import re
 from typing import Any, Dict, Mapping
 
-from ..core.events import EVENT_TYPES, EventLog
+from ..core.events import (
+    EVENT_TYPES,
+    SOURCE_EVENT_TYPES as CORE_SOURCE_EVENT_TYPES,
+    EventLog,
+)
 from ..core.model import (
     BASIS_RECORD,
     OUTCOME_HOLDS,
@@ -74,9 +78,7 @@ MAX_ASSERTION_EVENT_REFS = 16
 # program input, so verifier-only concurrent appends do not change an
 # observed-EOF source projection.  A protocol change requires a new adapter
 # version.
-SOURCE_EVENT_TYPES = frozenset({
-    "session_start", "tool_call", "tool_result", "message", "commit", "stop",
-})
+SOURCE_EVENT_TYPES = frozenset(CORE_SOURCE_EVENT_TYPES)
 assert SOURCE_EVENT_TYPES <= frozenset(EVENT_TYPES)
 
 

@@ -38,6 +38,10 @@ from .model_spans import (
     seat_wait_started, submit_with_context,
 )
 from .schema import RoleError, validate, field_name, optional_key
+from ..engine.source_evidence import (
+    SourceEvidenceView,
+    refresh_source_evidence_variables,
+)
 # The Claude Agent SDK backs the DEFAULT backend only; alternate backends
 # (CodexBackend) never touch it. Imported lazily so that a seats=codex run
 # does not depend on the SDK's import chain (mcp -> pydantic -> native
@@ -174,8 +178,8 @@ class AgentRole:
 
     def call(self, backend, variables: Dict[str, Any]) -> Dict[str, Any]:
         """Two attempts (schema error fed back once), then RoleError."""
-        prompt = self.render(variables)
         last_error: Optional[RoleError] = None
+        retry_feedback = ""
         # Start before acquiring SEAT_GATE: queueing is part of end-to-end
         # role latency, while each schema retry remains separately visible.
         with role_span(self.name):
@@ -186,17 +190,40 @@ class AgentRole:
                         with SEAT_GATE.slot():
                             acquired = seat_acquired(wait_started)
                             try:
+                                # Bind after queueing: a view captured before
+                                # the seat gate could go stale while waiting
+                                # and waste a complete paid backend call.
+                                attempt_variables = \
+                                    refresh_source_evidence_variables(variables)
+                                source_view = attempt_variables.get(
+                                    "_source_evidence_view")
+                                if (type(source_view) is SourceEvidenceView
+                                        and not source_view.revalidate()):
+                                    # The optimization is optional. A race in
+                                    # publication must expose the original
+                                    # full ledger, not consume a model retry.
+                                    attempt_variables = dict(attempt_variables)
+                                    attempt_variables["ledger_path"] = \
+                                        attempt_variables["_mixed_ledger_path"]
+                                    attempt_variables.pop(
+                                        "_source_evidence_view", None)
+                                    source_view = None
+                                prompt = (self.render(attempt_variables)
+                                          + retry_feedback)
                                 payload = backend.complete(
-                                    self.name, prompt, variables)
+                                    self.name, prompt, attempt_variables)
                             finally:
                                 seat_released(acquired)
+                        if (type(source_view) is SourceEvidenceView
+                                and not source_view.revalidate()):
+                            raise RoleError(
+                                f"{self.name}: source evidence changed during audit")
                         validate(self.schema, payload)
                     return payload
                 except RoleError as err:
                     last_error = err
-                    prompt = (
-                        prompt
-                        + f"\n\n[previous attempt failed; fix it and retry] {err}"
+                    retry_feedback = (
+                        f"\n\n[previous attempt failed; fix it and retry] {err}"
                     )
             raise RoleError(f"{self.name}: failed twice: {last_error}")
 

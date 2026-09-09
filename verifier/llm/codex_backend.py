@@ -167,6 +167,10 @@ _COMPACT_INSPECTION_NOTE = (
     "truncation, selected rows or a digest are not proof of uninspected "
     "content. Keep the complete sources accessible and inspect additional "
     "contents whenever meaning, scope, provenance or fidelity requires it. "
+    "When ledger_path names a gv-source-evidence-view manifest, start with "
+    "its complete index and open the referenced content-addressed pages and exact "
+    "blobs needed by this role; the manifest is lossless source-event "
+    "transport, not a summary, verdict, or authority. "
     "Preserve the promised artifact, absence rules and independent semantic "
     "audit. This is a tool-output efficiency preference, not permission to "
     "omit evidence, trust a reported outcome or re-execute a historical "
@@ -1921,9 +1925,11 @@ class CodexBackend:
 
     def _offline_state_dir(self, variables: Dict[str, Any]) -> str:
         state_dir = self.cwd
-        if not state_dir and variables.get("ledger_path"):
+        ledger_locator = (variables.get("_mixed_ledger_path")
+                          or variables.get("ledger_path"))
+        if not state_dir and ledger_locator:
             state_dir = os.path.dirname(
-                os.path.abspath(str(variables["ledger_path"])))
+                os.path.abspath(str(ledger_locator)))
         if not state_dir:
             raise RoleError(
                 "offline execution needs a state cwd or ledger path")
@@ -2213,7 +2219,7 @@ class CodexBackend:
             + prompt
             + (self._artifact_address_note if role_name == "judger" else "")
             + (self._compact_inspection_note
-               if role_name in {"discharge", "judger"} else "")
+               if role_name != "extract" else "")
             + self._compact_report_note
             + (_SEARCH_NOTE if self._search_enabled(role_name) else "")
             + image_note

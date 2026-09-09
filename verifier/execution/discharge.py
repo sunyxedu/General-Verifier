@@ -27,6 +27,8 @@ from ..core.model import (
     BASIS_RECORD, Obligation, OUTCOME_FAILED, STRENGTH_ANALYTIC, STRENGTHS,
     content_hash,
 )
+from ..core.events import EventLog
+from ..engine.source_evidence import bind_source_evidence_variables
 from ..llm.schema import RoleError
 
 
@@ -96,8 +98,10 @@ class AgentDischarger:
                  state_dir: Optional[str] = None,
                  live_world: bool = True,
                  store=None,
-                 shared_cache_dir: Optional[str] = None):
+                 shared_cache_dir: Optional[str] = None,
+                 log: Optional[EventLog] = None):
         self.backend = backend
+        self.log = log if type(log) is EventLog else None
         # verifier-owned install caches shared across trials (the codex
         # backend points the executor's package caches at it and grants it
         # write access); None keeps caches state-local
@@ -339,6 +343,13 @@ class AgentDischarger:
                                    live_world=self.live_world),
             "snapshot_per_file_cap": SNAPSHOT_PER_FILE_CAP,
         }
+        if self.log is not None:
+            variables = bind_source_evidence_variables(
+                self.log,
+                variables,
+                enabled=(getattr(self.backend, "compact_inspection", False)
+                         is True),
+            )
         try:
             payload = self.role.call(self.backend, variables)
         except RoleError as err:

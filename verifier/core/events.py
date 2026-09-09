@@ -5,21 +5,33 @@ Replay = reading the same file.
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import os
+import stat
 import threading
 import time
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 from .model import content_hash
 
-EVENT_TYPES = (
-    # solver-side behaviors
+SOURCE_EVENT_TYPES = (
+    # The candidate/source record.  This tuple is an integrity boundary: a
+    # source-evidence view must never infer source membership from names or
+    # from whichever event types happen to exist at runtime.
     "session_start",
     "tool_call",
     "tool_result",
     "message",
     "commit",
     "stop",
+)
+
+MAX_SOURCE_LEDGER_BYTES = 32 * 1024 * 1024
+MAX_SOURCE_LEDGER_EVENTS = 20_000
+
+EVENT_TYPES = (
+    *SOURCE_EVENT_TYPES,
 
     # scheduling
     "verify_request",
@@ -58,6 +70,246 @@ EVENT_TYPES = (
 )
 
 
+class SourceProjectionUnavailable(ValueError):
+    """The event ledger cannot be projected as a stable strict source."""
+
+
+def _reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number {value!r}")
+
+
+def _finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number")
+    return parsed
+
+
+def _strict_json(raw: bytes) -> Any:
+    return json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=_reject_duplicate_keys,
+        parse_constant=_reject_constant,
+        parse_float=_finite_float,
+    )
+
+
+def _validate_event_payload(value: Any, *, depth: int = 0) -> None:
+    """Require the in-memory payload to have one lossless JSON identity."""
+    if depth > 128:
+        raise ValueError("event payload exceeds the JSON depth limit")
+    if value is None or isinstance(value, (bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("event payload contains a non-finite number")
+        return
+    if isinstance(value, str):
+        value.encode("utf-8", errors="strict")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_event_payload(item, depth=depth + 1)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("event payload object keys must be text")
+            key.encode("utf-8", errors="strict")
+            _validate_event_payload(item, depth=depth + 1)
+        return
+    raise ValueError(
+        f"event payload contains non-JSON value {type(value).__name__}")
+
+
+def _directory_flags() -> int:
+    required = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    if not all(hasattr(os, name) for name in required):
+        raise SourceProjectionUnavailable(
+            "safe source projection is unsupported on this platform")
+    return (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0))
+
+
+def _file_flags() -> int:
+    # O_NONBLOCK makes an accidental special-file substitution fail without
+    # waiting, while the fstat checks below still require a regular file.
+    return (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            | getattr(os, "O_CLOEXEC", 0))
+
+
+def _file_identity(value: os.stat_result) -> Tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_gid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _read_stable_event_log(path: str) -> bytes:
+    """Read one real, private ledger path without following aliases.
+
+    EventLog's writer lock is held by the caller.  Descriptor and path
+    identities are checked on both sides of the read as defence against
+    mutation by actors which do not participate in that lock.
+    """
+    absolute = os.path.abspath(os.fspath(path))
+    parent = os.path.realpath(os.path.dirname(absolute))
+    name = os.path.basename(absolute)
+    if not name or name in {".", ".."} or os.sep in name:
+        raise SourceProjectionUnavailable(
+            "event ledger path must have a final file name")
+
+    parent_fd = file_fd = -1
+    try:
+        expected_parent = os.lstat(parent)
+        if (not stat.S_ISDIR(expected_parent.st_mode)
+                or stat.S_ISLNK(expected_parent.st_mode)):
+            raise SourceProjectionUnavailable(
+                "event ledger parent must be a real directory")
+        parent_fd = os.open(parent, _directory_flags())
+        opened_parent = os.fstat(parent_fd)
+        if (not stat.S_ISDIR(opened_parent.st_mode)
+                or (opened_parent.st_dev, opened_parent.st_ino)
+                != (expected_parent.st_dev, expected_parent.st_ino)):
+            raise SourceProjectionUnavailable(
+                "event ledger parent changed while opening")
+
+        try:
+            expected = os.stat(
+                name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            # An uncreated EventLog has a complete empty source projection.
+            try:
+                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return b""
+            raise SourceProjectionUnavailable(
+                "event ledger appeared while being projected")
+        if (not stat.S_ISREG(expected.st_mode)
+                or stat.S_ISLNK(expected.st_mode)
+                or expected.st_nlink != 1):
+            raise SourceProjectionUnavailable(
+                "event ledger must be a private regular file")
+        if expected.st_size > MAX_SOURCE_LEDGER_BYTES:
+            raise SourceProjectionUnavailable(
+                "event ledger exceeds the source projection byte limit")
+
+        file_fd = os.open(name, _file_flags(), dir_fd=parent_fd)
+        before = os.fstat(file_fd)
+        if (not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or (before.st_dev, before.st_ino)
+                != (expected.st_dev, expected.st_ino)):
+            raise SourceProjectionUnavailable(
+                "event ledger changed before reading")
+        before_identity = _file_identity(before)
+        chunks = []
+        total = 0
+        while True:
+            block = os.read(
+                file_fd,
+                min(1024 * 1024, MAX_SOURCE_LEDGER_BYTES + 1 - total),
+            )
+            if not block:
+                break
+            chunks.append(block)
+            total += len(block)
+            if total > MAX_SOURCE_LEDGER_BYTES:
+                raise SourceProjectionUnavailable(
+                    "event ledger exceeds the source projection byte limit")
+        if _file_identity(os.fstat(file_fd)) != before_identity:
+            raise SourceProjectionUnavailable(
+                "event ledger changed while reading")
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if _file_identity(current) != before_identity:
+            raise SourceProjectionUnavailable(
+                "event ledger path changed while reading")
+        return b"".join(chunks)
+    except SourceProjectionUnavailable:
+        raise
+    except (OSError, ValueError) as error:
+        raise SourceProjectionUnavailable(
+            f"cannot safely read event ledger: {error}") from error
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def _strict_events(raw: bytes) -> Tuple[Dict[str, Any], ...]:
+    if raw and not raw.endswith(b"\n"):
+        raise SourceProjectionUnavailable(
+            "event ledger has an incomplete final record")
+    events = []
+    expected_seq = 0
+    try:
+        # JSONL is delimited only by LF.  splitlines() would also treat the
+        # legal Unicode character U+0085 as a line boundary after decoding.
+        for line in raw.split(b"\n")[:-1]:
+            if not line:
+                raise ValueError("event ledger contains an empty record")
+            event = _strict_json(line)
+            expected_seq += 1
+            if expected_seq > MAX_SOURCE_LEDGER_EVENTS:
+                raise ValueError("event ledger exceeds the source event limit")
+            if (not isinstance(event, dict)
+                    or set(event) != {"seq", "ts", "type", "payload"}):
+                raise ValueError("event has an unsupported shape")
+            seq = event["seq"]
+            timestamp = event["ts"]
+            if (isinstance(seq, bool) or not isinstance(seq, int)
+                    or seq != expected_seq):
+                raise ValueError(
+                    f"expected event seq {expected_seq}, got {seq!r}")
+            if (isinstance(timestamp, bool)
+                    or not isinstance(timestamp, (int, float))
+                    or not math.isfinite(timestamp)):
+                raise ValueError("event timestamp must be finite")
+            if event["type"] not in EVENT_TYPES:
+                raise ValueError(f"unknown event type {event['type']!r}")
+            if not isinstance(event["payload"], dict):
+                raise ValueError("event payload must be an object")
+            # Reject escaped lone surrogates and any value which cannot be
+            # represented by the canonical UTF-8 event identity.
+            content_hash({
+                "seq": seq,
+                "type": event["type"],
+                "payload": event["payload"],
+            })
+            expected_line = json.dumps(
+                event, ensure_ascii=False, sort_keys=True, allow_nan=False,
+            ).encode("utf-8", errors="strict")
+            if line != expected_line:
+                raise ValueError(
+                    "event record is not in the EventLog writer encoding")
+            event["_source_record_digest"] = hashlib.sha256(line).hexdigest()
+            events.append(event)
+    except SourceProjectionUnavailable:
+        raise
+    except (UnicodeDecodeError, UnicodeEncodeError, ValueError,
+            json.JSONDecodeError, RecursionError, TypeError) as error:
+        raise SourceProjectionUnavailable(
+            f"event ledger is not strict UTF-8 JSONL: {error}") from error
+    return tuple(events)
+
+
 class EventLog:
     """
     Append-only JSONL. Every event gets a monotonically increasing seq.
@@ -88,14 +340,22 @@ class EventLog:
     def append(self, type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if type not in EVENT_TYPES:
             raise ValueError(f"unknown event type: {type}")
+        if not isinstance(payload, dict):
+            raise ValueError("event payload must be an object")
+        _validate_event_payload(payload)
         with self._lock:
-            self._seq += 1
-            event = {"seq": self._seq, "ts": time.time(), "type": type,
+            next_seq = self._seq + 1
+            event = {"seq": next_seq, "ts": time.time(), "type": type,
                      "payload": payload}
-            with open(self.path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(event, ensure_ascii=False,
-                                   sort_keys=True) + "\n")
+            # Encode before changing the in-memory sequence or touching the
+            # file. Invalid Unicode/NaN can never create a permanent gap.
+            raw = (json.dumps(
+                event, ensure_ascii=False, sort_keys=True, allow_nan=False,
+            ) + "\n").encode("utf-8", errors="strict")
+            with open(self.path, "ab") as f:
+                f.write(raw)
                 f.flush()
+            self._seq = next_seq
         return event
 
     def replay(self) -> Iterator[Dict[str, Any]]:
@@ -120,6 +380,26 @@ class EventLog:
             if event["seq"] == seq:
                 return event
         return None
+
+    def source_projection(self) -> Tuple[Dict[str, Any], ...]:
+        """Return one stable, detached projection of candidate-source events.
+
+        The same lock which allocates sequence numbers and appends events is
+        held for the complete safe read and projection.  Consequently a
+        source view is always built from either side of an EventLog append,
+        never from a torn in-process prefix.  Verifier events are parsed and
+        sequence-checked but are intentionally absent from the result.
+        """
+        with self._lock:
+            events = _strict_events(_read_stable_event_log(self.path))
+            return tuple({
+                "seq": event["seq"],
+                "ts": event["ts"],
+                "type": event["type"],
+                "payload": event["payload"],
+                "event_digest": self.event_digest(event),
+                "source_record_digest": event["_source_record_digest"],
+            } for event in events if event["type"] in SOURCE_EVENT_TYPES)
 
     @staticmethod
     def event_digest(event: Dict[str, Any]) -> str:

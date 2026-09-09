@@ -12,15 +12,22 @@ or prove which content was reread; they do establish that a compact receipt
 alone did not produce compact tool output. Removing all work outside those
 two calls would improve this observed wall by only about 1.004×.
 
-The experiment supplies an evidence-inspection preference only to executor
-and Judger: when complete local computation suffices, return the exact facts,
-counts, source identities and integrity checks needed for the audit instead
-of unnecessarily displaying entire sources. Complete required input coverage,
-access to additional contents, method scope, promised artifacts, absence rules,
-and independent semantic judgment remain mandatory. A digest or truncated view
-does not prove uninspected content. No tools, permissions, role schemas, models,
-effort, tiers or production retry budgets change. Record obligations still
-cannot be decided by replaying historical actions.
+The experiment supplies every post-extraction role with a lossless source-event
+view. The role receives one manifest, a complete event index, bounded pages and
+exact content-addressed blobs instead of the growing mixed source/verifier
+ledger. Original seq, timestamp, type, payload and record identity are
+preserved; verifier-only events are not candidate evidence. Construction or
+validation failure returns the role to the original full ledger. Compiler,
+Critic, Oracle, executor/adapter and fresh Judger remain separate and unchanged.
+
+The existing evidence-inspection preference still asks roles to return exact
+facts, counts, source identities and integrity checks instead of unnecessarily
+displaying whole large sources. Complete required input coverage, access to
+additional contents, method scope, promised artifacts, absence rules, and
+independent semantic judgment remain mandatory. A digest or truncated view
+does not prove uninspected content. No tools, role schemas, models, effort,
+tiers or production retry budgets change. Record obligations still cannot be
+decided by replaying historical actions.
 
 Enable explicitly with `CodexBackend(compact_inspection=True)` or the diagnostic
 probe's `--compact-inspection 1`. The probe default is `0`, and there is no
@@ -34,13 +41,20 @@ declared experiment setting.
 The ordinary offline scoring path also accepts an explicit
 `compact_inspection=False` argument, exposed by Terminal-Bench `score.py` as
 `--compact-inspection 0|1`. It is forwarded to both extraction and kernel
-backends; only the existing executor/Judger preference changes their prompts.
+backends; the lossless view and inspection preference cover the existing
+post-extraction roles.
 Authority-only backend clones preserve the captured runtime instructions.
 The scoring config always records the boolean and includes it in its hash, so
 an old config with no field is not silently relabeled as a new measured run.
 An injected backend whose actual profile differs from the declared setting is
 rejected. This plumbing does not enable contract or accepted-method caches,
 merge stages, alter budgets, or establish end-to-end speedup.
+
+Offline Codex seats receive the state directory read-only, so the published
+view is outside their writable work roots. Online seats retain the existing
+live-world capability profile; there the view is content-checked before and
+after a role call, not claimed to be immutable against an active same-UID
+process that can replace and restore paths during the call.
 
 Official documentation permits replacing Codex's built-in instructions, but
 this experiment does **not** use that broader mechanism. It follows the narrower

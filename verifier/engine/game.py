@@ -82,6 +82,7 @@ from ..llm.typed_judger_backend import restricted_typed_judger_backend
 from .method_cache import AcceptedMethod, build_method_cache_key
 from .judger_prefetch import build_judger_evidence_packet
 from .typed_judger_packet import build_typed_adapter_judger_packet
+from .source_evidence import bind_source_evidence_variables
 from ..execution.config import (
     APPEND_ONLY_DELTA_PROTOCOL,
     append_only_deltas_enabled,
@@ -1135,8 +1136,8 @@ class BindingGame:
                 stage=("oracle_repair" if oracle_round else
                        "oracle_enumerate"),
                 round=oracle_round):
-            payload = self.oracles_role.call(
-                self.backend,
+            variables = bind_source_evidence_variables(
+                self.log,
                 {
                 "claim_text": row["text"],
                 "obligation_text": obligation.text,
@@ -1156,7 +1157,10 @@ class BindingGame:
                 "world_manifest": manifest,
                 "world_map": world_map(state, live_world=self.live_world),
                 },
+                enabled=(getattr(self.backend, "compact_inspection", False)
+                         is True),
             )
+            payload = self.oracles_role.call(self.backend, variables)
         prepare = getattr(self.discharger, "prepare_method", lambda method: method)
         methods = [prepare(method) for method in payload["methods"]]
         event = {
@@ -1237,6 +1241,12 @@ class BindingGame:
             "world_map": world_map(state, live_world=self.live_world),
             "evidence": json.dumps(evidence, ensure_ascii=False),
         }
+        variables = bind_source_evidence_variables(
+            self.log,
+            variables,
+            enabled=(getattr(self.backend, "compact_inspection", False)
+                     is True),
+        )
         typed_packet = None
         if self.typed_adapter_judger_packet:
             # Codex attaches captured images independently of prompt text.

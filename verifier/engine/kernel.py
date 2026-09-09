@@ -51,6 +51,7 @@ from .authority_view import (
 from .contract_cache import (
     CompiledFinalContract, contract_cache_key,
 )
+from .source_evidence import bind_source_evidence_variables
 
 # attack rounds on a decomposition before the claim fails closed: each round
 # is one critic attempt; an `insufficient` verdict sends the decomposition
@@ -170,7 +171,7 @@ class Kernel:
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),
-            live_world=live_world, store=store)
+            live_world=live_world, store=store, log=log)
         self.binder = binder      # binding game; None -> direct discharge (tests)
         if binder is not None:
             binder_delta = getattr(
@@ -546,7 +547,12 @@ class Kernel:
         handled, payload = self._authority_final_contract(row, state)
         if handled:
             return payload
-        variables = self._obligation_compile_variables(row)
+        variables = bind_source_evidence_variables(
+            self.log,
+            self._obligation_compile_variables(row),
+            enabled=(getattr(self.backend, "compact_inspection", False)
+                     is True),
+        )
         with model_scope(stage="contract_compile", round=0):
             payload = self.obligations_role.call(self.backend, variables)
         return self._critique(row, payload, variables)
@@ -849,14 +855,15 @@ class Kernel:
         while critic_calls < self.critic_rounds:  # overruled in round n was
             round_no = critic_calls               # re-issued verbatim in n+2)
             with model_scope(stage="contract_critic", round=round_no):
-                verdict = critic_role.call(
-                    backend,
+                critic_variables = bind_source_evidence_variables(
+                    self.log,
                     {
                     "claim_text": variables["claim_text"],
                     "claim_kind": variables["claim_kind"],
                     "contract_locus": variables["contract_locus"],
                     "task_context": task_context,
-                    "ledger_path": variables["ledger_path"],
+                    "ledger_path": variables.get(
+                        "_mixed_ledger_path", variables["ledger_path"]),
                     "world_mode": variables["world_mode"],
                     "world_path": variables["world_path"],
                     "world_map": variables["world_map"],
@@ -872,6 +879,12 @@ class Kernel:
                         variables["dependency_referent_context"],
                     "game_history": json.dumps(history, ensure_ascii=False),
                     },
+                    enabled=(getattr(backend, "compact_inspection", False)
+                             is True),
+                )
+                verdict = critic_role.call(
+                    backend,
+                    critic_variables,
                 )
             self.log.append(
                 "decomposition_attacked",
