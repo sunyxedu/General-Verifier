@@ -128,7 +128,7 @@ def test_catalog_is_declarative_record_only_and_task_agnostic():
     assert entry["basis"] == BASIS_RECORD
     assert set(entry["query_kinds"]) == {
         "event-at", "exists", "paired-exchange",
-        "last-decoded-command", "count",
+        "last-decoded-command", "terminal-exact-command", "count",
     }
     assert entry["normalization"]["decoder_policy"] == DECODER_POLICY
     assert "never read from the ledger" in entry["normalization"][
@@ -145,12 +145,31 @@ def test_catalog_is_declarative_record_only_and_task_agnostic():
     }
     assert set(evidence["observation"]["evaluation_fields_by_query"]) == {
         "event-at", "exists", "paired-exchange", "last-decoded-command",
-        "count",
+        "terminal-exact-command", "count",
     }
     assert evidence["retention_limits"]["complete_ledger_bytes_retained"] \
         is False
     assert "never that no later opaque call" in entry["query_kinds"][
         "last-decoded-command"]
+    assert "opaque or different later tool_call makes the query false" in \
+        entry["query_kinds"]["terminal-exact-command"]
+    assert "decode=any-supported-v1" in entry["event_predicate"][
+        "invocation_test_requirement"]
+    terminal_examples = [
+        example for example in entry["examples"]
+        if example["adapter_arguments"]["query"]["kind"]
+        == "terminal-exact-command"
+    ]
+    assert len(terminal_examples) == 1
+    assert terminal_examples[0]["adapter_arguments"] == {
+        "scope": "observed-eof",
+        "query": {
+            "kind": "terminal-exact-command",
+            "operation": "exec_command",
+            "predicate": "equals",
+            "expected": "<exact command from the obligation>",
+        },
+    }
 
 
 def test_default_registry_publishes_binds_and_oracle_sees_record_query(
@@ -390,6 +409,105 @@ def test_later_message_is_suffix_but_not_a_later_decoded_command(tmp_path):
     assert evaluation["later_decoded_invocation_count"] == 0
 
 
+def test_terminal_exact_command_holds_at_declared_boundary_with_noncall_suffix(
+    tmp_path,
+):
+    _state, log, artifacts, fallback, route, obligation = _environment(tmp_path)
+    _pair(log, "earlier", call_id="earlier")
+    terminal, _result = _pair(log, "terminal", call_id="terminal")
+    boundary = log.append("message", {"text": "a later non-call source event"})
+    query = {
+        "kind": "terminal-exact-command", "operation": "exec_command",
+        "predicate": "equals", "expected": "terminal",
+    }
+    method, result = _run(route, obligation, query)
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert fallback.calls == []
+    evidence = artifacts.get(result.artifact)
+    evaluation = evidence["execution"]["observation"]["evaluation"]
+    assert evaluation == {
+        "kind": "terminal-exact-command",
+        "tool_call_count": 2,
+        "selected": [evaluation["selected"][0]],
+        "selected_decode_status": "decoded",
+        "selected_operation": "exec_command",
+        "selected_command": "terminal",
+        "scanned_source_suffix_count": 2,
+        "later_tool_call_count": 0,
+    }
+    assert evaluation["selected"][0]["seq"] == terminal["seq"]
+    packet = build_typed_adapter_judger_packet(
+        route, artifacts, obligation, method, result, "decisive")
+    assert type(packet) is TypedAdapterJudgerPacket
+    assert packet.revalidate() is True
+
+
+@pytest.mark.parametrize(
+    "later_kind", ["opaque", "different-command", "different-operation"])
+def test_terminal_exact_command_does_not_skip_a_later_tool_call(
+    tmp_path, later_kind,
+):
+    _state, log, artifacts, fallback, route, obligation = _environment(tmp_path)
+    _pair(log, "expected", call_id="expected")
+    if later_kind == "opaque":
+        later = log.append("tool_call", {
+            "tool": "unrecognized.transport",
+            "tool_use_id": "later", "session": None, "agent": None,
+            "input": {"cmd": "expected"},
+        })
+    elif later_kind == "different-command":
+        later = log.append("tool_call", {
+            "tool": "exec_command",
+            "tool_use_id": "later", "session": None, "agent": None,
+            "input": {"cmd": "different"},
+        })
+    else:
+        later = log.append("tool_call", {
+            "tool": "Bash",
+            "tool_use_id": "later", "session": None, "agent": None,
+            "input": {"command": "expected"},
+        })
+    query = {
+        "kind": "terminal-exact-command", "operation": "exec_command",
+        "predicate": "equals", "expected": "expected",
+    }
+
+    _method_value, result = _run(route, obligation, query)
+
+    assert result.outcome == OUTCOME_FAILED
+    assert result.instrument == "adapter:record.query@1"
+    assert fallback.calls == []
+    evaluation = artifacts.get(result.artifact)["execution"]["observation"][
+        "evaluation"]
+    assert evaluation["selected"][0]["seq"] == later["seq"]
+    assert evaluation["tool_call_count"] == 2
+    assert evaluation["selected_decode_status"] == (
+        "opaque" if later_kind == "opaque" else "decoded")
+    assert evaluation["later_tool_call_count"] == 0
+
+
+def test_terminal_exact_command_rejects_prefix_scope(tmp_path):
+    _state, log, _artifacts, fallback, route, obligation = _environment(tmp_path)
+    _call, boundary = _pair(log, "terminal")
+    log.append("tool_call", {
+        "tool": "unrecognized.transport", "tool_use_id": "outside-prefix",
+        "session": None, "agent": None, "input": {"cmd": "terminal"},
+    })
+    query = {
+        "kind": "terminal-exact-command", "operation": "exec_command",
+        "predicate": "equals", "expected": "terminal",
+    }
+
+    _method_value, result = _run(
+        route, obligation, query, scope="prefix",
+        through_seq=boundary["seq"])
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert result.instrument == "agent:fallback"
+    assert len(fallback.calls) == 1
+
+
 def test_complete_no_match_is_failed_never_refuted_or_agent_fallback(tmp_path):
     _state, log, _artifacts, fallback, route, obligation = _environment(tmp_path)
     log.append("message", {"text": "different"})
@@ -547,6 +665,45 @@ def test_typed_gate_rejects_mutated_complete_receipt(tmp_path, mutation):
         })
 
 
+@pytest.mark.parametrize("mutation", [
+    "capsule", "decode-status", "operation", "command", "call-count",
+    "later-call", "extra-field",
+])
+def test_typed_terminal_gate_rejects_mutated_receipt(tmp_path, mutation):
+    _state, log, artifacts, _fallback, route, obligation = _environment(tmp_path)
+    _pair(log, "terminal")
+    query = {
+        "kind": "terminal-exact-command", "operation": "exec_command",
+        "predicate": "equals", "expected": "terminal",
+    }
+    method, result = _run(route, obligation, query)
+    changed = copy.deepcopy(artifacts.get(result.artifact))
+    evaluation = changed["execution"]["observation"]["evaluation"]
+    if mutation == "capsule":
+        evaluation["selected"][0]["payload"]["input"] = "opaque"
+    elif mutation == "decode-status":
+        evaluation["selected_decode_status"] = "opaque"
+    elif mutation == "operation":
+        evaluation["selected_operation"] = "bash"
+    elif mutation == "command":
+        evaluation["selected_command"] = "different"
+    elif mutation == "call-count":
+        evaluation["tool_call_count"] = 0
+    elif mutation == "later-call":
+        evaluation["later_tool_call_count"] = 1
+    else:
+        evaluation["additional"] = True
+    invocation = AdapterInvocation.from_method(method)
+    assert invocation is not None
+
+    assert not typed_record_query_observation_is_complete(
+        invocation, changed, {
+            "outcome": result.outcome,
+            "witness": result.witness,
+            "witness_kind": result.witness_kind,
+        })
+
+
 @pytest.mark.parametrize("mutation", ["peer-digest", "peer-seq", "metadata"])
 def test_typed_pair_gate_rejects_incomplete_correlation(
     tmp_path, mutation,
@@ -602,6 +759,27 @@ def test_source_append_breaks_packet_replay_but_verifier_append_does_not(tmp_pat
     log.append("judger_verdict", {"verifier_only": True})
     assert packet.revalidate() is True
     log.append("message", {"text": "late source continuation"})
+    assert packet.revalidate() is False
+
+
+def test_terminal_packet_replay_rejects_a_later_opaque_call(tmp_path):
+    _state, log, artifacts, _fallback, route, obligation = _environment(tmp_path)
+    _pair(log, "terminal")
+    query = {
+        "kind": "terminal-exact-command", "operation": "exec_command",
+        "predicate": "equals", "expected": "terminal",
+    }
+    method, result = _run(route, obligation, query)
+    packet = build_typed_adapter_judger_packet(
+        route, artifacts, obligation, method, result, "decisive")
+    assert type(packet) is TypedAdapterJudgerPacket
+    assert packet.revalidate() is True
+
+    log.append("tool_call", {
+        "tool": "unrecognized.transport", "tool_use_id": "late-opaque",
+        "session": None, "agent": None, "input": {"cmd": "terminal"},
+    })
+
     assert packet.revalidate() is False
 
 

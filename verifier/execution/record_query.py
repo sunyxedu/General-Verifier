@@ -7,10 +7,11 @@ sufficiency for every successful result.  This adapter only replaces the
 executor seat.
 
 The algebra is deliberately small: one exact event, one existential event,
-one structurally paired exchange, the last decoded command, or an aggregate
-event count.  Expected literals are MethodIR inputs; the adapter never derives
-them from the observed record.  A complete negative evaluation fails only the
-method.  It is never an obligation refutation or an absence witness.
+one structurally paired exchange, a last or terminal command predicate, or an
+aggregate event count.  Expected literals are MethodIR inputs; the adapter
+never derives them from the observed record.  A complete negative evaluation
+fails only the method.  It is never an obligation refutation or an absence
+witness.
 """
 from __future__ import annotations
 
@@ -80,6 +81,11 @@ EVALUATION_FIELDS = {
         "kind", "decoded_invocation_count", "selected",
         "selected_operation", "selected_command", "scanned_source_suffix_count",
         "later_decoded_invocation_count",
+    }),
+    "terminal-exact-command": frozenset({
+        "kind", "tool_call_count", "selected", "selected_decode_status",
+        "selected_operation", "selected_command", "scanned_source_suffix_count",
+        "later_tool_call_count",
     }),
     "count": frozenset({
         "kind", "count", "comparison", "matching_events_digest",
@@ -225,7 +231,8 @@ def _query(value: Any) -> dict:
         result = {
             "kind": kind, "call": call, "result": result_predicate,
         }
-    elif kind == "last-decoded-command" and set(value) == {
+    elif kind in {"last-decoded-command", "terminal-exact-command"} \
+            and set(value) == {
             "kind", "operation", "predicate", "expected"}:
         operation = value["operation"]
         expected = value["expected"]
@@ -233,8 +240,7 @@ def _query(value: Any) -> dict:
                 or value["predicate"] != "equals" \
                 or not isinstance(expected, str):
             raise AdapterNotApplicable(
-                "last-decoded-command requires a supported operation and "
-                "an exact string")
+                f"{kind} requires a supported operation and an exact string")
         _utf8_size(expected, "query.expected", MAX_COMMAND_BYTES)
         result = dict(value)
     elif kind == "count" and set(value) == {
@@ -471,6 +477,44 @@ def _evaluate(
             "later_decoded_invocation_count": 0,
         }
 
+    if kind == "terminal-exact-command":
+        # Select by source event type before decoding.  This ordering is the
+        # defining safety property: an opaque later call is terminal and makes
+        # the exact-command predicate false instead of being skipped.
+        tool_calls = [event for event in in_range
+                      if event["type"] == "tool_call"]
+        selected_event = tool_calls[-1] if tool_calls else None
+        selected_invocation = (
+            _normalized_invocation(selected_event)
+            if selected_event is not None else None)
+        matched = bool(
+            selected_invocation is not None
+            and selected_invocation.get("status") == "decoded"
+            and selected_invocation.get("operation") == query["operation"]
+            and selected_invocation.get("command") == query["expected"]
+        )
+        suffix_count = (sum(1 for event in all_events
+                            if selected_event is not None
+                            and event["seq"] > selected_event["seq"])
+                        if selected_event is not None else 0)
+        return matched, {
+            "kind": kind,
+            "tool_call_count": len(tool_calls),
+            "selected": ([_capsule(selected_event)]
+                         if selected_event is not None else []),
+            "selected_decode_status": (
+                selected_invocation.get("status")
+                if selected_invocation is not None else None),
+            "selected_operation": (
+                selected_invocation.get("operation")
+                if selected_invocation is not None else None),
+            "selected_command": (
+                selected_invocation.get("command")
+                if selected_invocation is not None else None),
+            "scanned_source_suffix_count": suffix_count,
+            "later_tool_call_count": 0,
+        }
+
     matching = [event for event in in_range
                 if _matches(event, query["event"])]
     count = len(matching)
@@ -494,8 +538,9 @@ class RecordQueryAdapter(MethodAdapter):
     fixed_inputs = (FixedAdapterInput("ledger:events", PROVENANCE_LEDGER),)
     summary = (
         "Evaluate one bounded declarative query over immutable source ledger "
-        "events: event-at, exists, paired-exchange, last-decoded-command, or "
-        "count. Recorded commands are decoded only by frozen exact transport "
+        "events: event-at, exists, paired-exchange, last-decoded-command, "
+        "terminal-exact-command, or count. Recorded commands are decoded only "
+        "by frozen exact transport "
         "profiles and are never parsed or executed. A complete no-match fails "
         "only this method and never refutes the obligation."
     )
@@ -505,7 +550,7 @@ class RecordQueryAdapter(MethodAdapter):
         "after_seq": "optional exclusive raw-ledger lower bound, default 0",
         "query": (
             "one exact declarative event-at|exists|paired-exchange|"
-            "last-decoded-command|count query"
+            "last-decoded-command|terminal-exact-command|count query"
         ),
     }
 
@@ -526,6 +571,12 @@ class RecordQueryAdapter(MethodAdapter):
                 "snapshot": (
                     "complete source-event projection counts and digests for "
                     "the declared prefix or stable observed EOF"
+                ),
+                "terminal_exact_command": (
+                    "the exact last tool_call capsule, its frozen decode, the "
+                    "complete in-range tool_call count, and a zero later-call "
+                    "aggregate at the declared boundary; opaque calls are not "
+                    "skipped and the receipt does not prove future closure"
                 ),
             },
             "retention_limits": {
@@ -554,6 +605,14 @@ class RecordQueryAdapter(MethodAdapter):
                     "operation and exact command; proves no later decoded "
                     "invocation in the declared range, never that no later "
                     "opaque call or other action exists"
+                ),
+                "terminal-exact-command": (
+                    "at stable observed EOF, select the last tool_call before "
+                    "decoding, then require a frozen decoded invocation with "
+                    "the exact operation and command; an opaque or different "
+                    "later tool_call makes the query false, so a hold proves "
+                    "there is no later tool_call within the declared observed "
+                    "boundary, but never proves future closure"
                 ),
                 "count": (
                     "compare the complete matching-event count with one exact "
@@ -585,6 +644,14 @@ class RecordQueryAdapter(MethodAdapter):
                     "operation": sorted(_NORMALIZED_OPERATIONS),
                     "predicate": "equals", "expected": "exact string",
                 },
+                "terminal-exact-command": {
+                    "required_fields": [
+                        "kind", "operation", "predicate", "expected",
+                    ],
+                    "kind": "terminal-exact-command",
+                    "operation": sorted(_NORMALIZED_OPERATIONS),
+                    "predicate": "equals", "expected": "exact string",
+                },
                 "count": {
                     "required_fields": ["kind", "event", "comparison"],
                     "kind": "count", "event": "event_predicate",
@@ -607,6 +674,11 @@ class RecordQueryAdapter(MethodAdapter):
                     "pointer": "RFC 6901",
                     "predicate": sorted(_TEST_PREDICATES),
                 },
+                "invocation_test_requirement": (
+                    f"every test with source=invocation requires "
+                    f"decode={DECODER_POLICY}; undecodable tool calls do not "
+                    "satisfy invocation tests"
+                ),
             },
             "normalization": {
                 "decoder_policy": DECODER_POLICY,
@@ -692,6 +764,17 @@ class RecordQueryAdapter(MethodAdapter):
                         "expected": "<exact command from the obligation>",
                     },
                 },
+            }, {
+                "purpose": "exact terminal tool call at the observed boundary",
+                "replace_example_literals": True,
+                "adapter_arguments": {
+                    "scope": "observed-eof",
+                    "query": {
+                        "kind": "terminal-exact-command",
+                        "operation": "exec_command", "predicate": "equals",
+                        "expected": "<exact command from the obligation>",
+                    },
+                },
             }],
         })
         return entry
@@ -723,6 +806,10 @@ class RecordQueryAdapter(MethodAdapter):
         else:
             raise AdapterNotApplicable("record query scope is invalid")
         query = _query(invocation.arguments["query"])
+        if query["kind"] == "terminal-exact-command" \
+                and scope != "observed-eof":
+            raise AdapterNotApplicable(
+                "terminal-exact-command requires stable observed-eof scope")
         if query["kind"] == "event-at":
             if query["seq"] <= after_seq:
                 raise AdapterNotApplicable("event-at seq is below the query range")
@@ -866,7 +953,7 @@ def typed_record_query_observation_is_complete(
     evidence: Mapping[str, Any],
     result_identity: Mapping[str, Any],
 ) -> bool:
-    """Admit only a complete successful receipt to restricted judgment."""
+    """Admit a closed successful receipt; fresh replay checks aggregates."""
     try:
         if ((invocation.name, invocation.version) != ("record.query", 1)
                 or invocation.input_binding != FIXED_INPUT_BINDING
@@ -1028,6 +1115,24 @@ def typed_record_query_observation_is_complete(
                 and 0 <= evaluation["scanned_source_suffix_count"]
                 < snapshot["source_event_count"]
                 and evaluation.get("later_decoded_invocation_count") == 0
+            )
+        if kind == "terminal-exact-command":
+            invocation_value = selected[0]["invocation"]
+            return (
+                selected[0]["type"] == "tool_call"
+                and invocation_value.get("status") == "decoded"
+                and invocation_value.get("operation") == query["operation"]
+                and invocation_value.get("command") == query["expected"]
+                and evaluation.get("selected_decode_status") == "decoded"
+                and evaluation.get("selected_operation") == query["operation"]
+                and evaluation.get("selected_command") == query["expected"]
+                and type(evaluation.get("tool_call_count")) is int
+                and 1 <= evaluation["tool_call_count"]
+                <= snapshot["range_source_event_count"]
+                and type(evaluation.get("scanned_source_suffix_count")) is int
+                and 0 <= evaluation["scanned_source_suffix_count"]
+                < snapshot["source_event_count"]
+                and evaluation.get("later_tool_call_count") == 0
             )
         count = evaluation.get("count")
         return (
