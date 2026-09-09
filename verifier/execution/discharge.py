@@ -15,7 +15,7 @@ import re
 import stat
 import tempfile
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
 from ..llm.prompts.discharge import DISCHARGE_REPAIR_CONTEXT
@@ -43,6 +43,8 @@ SNAPSHOT_IMAGE_MAX_TOTAL_BYTES = 40 * 1024 * 1024
 # Repair material is optional. Oversized or invalid retained artifacts simply
 # leave the executor on its existing context-free redo path.
 REPAIR_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
+SNAPSHOT_MAX_PREFERRED_PATHS = 32
+SNAPSHOT_MAX_PREFERRED_PATH_CHARS = 4096
 
 
 @dataclass(frozen=True)
@@ -368,7 +370,9 @@ class AgentDischarger:
             return DischargeResult(OUTCOME_FAILED, str(err), digest,
                                    self.instrument)
 
-        snapshot = _snapshot_envelope(workdir, self.artifacts)
+        snapshot = _snapshot_envelope(
+            workdir, self.artifacts,
+            preferred_paths=_reported_artifact_paths(payload, workdir))
         digest = self.artifacts.put({
             "instrument": self.instrument,
             "reported": payload,
@@ -410,11 +414,65 @@ SNAPSHOT_SKIP_DIRS = {
 }
 
 
+def _safe_preferred_paths(paths: Iterable[str]) -> tuple[str, ...]:
+    """Normalize a bounded untrusted path hint list to relative paths."""
+    if isinstance(paths, (str, bytes)):
+        return ()
+    result = []
+    seen = set()
+    try:
+        iterator = iter(paths)
+    except TypeError:
+        return ()
+    for raw in iterator:
+        if len(result) >= SNAPSHOT_MAX_PREFERRED_PATHS:
+            break
+        if (not isinstance(raw, str) or not raw
+                or len(raw) > SNAPSHOT_MAX_PREFERRED_PATH_CHARS
+                or "\x00" in raw or os.path.isabs(raw)):
+            continue
+        normalized = os.path.normpath(raw)
+        if (normalized in {"", ".", ".."}
+                or normalized.startswith(".." + os.sep)
+                or normalized in seen):
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return tuple(result)
+
+
+def _reported_artifact_paths(payload: Any, workdir: str) -> tuple[str, ...]:
+    """Extract optional snapshot-order hints from the executor's report.
+
+    These hints affect retention order only. They never make a path evidence,
+    bypass byte/file caps, or change the Judger's independent audit.
+    """
+    if not isinstance(payload, dict) or not isinstance(
+            payload.get("artifact"), str):
+        return ()
+    root = os.path.abspath(workdir)
+    candidates = []
+    for item in payload["artifact"].split(","):
+        path = item.strip()
+        if not path:
+            continue
+        if os.path.isabs(path):
+            try:
+                if os.path.commonpath((root, os.path.abspath(path))) != root:
+                    continue
+                path = os.path.relpath(path, root)
+            except ValueError:
+                continue
+        candidates.append(path)
+    return _safe_preferred_paths(candidates)
+
+
 def _snapshot(
     workdir: str,
     per_file_cap: int = SNAPSHOT_PER_FILE_CAP,
     max_files: int = SNAPSHOT_MAX_FILES,
     max_total: int = SNAPSHOT_MAX_TOTAL_CHARS,
+    preferred_paths: Iterable[str] = (),
 ) -> Dict[str, str]:
     """
     Bounded content snapshot of what the agent left on disk. 
@@ -424,24 +482,44 @@ def _snapshot(
     files: Dict[str, str] = {}
     total = 0
     skipped = 0
+
+    def capture(path: str, rel: str) -> None:
+        nonlocal total
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(per_file_cap + 1)
+        except OSError as err:
+            files[rel] = f"<unreadable: {err}>"
+            return
+        if len(content) > per_file_cap:
+            content = content[:per_file_cap] + "\n<truncated>"
+        total += len(content)
+        files[rel] = content
+
+    root = os.path.realpath(workdir)
+    for rel in _safe_preferred_paths(preferred_paths):
+        if len(files) >= max_files or total >= max_total:
+            break
+        path = os.path.join(workdir, rel)
+        try:
+            if os.path.commonpath((root, os.path.realpath(path))) != root \
+                    or not os.path.isfile(path):
+                continue
+        except (OSError, ValueError):
+            continue
+        capture(path, rel)
+
     for dirpath, dirnames, filenames in os.walk(workdir):
         dirnames[:] = sorted(d for d in dirnames if d not in SNAPSHOT_SKIP_DIRS)
         for filename in sorted(filenames):
+            path = os.path.join(dirpath, filename)
+            rel = os.path.relpath(path, workdir)
+            if rel in files:
+                continue
             if len(files) >= max_files or total >= max_total:
                 skipped += 1
                 continue
-            path = os.path.join(dirpath, filename)
-            rel = os.path.relpath(path, workdir)
-            try:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read(per_file_cap + 1)
-            except OSError as err:
-                files[rel] = f"<unreadable: {err}>"
-                continue
-            if len(content) > per_file_cap:
-                content = content[:per_file_cap] + "\n<truncated>"
-            total += len(content)
-            files[rel] = content
+            capture(path, rel)
     if skipped:
         files["<snapshot>"] = f"truncated: {skipped} files beyond caps"
     return files
@@ -453,6 +531,7 @@ def _snapshot_envelope(
     per_file_cap: int = SNAPSHOT_PER_FILE_CAP,
     max_files: int = SNAPSHOT_MAX_FILES,
     max_total: int = SNAPSHOT_MAX_TOTAL_CHARS,
+    preferred_paths: Iterable[str] = (),
 ) -> Dict[str, Any]:
     """Capture text plus exact, content-addressed raster evidence.
 
@@ -469,7 +548,8 @@ def _snapshot_envelope(
     # image retention is a strictly additive second pass.
     files = _snapshot(
         workdir, per_file_cap=per_file_cap,
-        max_files=max_files, max_total=max_total)
+        max_files=max_files, max_total=max_total,
+        preferred_paths=preferred_paths)
     binary_files: Dict[str, Dict[str, Any]] = {}
     image_total = 0
     for dirpath, dirnames, filenames, directory_fd in os.fwalk(

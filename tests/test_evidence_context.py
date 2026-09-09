@@ -17,6 +17,7 @@ from verifier.execution.discharge import (
     SNAPSHOT_MAX_TOTAL_CHARS,
     SNAPSHOT_PER_FILE_CAP,
     AgentDischarger,
+    _reported_artifact_paths,
     _snapshot,
     _snapshot_envelope,
 )
@@ -322,6 +323,50 @@ def test_binary_pass_does_not_promote_an_image_beyond_legacy_file_cap(tmp_path):
 
     assert envelope["files"] == legacy
     assert "z.png" not in envelope.get("binary_files", {})
+
+
+def test_reported_artifact_paths_are_bounded_relative_order_hints(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    inside = work / "result.txt"
+    outside = tmp_path / "outside.txt"
+    inside.write_text("result")
+    outside.write_text("outside")
+    payload = {"artifact": (
+        f"{inside}, ../outside.txt, {outside}, ./result.txt, result.txt")}
+
+    assert _reported_artifact_paths(payload, str(work)) == ("result.txt",)
+    assert _reported_artifact_paths({"artifact": []}, str(work)) == ()
+
+
+def test_snapshot_prioritizes_declared_artifacts_without_expanding_caps(tmp_path):
+    (tmp_path / "a.txt").write_text("first")
+    (tmp_path / "b.txt").write_text("second")
+    (tmp_path / "z-result.txt").write_text("load-bearing")
+
+    ordinary = _snapshot(str(tmp_path), max_files=2)
+    prioritized = _snapshot(
+        str(tmp_path), max_files=2, preferred_paths=("z-result.txt",))
+
+    assert set(ordinary) == {"a.txt", "b.txt", "<snapshot>"}
+    assert set(prioritized) == {"z-result.txt", "a.txt", "<snapshot>"}
+    assert prioritized["z-result.txt"] == "load-bearing"
+    assert prioritized["<snapshot>"] == "truncated: 1 files beyond caps"
+
+
+def test_snapshot_never_prioritizes_a_symlink_outside_workdir(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not private evidence")
+    os.symlink(outside, work / "a-link.txt")
+    (work / "z-safe.txt").write_text("safe")
+
+    captured = _snapshot(
+        str(work), max_files=1, preferred_paths=("a-link.txt", "z-safe.txt"))
+
+    assert "z-safe.txt" in captured
+    assert "a-link.txt" not in captured
 
 
 def test_snapshot_per_file_character_boundary_is_explicit(tmp_path):

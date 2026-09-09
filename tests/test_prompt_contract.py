@@ -136,8 +136,9 @@ def test_game_and_locus_contract_survive():
     assert "false sufficiency attack" in prompts.CONTRACT_LOCUS_NONFINAL
     assert "genuine necessity violation" in prompts.CONTRACT_LOCUS_NONFINAL
     assert "neither narrows nor expands" in prompts.CONTRACT_LOCUS_FINAL
-    assert "A record floor is not a deficiency there" in prompts.CRITIC_SYSTEM
-    assert "covers the action's occurrence only" in prompts.CRITIC_SYSTEM
+    assert "E→O stays record-floor" in prompts.CRITIC_SYSTEM
+    assert "record decides occurrence, not reported content's truth" \
+        in prompts.CRITIC_SYSTEM
     assert "APPEND OBLIGATION:" in prompts.CRITIC_SYSTEM
     assert "{violation}" in prompts.APPEND_REPAIR_GUARD_FEEDBACK
 
@@ -154,11 +155,24 @@ def test_strength_ladder_contract_survives():
     assert "VERDICT-DIRECTION AT EXECUTION" in prompts.DISCHARGE_SYSTEM
     assert "IRREPLACEABLE-PREREQUISITE SHORT-CIRCUIT" \
         in prompts.DISCHARGE_SYSTEM
-    assert "one bounded direct obtain attempt" in prompts.DISCHARGE_SYSTEM
+    assert "at most one bounded direct obtain attempt" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "Install only a local instrument explicitly named or permitted" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "missing physical device, external endpoint, credential" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "terminal result ends this exact method" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "authoritative fixed-boundary capability facts" \
+        in prompts.DISCHARGE_SYSTEM
     assert "attempt failure alone never proves a permanent gap" \
         in prompts.DISCHARGE_SYSTEM
     assert "do not parse, render, install, or inspect downstream material" \
         in prompts.DISCHARGE_SYSTEM
+    assert "LARGE-INPUT DISCIPLINE" in prompts.DISCHARGE_TEMPLATE
+    assert "Never print or read an entire large source" \
+        in prompts.DISCHARGE_TEMPLATE
+    assert "rerun it from fixed inputs" in prompts.DISCHARGE_TEMPLATE
 
 
 def test_semantic_methods_are_operational_and_target_is_comparison_only():
@@ -242,11 +256,15 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "delivered or independently evaluated object" in compiler
     assert "do not convert it to a SHOULD or a narrower" in compiler
     assert "PRE-CRITIC MATERIAL NORMAL FORM" in compiler
+    assert compiler.index("ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
+        < compiler.index("INITIAL COMPLETION COVERAGE LEDGER")
     assert "term, floor, severity, absence" in compiler
     assert "Remove only exact semantic duplicates" in compiler
     assert "never merge, weaken, or omit independent conditions" in compiler
 
     assert "COMPLETE DEFECT CENSUS" in critic
+    assert critic.index("ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
+        < critic.index("COMPLETE DEFECT CENSUS")
     assert "two source-order sweeps" in critic
     assert "Do not stop at the first witness" in critic
     assert "every independently visible missing and overstrong condition" in critic
@@ -281,21 +299,49 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
 def test_compiler_separates_runner_protocol_from_task_acceptance():
     prompt = prompts.OBLIGATIONS_SYSTEM
 
-    assert "RUNNER BOUNDARY" in prompt
-    assert "capture-preserving ACCEPTANCE COUNTERFACTUAL" in prompt
-    assert "task-selected candidate, successful capture" in prompt
-    assert "runner control, transport, progress, telemetry, retry" in prompt
-    assert "carrier, address, or form instruction emits world conditions" in prompt
-    assert "only when the task independently makes the action" in prompt
-    assert "Classify by semantic function and stated consequence" in prompt
+    assert "RUNNER-INTERFACE QUOTIENT" in prompt
+    assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" in prompt
+    assert "successful runner capture and handoff" in prompt
+    assert "source says it is mandatory" in prompt
+    assert "Remove failures before every later audit" in prompt
+    assert "not even a SHOULD or narrower" in prompt
+    assert "semantic function, never by tool name" in prompt
+    assert prompts.OBLIGATIONS_TEMPLATE.index(
+        "ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
+        < prompts.OBLIGATIONS_TEMPLATE.index("MANDATORY DEFINITION CHECK")
 
 
 def test_critic_attacks_both_sides_of_runner_boundary():
     prompt = prompts.CRITIC_SYSTEM
 
-    assert "RUNNER-BOUNDARY ATTACK" in prompt
-    assert "perform handoff surgery" in prompt
-    assert "If only runner state changes" in prompt
-    assert "if the task itself rejects that history" in prompt
-    assert "never against the historical act of submission" in prompt
+    assert "RUNNER-INTERFACE QUOTIENT" in prompt
+    assert "CAPTURE-PRESERVING NON-CIRCULARITY ATTACK" in prompt
+    assert "apply a NECESSITY attack" in prompt
+    assert "successful runner capture and handoff" in prompt
+    assert "It survives only if both a non-circular task-owned property" \
+        in prompt
+    assert "require removal in this same round" in prompt
+    assert "never append, refine, downgrade to SHOULD, or narrow" in prompt
     assert "Imperatives, `must`, headings, tool names" in prompt
+    assert prompts.CRITIC_TEMPLATE.index(
+        "ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
+        < prompts.CRITIC_TEMPLATE.index("GAME CONSISTENCY RULE")
+    assert "bind you only where they survive that quotient" \
+        in prompts.CRITIC_TEMPLATE
+
+
+def test_compiler_and_critic_freeze_past_report_intension():
+    compiler = prompts.OBLIGATIONS_SYSTEM + prompts.OBLIGATIONS_TEMPLATE
+    critic = prompts.CRITIC_SYSTEM
+
+    for prompt in (compiler, critic):
+        assert "E→O" in prompt
+        assert "P@time" in prompt
+    assert "HISTORICAL EVENT-CONTENT GATE" in compiler
+    assert "trusted ledger's direct event predicate" in compiler
+    assert "Missing record availability is a downstream evidence gap" \
+        in compiler
+    assert "HISTORICAL EVENT-CONTENT INVARIANT" in critic
+    assert "not another reporter" in critic
+    assert "downstream evidence availability" in critic
+    assert "adding accuracy or an external property" in critic
