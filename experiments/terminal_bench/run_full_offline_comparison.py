@@ -309,16 +309,23 @@ def _quality_view(result, projection_report):
 
 def compare_pair(control, treatment):
     left, right = control.get("quality_view"), treatment.get("quality_view")
+    # The treatment profile counts as exercised when at least one Judger
+    # seat actually used a verifier-built packet, by prefetch or by the
+    # typed no-tools transport.  A profile that never attached is still a
+    # valid cold comparison, just not evidence about the packet channel.
+    profile_exercised = (treatment.get("prefetch_exercised") is True
+                         or treatment.get("typed_judger_exercised") is True)
     complete = (control.get("worker_complete") is True
                 and treatment.get("worker_complete") is True
                 and control.get("accounting_complete") is True
                 and treatment.get("accounting_complete") is True
-                and treatment.get("prefetch_exercised") is True
+                and profile_exercised
                 and left is not None and right is not None)
     equal = (left == right) if complete else None
     return {"complete": complete, "exact_quality_equal": equal,
             "control": left, "treatment": right,
-            "prefetch_exercised": treatment.get("prefetch_exercised")}
+            "prefetch_exercised": treatment.get("prefetch_exercised"),
+            "typed_judger_exercised": treatment.get("typed_judger_exercised")}
 
 
 def _observer_bytes(worker_output, cap=64 * 1024 * 1024):
@@ -664,6 +671,8 @@ def _run_job(plan, projection, output, pair, job, ordinal):
         "quality_view": _quality_view(result, projection_report),
         "prefetch_exercised": (audit.get("prefetch_exercised")
                                if type(audit) is dict else None),
+        "typed_judger_exercised": (audit.get("typed_judger_exercised")
+                                   if type(audit) is dict else None),
         "stdout_sha256": _sha(stdout_path), "stderr_sha256": _sha(stderr_path),
     }
     _write_new(output / f"job-{ordinal:02d}-result.json", summary)

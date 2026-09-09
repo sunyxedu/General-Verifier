@@ -191,6 +191,8 @@ def test_pair_equality_is_true_false_or_inconclusive_not_conflated():
     assert comparison.compare_pair(base, incomplete)["exact_quality_equal"] is None
     no_packet = {**base, "prefetch_exercised": False}
     assert comparison.compare_pair(base, no_packet)["exact_quality_equal"] is None
+    typed_only = {**no_packet, "typed_judger_exercised": True}
+    assert comparison.compare_pair(base, typed_only)["exact_quality_equal"] is True
 
 
 def test_incomplete_cost_retains_every_known_bucket_but_has_no_ratio():

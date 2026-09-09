@@ -92,7 +92,13 @@ def test_runtime_environment_keeps_auth_but_clears_ambient_evaluation_flags(monk
     assert env["UNCHANGED"] == "ordinary"
     assert env["GV_CONTRACT_CACHE"] == "0"
     assert env["GV_TYPED_ADAPTERS"] == "1"
+    assert env["GV_TYPED_JUDGER_PACKET"] == "1"
+    assert env["GV_CERTIFICATE_SCOPE"] == "final"
     assert "GV_SHARED_DIR" not in env and "PYTHONPATH" not in env
+    worker._environment({"arm": "control", "runtime_read_roots": []})
+    assert env["GV_TYPED_ADAPTERS"] == "0"
+    assert env["GV_TYPED_JUDGER_PACKET"] == "0"
+    assert "GV_CERTIFICATE_SCOPE" not in env
 
 
 def test_certificate_is_read_from_content_address_not_just_feature_label(tmp_path):
@@ -205,6 +211,50 @@ def test_actual_prefetch_use_is_distinct_from_enabled_profile(tmp_path, attached
     audit = worker._audit_role_and_cache_records(tmp_path, "treatment", "fixture-v1")
     assert audit["prefetch_exercised"] is attached
     assert audit["prefetch_attached_attempts"] == int(attached)
+    assert audit["typed_judger_exercised"] is False
+
+
+def _typed_row(**changes):
+    row = {"record_type": "codex_cli_attempt", "thread_id": "thread-2",
+           "role": "judger", "typed_judger_transport": True,
+           "typed_judger_protocol": "typed-v1",
+           "typed_judger_packet_sha256": "b" * 64,
+           "judger_prefetch": False, "compact_inspection": False,
+           "judger_prefetch_protocol": None,
+           "judger_prefetch_attached": False,
+           "judger_prefetch_packet_sha256": None}
+    row.update(changes)
+    return row
+
+
+def test_typed_judger_rows_count_as_the_exercised_profile(tmp_path):
+    observer, native = _audit_fixture(tmp_path, attached=False)
+    observer.append({"record_type": "codex_cli_attempt_finished",
+                     "thread_id": "thread-2"})
+    native.append(_typed_row())
+    _jsonl(tmp_path / "observer.jsonl", observer)
+    _jsonl(tmp_path / "native-usage.jsonl", native)
+    audit = worker._audit_role_and_cache_records(tmp_path, "treatment", "fixture-v1")
+    assert audit["prefetch_exercised"] is False
+    assert audit["typed_judger_exercised"] is True
+    assert audit["typed_judger_attempts"] == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("role", "discharge"), ("typed_judger_protocol", ""),
+    ("typed_judger_packet_sha256", "bad"), ("judger_prefetch", True),
+    ("judger_prefetch_attached", True), ("compact_inspection", True),
+    ("judger_prefetch_packet_sha256", "a" * 64),
+])
+def test_typed_judger_rows_must_be_internally_consistent(tmp_path, field, value):
+    observer, native = _audit_fixture(tmp_path, attached=False)
+    observer.append({"record_type": "codex_cli_attempt_finished",
+                     "thread_id": "thread-2"})
+    native.append(_typed_row(**{field: value}))
+    _jsonl(tmp_path / "observer.jsonl", observer)
+    _jsonl(tmp_path / "native-usage.jsonl", native)
+    with pytest.raises(ValueError, match="typed Judger profile"):
+        worker._audit_role_and_cache_records(tmp_path, "treatment", "fixture-v1")
 
 
 @pytest.mark.parametrize("field,value", [

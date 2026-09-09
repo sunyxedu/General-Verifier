@@ -155,8 +155,13 @@ def _environment(plan):
         if name.startswith("GV_") or name in {
                 "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"}:
             del os.environ[name]
+    treatment = plan["arm"] == "treatment"
     os.environ.update({
-        "GV_TYPED_ADAPTERS": "1" if plan["arm"] == "treatment" else "0",
+        "GV_TYPED_ADAPTERS": "1" if treatment else "0",
+        # The treatment's fresh independent Judger may receive a verifier
+        # built typed-adapter packet in a no-tools session; the control
+        # source predates the flag and ignores it.
+        "GV_TYPED_JUDGER_PACKET": "1" if treatment else "0",
         "GV_CONTRACT_CACHE": "0", "GV_APPEND_ONLY_DELTAS": "0",
         "GV_MAX_CONCURRENT_SEATS": "12",
         "GV_OFFLINE_RUNTIME_READ_ROOTS": json.dumps(plan["runtime_read_roots"]),
@@ -164,6 +169,10 @@ def _environment(plan):
         "TMPDIR": "/private/tmp", "PYTHONDONTWRITEBYTECODE": "1",
         "TZ": "Europe/London",
     })
+    if treatment:
+        # The verdict is the final claim's own status; narration claims are
+        # exported open rather than audited.  Part of the scoring identity.
+        os.environ["GV_CERTIFICATE_SCOPE"] = "final"
     sys.dont_write_bytecode = True
 
 
@@ -295,6 +304,7 @@ def _audit_role_and_cache_records(output, arm, expected_prefetch_protocol=None):
     roles = set()
     native_attempts = 0
     attached_attempts = 0
+    typed_attempts = 0
     observed_attempts = []
     for row in _read_jsonl(output / "observer.jsonl"):
         if row.get("record_type") == "codex_logical_call_started":
@@ -314,6 +324,22 @@ def _audit_role_and_cache_records(output, arm, expected_prefetch_protocol=None):
             if row.get("record_type") != "codex_cli_attempt":
                 raise ValueError("treatment native usage has an unknown row type")
             native_attempts += 1
+            if row.get("typed_judger_transport") is True:
+                # A restricted no-tools Judger seat: the packet replaces the
+                # prefetch channel, and only a Judger may use it.
+                typed_digest = row.get("typed_judger_packet_sha256")
+                if (row.get("role") != "judger"
+                        or row.get("compact_inspection") is not False
+                        or not isinstance(row.get("typed_judger_protocol"), str)
+                        or not row["typed_judger_protocol"]
+                        or not isinstance(typed_digest, str)
+                        or not _HASH.fullmatch(typed_digest)
+                        or row.get("judger_prefetch") is not False
+                        or row.get("judger_prefetch_attached") is not False
+                        or row.get("judger_prefetch_packet_sha256") is not None):
+                    raise ValueError("treatment typed Judger profile mismatch")
+                typed_attempts += 1
+                continue
             if (row.get("judger_prefetch") is not True
                     or row.get("compact_inspection") is not False
                     or row.get("judger_prefetch_protocol") != expected_prefetch_protocol
@@ -352,6 +378,8 @@ def _audit_role_and_cache_records(output, arm, expected_prefetch_protocol=None):
             "treatment_native_attempts": native_attempts if arm == "treatment" else None,
             "prefetch_attached_attempts": attached_attempts,
             "prefetch_exercised": attached_attempts > 0,
+            "typed_judger_attempts": typed_attempts,
+            "typed_judger_exercised": typed_attempts > 0,
             "expected_prefetch_protocol": expected_prefetch_protocol}
 
 
@@ -389,6 +417,7 @@ def run_worker(plan):
         "runtime": RUNTIME, "worker_id": worker_id,
         "started_at_unix_ns": started_unix,
         "scope": "full-offline-score-fresh-cold-candidate",
+        "certificate_scope": "final" if plan["arm"] == "treatment" else "full",
         "common_isolation_overlay": True, "pristine_baseline_execution": False,
         "contract_cache": False, "accepted_method_reuse": False,
         "automatic_outer_retries": 0,
