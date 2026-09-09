@@ -205,4 +205,5 @@ rank only when the negative also ends undecided.
 | Typed Judger packet | Toolful Judger sessions for deterministic adapter receipts | `adapters.md` |
 | Sufficiency pre-audit | Executor runs on methods the Judger then rejects as insufficient | `sufficiency-preaudit.md` |
 | Concurrent final-contract compile | Extraction time on the critical path | `final-contract-precompile.md` |
+| Prior-attempt briefing for the executor | A replacement method's executor re-making the artifact the Judger just rejected | `executor-briefing.md` |
 | Process-local reuse (warm) | Repeated contract compilation and Oracle enumeration across candidates of one task | `contract-cache-proposal.md` |

@@ -52,6 +52,10 @@ def test_sufficient_method_runs_and_is_still_judged(tmp_path, monkeypatch):
     assert variables["procedure"] == fixtures["oracles"]["methods"][0]["procedure"]
     assert variables["declared_strength"] == "decisive"
     assert "evidence" not in variables and "artifact_root" not in variables
+    # a first attempt has no prior attempts to be briefed on
+    discharge = next(c["variables"] for c in backend.calls if c["role"] == "discharge")
+    assert discharge["redo_feedback"] == "(none)"
+    assert not [e for e in service.log.replay() if e["type"] == "executor_briefed"]
 
 
 def test_insufficient_method_is_rejected_without_execution(tmp_path, monkeypatch):
@@ -111,3 +115,40 @@ def test_adapter_methods_skip_the_preaudit(tmp_path, monkeypatch):
     service = _scoped_service(tmp_path, backend, monkeypatch)
     service.verify("f")
     assert "sufficiency" not in _roles(backend)
+
+
+def test_replacement_method_executor_is_briefed_on_the_rejected_attempt(
+        tmp_path, monkeypatch):
+    fixtures = _fixtures()
+    first = copy.deepcopy(fixtures["oracles"]["methods"][0])
+    second = {**first, "procedure": first["procedure"] + " over every page"}
+    calls = {"oracle": 0, "audit": 0}
+
+    def oracles(_variables):
+        calls["oracle"] += 1
+        return {"methods": [first if calls["oracle"] == 1 else second]}
+
+    def sufficiency(_variables):
+        calls["audit"] += 1
+        if calls["audit"] == 1:
+            return {"sufficient": "no", "reason": "one page is not every page"}
+        return {"sufficient": "yes", "reason": "the complete scan decides it"}
+
+    fixtures["oracles"] = oracles
+    fixtures["sufficiency"] = sufficiency
+    backend = FixtureBackend(fixtures)
+    service = _service(tmp_path, backend, monkeypatch)
+    assert service.verify("f")["status"] == "verified"
+    discharge = [c for c in backend.calls if c["role"] == "discharge"]
+    assert len(discharge) == 1
+    feedback = discharge[0]["variables"]["redo_feedback"]
+    assert feedback.startswith("Prior attempt 1 on this obligation used a different method")
+    assert "rejected before execution" in feedback
+    assert "one page is not every page" in feedback
+    # the bound procedure itself is the replacement's, unchanged
+    assert discharge[0]["variables"]["procedure"] == second["procedure"]
+    briefed = [e["payload"] for e in service.log.replay()
+               if e["type"] == "executor_briefed"]
+    assert briefed == [{**briefed[0], "method_attempt": 2, "prior_attempts": 1}]
+    # the Judger audited the replacement's execution as before
+    assert [c["role"] for c in backend.calls].count("judger") >= 1

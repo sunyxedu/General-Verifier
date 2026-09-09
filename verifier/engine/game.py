@@ -123,10 +123,51 @@ class Attempt:
     audit: Optional[Dict[str, str]] = None  # judger's first verdict
     redos: List[Dict] = None                # one {reason, outcome, artifact,
                                             # audit} per redo round
+    briefing: str = ""                      # prior attempts' judged gaps,
+                                            # as handed to this executor
 
     def __post_init__(self):
         if self.redos is None:
             self.redos = []
+
+
+BRIEFING_MAX_ATTEMPTS = 3
+BRIEFING_PROCEDURE_CHARS = 240
+BRIEFING_REASON_CHARS = 600
+
+
+def prior_attempt_briefing(attempts: List["Attempt"]) -> str:
+    """Untrusted diagnostics from this obligation's earlier attempts.
+
+    A fresh method's executor otherwise starts blind: the Oracle saw why
+    the previous method was rejected, but the seat that has to implement
+    the replacement did not, and re-made the rejected artifact (a checker
+    hard-coding one database page was executed twice, 300 s each, and
+    rejected twice for the same gap).  The redo loop already hands the
+    Judger's reason to the same method's re-execution; this extends that
+    to the obligation's earlier methods.  It is diagnostic only: it cannot
+    amend the bound procedure and the fresh Judger audits as before.
+    """
+    lines = []
+    for index, attempt in enumerate(attempts[-BRIEFING_MAX_ATTEMPTS:], 1):
+        reason = attempt.rejected or ""
+        if attempt.redos and attempt.redos[-1].get("reason"):
+            reason = reason or ""
+            reason = (reason + " | last redo: "
+                      + str(attempt.redos[-1]["reason"])).strip(" |")
+        if not reason:
+            continue
+        procedure = str(attempt.method.get("procedure", ""))
+        procedure = procedure[:BRIEFING_PROCEDURE_CHARS]
+        if attempt.discharge_outcome is None:
+            state = "was rejected before execution"
+        else:
+            state = f"was executed (outcome {attempt.discharge_outcome}) and rejected"
+        lines.append(
+            f"Prior attempt {index} on this obligation used a different method "
+            f"(procedure: {procedure}) and {state}: "
+            f"{reason[:BRIEFING_REASON_CHARS]}")
+    return "\n\n".join(lines)
 
 
 class BindingGame:
@@ -897,10 +938,24 @@ class BindingGame:
                 self._reject(row, obligation, method, reason)
                 attempt.rejected = reason
                 continue
+            # Typed adapters execute a declared signature, not a prompt: an
+            # extra key would only make the router treat the method as an
+            # agent method.  Only an agent executor is briefed.
+            briefing = ("" if "adapter" in method
+                        else prior_attempt_briefing(attempts[:-1]))
+            bound_method = method
+            if briefing:
+                attempt.briefing = briefing
+                bound_method = {**method, "redo_feedback": briefing}
+                self.log.append("executor_briefed", {
+                    "claim": row["id"], "obligation": obligation.id,
+                    "procedure": procedure[:80],
+                    "method_attempt": method_attempt,
+                    "prior_attempts": len(attempts) - 1})
             with model_scope(
                     stage="discharge", method_attempt=method_attempt, redo=0):
                 result = self.discharger.discharge(
-                    row, obligation, method=method, tag="bound"
+                    row, obligation, method=bound_method, tag="bound"
                 )
             attempt.discharge_artifact = result.artifact
             attempt.discharge_outcome = result.outcome
@@ -1477,6 +1532,8 @@ class BindingGame:
             f"previous attempt: {r['reason']}"
             for i, r in enumerate(attempt.redos)
         )
+        if attempt.briefing:
+            notes = attempt.briefing + "\n\n" + notes
         method_fb = {**method, "redo_feedback": notes}
         with model_scope(
                 stage="discharge", method_attempt=method_attempt,
