@@ -906,18 +906,26 @@ def test_harness_final_contract_is_isolated_from_solver_graph(
 
     assert json.loads(compiler["verified_deps"]) == []
     assert json.loads(compiler["pending_deps"]) == []
-    assert json.loads(compiler["graph"]) == [{
-        "note": "withheld: harness final contract is compiled "
-                "independently from authoritative task context"
-    }]
+    expected_boundary = (
+        "withheld: authority-only contract compilation"
+        if task_supplied else
+        "harness final contract is independent of the solver-derived "
+        "dependency graph"
+    )
+    if task_supplied:
+        assert json.loads(compiler["graph"]) == []
+    else:
+        assert json.loads(compiler["graph"]) == [{
+            "note": "withheld: harness final contract is compiled "
+                    "independently from authoritative task context"
+        }]
     assert json.loads(compiler["dependency_referent_context"]) == {
-        "withheld": "harness final contract is independent of the "
-                    "solver-derived dependency graph"
+        "withheld": expected_boundary
     }
     assert critic["dependency_referent_context"] == \
         compiler["dependency_referent_context"]
     if task_supplied:
-        assert json.loads(compiler["task_context"])["text"] == (
+        assert json.loads(compiler["task_context"])["task"]["text"] == (
             "Return the complete total.")
     else:
         assert compiler["task_context"] == "(none supplied)"
@@ -965,7 +973,8 @@ def test_task_defined_aggregate_projection_is_repaired(tmp_path):
                 "required_basis": "world",
             }]}
         context = json.loads(variables["task_context"])
-        assert context["text"] == task_text
+        task = context.get("task", context)
+        assert task["text"] == task_text
         return {"obligations": [{
             "text": "The independently established sum of A and B equals N.",
             "required_basis": "world",
