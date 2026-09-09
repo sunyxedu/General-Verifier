@@ -30,6 +30,13 @@ adopted contract is exactly the contract the inline path would have
 compiled with the same seats. It is off by default and enabled by the v1
 full-offline treatment profile.
 
+With the process-local contract cache (`GV_CONTRACT_CACHE=1`) the thread
+first asks the cache whether its key is already published or in flight and
+then spends nothing (`contract_precompiled` records the bypass reason).
+Otherwise the kernel's own lookup is a miss that adopts the thread's result
+and publishes it, so a task's first candidate still overlaps compilation
+with extraction and every later candidate hits the published contract.
+
 ## What it does not change
 
 The Compiler and Critic prompts, schemas, tools, budgets and the Critic's

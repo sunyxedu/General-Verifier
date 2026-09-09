@@ -30,13 +30,13 @@ def _state(tmp_path):
     return state
 
 
-def _start(state, backend, *, critic_rounds=3):
+def _start(state, backend, *, critic_rounds=3, contract_cache=None):
     roles = harness_roles(str(state))
     compile_role, critic_role = compile_roles_for_backend(
         backend, roles["obligations"], roles["critic"])
     return PrecompiledFinalContract.start(
         str(state), backend, compile_role, critic_role, critic_rounds,
-        False, None)
+        False, None, contract_cache=contract_cache)
 
 
 def _service(state, backend, monkeypatch, handle=None, *, critic_rounds=3):
@@ -197,3 +197,79 @@ def test_precompile_runs_the_append_repair_loop(tmp_path, monkeypatch):
     assert certificate["verdict"] == "verified"
     assert _events(service, "contract_precompiled")[0]["adopted"] is True
     assert len(_events(service, "decomposition_attacked")) == 2
+
+
+def _cached_service(state, backend, monkeypatch, handle):
+    monkeypatch.setenv("GV_CONTRACT_CACHE", "1")
+    return _service(state, backend, monkeypatch, handle)
+
+
+def test_precompile_publishes_into_the_contract_cache_on_a_miss(
+        tmp_path, monkeypatch):
+    from verifier.engine.contract_cache import (
+        default_compiled_final_contract_cache,
+    )
+    cache = default_compiled_final_contract_cache()
+    cache.clear()
+    state = _state(tmp_path)
+    backend = FixtureBackend(_fixtures())
+    handle = _start(state, backend, contract_cache=cache)
+    outcome = handle.wait()
+    assert outcome.error is None and outcome.bypass_reason is None
+    assert len(cache) == 0  # only the kernel's own miss publishes
+
+    service = _cached_service(state, backend, monkeypatch, handle)
+    certificate = request_certificate(
+        service.store, service.kernel, service.log, service.artifacts,
+        service.builder.finals[-1], scope=CERTIFICATE_SCOPE_FINAL)
+    assert certificate["verdict"] == "verified"
+    final_id = service.builder.finals[-1]
+    assert [m["claim"] for m in _events(service, "contract_cache_miss")] == [final_id]
+    adopted = _events(service, "contract_precompiled")
+    assert adopted[0]["adopted"] is True and adopted[0]["claim"] == final_id
+    published = _events(service, "contract_cache_published")
+    assert [p["claim"] for p in published] == [final_id]
+    assert published[0]["key"] == outcome.key
+    assert len(cache) == 1
+    # one Compiler and one Critic call for the whole candidate
+    assert len([c for c in backend.calls if c["role"] == "obligations"]) == 1
+    assert len([c for c in backend.calls if c["role"] == "critic"]) == 1
+
+    # The task's next candidate: the thread finds the published key and
+    # spends nothing; the kernel's lookup is a plain hit.
+    (tmp_path / "second").mkdir()
+    second_state = _state(tmp_path / "second")
+    second = _start(second_state, backend, contract_cache=cache)
+    second_outcome = second.wait()
+    assert second_outcome.key == outcome.key
+    assert second_outcome.bypass_reason == "contract cache already holds this key"
+    assert second_outcome.payload is None and second_outcome.events == []
+    second_service = _cached_service(second_state, backend, monkeypatch, second)
+    request_certificate(
+        second_service.store, second_service.kernel, second_service.log,
+        second_service.artifacts, second_service.builder.finals[-1],
+        scope=CERTIFICATE_SCOPE_FINAL)
+    assert _events(second_service, "contract_cache_hit")
+    assert not _events(second_service, "contract_precompiled")
+    assert len([c for c in backend.calls if c["role"] == "obligations"]) == 1
+    cache.clear()
+
+
+def test_precompile_yields_to_an_in_flight_compilation(tmp_path, monkeypatch):
+    from verifier.engine.contract_cache import CompiledFinalContractCache
+    cache = CompiledFinalContractCache()
+    state = _state(tmp_path)
+    backend = FixtureBackend(_fixtures())
+    probe = _start(state, backend)  # cache-free run only to learn the key
+    key = probe.wait().key
+    calls_before = len(backend.calls)
+    lease = cache.acquire(key)
+    assert lease.leader
+    try:
+        handle = _start(state, backend, contract_cache=cache)
+        outcome = handle.wait()
+    finally:
+        lease.finish()
+    assert outcome.bypass_reason == (
+        "contract compilation for this key is already in flight")
+    assert len(backend.calls) == calls_before

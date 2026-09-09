@@ -771,13 +771,22 @@ class Kernel:
                         "claim": row["id"], "key": key,
                         "authority": view.identity,
                         "leader": lease.leader, "waited": lease.waited})
-                    with model_scope(stage="contract_compile", round=0):
-                        payload = session.obligations_role.call(
-                            session.backend, variables)
-                    payload = self._critique(
-                        row, payload, variables, backend=session.backend,
-                        obligations_role=session.obligations_role,
-                        critic_role=session.critic_role)
+                    # A miss is where the concurrent authority-only
+                    # compilation pays off: adopt it under the identical
+                    # key and publish it for the task's other candidates.
+                    adopted = False
+                    if self._precompiled_final is not None:
+                        adopted, payload = self._adopt_precompiled_final(
+                            row, state)
+                    if not adopted:
+                        with model_scope(stage="contract_compile", round=0):
+                            payload = session.obligations_role.call(
+                                session.backend, variables)
+                        payload = self._critique(
+                            row, payload, variables,
+                            backend=session.backend,
+                            obligations_role=session.obligations_role,
+                            critic_role=session.critic_role)
                     view.revalidate(state)
                     session.revalidate()
                     if payload is None:

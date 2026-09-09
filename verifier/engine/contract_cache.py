@@ -113,6 +113,19 @@ class CompiledFinalContractCache:
         while len(self._entries) > self.max_entries:
             self._entries.popitem(last=False)
 
+    def peek(self, key):
+        """Return ``(entry, in_flight)`` without joining the single flight.
+
+        A concurrent authority-only precompile asks this before spending a
+        Compiler/Critic run: a published entry or an open flight for the
+        same key means the kernel's own lookup will already be served.
+        """
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None:
+                return entry.detached(), False
+            return None, key in self._flights
+
     def publish_if_absent(self, key, entry):
         with self._lock:
             published = key not in self._entries

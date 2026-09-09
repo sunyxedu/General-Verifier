@@ -90,8 +90,13 @@ class PrecompiledFinalContract:
 
     def __init__(self, state_dir: str, backend, obligations_role, critic_role,
                  critic_rounds: int, append_only_deltas: bool,
-                 append_only_delta_protocol: Optional[str]):
+                 append_only_delta_protocol: Optional[str],
+                 contract_cache=None):
         self.state_dir = os.path.abspath(state_dir)
+        # With the process-local contract cache the thread compiles only
+        # when nobody has published or started this key: the kernel's own
+        # lookup is then a miss that adopts and publishes this result.
+        self.contract_cache = contract_cache
         self.backend = backend
         self.obligations_role = obligations_role
         self.critic_role = critic_role
@@ -146,6 +151,18 @@ class PrecompiledFinalContract:
                         append_only_deltas=self.append_only_deltas,
                         append_only_delta_protocol=
                             self.append_only_delta_protocol)
+                    if self.contract_cache is not None:
+                        entry, in_flight = self.contract_cache.peek(
+                            outcome.key)
+                        if entry is not None:
+                            outcome.bypass_reason = (
+                                "contract cache already holds this key")
+                            return
+                        if in_flight:
+                            outcome.bypass_reason = (
+                                "contract compilation for this key is "
+                                "already in flight")
+                            return
                     with model_scope(stage="contract_compile", round=0):
                         payload = session.obligations_role.call(
                             session.backend, variables)

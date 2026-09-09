@@ -1029,11 +1029,10 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             from .execution.config import (
                 contract_cache_enabled, final_contract_precompile_enabled,
             )
-            # With the process-local contract cache the task's contract is
-            # compiled once by the first candidate's kernel; a second
-            # concurrent compile would only duplicate that work.
+            # With the process-local contract cache the thread compiles only
+            # for the task's first candidate (a key nobody has published or
+            # started); later candidates' kernels hit the published entry.
             if (final_contract_precompile_enabled()
-                    and not contract_cache_enabled()
                     and not _has_commits(
                         os.path.join(state_dir, "events.jsonl"))):
                 from .engine.precompile import PrecompiledFinalContract
@@ -1046,13 +1045,20 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                 compile_role, critic_role = compile_roles_for_backend(
                     kernel_backend, roles["obligations"], roles["critic"])
                 deltas = append_only_deltas_enabled()
+                contract_cache = None
+                if contract_cache_enabled():
+                    from .engine.contract_cache import (
+                        default_compiled_final_contract_cache,
+                    )
+                    contract_cache = default_compiled_final_contract_cache()
                 # Started before extraction so the candidate-blind contract
                 # and the Extractor run side by side; adopted by the kernel
                 # only under an identical contract key.
                 precompile = PrecompiledFinalContract.start(
                     state_dir, kernel_backend, compile_role, critic_role,
                     critic_rounds, deltas,
-                    APPEND_ONLY_DELTA_PROTOCOL if deltas else None)
+                    APPEND_ONLY_DELTA_PROTOCOL if deltas else None,
+                    contract_cache=contract_cache)
 
     def run_verification() -> Dict[str, Any]:
         nonlocal extract_rounds
