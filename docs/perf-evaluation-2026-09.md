@@ -85,12 +85,35 @@ Where the treatment's remaining time goes: on hard semantic obligations
 that two to three times; the contract compile took up to four Critic
 rounds (209 s on chess).
 
-### 8-candidate cohort, treatment HEAD cold and warm (planned)
+### 8-candidate cohort, treatment `01293a8` cold (run `full-offline-01293a8-tb8-20260909`)
 
-Adds the record shape for the Oracle, the pre-execution sufficiency audit,
-the concurrent final-contract compile, eight obligation slots, and (warm
-only) contract and accepted-method reuse across the two candidates of each
-family.
+Treatment-only reruns of the same sealed inputs, paired with the
+`82bef17` cohort's control jobs. Adds the record shape for the Oracle, the
+pre-execution sufficiency audit, the concurrent final-contract compile,
+eight obligation slots, and the declined-append review.
+
+| Candidate (label) | Control verdict / cost / wall | Treatment verdict / cost / wall | cost × | latency × |
+| --- | --- | --- | ---: | ---: |
+| sqlite `4JQh54h` (1) | verified / $1.211 / 2955 s | unverified / $0.121 / 420 s | 10.04 | 7.04 |
+| sqlite `hUXYSvy` (0) | refuted / $0.425 / 898 s | refuted / $0.070 / 410 s | 6.07 | 2.19 |
+| chess `xGt6Pve` (1) | unverified / $0.653 / 1224 s | unverified / $0.035 / 145 s | 18.81 | 8.45 |
+| chess `Da8xED4` (0) | refuted¹ / $0.848 / 1474 s | partial / $0.102 / 437 s | 8.32 | 3.37 |
+| gcode `ELuvDeE` (1) | refuted² / $0.525 / 862 s | partial / $0.030 / 106 s | 17.36 | 8.15 |
+| gcode `HFh2qJM` (0) | refuted / $0.276 / 707 s | refuted / $0.050 / 286 s | 5.51 | 2.47 |
+| video `KFN5iFo` (1) | compile failed³ / $0.194 / 593 s | unverified / $0.063 / 283 s | 3.06 | 2.10 |
+| video `tJdCJ8R` (0) | unverified / $0.421 / 1321 s | refuted / $0.061 / 262 s | 6.93 | 5.04 |
+| **All eight** | **$4.553 / 10033 s** | **$0.531 / 2349 s** | **8.57** | **4.27** |
+
+Best-of-N within each family: the treatment selects the positive candidate
+in sqlite, gcode and video and the negative one in chess (the negative's
+semantic obligation ended `unobtainable`, which reads out as `partial`, while
+the positive's methods were rejected as insufficient and read out as
+`unverified`); the control selects correctly in sqlite and chess (the latter
+through the spurious refutation above) and fails in gcode and video.
+
+The pre-execution sufficiency audit stopped the executor before the two
+methods the Judger would have rejected after 200–330 s each on chess, and
+the fresh video pair no longer deadlocks on a runner-protocol append.
 
 ## Mechanisms and where their savings come from
 
