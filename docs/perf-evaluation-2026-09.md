@@ -152,6 +152,47 @@ whenever the contract cache was on. Commit `ee97910` composes the two: the
 thread yields to a published or in-flight key and otherwise the kernel's own
 miss adopts and publishes its result.
 
+### 8-candidate cohort, treatment `ee97910` cold (run `full-offline-ee97910-tb8-20260909`)
+
+Same protocol as the `01293a8` cold run (treatment-only, paired with the
+`82bef17` cohort's control jobs), with the precompile thread failure fixed
+and the precompile composed with the contract cache. The concurrent
+compile was adopted on every candidate.
+
+| Candidate (label) | Control verdict / cost / wall | Treatment verdict / cost / wall | cost × | latency × |
+| --- | --- | --- | ---: | ---: |
+| sqlite `4JQh54h` (1) | verified / $1.211 / 2955 s | unverified / $0.112 / 710 s | 10.80 | 4.16 |
+| sqlite `hUXYSvy` (0) | refuted / $0.425 / 898 s | unverified / $0.114 / 394 s | 3.74 | 2.28 |
+| chess `xGt6Pve` (1) | unverified / $0.653 / 1224 s | unverified / $0.035 / 134 s | 18.64 | 9.16 |
+| chess `Da8xED4` (0) | refuted¹ / $0.848 / 1474 s | unverified / $0.114 / 844 s | 7.41 | 1.75 |
+| gcode `ELuvDeE` (1) | refuted² / $0.525 / 862 s | unverified / $0.036 / 112 s | 14.72 | 7.68 |
+| gcode `HFh2qJM` (0) | refuted / $0.276 / 707 s | refuted / $0.051 / 144 s | 5.37 | 4.90 |
+| video `KFN5iFo` (1) | compile failed³ / $0.194 / 593 s | partial / $0.071 / 314 s | 2.75 | 1.89 |
+| video `tJdCJ8R` (0) | unverified / $0.421 / 1321 s | refuted / $0.057 / 213 s | 7.41 | 6.21 |
+| **All eight** | **$4.553 / 10033 s** | **$0.590 / 2865 s** | **7.72** | **3.50** |
+
+Across the two cold runs of the same cohort the treatment's cost ratio is
+stable (8.57× and 7.72×) while its latency ratio moves with two executor
+sessions: the chess negative's semantic obligation ran 220 s (`unobtainable`)
+in one run and 706 s (`failed`, nineteen Stockfish commands) in the other,
+and the sqlite positive's recovery obligation ran two ~300 s methods here
+against one in the earlier run. Both are honest executor outcomes on
+obligations the accepted method could not decide, not verifier waste: the
+treatment's critical path is now extract ∥ compile → Oracle → pre-audit →
+executor → Judger with no idle stage, and the executor and Judger seats hold
+about 80% of the remaining wall on these candidates. The treatment never
+refutes a positive candidate in either run; the control does so twice.
+
+The sqlite positive is the one candidate the control verifies and the
+treatment does not: the control compiled it into twenty per-row obligations
+plus one recovery obligation whose method was accepted after two redos
+(146 calls); the treatment's authority-only contract has three
+obligations, and its Judger rejected both executed recovery methods as
+covering one hard-coded leaf page rather than every recoverable row, so the
+obligation ended `failed`. That is the Judger holding the same coverage
+standard against a weaker executor artifact, and it costs the positive its
+rank only when the negative also ends undecided.
+
 ## Mechanisms and where their savings come from
 
 | Mechanism | Removes | Doc |
