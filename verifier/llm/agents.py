@@ -194,8 +194,61 @@ class AgentRole:
                                 # Bind after queueing: a view captured before
                                 # the seat gate could go stale while waiting
                                 # and waste a complete paid backend call.
-                                attempt_variables = \
-                                    refresh_source_evidence_variables(variables)
+                                attempt_variables = dict(variables)
+                                source_view = attempt_variables.get(
+                                    "_source_evidence_view")
+                                mixed_ledger_path = attempt_variables.get(
+                                    "_mixed_ledger_path")
+                                try:
+                                    allows_compact_source = getattr(
+                                        backend,
+                                        "allows_compact_source_evidence",
+                                        None,
+                                    )
+                                except Exception:
+                                    allows_compact_source = None
+                                compact_source_allowed = None
+                                if (type(source_view) is SourceEvidenceView
+                                        and callable(allows_compact_source)):
+                                    try:
+                                        compact_source_allowed = \
+                                            allows_compact_source(
+                                                self.name,
+                                                attempt_variables,
+                                            )
+                                    except Exception:
+                                        # An absent or faulty optional
+                                        # capability cannot change the
+                                        # established evidence transport.
+                                        compact_source_allowed = None
+                                valid_mixed_path = False
+                                if (type(source_view) is SourceEvidenceView
+                                        and isinstance(
+                                            mixed_ledger_path, str)
+                                        and os.path.isabs(mixed_ledger_path)):
+                                    try:
+                                        valid_mixed_path = (
+                                            mixed_ledger_path
+                                            == os.path.abspath(
+                                                source_view._log.path))
+                                    except (AttributeError, OSError,
+                                            TypeError, ValueError):
+                                        valid_mixed_path = False
+                                if (compact_source_allowed is False
+                                        and valid_mixed_path):
+                                    # Some runtimes mutate filesystem metadata
+                                    # merely by reading a directory. Respect
+                                    # an explicit opt-out before paying for a
+                                    # call whose immutable-view postcheck could
+                                    # therefore never succeed.
+                                    attempt_variables["ledger_path"] = \
+                                        mixed_ledger_path
+                                    attempt_variables.pop(
+                                        "_source_evidence_view", None)
+                                else:
+                                    attempt_variables = \
+                                        refresh_source_evidence_variables(
+                                            variables)
                                 catalog_snapshot = None
                                 if self.name == "oracles":
                                     from ..execution.adapters import \

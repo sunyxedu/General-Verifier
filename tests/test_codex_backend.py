@@ -478,6 +478,18 @@ def test_oracle_gets_compile_boundary_instead_of_execution_inspection(
     assert "PLAN-FIRST EXECUTION" not in instructions["oracles"]
 
 
+def test_codex_explicitly_rejects_compact_source_evidence_for_every_role_mode():
+    backend = CodexBackend()
+
+    for role_name in (
+            "obligations", "critic", "oracles", "discharge", "judger",
+            "extract"):
+        for world_mode in (
+                "live", "captured", "unavailable", "authority-only"):
+            assert backend.allows_compact_source_evidence(
+                role_name, {"world_mode": world_mode}) is False
+
+
 def test_service_tier_args_explicitly_override_user_config():
     assert service_tier_cli_args("standard") == [
         "-c", 'service_tier="default"', "--disable", "fast_mode",

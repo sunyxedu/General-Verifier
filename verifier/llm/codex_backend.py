@@ -1698,6 +1698,11 @@ class CodexBackend:
     def compact_inspection(self) -> bool:
         return bool(self._compact_inspection_note)
 
+    def allows_compact_source_evidence(
+            self, role_name: str, variables: Dict[str, Any]) -> bool:
+        """Codex filesystem reads can mutate sealed descriptor metadata."""
+        return False
+
     @property
     def judger_prefetch(self) -> bool:
         return bool(self._judger_prefetch_note)

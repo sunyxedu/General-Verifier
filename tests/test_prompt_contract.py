@@ -230,11 +230,17 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "Reading a child span in isolation never cancels inherited" in compiler
     assert "only after the acceptance counterfactual" in compiler
     assert "cannot turn runner protocol into a candidate requirement" in compiler
-    assert "CAPTURE-PRESERVING RUNNER NORMALIZATION" in compiler
-    assert "task-selected candidate, its successful capture" in compiler
-    assert "runner protocol and emits no obligation" in compiler
-    assert "Never infer that independent rejection from wording strength" \
+    assert "RUNNER-INTERFACE QUOTIENT" in compiler
+    assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" in compiler
+    assert "successfully captures and hands off that candidate" in compiler
+    assert "despite the challenged protocol violation" in compiler
+    assert "task-owned content, form, provenance, or non-runner-history" \
         in compiler
+    assert "task-owned acceptance consequence" in compiler
+    assert "source says it is mandatory" in compiler
+    assert "not task-owned merely because the runner records it" in compiler
+    assert "delivered or independently evaluated object" in compiler
+    assert "do not convert it to a SHOULD or a narrower" in compiler
     assert "PRE-CRITIC MATERIAL NORMAL FORM" in compiler
     assert "term, floor, severity, absence" in compiler
     assert "Remove only exact semantic duplicates" in compiler
@@ -248,10 +254,19 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "one `APPEND OBLIGATION:` prefix" in critic
     assert "use `REWRITE BOTH:`" in critic
     assert "MATERIAL DEFECT GATE" in critic
-    assert "CAPTURE-PRESERVING RUNNER NORMALIZATION" in critic
-    assert "varying only how or when the runner" in critic
-    assert "regardless of imperative or emphatic mandatory wording" in critic
-    assert "same fixed candidate and successful capture" in critic
+    assert "RUNNER-INTERFACE QUOTIENT" in critic
+    assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" in critic
+    assert "before searching for missing conditions" in critic
+    assert "apply this as a NECESSITY attack" in critic
+    assert "successfully captures and hands off that candidate" in critic
+    assert "despite the challenged protocol violation" in critic
+    assert "task-owned content, form, provenance, or non-runner-history" \
+        in critic
+    assert "task-owned acceptance consequence" in critic
+    assert "source says it is mandatory" in critic
+    assert "not task-owned merely because the runner records it" in critic
+    assert "require removal in this same round" in critic
+    assert "never append, refine, downgrade to SHOULD, or narrow" in critic
     assert "different wording, ordering, or granularity" in critic
     assert "do not demand a duplicate obligation" in critic
     assert "never excuses a surviving necessity or sufficiency" in critic

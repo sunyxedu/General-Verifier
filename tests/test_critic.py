@@ -546,10 +546,10 @@ def test_compact_profile_preserves_critic_call_and_repair_budget(
             in kernel.obligations_role.system
         assert "PRE-CRITIC MATERIAL NORMAL FORM" \
             in kernel.obligations_role.system
-        assert "CAPTURE-PRESERVING RUNNER NORMALIZATION" \
+        assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" \
             in kernel.obligations_role.system
         assert "MATERIAL DEFECT GATE" in kernel.critic_role.system
-        assert "CAPTURE-PRESERVING RUNNER NORMALIZATION" \
+        assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" \
             in kernel.critic_role.system
         assert "for output formatting only" in kernel.critic_role.system
     else:

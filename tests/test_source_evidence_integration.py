@@ -206,3 +206,114 @@ def test_source_view_change_uses_existing_role_retry_with_a_fresh_view(tmp_path)
     assert not first.revalidate()
     assert second.revalidate()
     assert "previous attempt failed" in backend.calls[1][1]
+
+
+def test_backend_explicit_opt_out_uses_full_ledger_before_call(tmp_path):
+    log = EventLog(str(tmp_path / "events.jsonl"))
+    log.append("message", {"text": "candidate source"})
+    variables = bind_source_evidence_variables(
+        log, {"ledger_path": os.path.abspath(log.path)}, enabled=True)
+
+    class OptOutBackend:
+        def __init__(self):
+            self.capability_calls = []
+            self.calls = []
+
+        def allows_compact_source_evidence(
+                self, role_name, call_variables):
+            self.capability_calls.append((role_name, call_variables))
+            return False
+
+        def complete(self, role_name, prompt, call_variables):
+            self.calls.append((role_name, prompt, call_variables))
+            return {"ok": True}
+
+    backend = OptOutBackend()
+    role = AgentRole("fixture", "ledger={ledger_path}", {"ok": bool})
+
+    assert role.call(backend, variables) == {"ok": True}
+    assert len(backend.capability_calls) == 1
+    assert len(backend.calls) == 1
+    call_variables = backend.calls[0][2]
+    assert call_variables["ledger_path"] == os.path.abspath(log.path)
+    assert "_source_evidence_view" not in call_variables
+    assert variables["_source_evidence_view"].revalidate()
+
+
+def test_non_explicit_source_capabilities_keep_compact_transport(tmp_path):
+    log = EventLog(str(tmp_path / "events.jsonl"))
+    log.append("message", {"text": "candidate source"})
+    variables = bind_source_evidence_variables(
+        log, {"ledger_path": os.path.abspath(log.path)}, enabled=True)
+    role = AgentRole("fixture", "ledger={ledger_path}", {"ok": bool})
+
+    for behavior in (
+            "absent", "true", "none", "unknown", "zero", "lookup-error",
+            "call-error"):
+        class CompatibleBackend:
+            def __init__(self):
+                self.calls = []
+
+            @property
+            def allows_compact_source_evidence(self):
+                if behavior == "absent":
+                    raise AttributeError
+                if behavior == "lookup-error":
+                    raise RuntimeError("optional capability unavailable")
+
+                def capability(_role_name, _call_variables):
+                    if behavior == "call-error":
+                        raise RuntimeError("optional capability unavailable")
+                    return {
+                        "true": True,
+                        "none": None,
+                        "zero": 0,
+                    }.get(behavior, "unknown")
+                return capability
+
+            def complete(self, role_name, prompt, call_variables):
+                self.calls.append((role_name, prompt, call_variables))
+                return {"ok": True}
+
+        backend = CompatibleBackend()
+        assert role.call(backend, variables) == {"ok": True}
+        assert len(backend.calls) == 1
+        call_variables = backend.calls[0][2]
+        assert call_variables["ledger_path"] == \
+            variables["ledger_path"]
+        assert call_variables["_source_evidence_view"] is \
+            variables["_source_evidence_view"]
+
+
+def test_opt_out_requires_mixed_path_bound_to_the_source_view(tmp_path):
+    log = EventLog(str(tmp_path / "events.jsonl"))
+    log.append("message", {"text": "candidate source"})
+    original = bind_source_evidence_variables(
+        log, {"ledger_path": os.path.abspath(log.path)}, enabled=True)
+    role = AgentRole("fixture", "ledger={ledger_path}", {"ok": bool})
+
+    for invalid in (
+            None, "", "relative/events.jsonl",
+            os.path.abspath(str(tmp_path / "different.jsonl"))):
+        variables = dict(original)
+        variables["_mixed_ledger_path"] = invalid
+
+        class OptOutBackend:
+            def __init__(self):
+                self.calls = []
+
+            def allows_compact_source_evidence(
+                    self, _role_name, _call_variables):
+                return False
+
+            def complete(self, role_name, prompt, call_variables):
+                self.calls.append((role_name, prompt, call_variables))
+                return {"ok": True}
+
+        backend = OptOutBackend()
+        assert role.call(backend, variables) == {"ok": True}
+        assert len(backend.calls) == 1
+        call_variables = backend.calls[0][2]
+        assert call_variables["ledger_path"] == original["ledger_path"]
+        assert call_variables["_source_evidence_view"] is \
+            original["_source_evidence_view"]
