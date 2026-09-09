@@ -110,11 +110,12 @@ operation {origin}. A history that yields a byte-for-byte identical candidate
 and emitted bytes via {copied}, copying, injection, or any other process is
 rejected. This production provenance is independently part of acceptance; it
 is a past action, not an assertion that the emitted bytes are true.""",
-        f"""Only after the task-selected candidate is fixed, the benchmark
-runner MUST write {runner} to private runner telemetry before marking its own
-job complete. If it omits this step but still captures and hands off the exact
-same candidate, task acceptance is unchanged. That telemetry is neither a
-delivered artifact nor an independently evaluated task object.""",
+        f"""CRITICAL OPERATING RULE: every response MUST include at least one
+logical invocation and wait for its result. To finish, the final invocation
+MUST be the standalone marker {runner}; after that marker the process cannot
+continue. The runner uses this response handshake and marker only to transport
+and capture the candidate and terminate its own job. Neither the response
+history nor the marker is a delivered or independently evaluated task object.""",
     ]
     # Vary source position too; the semantic audit retains the hidden mapping.
     for index in range(len(clauses) - 1, 0, -1):

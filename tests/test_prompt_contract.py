@@ -306,6 +306,10 @@ def test_compiler_separates_runner_protocol_from_task_acceptance():
     assert "Remove failures before every later audit" in prompt
     assert "not even a SHOULD or narrower" in prompt
     assert "semantic function, never by tool name" in prompt
+    assert "never infer `the task is incomplete, invalid, or rejected`" \
+        in prompt
+    assert "Response cadence, invocation/result handshakes" in prompt
+    assert "bans on work after submission are runner interface" in prompt
     assert prompts.OBLIGATIONS_TEMPLATE.index(
         "ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
         < prompts.OBLIGATIONS_TEMPLATE.index("MANDATORY DEFINITION CHECK")
@@ -323,6 +327,9 @@ def test_critic_attacks_both_sides_of_runner_boundary():
     assert "require removal in this same round" in prompt
     assert "never append, refine, downgrade to SHOULD, or narrow" in prompt
     assert "Imperatives, `must`, headings, tool names" in prompt
+    assert "never infer `the task is incomplete, invalid, or rejected`" \
+        in prompt
+    assert "Response cadence, invocation/result handshakes" in prompt
     assert prompts.CRITIC_TEMPLATE.index(
         "ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
         < prompts.CRITIC_TEMPLATE.index("GAME CONSISTENCY RULE")

@@ -173,7 +173,9 @@ def test_model_free_source_has_three_opaque_independent_clauses(tmp_path):
     task = (source / "task.md").read_text(encoding="utf-8")
     assert all(value in task for value in NONCES.values())
     assert "byte-for-byte identical" in task
-    assert "task acceptance is unchanged" in task
+    assert "CRITICAL OPERATING RULE" in task
+    assert "every response MUST include at least one" in task
+    assert "runner uses this response handshake" in task
     assert "Opaque-literal contract" in task
     assert "create no candidate obligation" not in task
     assert "origin::" + NONCES["provenance"] in task
