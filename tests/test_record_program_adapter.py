@@ -152,6 +152,9 @@ def test_catalog_and_fixed_binding_are_record_only(tmp_path):
     assert "no shell parsing" in entry["normalization"]["invocations"]
     assert "future closure" in entry["normalization"]["observed_eof"]
     assert "ordinary fresh toolful Judger" in entry["judgment_transport"]
+    assert "no single record.query" in entry["selection"]
+    assert "A bare boolean does not deliver" in entry[
+        "event_witness_requirement"]
     assert "task" not in entry["example"]
     assert entry["normalized_document_shape"]["schema"] \
         == record_program.NORMALIZATION_SCHEMA

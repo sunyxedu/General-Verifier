@@ -756,6 +756,8 @@ def test_module_contract_is_record_only_fixed_input_and_task_agnostic(tmp_path):
         "ref": "ledger:events", "provenance": "ledger", "role": "subject",
     }
     assert entry["direction"].startswith("holds-only")
+    assert "required multi-event order" in entry["selection"]
+    assert "one record.query exactly covers" in entry["selection"]
     assert "terminal-solver-action" in entry["capabilities"]
     assert "terminal-is-not-last-decoded-command" in entry["limitations"]
     terminal_example = next(
@@ -764,6 +766,9 @@ def test_module_contract_is_record_only_fixed_input_and_task_agnostic(tmp_path):
     assert "final recorded command" not in terminal_example["purpose"]
     assert "stronger than proving the last decoded command" \
         in terminal_example["warning"]
+    assert "record.query last-decoded-command" in terminal_example["warning"]
+    assert "record.query terminal-exact-command" in terminal_example[
+        "warning"]
     assert set(entry["source_projection"]["event_types"]) == {
         "session_start", "tool_call", "tool_result", "message", "commit", "stop",
     }

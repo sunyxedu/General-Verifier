@@ -62,7 +62,9 @@ MAX_RETAINED_EVENT_BYTES = 8 * 1024
 MAX_RECEIPT_BYTES = 12 * 1024
 MAX_TOOL_BYTES = 1_024
 MAX_COMMAND_BYTES = 4 * 1024
-_TEST_PREDICATES = frozenset({"equals", "contains", "nonempty", "nonblank"})
+_TEST_PREDICATES = frozenset({
+    "equals", "one-of", "contains", "nonempty", "nonblank",
+})
 _COUNT_OPERATORS = frozenset({"equals", "at-least", "at-most"})
 _NORMALIZED_OPERATIONS = frozenset({"exec_command", "bash", "terminal_input"})
 OBSERVATION_FIELDS = frozenset({
@@ -122,7 +124,7 @@ def _test_specs(value: Any, field: str) -> tuple[dict, ...]:
             raise AdapterNotApplicable(f"{item_field} must be an object")
         predicate = item.get("predicate")
         keys = ({"source", "pointer", "predicate", "expected"}
-                if predicate in {"equals", "contains"}
+                if predicate in {"equals", "one-of", "contains"}
                 else {"source", "pointer", "predicate"})
         if set(item) != keys or predicate not in _TEST_PREDICATES:
             raise AdapterNotApplicable(f"{item_field} has an invalid shape")
@@ -140,7 +142,7 @@ def _test_specs(value: Any, field: str) -> tuple[dict, ...]:
             "pointer": pointer,
             "predicate": predicate,
         }
-        if predicate in {"equals", "contains"}:
+        if predicate in {"equals", "one-of", "contains"}:
             expected = item.get("expected")
             try:
                 _validate_json_tree(expected)
@@ -156,6 +158,17 @@ def _test_specs(value: Any, field: str) -> tuple[dict, ...]:
                     not isinstance(expected, str) or not expected):
                 raise AdapterNotApplicable(
                     f"{item_field}.contains requires a non-empty string")
+            if predicate == "one-of":
+                if (not isinstance(expected, list)
+                        or not 1 <= len(expected) <= MAX_TESTS_PER_EVENT):
+                    raise AdapterNotApplicable(
+                        f"{item_field}.one-of requires 1.."
+                        f"{MAX_TESTS_PER_EVENT} values")
+                identities = {(type(item).__name__, canonical(item))
+                              for item in expected}
+                if len(identities) != len(expected):
+                    raise AdapterNotApplicable(
+                        f"{item_field}.one-of values must be unique")
             normalized["expected"] = expected
         result.append(normalized)
     return tuple(result)
@@ -273,6 +286,9 @@ def _test_holds(actual: Any, spec: Mapping[str, Any]) -> bool:
     predicate = spec["predicate"]
     if predicate == "equals":
         return _strict_equal(actual, spec["expected"])
+    if predicate == "one-of":
+        return any(_strict_equal(actual, expected)
+                   for expected in spec["expected"])
     if not isinstance(actual, str):
         return False
     if predicate == "contains":
@@ -594,6 +610,13 @@ class RecordQueryAdapter(MethodAdapter):
                 "holds-only; complete valid false query => failed; malformed, "
                 "ambiguous, racing, oversized, or incomplete => fallback"
             ),
+            "selection": (
+                "When one query exactly covers the whole obligation predicate, "
+                "use this closed declarative contract before an equivalent "
+                "programmable or multi-clause contract. Never weaken temporal "
+                "scope, terminality, correlation, or any other predicate merely "
+                "to fit one query."
+            ),
             "query_kinds": {
                 "event-at": "test the exact source event at one raw seq",
                 "exists": "retain the first exact matching source event",
@@ -673,6 +696,10 @@ class RecordQueryAdapter(MethodAdapter):
                     "source": "payload|invocation",
                     "pointer": "RFC 6901",
                     "predicate": sorted(_TEST_PREDICATES),
+                    "one-of": (
+                        f"expected is 1..{MAX_TESTS_PER_EVENT} unique exact "
+                        "JSON values; matching uses strict JSON type and value"
+                    ),
                 },
                 "invocation_test_requirement": (
                     f"every test with source=invocation requires "
@@ -722,6 +749,28 @@ class RecordQueryAdapter(MethodAdapter):
                 "receipt_bytes": MAX_RECEIPT_BYTES,
             },
             "examples": [{
+                "purpose": "one decoded nonblank direct shell command exists",
+                "adapter_arguments": {
+                    "scope": "observed-eof",
+                    "query": {
+                        "kind": "exists",
+                        "event": {
+                            "event_type": "tool_call",
+                            "decode": DECODER_POLICY,
+                            "tests": [{
+                                "source": "invocation",
+                                "pointer": "/operation",
+                                "predicate": "one-of",
+                                "expected": ["bash", "exec_command"],
+                            }, {
+                                "source": "invocation",
+                                "pointer": "/command",
+                                "predicate": "nonblank",
+                            }],
+                        },
+                    },
+                },
+            }, {
                 "purpose": "read one exact retained result event",
                 "adapter_arguments": {
                     "scope": "observed-eof",

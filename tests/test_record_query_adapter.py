@@ -153,6 +153,10 @@ def test_catalog_is_declarative_record_only_and_task_agnostic():
         "last-decoded-command"]
     assert "opaque or different later tool_call makes the query false" in \
         entry["query_kinds"]["terminal-exact-command"]
+    assert "use this closed declarative contract" in entry["selection"]
+    assert "Never weaken temporal scope" in entry["selection"]
+    assert "unique exact JSON values" in entry["event_predicate"]["tests"][
+        "one-of"]
     assert "decode=any-supported-v1" in entry["event_predicate"][
         "invocation_test_requirement"]
     terminal_examples = [
@@ -170,6 +174,17 @@ def test_catalog_is_declarative_record_only_and_task_agnostic():
             "expected": "<exact command from the obligation>",
         },
     }
+    shell_examples = [
+        example for example in entry["examples"]
+        if example["purpose"] ==
+        "one decoded nonblank direct shell command exists"
+    ]
+    assert len(shell_examples) == 1
+    shell_tests = shell_examples[0]["adapter_arguments"]["query"]["event"][
+        "tests"]
+    assert shell_tests[0]["predicate"] == "one-of"
+    assert shell_tests[0]["expected"] == ["bash", "exec_command"]
+    assert shell_tests[1]["predicate"] == "nonblank"
 
 
 def test_default_registry_publishes_binds_and_oracle_sees_record_query(
@@ -276,6 +291,62 @@ def test_event_at_exact_seq_type_tool_and_result(tmp_path):
             "witness": result.witness,
             "witness_kind": result.witness_kind,
         })
+
+
+def test_exists_supports_a_closed_one_of_predicate(tmp_path):
+    _state, log, artifacts, fallback, route, obligation = _environment(tmp_path)
+    _pair(log, "printf 'selected'", call_id="selected")
+    query = {
+        "kind": "exists",
+        "event": {
+            "event_type": "tool_call",
+            "decode": DECODER_POLICY,
+            "tests": [{
+                "source": "invocation",
+                "pointer": "/operation",
+                "predicate": "one-of",
+                "expected": ["bash", "exec_command"],
+            }, {
+                "source": "invocation",
+                "pointer": "/command",
+                "predicate": "nonblank",
+            }],
+        },
+    }
+
+    method, result = _run(route, obligation, query)
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert fallback.calls == []
+    evidence = artifacts.get(result.artifact)
+    assert evidence["execution"]["observation"]["evaluation"][
+        "matching_event_count"] == 1
+    packet = build_typed_adapter_judger_packet(
+        route, artifacts, obligation, method, result, "decisive")
+    assert type(packet) is TypedAdapterJudgerPacket
+
+
+@pytest.mark.parametrize("expected", [[], ["bash", "bash"]])
+def test_one_of_requires_a_nonempty_unique_expected_set(tmp_path, expected):
+    _state, log, _artifacts, _fallback, _route, obligation = _environment(
+        tmp_path)
+    context = AdapterContext(str(tmp_path / "state"), False, log)
+    query = {
+        "kind": "exists",
+        "event": {
+            "event_type": "tool_call",
+            "decode": DECODER_POLICY,
+            "tests": [{
+                "source": "invocation", "pointer": "/operation",
+                "predicate": "one-of", "expected": expected,
+            }],
+        },
+    }
+    invocation = AdapterInvocation.from_method(_method(query))
+    assert invocation is not None
+
+    with pytest.raises(AdapterNotApplicable):
+        RecordQueryAdapter().execute(invocation, obligation, context)
 
 
 def test_any_supported_decoded_call_pairs_with_exact_result(tmp_path):

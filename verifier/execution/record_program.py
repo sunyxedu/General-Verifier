@@ -357,6 +357,12 @@ class RecordProgramAdapter(MethodAdapter):
         entry = super().catalog_entry()
         entry.update({
             "direction": "holds-only; false/error/limit => ordinary executor fallback",
+            "selection": (
+                "Use only when no single record.query contract and no exact "
+                "ledger.sequence contract can express the whole obligation "
+                "predicate. Never replace a closed declarative predicate with "
+                "a program or weaken the predicate to fit this adapter."
+            ),
             "capabilities": [
                 "bounded-pure-record-predicate",
                 "canonical-source-event-projection",
@@ -465,6 +471,13 @@ class RecordProgramAdapter(MethodAdapter):
                 "always the ordinary fresh toolful Judger; an arbitrary record "
                 "program and sparse event references never qualify for the "
                 "restricted no-tools packet"
+            ),
+            "event_witness_requirement": (
+                "If the promised artifact depends on a matching event witness, "
+                "the successful require must retain exact event_refs, facts, and "
+                "scope in its third argument. A bare boolean does not deliver "
+                "that witness. Aggregate or whole-projection predicates may stay "
+                "on the ordinary fresh toolful Judger path."
             ),
             "example": (
                 "record = input_json(0)\n"

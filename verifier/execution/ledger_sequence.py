@@ -695,6 +695,13 @@ class LedgerSequenceAdapter(MethodAdapter):
         entry = super().catalog_entry()
         entry.update({
             "direction": "holds-only; absence/ambiguity/error/limit => fallback",
+            "selection": (
+                "Use for a required multi-event order, relation, or terminal "
+                "condition over the fixed solver-action event set. If one "
+                "record.query exactly covers the whole predicate, use that "
+                "narrower closed query instead; never weaken the predicate "
+                "or its terminal event set to fit either adapter."
+            ),
             "capabilities": [
                 "ordered-existential-source-events",
                 "exact-event-metadata-selectors",
@@ -774,8 +781,11 @@ class LedgerSequenceAdapter(MethodAdapter):
                 "warning": (
                     "This is stronger than proving the last decoded command: "
                     "any later event in the fixed solver-action set fails the "
-                    "terminal relation. Use record.program for last-command "
-                    "selection."
+                    "terminal relation. Use record.query last-decoded-command "
+                    "for only the last decoded invocation, or record.query "
+                    "terminal-exact-command when only absence of a later "
+                    "tool_call is required; retain this sequence contract when "
+                    "the task requires the wider fixed solver-action set."
                 ),
             }],
         })
