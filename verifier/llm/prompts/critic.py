@@ -192,6 +192,15 @@ COMPACT_COMPLETENESS_CRITIC_ADDENDUM = (
     "when conditions are missing and any existing obligation also needs "
     "change, use `REWRITE BOTH:` and include every removal, weakening, and "
     "addition. Otherwise retain the ordinary direction-specific prefix."
+    "\n- COMPACT AUDIT REPORT: complete every required attack internally, but "
+    "do not spend the response repeating passed source mappings, prompt text, "
+    "or a per-obligation narration. On `insufficient`, report every surviving "
+    "defect and its concrete witness in `counterexample_world`, then put every "
+    "corresponding smallest repair in `missing_condition`; passed gates need no "
+    "prose. On `pass`, use one short `counterexample_world` sentence naming the "
+    "completed necessity, sufficiency, scope, temporal, severity, and referent "
+    "audits, and use `n/a` for `missing_condition`. Brevity never licenses "
+    "omitting a surviving defect or weakening a repair."
 )
 
 CRITIC_TEMPLATE = (

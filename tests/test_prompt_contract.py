@@ -233,3 +233,6 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "do not defer a visible defect to a later round" in critic
     assert "one `APPEND OBLIGATION:` prefix" in critic
     assert "use `REWRITE BOTH:`" in critic
+    assert "COMPACT AUDIT REPORT" in critic
+    assert "passed gates need no prose" in critic
+    assert "Brevity never licenses" in critic
