@@ -88,6 +88,20 @@ def test_compiler_critic_and_repairs_receive_no_candidate_context(tmp_path):
         assert call["variables"]["claim_text"] == backend.calls[0]["variables"]["claim_text"]
 
 
+def test_cache_off_still_compiles_final_inside_authority_boundary(tmp_path):
+    backend = fixture()
+    machine, row, _ = kernel(tmp_path, backend, None)
+
+    assert machine._compile_obligations(row)
+
+    assert [call["role"] for call in backend.calls] == ["obligations", "critic"]
+    for call in backend.calls:
+        encoded = json.dumps(call["variables"])
+        assert row["text"] not in encoded
+        assert call["variables"]["claim_text"] == \
+            backend.calls[0]["variables"]["claim_text"]
+
+
 def test_task_change_and_role_change_never_hit(tmp_path):
     backend, cache = fixture(), CompiledFinalContractCache()
     a, ar, _ = kernel(tmp_path, backend, cache, name="a")

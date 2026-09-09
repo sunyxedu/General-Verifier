@@ -209,6 +209,10 @@ def test_harness_addendum_is_generic():
     assert "declarative pointers to named documentation" in add
     assert "MINIMAL-CHANGE" in add
     assert "emit NO minimal-change" in add
+    assert "CANDIDATE-CARRIER NORMAL FORM" in add
+    assert "Never compare with a value copied from the final claim" in add
+    assert "the response is independently selected as a carrier" \
+        in prompts.CRITIC_SYSTEM
 
 
 def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():

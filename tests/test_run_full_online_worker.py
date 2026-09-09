@@ -377,8 +377,8 @@ def test_live_chain_uses_service_commit_and_all_five_stages(tmp_path,
 
     assert [call["role"] for call in backend.calls] == [
         "obligations", "critic", "oracles", "discharge", "judger"]
-    assert all(call["variables"]["world_mode"] == "live"
-               for call in backend.calls)
+    assert [call["variables"]["world_mode"] for call in backend.calls] == [
+        "authority-only", "authority-only", "live", "live", "live"]
     assert result["commit"]["status"] == "verified"
     assert result["quality_view"]["ordered_contract"]
     assert result["quality_view"]["ordered_outcomes"][0]["status"] == "verified"

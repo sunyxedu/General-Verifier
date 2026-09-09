@@ -652,13 +652,15 @@ class Kernel:
         }
 
     def _authority_final_contract(self, row: Dict, state: str):
-        """Try a candidate-independent contract; unsupported inputs use legacy.
+        """Compile a final through the candidate-independent authority boundary.
 
-        No candidate-derived variables are even constructed on this path.
-        Compilation failures remain failures; only a passing Critic can fill
-        the cache. The Oracle and all candidate verification run afterwards.
+        Cache availability controls reuse only.  A fresh miss and a cache-off
+        run have the same answer-blind Compiler/Critic inputs and tool boundary;
+        otherwise disabling the cache would leak the final response back into
+        contract semantics.  Unsupported inputs use the legacy path.  The
+        Oracle and all candidate verification run afterwards.
         """
-        if self.contract_cache is None or row["kind"] != CLAIM_FINAL:
+        if row["kind"] != CLAIM_FINAL:
             return False, None
         if self.critic_role is None or self.critic_rounds < 1:
             self.log.append("contract_cache_bypass", {
@@ -684,6 +686,19 @@ class Kernel:
                     append_only_deltas=self.append_only_deltas,
                     append_only_delta_protocol=
                         self.append_only_delta_protocol)
+                if self.contract_cache is None:
+                    with model_scope(stage="contract_compile", round=0):
+                        payload = session.obligations_role.call(
+                            session.backend, variables)
+                    payload = self._critique(
+                        row, payload, variables, backend=session.backend,
+                        obligations_role=session.obligations_role,
+                        critic_role=session.critic_role)
+                    view.revalidate(state)
+                    session.revalidate()
+                    if payload is not None:
+                        validate(session.obligations_role.schema, payload)
+                    return True, payload
                 lease = self.contract_cache.acquire(key)
                 try:
                     # The lookup/single-flight wait may outlive an online task
