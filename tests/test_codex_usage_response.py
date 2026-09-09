@@ -114,15 +114,24 @@ def test_billing_rejects_malformed_or_duplicate_accounting(extra_line):
 
 @pytest.mark.parametrize("extra_line", [
     '[]',
-    '{"item":{},"type":"item.completed"}',
     '{"type" "item.completed","item":{}}',
     '{"type":',
     '{"type":true,"item":{}}',
+    '{"item":{},"type":"item.completed","type":"turn.completed"}',
 ])
 def test_billing_rejects_ambiguous_non_accounting_prefix(extra_line):
     attempt = _attempt_usage(accounting_stream(extra_line))
     assert attempt.status == "invalid"
     assert attempt.telemetry is None
+
+
+def test_billing_accepts_a_well_formed_event_whose_type_is_not_first():
+    # The whole line is decoded strictly, so its discriminator is not a
+    # guess; only accounting events contribute counters.
+    attempt = _attempt_usage(accounting_stream(
+        '{"item":{"payload":"x"},"type":"item.completed"}'))
+    assert attempt.status == "complete"
+    assert attempt.telemetry is not None
 
 
 def test_billing_rejects_tampered_counter_after_ignoring_item_payload():

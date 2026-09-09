@@ -452,6 +452,31 @@ def _usage_event_type(raw: str) -> Optional[str]:
     return event_type
 
 
+def _usage_event_type_or_full_parse(raw: str) -> Optional[str]:
+    """Frame the event type cheaply; decode the whole line only if needed.
+
+    A valid JSON object whose ``type`` is not its first member is still a
+    well-formed Codex event.  Rejecting it made an otherwise complete,
+    fully billed Judger attempt fail as "malformed" and forced paid retries
+    that reproduced the same stream.  The full decode is bounded by the
+    subprocess capture and never touches billing counters: those are still
+    read only from strictly decoded accounting events.
+    """
+    try:
+        return _usage_event_type(raw)
+    except ValueError as framing_error:
+        if len(raw) > _EXECUTION_DIAGNOSTIC_MAX_STREAM_CHARS:
+            raise
+        try:
+            event = _strict_usage_event(raw)
+        except (ValueError, TypeError, RecursionError):
+            raise framing_error from None
+        event_type = event.get("type")
+        if not isinstance(event_type, str):
+            raise framing_error from None
+        return event_type
+
+
 def _unique_usage_object(pairs):
     value = {}
     for key, item in pairs:
@@ -673,7 +698,8 @@ def _parse_exec_telemetry(stdout: str) -> _ExecTelemetry:
             event = json.loads(raw)
         except (ValueError, RecursionError) as err:
             raise RoleError(
-                f"codex exec --json emitted malformed line {number}") from err
+                f"codex exec --json emitted malformed line {number}: "
+                f"{_content_free_reason(err)}") from err
         if not isinstance(event, dict):
             raise RoleError(
                 f"codex exec --json emitted a non-object on line {number}")
@@ -730,13 +756,14 @@ def _parse_exec_accounting(stdout: str) -> _ExecTelemetry:
         if not raw.strip():
             continue
         try:
-            event_type = _usage_event_type(raw)
+            event_type = _usage_event_type_or_full_parse(raw)
             if event_type not in {"thread.started", "turn.completed"}:
                 continue
             event = _strict_usage_event(raw)
         except (ValueError, TypeError, RecursionError) as error:
             raise RoleError(
-                f"codex exec --json emitted malformed line {number}") from error
+                f"codex exec --json emitted malformed line {number}: "
+                f"{_content_free_reason(error)}") from error
         if event_type == "thread.started":
             thread_id = event.get("thread_id")
             if isinstance(thread_id, str) and thread_id:
@@ -768,6 +795,19 @@ def _parse_exec_accounting(stdout: str) -> _ExecTelemetry:
             cache_write, "cache_write_input_tokens")
     return _ExecTelemetry(
         thread_id=thread_ids[0], usage=usage, last_message="")
+
+
+def _content_free_reason(error: BaseException) -> str:
+    """A parser's fixed message or a decode position, never stream text."""
+    if isinstance(error, json.JSONDecodeError):
+        return f"{type(error).__name__} at char {error.pos}"
+    if isinstance(error, RecursionError):
+        return "RecursionError"
+    text = str(error)
+    if text.startswith(("Codex JSONL event", "duplicate accounting",
+                        "non-finite accounting", "accounting event")):
+        return text
+    return type(error).__name__
 
 
 def _completed_response_without_usage(
@@ -1270,7 +1310,7 @@ def _attempt_usage(stdout: Any, *, force_incomplete: bool = False,
         if not raw.strip():
             continue
         try:
-            event_type = _usage_event_type(raw)
+            event_type = _usage_event_type_or_full_parse(raw)
             if event_type not in {"thread.started", "turn.completed"}:
                 continue
             event = _strict_usage_event(raw)
