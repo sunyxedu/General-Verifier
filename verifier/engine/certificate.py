@@ -41,18 +41,32 @@ from ..core.model import (
 )
 from ..core.store import ClaimStore
 
+# What a certificate request settles.  ``full`` verifies every open claim in
+# the final's dependency closure; ``final`` settles only the final claim,
+# whose task contract is compiled independently of the solver's narration
+# and whose status is the verdict.  The slice is exported whole either way,
+# so support claims left open are visible as such.
+CERTIFICATE_SCOPE_FULL = "full"
+CERTIFICATE_SCOPE_FINAL = "final"
+CERTIFICATE_SCOPES = (CERTIFICATE_SCOPE_FULL, CERTIFICATE_SCOPE_FINAL)
+
 
 def request_certificate(
     store: ClaimStore, kernel: Kernel, log: EventLog,
     artifacts: ArtifactStore, final_id: str,
+    scope: str = CERTIFICATE_SCOPE_FULL,
 ) -> Dict:
     if store.get(final_id)["kind"] != CLAIM_FINAL:
         raise ValueError("a certificate requires a final claim")
-    log.append("verify_request", {"target": final_id, "cause": "certificate"})
+    if scope not in CERTIFICATE_SCOPES:
+        raise ValueError(f"unknown certificate scope: {scope!r}")
+    log.append("verify_request", {"target": final_id, "cause": "certificate",
+                                  "scope": scope})
 
     slice_ids = store.backward_slice(final_id)
     pending = [cid for cid in reversed(slice_ids)
-               if store.status(cid) in (STATUS_UNVERIFIED, STATUS_STALE)]
+               if store.status(cid) in (STATUS_UNVERIFIED, STATUS_STALE)
+               and (scope == CERTIFICATE_SCOPE_FULL or cid == final_id)]
     parallel = getattr(kernel, "parallel_claims", 1) or 1
     if parallel > 1 and len(pending) > 1:
         # The final contract is compiled independently of solver-derived

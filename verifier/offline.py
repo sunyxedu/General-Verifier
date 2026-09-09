@@ -41,7 +41,9 @@ from typing import Any, Dict, List, Optional
 from .core.events import EventLog, RECORD_DIRECTORY, SOURCE_EVENT_TYPES
 from .core.model import canonical, content_hash
 from .core.store import ClaimStore, TRIGGER_ON_FIRST_DEPENDENT, UnknownDependency
-from .engine.certificate import request_certificate
+from .engine.certificate import (
+    CERTIFICATE_SCOPE_FULL, CERTIFICATE_SCOPES, request_certificate,
+)
 from .llm.model_spans import model_scope
 from .llm.schema import RoleError
 from .stream.builder import Builder, TraceError
@@ -314,7 +316,9 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
                   critic_rounds: Optional[int] = None,
                   service_tier: Optional[str] = None,
                   compact_inspection: bool = False,
-                  judger_prefetch: bool = False) -> Dict[str, Any]:
+                  judger_prefetch: bool = False,
+                  certificate_scope: str = CERTIFICATE_SCOPE_FULL,
+                  ) -> Dict[str, Any]:
     """The full identity of a scoring run's judgment: the pipeline
     fingerprint plus the resolved run configuration, as plaintext fields
     with a content hash (`config`). Two configs must never share derived
@@ -331,6 +335,9 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         raise ValueError("judger_prefetch must be a bool")
     if judger_prefetch and seats != "codex":
         raise ValueError("judger_prefetch is only valid for Codex seats")
+    if certificate_scope not in CERTIFICATE_SCOPES:
+        raise ValueError(
+            f"certificate_scope must be one of {CERTIFICATE_SCOPES}")
     if not model and seats == "codex":
         from .llm.codex_backend import DEFAULT_MODEL
         model = DEFAULT_MODEL
@@ -353,6 +360,9 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         "critic_rounds": critic_rounds,
         "compact_inspection": compact_inspection,
         "judger_prefetch": judger_prefetch,
+        # which claims a certificate request settles; the verdict semantics
+        # are identical, but the exported slice and derived state differ
+        "certificate_scope": certificate_scope,
     }
     if judger_prefetch:
         from .engine.judger_prefetch import PREFETCH_PROTOCOL
@@ -830,7 +840,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           shared_dir: Optional[str] = None,
           compact_inspection: bool = False,
           judger_prefetch: bool = False,
-          restricted_judger_cwd: Optional[str] = None) -> Dict[str, Any]:
+          restricted_judger_cwd: Optional[str] = None,
+          certificate_scope: Optional[str] = None) -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -867,6 +878,9 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         parallel_claims = _env_int("GV_PARALLEL_CLAIMS", 4)
     if shared_dir is None:
         shared_dir = os.environ.get("GV_SHARED_DIR") or None
+    if certificate_scope is None:
+        certificate_scope = (os.environ.get("GV_CERTIFICATE_SCOPE")
+                             or CERTIFICATE_SCOPE_FULL)
     toolchain_dir = cache_dir = None
     if shared_dir:
         shared_dir = os.path.abspath(os.path.expanduser(shared_dir))
@@ -878,7 +892,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                         max_rounds=max_rounds, critic_rounds=critic_rounds,
                         service_tier=service_tier,
                         compact_inspection=compact_inspection,
-                        judger_prefetch=judger_prefetch)
+                        judger_prefetch=judger_prefetch,
+                        certificate_scope=certificate_scope)
     if restricted_judger_cwd is not None and (
             seats != "codex"
             or cfg["typed_adapter_judger_packet"] is not True
@@ -1075,13 +1090,14 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                 **cfg)
         cert = request_certificate(
             sc.store, sc.kernel, sc.log, sc.artifacts,
-            sc.builder.finals[-1])
+            sc.builder.finals[-1], scope=cfg["certificate_scope"])
         features = dict(_features(cert, extract_rounds, fingerprint), **cfg)
         features.update(_final_contract_audit(sc.log, cert))
         features["execution"] = {
             "parallel_obligations": parallel_obligations,
             "parallel_claims": parallel_claims,
             "shared_dir": shared_dir or None,
+            "certificate_scope": cfg["certificate_scope"],
         }
         return features
 
