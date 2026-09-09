@@ -713,6 +713,15 @@ class RecordQueryAdapter(MethodAdapter):
                     "the exact frozen profiles published by record.program@1"
                 ),
                 "operation_values": sorted(_NORMALIZED_OPERATIONS),
+                "direct_shell_operations": ["bash", "exec_command"],
+                "task_language": (
+                    "A task-facing shell or bash tool requirement does not by "
+                    "itself require one exact transport operation label. When "
+                    "either direct shell transport satisfies the obligation, "
+                    "test operation with one-of over direct_shell_operations; "
+                    "use equals only when the controlling source requires that "
+                    "exact normalized operation."
+                ),
                 "inert": True,
                 "expected_values": (
                     "supplied only by MethodIR; never read from the ledger"

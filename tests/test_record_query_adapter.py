@@ -133,6 +133,10 @@ def test_catalog_is_declarative_record_only_and_task_agnostic():
     assert entry["normalization"]["decoder_policy"] == DECODER_POLICY
     assert "never read from the ledger" in entry["normalization"][
         "expected_values"]
+    assert entry["normalization"]["direct_shell_operations"] == [
+        "bash", "exec_command"]
+    assert "does not by itself require one exact transport" in entry[
+        "normalization"]["task_language"]
     assert "gcode" not in rendered.lower()
     assert "/app/out.txt" not in rendered
     assert all(set(example["adapter_arguments"]) == {"scope", "query"}
