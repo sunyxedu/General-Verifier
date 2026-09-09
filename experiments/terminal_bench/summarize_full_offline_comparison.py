@@ -54,35 +54,64 @@ def _cost(rows):
     return total, complete, by_role, wall_by_role, calls_by_role
 
 
+def _job_record(candidate, arm, output, wall, verdict, final_obligations,
+                accounting_complete, worker_complete, labels):
+    cost, complete, by_role, wall_by_role, calls = _cost(
+        _rows(output / "native-usage.jsonl"))
+    label = (labels or {}).get(candidate)
+    return {
+        "candidate": candidate, "arm": arm, "wall": wall,
+        "cost": cost, "cost_complete": complete,
+        "accounting_complete": accounting_complete,
+        "worker_complete": worker_complete,
+        "calls": sum(calls.values()), "verdict": verdict,
+        "final_obligations": final_obligations, "label": label,
+        "agrees": (None if label is None or verdict is None
+                   else (verdict in POSITIVE) == (label == 1)),
+        "by_role": by_role, "wall_by_role": wall_by_role,
+        "calls_by_role": calls,
+    }
+
+
 def summarize(run_root: Path, labels: dict | None):
+    """Jobs from a coordinator run, or from bare worker outputs.
+
+    A coordinator run has ``comparison/job-*-result.json`` with the
+    spawn-to-exit wall.  A run of bare workers (for example a treatment-only
+    rerun of a cohort) is read from ``worker-outputs/*/worker-result.json``,
+    whose ``worker_wall_seconds`` excludes only interpreter start-up.
+    """
     comparison = run_root / "comparison"
     jobs = []
+    seen = set()
     for path in sorted(comparison.glob("job-*-result.json")):
         job = json.loads(path.read_text())
         output_root = job.get("worker_output_root")
         if output_root is None:
             plan = run_root / "plans" / f"{job['candidate_id']}-{job['arm']}.json"
             output_root = json.loads(plan.read_text())["output_root"]
-        output = Path(output_root)
-        cost, complete, by_role, wall_by_role, calls = _cost(
-            _rows(output / "native-usage.jsonl"))
         view = job.get("quality_view") or {}
-        verdict = view.get("verdict")
-        label = (labels or {}).get(job["candidate_id"])
-        jobs.append({
-            "candidate": job["candidate_id"], "arm": job["arm"],
-            "wall": job.get("spawn_to_exit_wall_seconds"),
-            "cost": cost, "cost_complete": complete,
-            "accounting_complete": job.get("accounting_complete"),
-            "worker_complete": job.get("worker_complete"),
-            "calls": sum(calls.values()), "verdict": verdict,
-            "final_obligations": view.get("final_obligations"),
-            "label": label,
-            "agrees": (None if label is None or verdict is None
-                       else (verdict in POSITIVE) == (label == 1)),
-            "by_role": by_role, "wall_by_role": wall_by_role,
-            "calls_by_role": calls,
-        })
+        seen.add(Path(output_root).name)
+        jobs.append(_job_record(
+            job["candidate_id"], job["arm"], Path(output_root),
+            job.get("spawn_to_exit_wall_seconds"), view.get("verdict"),
+            view.get("final_obligations"), job.get("accounting_complete"),
+            job.get("worker_complete"), labels))
+    for path in sorted((run_root / "worker-outputs").glob("*/worker-result.json")):
+        output = path.parent
+        if output.name in seen:
+            continue
+        result = json.loads(path.read_text())
+        plan = result.get("plan") or {}
+        features = result.get("features") or {}
+        accounting = result.get("accounting") or {}
+        candidate = output.name.rsplit("-", 1)[0]
+        jobs.append(_job_record(
+            candidate, plan.get("arm", output.name.rsplit("-", 1)[-1]),
+            output, result.get("worker_wall_seconds"),
+            features.get("verdict"), features.get("final_obligations"),
+            accounting.get("accounting_complete") is True,
+            result.get("complete") is True, labels))
     return jobs
 
 
@@ -90,6 +119,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_root")
     parser.add_argument("--labels", help="operator-manifest.json with truth labels")
+    parser.add_argument("--control-root", help="pair with another run's control jobs")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     labels = None
@@ -98,6 +128,10 @@ def main():
         labels = {case["candidate_id"]: case["truth"]["label"]
                   for case in manifest["cases"]}
     jobs = summarize(Path(args.run_root), labels)
+    if args.control_root:
+        jobs = [job for job in jobs if job["arm"] == "treatment"] + [
+            job for job in summarize(Path(args.control_root), labels)
+            if job["arm"] == "control"]
     if args.json:
         print(json.dumps(jobs, indent=1, sort_keys=True, default=dict))
         return 0
