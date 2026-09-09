@@ -236,3 +236,26 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "COMPACT AUDIT REPORT" in critic
     assert "passed gates need no prose" in critic
     assert "Brevity never licenses" in critic
+
+
+def test_compiler_separates_runner_protocol_from_task_acceptance():
+    prompt = prompts.OBLIGATIONS_SYSTEM
+
+    assert "RUNNER BOUNDARY" in prompt
+    assert "capture-preserving ACCEPTANCE COUNTERFACTUAL" in prompt
+    assert "task-selected candidate, successful capture" in prompt
+    assert "runner control, transport, progress, telemetry, retry" in prompt
+    assert "carrier, address, or form instruction emits world conditions" in prompt
+    assert "only when the task independently makes the action" in prompt
+    assert "Classify by semantic function and stated consequence" in prompt
+
+
+def test_critic_attacks_both_sides_of_runner_boundary():
+    prompt = prompts.CRITIC_SYSTEM
+
+    assert "RUNNER-BOUNDARY ATTACK" in prompt
+    assert "perform handoff surgery" in prompt
+    assert "If only runner state changes" in prompt
+    assert "if the task itself rejects that history" in prompt
+    assert "never against the historical act of submission" in prompt
+    assert "Imperatives, `must`, headings, tool names" in prompt
