@@ -1532,8 +1532,14 @@ class LedgerEventAdapter(MethodAdapter):
         digest = EventLog.event_digest(event)
         consumed = ({"ref": ref, "event_digest": digest,
                      "event_type": event.get("type")},)
+        # Retain what was actually observed, not only the expectation and a
+        # digest: an auditor must be able to see that the artifact's facts
+        # entail the outcome without reopening the ledger.
         observation = {"event_seq": seq, "exists": True,
-                       "event_digest": digest, "mismatches": mismatches}
+                       "event_digest": digest, "mismatches": mismatches,
+                       "observed": {"type": event.get("type"),
+                                    "payload": _bounded_json(
+                                        event.get("payload"))}}
         if not mismatches:
             return AdapterExecution(
                 OUTCOME_HOLDS, None, WITNESS_NONE,

@@ -1012,6 +1012,11 @@ def test_ledger_adapter_matches_an_immutable_event_subset(tmp_path):
     assert refuted.outcome == OUTCOME_REFUTED
     assert refuted.witness_kind == WITNESS_RECORD_CONTRADICTION
     assert fallback.calls == []
+    # the receipt carries the observed event itself, so the audit can check
+    # entailment from the artifact alone
+    observed = artifacts.get(holds.artifact)["execution"]["observation"][
+        "observed"]
+    assert observed == {"type": event["type"], "payload": event["payload"]}
 
 
 @pytest.mark.parametrize("selector,expected,outcome", [
