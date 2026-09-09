@@ -66,8 +66,10 @@ def _ledger_method():
 def test_online_and_offline_default_kernels_publish_the_same_adapter_catalog(
         tmp_path, monkeypatch):
     monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
-    # Even an ambient research flag may not change the production topology.
+    # Process-local reuse is an explicit opt-in that both entry points honor
+    # identically; it is part of the scoring identity, never ambient.
     monkeypatch.setenv("GV_CONTRACT_CACHE", "1")
+    monkeypatch.delenv("GV_METHOD_CACHE", raising=False)
     for name in (
         "GV_BROWSER_OBSERVER",
         "GV_BROWSER_OBSERVER_SHA256",
@@ -110,8 +112,13 @@ def test_online_and_offline_default_kernels_publish_the_same_adapter_catalog(
     assert offline_kernel.discharger.context.world.mode == "captured"
     assert online_kernel.binder.method_cache is None
     assert offline_kernel.binder.method_cache is None
-    assert online_kernel.contract_cache is None
-    assert offline_kernel.contract_cache is None
+    assert online_kernel.contract_cache is offline_kernel.contract_cache
+    assert online_kernel.contract_cache is not None
+    monkeypatch.delenv("GV_CONTRACT_CACHE")
+    plain = _default_kernel(
+        offline, model=None, backend=FixtureBackend({}), critic_rounds=0,
+        parallel_obligations=1, parallel_claims=1)
+    assert plain.contract_cache is None
 
 
 def test_ledger_method_is_freshly_oracle_judged_for_each_state(tmp_path):
