@@ -77,6 +77,7 @@ EVENT_TYPES = (
     "method_cache_hit",
     "method_cache_direction_audit",
     "method_cache_bypass",
+    "method_cache_published",
     "adapter_discharge",
     "adapter_fallback",
     "discharge",

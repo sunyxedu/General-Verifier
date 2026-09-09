@@ -204,6 +204,10 @@ class BindingGame:
             return self._run_uncached(row, obligation)
         key = self._method_cache_key(row, obligation)
         if key is None:
+            self.log.append("method_cache_bypass", {
+                "claim": row["id"], "obligation": obligation.id,
+                "key": None, "reason": "no exact reuse key for this "
+                "claim, obligation, authority, world, or backend"})
             return self._run_uncached(row, obligation)
 
         lease = self.method_cache.acquire(key)
@@ -354,7 +358,8 @@ class BindingGame:
             # a live edit during the cold fill can never publish under the
             # earlier task identity.
             if self._method_cache_key(row, obligation) == key:
-                accepted = self._accepted_method(row, obligation, result)
+                accepted, why = self._accepted_method_or_reason(
+                    row, obligation, result)
                 if accepted is not None:
                     if lease is not None and lease.leader and (
                             direction is None
@@ -362,6 +367,22 @@ class BindingGame:
                         fill = accepted
                     else:
                         self.method_cache.publish_if_absent(key, accepted)
+                    self.log.append("method_cache_published", {
+                        "claim": row["id"], "obligation": obligation.id,
+                        "key": key[:16], "direction": accepted.source_outcome,
+                        "adapter": str(accepted.method.get("adapter", ""))[:80]})
+                else:
+                    self.log.append("method_cache_bypass", {
+                        "claim": row["id"], "obligation": obligation.id,
+                        "key": key[:16],
+                        "reason": "settled result not cacheable: " + why})
+            else:
+                self.log.append("method_cache_bypass", {
+                    "claim": row["id"], "obligation": obligation.id,
+                    "key": key[:16],
+                    "reason": "task authority changed during the game; "
+                              "the result is not published under the "
+                              "earlier reuse key"})
             return result
         finally:
             if lease is not None:
@@ -592,30 +613,38 @@ class BindingGame:
 
     def _accepted_method(self, row, obligation, settled):
         """Extract one authenticated, cache-eligible binding artifact."""
-        if settled.outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED) \
-                or settled.assumed_premises:
-            return None
+        return self._accepted_method_or_reason(row, obligation, settled)[0]
+
+    def _accepted_method_or_reason(self, row, obligation, settled):
+        """As :meth:`_accepted_method`, plus the reason when ineligible."""
+        if settled.outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
+            return None, f"outcome {settled.outcome!r} is not a direction"
+        if settled.assumed_premises:
+            return None, "result assumed premises"
         try:
             binding = self.artifacts.get(settled.artifact)
             if content_hash(binding) != settled.artifact \
                     or binding.get("instrument") != "binding-game" \
                     or binding.get("obligation") != obligation.text:
-                return None
+                return None, "binding artifact is not this obligation's game"
             bound = binding.get("bound")
             if not isinstance(bound, dict):
-                return None
+                return None, "no bound method"
             method, audit = bound.get("method"), bound.get("audit")
-            if not isinstance(method, dict) or not isinstance(audit, dict) \
-                    or not self._cacheable_signature(method, audit):
-                return None
+            if not isinstance(method, dict) or not isinstance(audit, dict):
+                return None, "bound method or audit missing"
+            if not self._cacheable_signature(method, audit):
+                return None, "method signature is not reusable (needs a typed " \
+                    "world-basis decisive adapter with delivered subjects and " \
+                    "a yes/yes/n/a audit)"
             if not getattr(self.discharger, "supports_method_reuse",
                            lambda _method: False)(method):
-                return None
+                return None, "adapter does not accept method reuse"
             discharge_digest = bound.get("discharge_artifact")
             evidence = self.artifacts.get(discharge_digest)
             execution = evidence.get("execution")
             if not isinstance(execution, dict):
-                return None
+                return None, "discharge evidence has no execution record"
             inner = DischargeResult(
                 outcome=execution.get("outcome"),
                 witness=execution.get("witness"),
@@ -628,20 +657,23 @@ class BindingGame:
                 getattr(self.discharger, "registry", None),
                 "validate_evidence", None)
             if validator is None:
-                return None
-            valid, _reason = validator(
+                return None, "discharger has no evidence validator"
+            valid, reason = validator(
                 method, row, obligation, inner, self.artifacts)
-            if not valid or inner.outcome != settled.outcome:
-                return None
-        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
-            return None
+            if not valid:
+                return None, f"evidence not authenticated: {reason}"
+            if inner.outcome != settled.outcome:
+                return None, "discharge outcome differs from settled outcome"
+        except (OSError, TypeError, ValueError, KeyError,
+                json.JSONDecodeError) as error:
+            return None, f"eligibility check failed: {type(error).__name__}"
         return AcceptedMethod(
             method=method,
             source_binding_artifact=settled.artifact,
             source_discharge_artifact=discharge_digest,
             source_outcome=inner.outcome,
             audit=audit,
-        )
+        ), ""
 
     def _run_uncached(self, row: Dict, obligation: Obligation) -> DischargeResult:
         attempts: List[Attempt] = []

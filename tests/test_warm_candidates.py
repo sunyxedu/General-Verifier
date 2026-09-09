@@ -95,6 +95,7 @@ def test_second_candidate_reuses_contract_and_accepted_method(tmp_path, monkeypa
 
     assert first["verdict"] == second["verdict"] == "verified"
     assert "contract_cache_published" in first_events
+    assert "method_cache_published" in first_events
     assert "contract_cache_hit" in second_events
     assert "method_cache_hit" in second_events
     # the second candidate spent no compiler, critic, oracle or judger call:
@@ -118,3 +119,26 @@ def test_caches_stay_off_by_default(tmp_path, monkeypatch):
                    for kind in events)
     fields = offline.config_fields(model="m", seats="codex")
     assert fields["contract_cache"] is False and fields["method_cache"] is False
+
+
+def test_non_reusable_settlement_reports_why(tmp_path, monkeypatch):
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
+    monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "0")
+    monkeypatch.setenv("GV_CONTRACT_CACHE", "1")
+    monkeypatch.setenv("GV_METHOD_CACHE", "1")
+    _fresh_caches(monkeypatch)
+    fixtures = _fixtures()
+    # an agent method (no adapter binding) can never be reused
+    fixtures["oracles"] = {"methods": [{
+        "procedure": "read the delivered file and compare by hand",
+        "artifact": "a retained read", "level": "exact", "basis": "world",
+        "strength": "decisive", "bridges": []}]}
+    fixtures["discharge"] = {
+        "outcome": "holds", "witness": "the file exists", "artifact": "read",
+        "assumed_premises": [], "witness_kind": "none",
+        "inputs": [{"ref": "/app/answer.txt", "provenance": "delivered",
+                    "role": "subject"}]}
+    backend = FixtureBackend(fixtures)
+    _certificate, events = _candidate(tmp_path, "alpha", backend)
+    assert "method_cache_published" not in events
+    assert "method_cache_bypass" in events
