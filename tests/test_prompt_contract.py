@@ -225,6 +225,20 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "apply the ACCEPTANCE COUNTERFACTUAL separately" in compiler
     assert "no acceptance condition is unmapped" in compiler
     assert "Emit only the existing obligations schema" in compiler
+    assert "GOVERNING-SCOPE DISTRIBUTION" in compiler
+    assert "subject, quantifier, modality" in compiler
+    assert "Reading a child span in isolation never cancels inherited" in compiler
+    assert "only after the acceptance counterfactual" in compiler
+    assert "cannot turn runner protocol into a candidate requirement" in compiler
+    assert "CAPTURE-PRESERVING RUNNER NORMALIZATION" in compiler
+    assert "task-selected candidate, its successful capture" in compiler
+    assert "runner protocol and emits no obligation" in compiler
+    assert "Never infer that independent rejection from wording strength" \
+        in compiler
+    assert "PRE-CRITIC MATERIAL NORMAL FORM" in compiler
+    assert "term, floor, severity, absence" in compiler
+    assert "Remove only exact semantic duplicates" in compiler
+    assert "never merge, weaken, or omit independent conditions" in compiler
 
     assert "COMPLETE DEFECT CENSUS" in critic
     assert "two source-order sweeps" in critic
@@ -233,7 +247,18 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "do not defer a visible defect to a later round" in critic
     assert "one `APPEND OBLIGATION:` prefix" in critic
     assert "use `REWRITE BOTH:`" in critic
+    assert "MATERIAL DEFECT GATE" in critic
+    assert "CAPTURE-PRESERVING RUNNER NORMALIZATION" in critic
+    assert "varying only how or when the runner" in critic
+    assert "regardless of imperative or emphatic mandatory wording" in critic
+    assert "same fixed candidate and successful capture" in critic
+    assert "different wording, ordering, or granularity" in critic
+    assert "do not demand a duplicate obligation" in critic
+    assert "never excuses a surviving necessity or sufficiency" in critic
     assert "COMPACT AUDIT REPORT" in critic
+    assert "for output formatting only" in critic
+    assert "supersedes the CRITIC_TEMPLATE" in critic
+    assert "does not supersede performing those audits" in critic
     assert "passed gates need no prose" in critic
     assert "Brevity never licenses" in critic
 

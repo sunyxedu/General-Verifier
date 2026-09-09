@@ -541,6 +541,45 @@ def test_compact_profile_preserves_critic_call_and_repair_budget(
         "obligations", "critic", "obligations", "critic"]
     assert [event["payload"]["round"] for event in ledger_events(
         log, "decomposition_attacked")] == [0, 1]
+    if compact:
+        assert "GOVERNING-SCOPE DISTRIBUTION" \
+            in kernel.obligations_role.system
+        assert "PRE-CRITIC MATERIAL NORMAL FORM" \
+            in kernel.obligations_role.system
+        assert "CAPTURE-PRESERVING RUNNER NORMALIZATION" \
+            in kernel.obligations_role.system
+        assert "MATERIAL DEFECT GATE" in kernel.critic_role.system
+        assert "CAPTURE-PRESERVING RUNNER NORMALIZATION" \
+            in kernel.critic_role.system
+        assert "for output formatting only" in kernel.critic_role.system
+    else:
+        assert "GOVERNING-SCOPE DISTRIBUTION" \
+            not in kernel.obligations_role.system
+        assert "MATERIAL DEFECT GATE" not in kernel.critic_role.system
+
+
+def test_compact_profile_first_pass_keeps_both_independent_seats(tmp_path):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": COMPILE, "critic": PASS})
+    backend.compact_inspection = True
+    kernel = Kernel(
+        store, log, backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        critic_role=CRITIC_AGENT,
+        discharger=StubDischarger(),
+        critic_rounds=2,
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "P holds for every prime"))
+
+    assert store.status(cid) == "verified"
+    assert kernel.critic_rounds == 2
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic"]
+    reviews = ledger_events(log, "decomposition_attacked")
+    assert [(event["payload"]["round"], event["payload"]["verdict"])
+            for event in reviews] == [(0, "pass")]
 
 
 def test_game_history_binds_both_seats_across_rounds(tmp_path):

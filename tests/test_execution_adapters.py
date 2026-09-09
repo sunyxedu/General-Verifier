@@ -289,10 +289,10 @@ def test_unknown_backend_uses_same_safe_world_baseline_for_initial_and_repair(
 
 @pytest.mark.parametrize(
     ("live_world", "expected_schema", "expected_calls"),
-    [(False, ORACLE_CATALOG_INDEX_SCHEMA, 2),
+    [(False, ORACLE_CATALOG_SLICE_SCHEMA, 2),
      (True, ORACLE_CATALOG_SLICE_SCHEMA, 1)],
 )
-def test_codex_catalog_capability_preserves_normal_call_count(
+def test_codex_catalog_uses_inline_baseline_without_changing_call_count(
     tmp_path, live_world, expected_schema, expected_calls,
 ):
     if live_world:
@@ -332,7 +332,7 @@ def test_codex_catalog_capability_preserves_normal_call_count(
     catalogs = [call["catalog"] for call in backend.observed_calls]
     assert len({str(catalog) for catalog in catalogs}) == 1
     assert json.loads(catalogs[0])["schema"] == expected_schema
-    assert (type(catalogs[0]) is OracleCatalogView) is (not live_world)
+    assert type(catalogs[0]) is str
 
 
 def test_agent_backend_lazy_catalog_capability_checks_actual_tool_palette():

@@ -64,11 +64,12 @@ still receives a fresh independent Judger.
 
 An Oracle backend receives the compact identity index only when its effective
 tool boundary is hard read-only. The default Agent backend checks the actual
-Oracle palette against its read-only allowlist; Codex uses the index only in
-its offline read-only execution profile. Live Codex and unknown or custom
+Oracle palette against its read-only allowlist. Codex and unknown or custom
 backends receive the established safe inline baseline (the old basis slice for
-world obligations and the full catalog for record obligations), so a model
-with write capability never sees a lazy pathname.
+world obligations and the full catalog for record obligations). Codex stays
+inline because its macOS execution boundary may add filesystem provenance
+metadata while reading an otherwise unchanged descriptor; retrying that safe
+host-side mutation costs more than the shorter initial prompt saves.
 
 Within the index, a fixed 4 KiB budget inlines as many complete small contracts
 as fit, ordered mechanically by canonical byte length and digest. Every other
