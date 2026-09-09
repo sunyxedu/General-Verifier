@@ -4,6 +4,7 @@ Wording pins beyond these are deliberately absent: the prompts are
 principles, not a rule catalogue, and tests should not freeze prose."""
 from __future__ import annotations
 
+import json
 import re
 
 from verifier.llm import prompts, agents
@@ -222,22 +223,33 @@ def test_oracle_adapter_dispatch_is_basis_and_primitive_driven():
     assert "never by task name, domain, expected outcome" in template
     assert "does not cover the whole obligation" in template
     assert "DIRECT EFFECT-OUTPUT RECIPE" in template
-    assert "unqualified `effect N returned literal X` occurrence claim" \
-        in template
-    assert "no asserted source, operation, input, or transformation relation" \
-        in template
+    assert "for unqualified `effect N returned X`" in template
     assert "record.query@1 event-at" in template
-    assert "source=payload" in template
-    assert "/excerpt_truncated equals false" in template
-    assert "Tests include source, pointer, predicate" in template
-    assert "Any asserted producing operation, input, transformation" \
-        in template
-    assert "instrument, or source relation instead requires paired-exchange" \
+    assert '\"source\":\"payload\"' in template
+    assert '\"/excerpt_truncated\"' in template
+    assert '\"expected\":false' in template
+    assert "operation, input, transformation, instrument, or source relation" \
         in template
     assert "paired-exchange with exact result seq=N" in template
     assert "full correlated call, never event-at" in template
-    assert "already-selected call is fresh Judger evidence audit" in template
-    assert "not outside-world truth" in template
+    assert "adapter=record.query" in template
+    assert "adapter_input_binding=fixed-v1, adapter_inputs=[]" in template
+    assert '\"kind\":\"paired-exchange\"' in template
+    assert '\"source\":\"payload\"' in template
+    assert "This binding is the complete pair observation" in template
+    assert "Fresh Judger, not custom execution" in template
+    assert "Use custom only for independent computation or evidence" \
+        in template
+    assert "A custom method omits adapter_inputs too" in template
+
+    rendered = template.format(**{name: "x" for name in _vars(template)})
+    match = re.search(r"adapter_arguments=`([^`]+)`", rendered)
+    assert match is not None
+    recipe = json.loads(match.group(1).replace(":N", ":128")
+                        .replace('"X"', '"target"'))
+    assert recipe["through_seq"] == 128
+    assert recipe["query"]["kind"] == "paired-exchange"
+    assert recipe["query"]["result"]["seq"] == 128
 
 
 def test_plain_reading_gate_is_refutation_only():
