@@ -359,6 +359,10 @@ class MethodAdapter:
     # reproducible from MethodIR and the current declared inputs.
     accepted_method_reuse = False
     fixed_inputs: Tuple[FixedAdapterInput, ...] = ()
+    # Presentation only.  A lower value lets a general, closed adapter appear
+    # earlier in an Oracle's complete basis-eligible catalog.  It never makes
+    # an adapter eligible, binds a method, or changes execution precedence.
+    oracle_discovery_priority = 100
 
     @property
     def identity(self) -> str:
@@ -2867,6 +2871,7 @@ class AdapterRegistry:
     def __init__(self, adapters: Iterable[MethodAdapter] = ()):
         self._adapters: Dict[Tuple[str, int], MethodAdapter] = {}
         self._fixed_inputs: Dict[Tuple[str, int], Tuple[FixedAdapterInput, ...]] = {}
+        self._oracle_discovery_priorities: Dict[Tuple[str, int], int] = {}
         for adapter in adapters:
             key = (adapter.name, adapter.version)
             if key in self._adapters:
@@ -2874,6 +2879,13 @@ class AdapterRegistry:
             if not _NAME.fullmatch(adapter.name):
                 raise ValueError(f"invalid registered adapter name {adapter.name!r}")
             self._adapters[key] = adapter
+            priority = adapter.oracle_discovery_priority
+            if type(priority) is not int or not 0 <= priority <= 1_000_000:
+                raise ValueError(
+                    "oracle discovery priority must be an integer in range")
+            # Snapshot the display hint just like the fixed-input contract so
+            # later instance mutation cannot reorder one in-flight catalog.
+            self._oracle_discovery_priorities[key] = priority
             # Snapshot this new contract, including for extension adapters.
             # Catalog identity and materialization must not diverge if a
             # class-level descriptor tuple is replaced after registration.
@@ -2904,19 +2916,32 @@ class AdapterRegistry:
         return (isinstance(expected_type, type)
                 and type(self._adapters.get((name, version))) is expected_type)
 
+    def _oracle_discovery_key(
+        self, entry: Mapping[str, Any], required_basis: str,
+    ) -> Tuple[int, int, str, int]:
+        """Stable presentation key; never an applicability or routing rule."""
+        basis = entry["basis"]
+        basis_rank = (0 if basis == required_basis else
+                      1 if basis_satisfies(basis, required_basis) else 2)
+        identity = (entry["name"], entry["version"])
+        return (basis_rank, self._oracle_discovery_priorities[identity],
+                identity[0], identity[1])
+
     def oracle_catalog_view(
         self, full_catalog: str, required_basis: str,
     ) -> str:
-        """Return a lossless identity index plus only basis-eligible contracts.
+        """Return a lossless, basis-first Oracle presentation.
 
         This is a display optimization for Oracle, never the registry identity
-        used by execution, caches, or Judger replay.  The record floor admits
-        both bases and therefore deliberately returns the original bytes.
-        Every validation or size doubt also returns those original bytes.
+        used by execution, caches, or Judger replay.  A record floor admits
+        both bases, so its complete array is reordered rather than filtered:
+        exact-basis contracts first, then a stable verifier-owned discovery
+        hint, then identity.  Every entry remains byte-for-byte equivalent as
+        parsed JSON.  Every validation or size doubt returns the supplied
+        bytes unchanged.
         """
         if (not isinstance(full_catalog, str)
-                or required_basis not in {BASIS_RECORD, BASIS_WORLD}
-                or required_basis != BASIS_WORLD):
+                or required_basis not in {BASIS_RECORD, BASIS_WORLD}):
             return full_catalog
         try:
             entries = json.loads(
@@ -2946,18 +2971,32 @@ class AdapterRegistry:
                         or adapter.basis != basis):
                     return full_catalog
                 seen.add(identity)
-                eligible = basis_satisfies(basis, required_basis)
+            if seen != expected:
+                return full_catalog
+            entries.sort(key=lambda entry: self._oracle_discovery_key(
+                entry, required_basis))
+            if required_basis == BASIS_RECORD:
+                return json.dumps(
+                    entries,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            index = []
+            included = []
+            for entry in entries:
+                eligible = basis_satisfies(
+                    entry["basis"], required_basis)
                 index.append({
-                    "name": name,
-                    "version": version,
-                    "basis": basis,
+                    "name": entry["name"],
+                    "version": entry["version"],
+                    "basis": entry["basis"],
                     "descriptor": (
                         "included" if eligible else "excluded-below-floor"),
                 })
                 if eligible:
                     included.append(entry)
-            if seen != expected:
-                return full_catalog
             document = {
                 "schema": ORACLE_CATALOG_SLICE_SCHEMA,
                 "full_catalog_sha256": hashlib.sha256(
@@ -3063,6 +3102,8 @@ class AdapterRegistry:
                 inline.add(digest)
                 inline_bytes += size
 
+            catalogued.sort(key=lambda item: self._oracle_discovery_key(
+                item[0], required_basis))
             for entry, _encoded, digest, eligible in catalogued:
                 name = entry["name"]
                 version = entry["version"]
@@ -3761,8 +3802,13 @@ def snapshot_oracle_catalog(
         if inline_digests != expected_inline or policy["used_bytes"] != used:
             raise ValueError("inline oracle budget selection changed")
         if required_basis == BASIS_RECORD:
-            ordered_entries = [page_entries[(item["name"], item["version"])][0]
-                               for item in index]
+            # Registry catalogs are canonical identity-ordered arrays.  The
+            # index itself is presentation-ordered, so reconstruct identity
+            # independently of its discovery order.
+            ordered_entries = [
+                page_entries[identity][0]
+                for identity in sorted(page_entries)
+            ]
             rebuilt = json.dumps(
                 ordered_entries, ensure_ascii=False, sort_keys=True,
                 separators=(",", ":"), allow_nan=False).encode("utf-8")

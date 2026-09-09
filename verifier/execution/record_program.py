@@ -336,6 +336,9 @@ class RecordProgramAdapter(MethodAdapter):
     version = 1
     basis = BASIS_RECORD
     accepted_method_reuse = False
+    # Prefer closed declarative record contracts when they cover the whole
+    # predicate; this remains available before any world-basis alternative.
+    oracle_discovery_priority = 200
     fixed_inputs = (FixedAdapterInput("ledger:events", PROVENANCE_LEDGER),)
     summary = (
         "Interpret the bounded pure evidence language over one verifier-owned "

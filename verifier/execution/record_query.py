@@ -588,6 +588,9 @@ class RecordQueryAdapter(MethodAdapter):
     version = 1
     basis = BASIS_RECORD
     accepted_method_reuse = False
+    # General closed record predicates should be discovered before compatible
+    # legacy special cases and before the programmable record fallback.
+    oracle_discovery_priority = 0
     fixed_inputs = (FixedAdapterInput("ledger:events", PROVENANCE_LEDGER),)
     summary = (
         "Evaluate one bounded declarative query over immutable source ledger "

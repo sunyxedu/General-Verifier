@@ -66,8 +66,11 @@ An Oracle backend receives the compact identity index only when its effective
 tool boundary is hard read-only. The default Agent backend checks the actual
 Oracle palette against its read-only allowlist. Codex and unknown or custom
 backends receive the established safe inline baseline (the old basis slice for
-world obligations and the full catalog for record obligations). Codex stays
-inline because its macOS execution boundary may add filesystem provenance
+world obligations and the same complete contracts, presentation-ordered by
+exact basis, verifier-owned discovery priority, and identity for record
+obligations). The order is a non-authoritative discovery hint: Oracle may
+choose any later adapter or a custom method. Codex stays inline because its
+macOS execution boundary may add filesystem provenance
 metadata while reading an otherwise unchanged descriptor; retrying that safe
 host-side mutation costs more than the shorter initial prompt saves.
 

@@ -169,6 +169,13 @@ def test_strength_ladder_contract_survives():
         in prompts.DISCHARGE_SYSTEM
     assert "do not parse, render, install, or inspect downstream material" \
         in prompts.DISCHARGE_SYSTEM
+    assert "FAST CAPABILITY-ABSENCE RESPONSE" in prompts.DISCHARGE_SYSTEM
+    assert "immediately return unobtainable" in prompts.DISCHARGE_SYSTEM
+    assert "no tools/files and an empty artifact locator" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "never settles evidence" in prompts.DISCHARGE_SYSTEM
+    assert "excludes live, implicit, or ambiguous cases" \
+        in prompts.DISCHARGE_SYSTEM
     assert "LARGE-INPUT DISCIPLINE" in prompts.DISCHARGE_TEMPLATE
     assert "Never print or read an entire large source" \
         in prompts.DISCHARGE_TEMPLATE
@@ -207,6 +214,9 @@ def test_oracle_adapter_dispatch_is_basis_and_primitive_driven():
     template = prompts.ORACLES_TEMPLATE
     assert "TYPED-ADAPTER DISPATCH ORDER" in template
     assert "record.query first" in template
+    assert "Catalog order is discovery only" in template
+    assert "independently choose any exact-fit adapter or custom method" \
+        in template
     assert "event-at, exists, paired-exchange" in template
     assert "record.program only for bounded pure computation" in template
     assert "filesystem, document, and evidence-program families" in template
@@ -246,6 +256,17 @@ def test_harness_addendum_is_generic():
     assert "Never compare with a value copied from the final claim" in add
     assert "the response is independently selected as a carrier" \
         in prompts.CRITIC_SYSTEM
+
+
+def test_carrier_form_is_not_inferred_from_locator_conventions():
+    compiler = prompts.OBLIGATIONS_SYSTEM
+    critic = prompts.CRITIC_SYSTEM
+    assert "CARRIER-FORM INFERENCE GATE" in compiler
+    assert "locator syntax alone entails no media" in compiler
+    assert "address/existence separate from content" in compiler
+    assert "CARRIER-FORM INFERENCE ATTACK" in critic
+    assert "locator syntax is no authority" in critic
+    assert "require removal unless the source states or entails" in critic
 
 
 def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():

@@ -11,6 +11,7 @@ import pytest
 from experiments.terminal_bench import probe_record_game as probe
 from test_contract_replay import source_state
 from verifier.core.model import content_hash
+from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
 from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.schema import FixtureBackend
 
@@ -94,7 +95,7 @@ def _backend_factory(monkeypatch, responses, calls, *, compact_inspection=False,
 
 
 def _run(tmp_path, monkeypatch, typed, *, compact_inspection=False,
-         judger_prefetch=False):
+         judger_prefetch=False, typed_judger_packet=False):
     source, case = _inputs(tmp_path)
     calls = []
     responses = [{"methods": [METHOD]}]
@@ -108,11 +109,29 @@ def _run(tmp_path, monkeypatch, typed, *, compact_inspection=False,
         expected_source_fingerprint=probe._source_fingerprint(probe.SOURCE_ROOT),
         compact_inspection=compact_inspection,
         judger_prefetch=judger_prefetch,
+        typed_judger_packet=typed_judger_packet,
         backend_factory=_backend_factory(
             monkeypatch, responses, calls, compact_inspection=compact_inspection,
             judger_prefetch=judger_prefetch),
     )
     return result, calls, source
+
+
+def test_probe_can_exercise_production_typed_judger_transport(
+        tmp_path, monkeypatch):
+    result, calls, _ = _run(
+        tmp_path, monkeypatch, True, typed_judger_packet=True)
+
+    assert result["complete"] is True
+    assert result["typed_judger_packet"] is True
+    assert result["typed_judger_attempts"] == 1
+    assert len(calls) == 2
+    rows = [json.loads(line) for line in
+            (tmp_path / "typed" / "usage.jsonl").read_text().splitlines()]
+    assert rows[0]["typed_judger_transport"] is False
+    assert rows[1]["typed_judger_transport"] is True
+    assert rows[1]["typed_judger_protocol"] \
+        == TYPED_JUDGER_PACKET_PROTOCOL
 
 
 @pytest.mark.parametrize("typed,expected_calls", [(False, 3), (True, 2)])

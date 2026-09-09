@@ -33,6 +33,7 @@ from verifier.core.model import Obligation, content_hash
 from verifier.engine.contract_bundle import _strict_json
 from verifier.engine.game import BindingGame
 from verifier.engine.judger_prefetch import PREFETCH_PROTOCOL
+from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
 from verifier.execution.discharge import AgentDischarger
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.codex_backend import CodexBackend, codex_usage_ledger
@@ -49,6 +50,8 @@ _PROFILE_FIELDS = frozenset((
     "model", "effort", "service_tier", "role", "compact_inspection",
     "judger_prefetch", "judger_prefetch_protocol", "judger_prefetch_attached",
     "judger_prefetch_packet_sha256",
+    "typed_judger_transport", "typed_judger_protocol",
+    "typed_judger_packet_sha256",
 ))
 _CASE_KEYS = frozenset(("row", "obligation"))
 _ROW_KEYS = frozenset(("id", "kind", "text"))
@@ -90,7 +93,9 @@ def _case(path: Path) -> tuple[dict[str, Any], Obligation, str]:
     return dict(row), obligation, hashlib.sha256(raw).hexdigest()
 
 
-def _build_game(state: Path, typed: bool, backend: Any) -> BindingGame:
+def _build_game(
+    state: Path, typed: bool, backend: Any, *, typed_judger_packet: bool = False,
+) -> BindingGame:
     log = EventLog(str(state / "events.jsonl"))
     artifacts = ArtifactStore(str(state / "artifacts"))
     fallback = AgentDischarger(
@@ -109,6 +114,7 @@ def _build_game(state: Path, typed: bool, backend: Any) -> BindingGame:
     return BindingGame(
         backend, artifacts, log, discharger, live_world=False,
         method_cache=None,
+        typed_adapter_judger_packet=typed_judger_packet,
     )
 
 
@@ -161,6 +167,7 @@ def run_probe(
     expected_source_fingerprint: str,
     compact_inspection: bool = False,
     judger_prefetch: bool = False,
+    typed_judger_packet: bool = False,
     backend_factory: Callable[[Path], Any] | None = None,
 ) -> dict[str, Any]:
     """Run one arm. ``backend_factory`` is a local-test seam, not a CLI flag."""
@@ -170,6 +177,11 @@ def run_probe(
         raise ReplaySetupError("compact_inspection must be a boolean")
     if type(judger_prefetch) is not bool:
         raise ReplaySetupError("judger_prefetch must be a boolean")
+    if type(typed_judger_packet) is not bool:
+        raise ReplaySetupError("typed_judger_packet must be a boolean")
+    if typed_judger_packet and not typed_adapters:
+        raise ReplaySetupError(
+            "typed_judger_packet requires typed_adapters")
     source = source.resolve(strict=True)
     output = output.absolute()
     if (not output.is_absolute() or ".." in output.parts
@@ -201,6 +213,9 @@ def run_probe(
         "compact_inspection": compact_inspection,
         "judger_prefetch": judger_prefetch,
         "judger_prefetch_protocol": PREFETCH_PROTOCOL if judger_prefetch else None,
+        "typed_judger_packet": typed_judger_packet,
+        "typed_judger_packet_protocol": (
+            TYPED_JUDGER_PACKET_PROTOCOL if typed_judger_packet else None),
         "source": str(source), "source_seal": expected_source_seal,
         "source_root": str(SOURCE_ROOT),
         "source_fingerprint": expected_source_fingerprint,
@@ -240,7 +255,9 @@ def run_probe(
         validate = getattr(backend, "validate_offline_tool_scope", None)
         if callable(validate):
             validate(str(state), None, None)
-        game = _build_game(state, typed_adapters, backend)
+        game = _build_game(
+            state, typed_adapters, backend,
+            typed_judger_packet=typed_judger_packet)
         with codex_usage_ledger(str(usage), {str(state): context}):
             result = game.run(row, obligation)
     except BaseException as error:
@@ -289,22 +306,47 @@ def run_probe(
         error_class = error_class or "LedgerSnapshotError"
     profile_complete = False
     attached_attempts = 0
+    bills = []
     try:
         bills = [json.loads(line) for line in (snapshots["usage"] or b"").splitlines()
                  if line.strip()]
+
+        def matches_transport(bill):
+            restricted = bill.get("typed_judger_transport") is True
+            if type(bill.get("typed_judger_transport")) is not bool:
+                return False
+            if restricted:
+                return (typed_judger_packet and bill.get("role") == "judger"
+                        and bill.get("typed_judger_protocol")
+                        == TYPED_JUDGER_PACKET_PROTOCOL
+                        and isinstance(
+                            bill.get("typed_judger_packet_sha256"), str)
+                        and _SHA256.fullmatch(
+                            bill["typed_judger_packet_sha256"]) is not None
+                        and bill.get("judger_prefetch") is False
+                        and bill.get("judger_prefetch_protocol") is None
+                        and bill.get("judger_prefetch_attached") is False
+                        and bill.get("judger_prefetch_packet_sha256") is None)
+            return (bill.get("typed_judger_protocol") is None
+                    and bill.get("typed_judger_packet_sha256") is None
+                    and bill.get("judger_prefetch") is judger_prefetch
+                    and bill.get("judger_prefetch_protocol")
+                    == start["judger_prefetch_protocol"]
+                    and type(bill.get("judger_prefetch_attached")) is bool
+                    and ((bill["judger_prefetch_attached"] is False
+                          and bill.get("judger_prefetch_packet_sha256") is None)
+                         or (judger_prefetch and bill.get("role") == "judger"
+                             and isinstance(
+                                 bill.get("judger_prefetch_packet_sha256"), str)
+                             and _SHA256.fullmatch(
+                                 bill["judger_prefetch_packet_sha256"])
+                             is not None)))
+
         profile_complete = bool(bills) and all(
             isinstance(bill, dict) and _PROFILE_FIELDS <= bill.keys()
-            and bill.get("judger_prefetch") is judger_prefetch
-            and bill.get("judger_prefetch_protocol") == start["judger_prefetch_protocol"]
             and bill.get("compact_inspection") is compact_inspection
             and all(bill.get(key) == value for key, value in RUNTIME.items())
-            and type(bill.get("judger_prefetch_attached")) is bool
-            and ((bill["judger_prefetch_attached"] is False
-                  and bill.get("judger_prefetch_packet_sha256") is None)
-                 or (judger_prefetch and bill.get("role") == "judger"
-                     and bill["judger_prefetch_attached"] is True
-                     and isinstance(bill.get("judger_prefetch_packet_sha256"), str)
-                     and _SHA256.fullmatch(bill["judger_prefetch_packet_sha256"]) is not None))
+            and matches_transport(bill)
             for bill in bills)
         attached_attempts = sum(
             bill.get("judger_prefetch_attached") is True for bill in bills)
@@ -344,6 +386,8 @@ def run_probe(
         "cost_report": cost,
         "runtime_profile_accounting_complete": profile_complete,
         "prefetch_attached_attempts": attached_attempts,
+        "typed_judger_attempts": sum(
+            bill.get("typed_judger_transport") is True for bill in bills),
         "binding_result": binding, "events": events,
         "judger_ledger_rescan_observable": False,
         "note": (
@@ -366,6 +410,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--typed-adapters", choices=("0", "1"), required=True)
     parser.add_argument("--compact-inspection", choices=("0", "1"), default="0")
     parser.add_argument("--judger-prefetch", choices=("0", "1"), default="0")
+    parser.add_argument(
+        "--typed-judger-packet", choices=("0", "1"), default="0")
     parser.add_argument("--source-seal", required=True)
     parser.add_argument("--source-fingerprint", required=True)
     parser.add_argument("--execute", action="store_true")
@@ -373,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.execute and args.confirm_paid != "GPT-5.6-Luna":
         parser.error("execution requires --confirm-paid GPT-5.6-Luna")
+    if args.typed_judger_packet == "1" and args.typed_adapters != "1":
+        parser.error("--typed-judger-packet=1 requires --typed-adapters=1")
     source = args.source.resolve(strict=True)
     _case(args.case_path)
     if offline.verify_immutable_input_anchor(str(source)) != args.source_seal:
@@ -392,6 +440,10 @@ def main(argv: list[str] | None = None) -> int:
             "judger_prefetch": args.judger_prefetch == "1",
             "judger_prefetch_protocol": (
                 PREFETCH_PROTOCOL if args.judger_prefetch == "1" else None),
+            "typed_judger_packet": args.typed_judger_packet == "1",
+            "typed_judger_packet_protocol": (
+                TYPED_JUDGER_PACKET_PROTOCOL
+                if args.typed_judger_packet == "1" else None),
             "runtime": RUNTIME,
         }, indent=2))
         return 0
@@ -401,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
         typed_adapters=args.typed_adapters == "1",
         compact_inspection=args.compact_inspection == "1",
         judger_prefetch=args.judger_prefetch == "1",
+        typed_judger_packet=args.typed_judger_packet == "1",
         expected_source_seal=args.source_seal,
         expected_source_fingerprint=args.source_fingerprint,
     )

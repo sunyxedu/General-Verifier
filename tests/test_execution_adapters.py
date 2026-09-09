@@ -234,7 +234,63 @@ def test_oracle_catalog_slices_only_mechanically_ineligible_record_contracts():
             else "excluded-below-floor")
         for entry in document["index"])
     assert len(world_view.encode("utf-8")) < len(full.encode("utf-8"))
-    assert registry.oracle_catalog_view(full, BASIS_RECORD) == full
+
+    record_view = json.loads(
+        registry.oracle_catalog_view(full, BASIS_RECORD))
+    original = {
+        (entry["name"], entry["version"]): entry
+        for entry in json.loads(full)
+    }
+    assert {
+        (entry["name"], entry["version"]): entry
+        for entry in record_view
+    } == original
+    assert record_view[0]["name"] == "record.query"
+    bases = [entry["basis"] for entry in record_view]
+    assert bases == sorted(bases, key=lambda basis: basis != BASIS_RECORD)
+    record_names = [
+        entry["name"] for entry in record_view
+        if entry["basis"] == BASIS_RECORD
+    ]
+    assert record_names[-1] == "record.program"
+    lazy = registry.oracle_catalog_index(full, BASIS_RECORD)
+    assert lazy is not None
+    lazy_document, _pages = lazy
+    assert lazy_document["index"][0]["name"] == "record.query"
+    assert {
+        (entry["name"], entry["version"])
+        for entry in lazy_document["index"]
+    } == set(original)
+
+
+def test_oracle_discovery_priority_is_validated_and_snapshotted():
+    class PreferredAdapter(MethodAdapter):
+        name = "test.zpreferred"
+        basis = BASIS_RECORD
+        oracle_discovery_priority = 7
+
+    class OrdinaryAdapter(MethodAdapter):
+        name = "test.aordinary"
+        basis = BASIS_RECORD
+
+    preferred = PreferredAdapter()
+    registry = AdapterRegistry([preferred, OrdinaryAdapter()])
+    full = registry.catalog()
+    assert [entry["name"] for entry in json.loads(full)] == [
+        "test.aordinary", "test.zpreferred"]
+    preferred.oracle_discovery_priority = 999
+    assert [
+        entry["name"]
+        for entry in json.loads(
+            registry.oracle_catalog_view(full, BASIS_RECORD))
+    ] == ["test.zpreferred", "test.aordinary"]
+
+    class InvalidAdapter(MethodAdapter):
+        name = "test.invalid"
+        oracle_discovery_priority = True
+
+    with pytest.raises(ValueError, match="discovery priority"):
+        AdapterRegistry([InvalidAdapter()])
 
 
 def test_oracle_catalog_slice_fails_open_to_exact_supplied_catalog():
@@ -493,7 +549,7 @@ def test_oversized_extension_fails_open_before_publication(tmp_path):
     assert not (state / "oracle_catalog").exists()
 
 
-def test_tampered_lazy_catalog_fails_open_to_full_inline_catalog(tmp_path):
+def test_tampered_lazy_catalog_fails_open_to_lossless_inline_baseline(tmp_path):
     _state, _world, _artifacts, _log, _fallback, routing = captured(tmp_path)
     full = routing.adapter_catalog()
     document = json.loads(
@@ -505,7 +561,9 @@ def test_tampered_lazy_catalog_fails_open_to_full_inline_catalog(tmp_path):
         handle.write(b"{}")
     os.chmod(path, 0o400)
 
-    assert routing.oracle_adapter_catalog(full, BASIS_RECORD) == full
+    assert routing.oracle_adapter_catalog(
+        full, BASIS_RECORD) == routing.registry.oracle_catalog_view(
+            full, BASIS_RECORD)
 
 
 @pytest.mark.parametrize("backend_raises", [False, True])
@@ -561,7 +619,9 @@ def test_cleanup_does_not_remove_a_renamed_substitute_directory(
 
     monkeypatch.setattr("verifier.execution.adapters.os.rename",
                         rename_then_substitute)
-    assert routing.oracle_adapter_catalog(full, BASIS_RECORD) == full
+    assert routing.oracle_adapter_catalog(
+        full, BASIS_RECORD) == routing.registry.oracle_catalog_view(
+            full, BASIS_RECORD)
 
     parent = state / "oracle_catalog"
     assert (parent / raced["source"]).is_dir()
@@ -1279,11 +1339,43 @@ def test_binding_game_keeps_oracle_and_judger_but_skips_agent_discharge(
     assert fallback.calls == []
     oracle_vars = backend.calls[0]["variables"]
     assert "document.json-value" in oracle_vars["adapter_catalog"]
+    catalog_view = json.loads(oracle_vars["adapter_catalog"])
+    ordered_names = [
+        entry["name"] for entry in catalog_view["adapters"]
+    ]
+    assert ordered_names.index("document.json-value") > 0
     judge_vars = backend.calls[1]["variables"]
     assert "document.json-value" in judge_vars["adapter_method"]
     evidence = json.loads(judge_vars["evidence"])
     assert artifacts.get(evidence["artifact_digest"])["schema"] \
         == EVIDENCE_SCHEMA
+
+
+def test_record_catalog_order_does_not_prevent_custom_oracle_choice(tmp_path):
+    _, _, artifacts, log, fallback, routing = captured(tmp_path)
+    custom = {
+        "procedure": "audit the complete retained record with a custom check",
+        "artifact": "a replayable custom audit",
+        "level": "custom exact record audit",
+        "basis": BASIS_RECORD,
+        "strength": "decisive",
+        "bridges": [],
+    }
+    backend = FixtureBackend({
+        "oracles": {"methods": [custom]},
+        "judger": JUDGE_YES,
+    })
+
+    result = BindingGame(
+        backend, artifacts, log, routing, live_world=False).run(
+            ROW, Obligation("c1", "inspect a retained record fact", BASIS_RECORD))
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert len(fallback.calls) == 1
+    catalog = json.loads(backend.calls[0]["variables"]["adapter_catalog"])
+    assert catalog[0]["name"] == "record.query"
+    assert "adapter" not in fallback.calls[0]["method"]
+    assert [call["role"] for call in backend.calls] == ["oracles", "judger"]
 
 
 def test_judger_redo_routes_to_agent_instead_of_repeating_adapter(tmp_path):

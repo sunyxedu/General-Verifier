@@ -1452,6 +1452,10 @@ class EvidenceProgramAdapter(MethodAdapter):
     version = 1
     basis = BASIS_WORLD
     accepted_method_reuse = False
+    # Closed single-purpose world adapters are the simpler discovery surface;
+    # this bounded language remains fully available when they cannot express
+    # the whole predicate.
+    oracle_discovery_priority = 200
     summary = (
         "Interpret a bounded pure evidence program over ordered declared world-file "
         "slots. This is not Python execution: imports, attributes, ambient I/O, "
