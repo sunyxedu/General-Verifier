@@ -50,6 +50,13 @@ SURFACES = {
     "EXTRACT_TEMPLATE": prompts.EXTRACT_TEMPLATE,
 }
 
+COMPACT_SURFACES = {
+    "COMPACT_COMPLETENESS_COMPILER_ADDENDUM":
+        prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM,
+    "COMPACT_COMPLETENESS_CRITIC_ADDENDUM":
+        prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM,
+}
+
 
 def _hits(text: str):
     low = text.lower()
@@ -65,7 +72,10 @@ def _hits(text: str):
 
 
 def test_prompts_name_no_tool_format_benchmark_or_case():
-    offenders = {name: _hits(text) for name, text in SURFACES.items()}
+    offenders = {
+        name: _hits(text)
+        for name, text in {**SURFACES, **COMPACT_SURFACES}.items()
+    }
     offenders = {k: v for k, v in offenders.items() if v}
     assert not offenders, offenders
 

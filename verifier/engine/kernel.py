@@ -168,6 +168,21 @@ class Kernel:
                     system=(self.critic_role.system
                             + prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM),
                 )
+            # Agent backends resolve the system instruction again by seat
+            # name inside ``complete``.  Keep that registry on the exact
+            # effective clones selected above; otherwise the Kernel would
+            # expose the compact roles while paid calls silently used the
+            # pre-clone systems.  This mirrors the existing harness-role
+            # registration in ``_default_kernel`` and changes no seat,
+            # schema, tool palette, or retry behavior.
+            role_registry = getattr(backend, "roles", None)
+            if isinstance(role_registry, dict):
+                if (type(self.obligations_role) is AgentRole
+                        and self.obligations_role.name == "obligations"):
+                    role_registry["obligations"] = self.obligations_role
+                if (type(self.critic_role) is AgentRole
+                        and self.critic_role.name == "critic"):
+                    role_registry["critic"] = self.critic_role
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),

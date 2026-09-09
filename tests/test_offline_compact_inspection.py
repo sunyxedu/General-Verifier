@@ -113,6 +113,10 @@ def test_authority_clone_preserves_profile_and_frozen_identity(tmp_path, monkeyp
 def _prompt_kernel(tmp_path, compact):
     backend = FixtureBackend({})
     backend.compact_inspection = compact
+    backend.roles = {
+        "obligations": COMPILE_OBLIGATIONS_AGENT,
+        "critic": CRITIC_AGENT,
+    }
     return Kernel(
         ClaimStore(),
         EventLog(os.path.join(tmp_path, "events.jsonl")),
@@ -137,6 +141,10 @@ def test_compact_profile_clones_only_compiler_and_critic_prompts(tmp_path):
         + prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM)
     assert treatment.critic_role.system == (
         CRITIC_AGENT.system + prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM)
+    assert treatment.backend.roles["obligations"] is treatment.obligations_role
+    assert treatment.backend.roles["critic"] is treatment.critic_role
+    assert control.backend.roles["obligations"] is COMPILE_OBLIGATIONS_AGENT
+    assert control.backend.roles["critic"] is CRITIC_AGENT
 
     # The treatment is a prompt representation change only.  Seat identity,
     # output schema, tools, and retry/turn limits remain exactly symmetric.
