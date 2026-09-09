@@ -222,12 +222,34 @@ def run_worker(plan):
     results = []
     failures = []
     observation = overlay = accounting = None
+    # The policy overlay binds existing state directories, so every
+    # candidate's immutable inputs are cloned before the batch opens.
+    records = {}
+    for candidate in plan["candidates"]:
+        identifier = candidate["candidate_id"]
+        record = {"candidate_id": identifier,
+                  "input_seal": candidate["input_seal"],
+                  "features": None, "certificate": None,
+                  "event_counts": None, "failures": [],
+                  "wall_seconds": None}
+        records[identifier] = record
+        results.append(record)
+        try:
+            states[identifier].parent.mkdir(parents=True, exist_ok=False)
+            cold._clone(offline, Path(candidate["input_source"]),
+                        states[identifier], candidate["input_seal"])
+        except Exception as error:
+            record["failures"].append(type(error).__name__)
+            failures.append(f"{identifier}:{type(error).__name__}")
     try:
         bindings = tuple(
             policy.OfflinePolicyBinding(
-                state_dir=str(state),
+                state_dir=str(states[identifier]),
                 runtime_read_roots=tuple(plan["runtime_read_roots"]))
-            for state in states.values())
+            for identifier, record in records.items()
+            if not record["failures"])
+        if not bindings:
+            raise ValueError("no candidate input could be cloned")
         with policy.eval_offline_policy(backend, bindings=bindings) as overlay:
             with observer.observe_codex_attempts(
                     backend, output / "observer.jsonl",
@@ -238,17 +260,11 @@ def run_worker(plan):
                     for candidate in plan["candidates"]:
                         identifier = candidate["candidate_id"]
                         state = states[identifier]
-                        record = {"candidate_id": identifier,
-                                  "input_seal": candidate["input_seal"],
-                                  "features": None, "certificate": None,
-                                  "event_counts": None, "failures": [],
-                                  "wall_seconds": None}
-                        results.append(record)
+                        record = records[identifier]
+                        if record["failures"]:
+                            continue
                         begun = time.monotonic_ns()
                         try:
-                            state.parent.mkdir(parents=True, exist_ok=False)
-                            cold._clone(offline, Path(candidate["input_source"]),
-                                        state, candidate["input_seal"])
                             features = offline.score(
                                 str(state), **RUNTIME, seats="codex",
                                 max_rounds=3, parallel_claims=4,

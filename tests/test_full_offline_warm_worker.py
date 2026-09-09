@@ -89,7 +89,10 @@ def test_batch_scores_each_candidate_once_in_order_and_keeps_failures(
         return {"unscoreable": False, "verdict": "verified",
                 "certificate_id": "c" * 64}
 
+    cloned = []
+
     def clone(offline_module, source, destination, expected):
+        cloned.append(str(destination))
         destination.mkdir(parents=True)
 
     offline_stub = SimpleNamespace(
@@ -116,10 +119,11 @@ def test_batch_scores_each_candidate_once_in_order_and_keeps_failures(
 
     @contextmanager
     def observer(*args, **kwargs):
-        # every candidate state is registered before any model call
+        # every candidate state is registered and cloned before any model call
         assert set(kwargs["context_by_cwd"]) == {
             str(Path(plan["output_root"]) / c["candidate_id"] / "state")
             for c in plan["candidates"]}
+        assert len(cloned) == 3
         yield SimpleNamespace(summary=lambda: {"fixture": True})
 
     @contextmanager
