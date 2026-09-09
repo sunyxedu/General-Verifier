@@ -9,6 +9,13 @@ from types import SimpleNamespace
 import pytest
 
 from experiments.terminal_bench import run_full_online_comparison as comparison
+from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
+from verifier.llm.typed_judger_backend import TYPED_JUDGER_BOUNDARY_VERSION
+
+
+def test_transport_pins_match_production_protocols():
+    assert comparison.TYPED_PACKET_PROTOCOL == TYPED_JUDGER_PACKET_PROTOCOL
+    assert comparison.TYPED_BOUNDARY == TYPED_JUDGER_BOUNDARY_VERSION
 
 
 def _write(path, value):
