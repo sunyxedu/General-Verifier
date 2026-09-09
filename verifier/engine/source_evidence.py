@@ -839,7 +839,8 @@ def bind_source_evidence_variables(
     if type(log) is not EventLog:
         return bound
     mixed_ledger = os.path.abspath(log.path)
-    if bound.get("ledger_path") != mixed_ledger:
+    if (bound.get("ledger_path") != mixed_ledger
+            and not log.is_record_path(bound.get("ledger_path"))):
         # In particular, never replace the authority-only withheld boundary.
         return bound
     try:

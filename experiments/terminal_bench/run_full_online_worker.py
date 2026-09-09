@@ -54,6 +54,8 @@ _INPUT_PATH_BYTES_CAP = 4096
 _RUNTIME_STATE_TOP_LEVEL = frozenset({
     "artifacts", "work", "workspace", "events.jsonl", "claims.sqlite",
     "claims.sqlite-shm", "claims.sqlite-wal",
+    # frozen per-claim ledger prefixes published during verification
+    "record",
 })
 _ARTIFACT_CAP = 32 * 1024 * 1024
 _EVENT_CAP = 64 * 1024 * 1024

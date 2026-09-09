@@ -17,6 +17,7 @@ import stat
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from ..core.events import EventLog, RECORD_DIRECTORY
 from ..core.model import BASIS_RECORD, content_hash
 from ..execution.instruments import (
     MAX_IMAGE_PIXELS,
@@ -111,6 +112,7 @@ class _StableFile:
 @dataclass(frozen=True)
 class _PacketSnapshot:
     state_path: str
+    ledger_path: str
     artifact_root: str
     artifact: _StableFile
     ledger: Optional[_StableFile]
@@ -425,14 +427,25 @@ def _snapshot(
         raise ValueError("prefetch is unsupported or has an invalid digest")
 
     ledger_path = os.path.abspath(os.fspath(log.path))
-    if os.path.basename(ledger_path) != "events.jsonl":
-        raise ValueError("prefetch ledger must be state/events.jsonl")
-    state_path = os.path.dirname(ledger_path)
+    ledger_name = os.path.basename(ledger_path)
+    ledger_parent = os.path.dirname(ledger_path)
+    if ledger_name == "events.jsonl":
+        state_path = ledger_parent
+        ledger_directory = None
+    elif (os.path.basename(ledger_parent) == RECORD_DIRECTORY
+            and EventLog.record_boundary_of(ledger_name) is not None):
+        # A frozen record is the claim's immutable ledger prefix; it lives
+        # one directory below the state root.
+        state_path = os.path.dirname(ledger_parent)
+        ledger_directory = RECORD_DIRECTORY
+    else:
+        raise ValueError(
+            "prefetch ledger must be state/events.jsonl or a frozen record")
     artifact_root = os.path.abspath(os.fspath(artifacts.root))
     if artifact_root != os.path.join(state_path, "artifacts"):
         raise ValueError("prefetch artifact store must belong to ledger state")
 
-    state_fd = artifact_fd = -1
+    state_fd = artifact_fd = record_fd = -1
     try:
         state_fd = _open_real_directory(state_path)
         artifact_fd = _open_directory_at(state_fd, "artifacts")
@@ -455,8 +468,11 @@ def _snapshot(
         if basis == BASIS_RECORD:
             remaining = max(0, MAX_PREFETCH_RAW_BYTES - len(artifact.raw))
             try:
+                if ledger_directory is not None:
+                    record_fd = _open_directory_at(state_fd, ledger_directory)
                 ledger = _read_regular_at(
-                    state_fd, "events.jsonl", ledger_path, remaining)
+                    record_fd if ledger_directory is not None else state_fd,
+                    ledger_name, ledger_path, remaining)
             except _SourceTooLarge:
                 # Partial transport is not a partial file.  Keep the complete
                 # artifact benefit and tell the Judger to open the unchanged
@@ -468,6 +484,7 @@ def _snapshot(
 
         return _PacketSnapshot(
             state_path=state_path,
+            ledger_path=ledger_path,
             artifact_root=artifact_root,
             artifact=artifact,
             ledger=ledger,
@@ -477,6 +494,8 @@ def _snapshot(
             images=images,
         )
     finally:
+        if record_fd >= 0:
+            os.close(record_fd)
         if artifact_fd >= 0:
             os.close(artifact_fd)
         if state_fd >= 0:
@@ -608,7 +627,7 @@ def _packet_document(snapshot: _PacketSnapshot, artifact_digest: str) -> dict:
     elif snapshot.ledger_omitted_reason is not None:
         sources["ledger"] = {
             "attached": False,
-            "path": os.path.join(snapshot.state_path, "events.jsonl"),
+            "path": snapshot.ledger_path,
             "reason": snapshot.ledger_omitted_reason,
             "must_open_original": True,
         }
@@ -673,9 +692,7 @@ class JudgerEvidencePacket:
             )
             current = _snapshot(
                 _ArtifactRoot(self._snapshot.artifact_root),
-                _LogPath(self._snapshot.ledger.path if self._snapshot.ledger
-                         is not None else os.path.join(
-                             self._snapshot.state_path, "events.jsonl")),
+                _LogPath(self._snapshot.ledger_path),
                 basis,
                 self.artifact_digest,
             )

@@ -117,6 +117,7 @@ class Kernel:
         parallel_claims: int = 1,
         contract_cache=None,
         contract_replay=None,
+        record_boundary=None,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -136,6 +137,11 @@ class Kernel:
         self.backend = backend
         self.artifacts = artifacts
         self.ledger = LedgerInstrument(log)
+        # claim id -> ledger seq at which the claim was made (the Builder
+        # knows; a bare kernel does not).  Without it the record boundary is
+        # the ledger's end when verification of the claim begins.
+        self._record_boundary = (record_boundary
+                                 if callable(record_boundary) else None)
         self.memory_hits = memory_hits
         self.live_world = live_world
         self.critic_rounds = (MAX_CRITIC_ROUNDS if critic_rounds is None
@@ -237,8 +243,38 @@ class Kernel:
                 if row["kind"] == CLAIM_EFFECT:
                     self._verify_effect(row)
                 else:
+                    self._freeze_record(row)
                     self._verify_assertion(row)
             return self.store.status(claim_id)
+
+    def _freeze_record(self, row: Dict) -> None:
+        """Bind an immutable ledger prefix to this claim's verification.
+
+        The retained record a claim is judged against must not grow while
+        the seats read it: the executor's complete scan and the Judger's
+        independent recount have to see the same bounded file.  The
+        boundary is the claim's own commit seq when known, otherwise the
+        ledger's end now.  A publication failure keeps the live ledger and
+        is recorded; it never changes what is verified.
+        """
+        boundary = None
+        if self._record_boundary is not None:
+            try:
+                boundary = self._record_boundary(row["id"])
+            except Exception:
+                boundary = None
+        if (isinstance(boundary, bool) or not isinstance(boundary, int)
+                or boundary < 0):
+            boundary = self.log.last_seq()
+        payload = {"claim": row["id"], "through_seq": boundary}
+        try:
+            path = self.log.freeze_record(boundary)
+        except (OSError, ValueError) as error:
+            payload["error"] = str(error)[:300]
+        else:
+            self.log.bind_record(row["id"], path)
+            payload["record"] = os.path.basename(path)
+        self.log.append("record_frozen", payload)
 
     # effect: ledger check
     def _verify_effect(self, row: Dict) -> None:
@@ -638,7 +674,7 @@ class Kernel:
                 prompts.CONTRACT_LOCUS_FINAL if row["kind"] == CLAIM_FINAL
                 else prompts.CONTRACT_LOCUS_NONFINAL),
             "task_context": task_context,
-            "ledger_path": os.path.abspath(self.log.path),
+            "ledger_path": self.log.record_path_for(row["id"]),
             "world_mode": world_mode,
             "world_path": world,
             "world_map": world_map(state, live_world=self.live_world),

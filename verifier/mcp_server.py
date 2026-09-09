@@ -343,6 +343,7 @@ def _default_kernel(sc: Service, model, backend=None,
                   obligations_role=obligations,
                   discharger=discharger, binder=binder,
                   memory=sc.memory, live_world=sc.live_world,
+                  record_boundary=sc.builder.commit_seq.get,
                   critic_rounds=critic_rounds,
                   # Keep the production topology fixed: every final claim is
                   # freshly compiled and criticised. Contract-cache research

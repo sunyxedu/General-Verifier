@@ -106,4 +106,6 @@ def test_prompt_corpus_stays_bounded():
     """Prose rules have diminishing returns; growth is the smell of case
     patches. Raise this bound deliberately, never incidentally."""
     total = sum(len(t.split()) for t in SURFACES.values())
-    assert total <= 17_000, total
+    # Raised from 17,000 for the frozen-record boundary sentences in the
+    # executor and Judger templates: a mechanism description, not a case.
+    assert total <= 17_100, total

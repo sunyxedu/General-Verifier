@@ -33,11 +33,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 import tempfile
 from typing import Any, Dict, List, Optional
 
-from .core.events import EventLog, SOURCE_EVENT_TYPES
+from .core.events import EventLog, RECORD_DIRECTORY, SOURCE_EVENT_TYPES
 from .core.model import canonical, content_hash
 from .core.store import ClaimStore, TRIGGER_ON_FIRST_DEPENDENT, UnknownDependency
 from .engine.certificate import request_certificate
@@ -1023,6 +1024,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                 path = os.path.join(state_dir, name)
                 if os.path.exists(path):
                     os.remove(path)
+            shutil.rmtree(os.path.join(state_dir, RECORD_DIRECTORY),
+                          ignore_errors=True)
             meta = {}
         if not _has_commits(events_path):
             try:

@@ -81,6 +81,15 @@ from ..llm.schema import RoleError
 from ..llm.typed_judger_backend import restricted_typed_judger_backend
 from .method_cache import AcceptedMethod, build_method_cache_key
 from .judger_prefetch import build_judger_evidence_packet
+
+
+class _RecordLedger:
+    """The ledger a fresh Judger reads: the claim's frozen record."""
+
+    __slots__ = ("path",)
+
+    def __init__(self, path: str):
+        self.path = path
 from .typed_judger_packet import build_typed_adapter_judger_packet
 from .source_evidence import bind_source_evidence_variables
 from ..execution.config import (
@@ -1160,7 +1169,7 @@ class BindingGame:
                 "registry": registry,
                 "adapter_catalog": oracle_catalog,
                 "method_feedback": method_feedback,
-                "ledger_path": os.path.abspath(self.log.path),
+                "ledger_path": self.log.record_path_for(row["id"]),
                 "artifact_root": os.path.abspath(self.artifacts.root),
                 "world_mode": world_mode,
                 "world_path": world,
@@ -1243,7 +1252,7 @@ class BindingGame:
                                   ensure_ascii=False),
             "degradation_record": degradation,
             "task_context": authoritative_task_context(state),
-            "ledger_path": os.path.abspath(self.log.path),
+            "ledger_path": self.log.record_path_for(obligation.claim_id),
             "artifact_root": os.path.abspath(self.artifacts.root),
             "world_mode": world_mode,
             "world_path": world,
@@ -1292,7 +1301,8 @@ class BindingGame:
                 if getattr(self.backend, "judger_prefetch", False) is True:
                     packet = build_judger_evidence_packet(
                         self.artifacts,
-                        self.log,
+                        _RecordLedger(
+                            self.log.record_path_for(obligation.claim_id)),
                         method.get("basis", ""),
                         result.artifact,
                     )

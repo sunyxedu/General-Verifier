@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import math
 import os
 import stat
+import tempfile
 import threading
 import time
 from typing import Any, Dict, Iterator, Optional, Tuple
@@ -30,6 +32,13 @@ SOURCE_EVENT_TYPES = (
 MAX_SOURCE_LEDGER_BYTES = 32 * 1024 * 1024
 MAX_SOURCE_LEDGER_EVENTS = 20_000
 
+# Frozen records: an exact, immutable prefix of the ledger published once per
+# verified claim.  Seats and the independent Judger read the same bounded
+# file, so a verifier append during verification can never make a complete
+# record scan look stale.
+RECORD_DIRECTORY = "record"
+_RECORD_NAME = re.compile(r"events-through-(\d+)-([0-9a-f]{16})\.jsonl\Z")
+
 EVENT_TYPES = (
     *SOURCE_EVENT_TYPES,
 
@@ -41,6 +50,7 @@ EVENT_TYPES = (
 
     # scheduling
     "verify_request",
+    "record_frozen",
     "status_change",
     "certificate",
 
@@ -331,6 +341,10 @@ class EventLog:
         # never interleave into a gap or a duplicate that replay rejects
         self._lock = threading.Lock()
         self._seq = self._last_seq()
+        # claim id -> absolute path of the frozen record bound to that
+        # claim's verification; every seat resolves its ledger through here
+        self._records: Dict[str, str] = {}
+        self._records_lock = threading.Lock()
 
     def _last_seq(self) -> int:
         if not os.path.exists(self.path):
@@ -363,6 +377,104 @@ class EventLog:
                 f.flush()
             self._seq = next_seq
         return event
+
+
+    def last_seq(self) -> int:
+        with self._lock:
+            return self._seq
+
+    def freeze_record(self, through_seq: int) -> str:
+        """Publish the exact ledger prefix through ``through_seq``.
+
+        The prefix is written verbatim (the writer's own encoding, one record
+        per line) to ``<state>/record/events-through-<seq>-<digest16>.jsonl``
+        as a read-only file and its absolute path is returned.  The name is
+        content-addressed, so freezing the same boundary twice is idempotent
+        and a tampered publication is detected rather than reused.
+        """
+        if (isinstance(through_seq, bool) or not isinstance(through_seq, int)
+                or through_seq < 0):
+            raise ValueError("record boundary must be a nonnegative integer")
+        with self._lock:
+            if through_seq > self._seq:
+                raise ValueError("record boundary lies beyond the ledger")
+            raw = _read_stable_event_log(self.path) if through_seq else b""
+            kept = []
+            count = 0
+            for line in raw.split(b"\n"):
+                if count == through_seq:
+                    break
+                if not line.strip():
+                    continue
+                try:
+                    seq = json.loads(line)["seq"]
+                except (ValueError, TypeError, KeyError) as error:
+                    raise ValueError(
+                        "ledger prefix is not valid JSONL") from error
+                count += 1
+                if seq != count:
+                    raise ValueError(
+                        f"ledger prefix is not contiguous at seq {count}")
+                kept.append(line)
+            if count != through_seq:
+                raise ValueError("ledger ends before the record boundary")
+            prefix = b"\n".join(kept) + (b"\n" if kept else b"")
+            digest = hashlib.sha256(prefix).hexdigest()
+            directory = os.path.join(
+                os.path.dirname(os.path.abspath(self.path)), RECORD_DIRECTORY)
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            target = os.path.join(
+                directory, f"events-through-{through_seq}-{digest[:16]}.jsonl")
+            if os.path.lexists(target):
+                if os.path.islink(target) or not os.path.isfile(target):
+                    raise ValueError("frozen record path is not a regular file")
+                with open(target, "rb") as handle:
+                    existing = handle.read(len(prefix) + 1)
+                if existing != prefix:
+                    raise ValueError("frozen record does not match its name")
+                return target
+            fd, temporary = tempfile.mkstemp(prefix=".freezing-", dir=directory)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(prefix)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.chmod(temporary, 0o444)
+                os.replace(temporary, target)
+                temporary = ""
+            finally:
+                if temporary:
+                    try:
+                        os.remove(temporary)
+                    except OSError:
+                        pass
+            return target
+
+    @staticmethod
+    def record_boundary_of(path: str) -> Optional[int]:
+        """The ``through_seq`` named by a frozen record path, else ``None``."""
+        match = _RECORD_NAME.match(os.path.basename(str(path)))
+        return int(match.group(1)) if match else None
+
+    def bind_record(self, claim_id: str, path: str) -> None:
+        with self._records_lock:
+            self._records[claim_id] = os.path.abspath(path)
+
+    def record_path_for(self, claim_id: Optional[str]) -> str:
+        """The ledger a seat verifying ``claim_id`` must read.
+
+        A claim whose verification froze a record gets that immutable prefix;
+        anything else keeps the live ledger, exactly as before.
+        """
+        with self._records_lock:
+            bound = self._records.get(claim_id) if claim_id else None
+        return bound or os.path.abspath(self.path)
+
+    def is_record_path(self, path: Any) -> bool:
+        if not isinstance(path, str):
+            return False
+        with self._records_lock:
+            return path in set(self._records.values())
 
     def replay(self) -> Iterator[Dict[str, Any]]:
         if not os.path.exists(self.path):

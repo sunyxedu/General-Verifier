@@ -72,7 +72,7 @@ DERIVED_FILES = frozenset({
     "claims.sqlite", "claims.sqlite-wal", "claims.sqlite-shm",
     "claims.sqlite-journal", "verification.json",
 })
-DERIVED_DIRS = frozenset({"artifacts", "work", "workspace"})
+DERIVED_DIRS = frozenset({"artifacts", "work", "workspace", "record"})
 SOURCE_MANIFEST = ".source_inputs.json"
 WORLD_MANIFEST = {
     "captured_roots": [],

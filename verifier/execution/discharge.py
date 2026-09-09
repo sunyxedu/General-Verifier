@@ -294,7 +294,11 @@ class AgentDischarger:
                          "write the check script and its complete output to disk",
         }
         ledger = ""
-        if self.state_dir:
+        if self.log is not None:
+            ledger = self.log.record_path_for(row.get("id"))
+            if not os.path.exists(ledger):
+                ledger = ""
+        elif self.state_dir:
             path = os.path.join(self.state_dir, "events.jsonl")
             ledger = path if os.path.exists(path) else ""
         world_mode, world, manifest = world_evidence_context(
