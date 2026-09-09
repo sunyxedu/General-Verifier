@@ -32,7 +32,7 @@ TYPED_PACKET_PROTOCOL = (
     "gv-typed-adapter-judger-packet-v5;evidence-cap=16384;"
     "render-cap=131072;fresh-replay=before+after;transport=no-tools-v1"
 )
-TYPED_BOUNDARY = "gv-typed-judger-no-tools-v1"
+TYPED_BOUNDARY = "gv-typed-judger-no-tools-v2"
 RUNTIME = {"model": "gpt-5.6-luna", "effort": "medium",
            "service_tier": "standard"}
 COST_RATES_USD_PER_MILLION = {

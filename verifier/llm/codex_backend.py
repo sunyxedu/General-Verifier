@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import errno
 import json
+import math
 import os
 import posixpath
 import re
@@ -725,6 +726,7 @@ def _parse_exec_accounting(stdout: str) -> _ExecTelemetry:
 
 def _completed_response_without_usage(
     stdout: str, *, permitted_startup_notice: Optional[str] = None,
+    allow_message_sequence: bool = False,
 ) -> Optional[str]:
     """Recover only a structurally complete response, never token counters.
 
@@ -748,7 +750,16 @@ def _completed_response_without_usage(
     def no_constant(_value):
         raise ValueError("non-finite event value")
 
+    def finite_float(value):
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("non-finite event value")
+        return parsed
+
+    if type(allow_message_sequence) is not bool:
+        return None
     phase, last_message = "new", None
+    message_phase = False
     active_items, completed_items = {}, set()
     notice_seen = False
     try:
@@ -758,7 +769,8 @@ def _completed_response_without_usage(
             if not line.strip():
                 continue
             event = json.loads(line, object_pairs_hook=unique_object,
-                               parse_constant=no_constant)
+                               parse_constant=no_constant,
+                               parse_float=finite_float)
             if not isinstance(event, dict):
                 return None
             kind = event.get("type")
@@ -786,7 +798,11 @@ def _completed_response_without_usage(
                 if not isinstance(item, dict) or not isinstance(item.get("type"), str):
                     return None
                 item_id = item.get("id")
-                if (item["type"] == "error" or last_message is not None
+                if (item["type"] == "error"
+                        or (last_message is not None
+                            and not allow_message_sequence)
+                        or (message_phase
+                            and item["type"] != "agent_message")
                         or not isinstance(item_id, str) or not item_id
                         or item_id in completed_items):
                     return None
@@ -804,8 +820,12 @@ def _completed_response_without_usage(
                         return None
                     active_items.pop(item_id, None)
                     completed_items.add(item_id)
+                if item["type"] == "agent_message":
+                    message_phase = True
                 if kind == "item.completed" and item["type"] == "agent_message":
                     if not isinstance(item.get("text"), str) or not item["text"].strip():
+                        return None
+                    if active_items:
                         return None
                     last_message = item["text"].strip()
             elif (phase == "turn" and kind == "turn.completed"
@@ -1698,6 +1718,9 @@ class CodexBackend:
     def _validate_attempt_stream(self, stdout: str) -> None:
         """Optional stricter stream policy for capability-limited subclasses."""
 
+    def _validated_stream_response(self, stdout: str) -> Optional[str]:
+        """Return a policy-bound final response, if this transport has one."""
+
     def _recover_completed_response(self, stdout: str) -> Optional[str]:
         """Called only after the role's stream policy has passed."""
         return _completed_response_without_usage(stdout)
@@ -2388,6 +2411,16 @@ class CodexBackend:
                         f"stderr={proc.stderr[-300:]!r})")
                 try:
                     self._validate_attempt_stream(stdout)
+                    validated_stream_response = self._validated_stream_response(
+                        stdout)
+                    if (validated_stream_response is not None
+                            and (not isinstance(validated_stream_response, str)
+                                 or not validated_stream_response.strip())):
+                        raise RoleError(
+                            "Codex stream policy returned an invalid response")
+                    validated_stream_response = (
+                        validated_stream_response.strip()
+                        if isinstance(validated_stream_response, str) else None)
                     response_without_usage = None
                     # Billing extraction deliberately ignores unrelated item
                     # payloads. Before accepting a role response, retain the
@@ -2411,7 +2444,12 @@ class CodexBackend:
                     if (usage_target is not None and attempt_usage.telemetry is None
                             and (usage_code.startswith("invalid_counter:")
                                  or usage_code == "cached_exceeds_input")):
-                        response_without_usage = self._recover_completed_response(stdout)
+                        recovered = self._recover_completed_response(stdout)
+                        if validated_stream_response is not None \
+                                and recovered != validated_stream_response:
+                            raise RoleError(
+                                "Codex stream validation and recovery disagree")
+                        response_without_usage = recovered
                 except RoleError:
                     _record_codex_attempt(
                         usage_target, base=attempt_base,
@@ -2462,6 +2500,7 @@ class CodexBackend:
                     "duration_ns": duration_ns,
                     "stdout": stdout,
                     "usage": attempt_usage,
+                    "validated_stream_response": validated_stream_response,
                     "response_without_usage": response_without_usage,
                 }
                 break
@@ -2482,18 +2521,41 @@ class CodexBackend:
                 try:
                     if os.path.exists(out.name):
                         with open(out.name, encoding="utf-8",
-                                  errors="replace") as f:
+                                  errors="strict") as f:
                             text = f.read().strip()
-                except OSError:
+                except (OSError, UnicodeError) as error:
                     _record_codex_attempt(
                         usage_target, base=attempt_base,
                         started=True, attempt_status="output_error",
-                        error_kind="output_read",
-                        error="Codex CLI output file could not be read",
+                        error_kind=("output_read" if isinstance(error, OSError)
+                                    else "output_encoding"),
+                        error=("Codex CLI output file could not be read"
+                               if isinstance(error, OSError) else
+                               "Codex CLI output was not strict UTF-8"),
                         **attempt_fields,
                     )
                     terminal_recorded = True
+                    if isinstance(error, UnicodeError):
+                        raise RoleError(
+                            "codex final output is not valid UTF-8") from error
                     raise
+                validated_stream_response = completed_attempt[
+                    "validated_stream_response"]
+                if validated_stream_response is not None:
+                    if not text or text != validated_stream_response:
+                        _record_codex_attempt(
+                            usage_target, base=attempt_base,
+                            started=True, attempt_status="output_error",
+                            error_kind="output_stream_mismatch",
+                            error=("Final output file was absent or disagreed "
+                                   "with the policy-validated final message"),
+                            **attempt_fields,
+                        )
+                        terminal_recorded = True
+                        raise RoleError(
+                            "codex final output is missing or disagrees with "
+                            "its completed stream")
+                    text = validated_stream_response
                 response_without_usage = completed_attempt["response_without_usage"]
                 if response_without_usage is not None:
                     if not text or text != response_without_usage:

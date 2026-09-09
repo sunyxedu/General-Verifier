@@ -151,13 +151,15 @@ def test_policy_denies_every_external_and_tool_channel(tmp_path, monkeypatch):
         != original_runtime_identity
 
 
-def test_stream_accepts_reasoning_and_one_message_but_rejects_tool_attempts():
-    validate_typed_judger_stream(_stream(
+def test_stream_accepts_reasoning_and_message_sequence_but_rejects_tools():
+    assert validate_typed_judger_stream(_stream(
         {"type": "item.completed", "item": {
             "id": "r", "type": "reasoning", "text": "private"}},
         {"type": "item.completed", "item": {
-            "id": "m", "type": "agent_message", "text": "{}"}},
-    ))
+            "id": "m1", "type": "agent_message", "text": "progress"}},
+        {"type": "item.completed", "item": {
+            "id": "m2", "type": "agent_message", "text": "{}"}},
+    )) == "{}"
     for item_type in (
         "command_execution", "file_change", "mcp_tool_call", "web_search",
         "image_generation", "collab_tool_call", "future_tool", None,
@@ -177,6 +179,45 @@ def test_stream_accepts_reasoning_and_one_message_but_rejects_tool_attempts():
             '"type":"agent_message","text":"{}"}}',
             '{"type":"turn.completed","usage":{}}',
         )))
+    with pytest.raises(TypedJudgerTransportError, match="malformed"):
+        validate_typed_judger_stream("\n".join((
+            '{"type":"thread.started","thread_id":"x","extra":1e999}',
+            '{"type":"turn.started"}',
+            '{"type":"item.completed","item":{"id":"m",'
+            '"type":"agent_message","text":"{}"}}',
+            '{"type":"turn.completed","usage":{}}',
+        )))
+
+
+@pytest.mark.parametrize("middle", [
+    (
+        {"type": "item.completed", "item": {
+            "id": "m1", "type": "agent_message", "text": "progress"}},
+        {"type": "item.completed", "item": {
+            "id": "r", "type": "reasoning", "text": "late"}},
+    ),
+    (
+        {"type": "item.completed", "item": {
+            "id": "m1", "type": "agent_message", "text": "progress"}},
+        {"type": "item.completed", "item": {
+            "id": "m2", "type": "agent_message", "text": "  "}},
+    ),
+    (
+        {"type": "item.completed", "item": {
+            "id": "same", "type": "agent_message", "text": "one"}},
+        {"type": "item.completed", "item": {
+            "id": "same", "type": "agent_message", "text": "two"}},
+    ),
+    (
+        {"type": "item.started", "item": {
+            "id": "m1", "type": "agent_message"}},
+        {"type": "item.completed", "item": {
+            "id": "m2", "type": "agent_message", "text": "two"}},
+    ),
+])
+def test_message_sequence_rejects_ambiguity_after_first_message(middle):
+    with pytest.raises(TypedJudgerTransportError):
+        validate_typed_judger_stream(_stream(*middle))
 
 
 def test_context_preserves_seat_identity_and_uses_fresh_scratch(tmp_path):
@@ -356,6 +397,91 @@ def test_restricted_call_appends_complete_inert_packet_only(tmp_path, monkeypatc
     assert "_typed_adapter_judger_packet" not in seen["variables"]
 
 
+def test_typed_output_file_must_equal_last_message_in_sequence(
+    tmp_path, monkeypatch,
+):
+    state, _target, *_middle, packet = _fixture(tmp_path)
+    role = AgentRole("judger", "fixed prompt", {"ok": bool}, system="fixed")
+    backend = CodexBackend(
+        roles={"judger": role}, cwd=str(state), model="gpt-5.6-luna")
+
+    def run(command, **_kwargs):
+        Path(command[command.index("-o") + 1]).write_text(
+            '{"ok":true}', encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="", stdout=_stream(
+            {"type": "item.completed", "item": {
+                "id": "m1", "type": "agent_message",
+                "text": '{"ok":true}'}},
+            {"type": "item.completed", "item": {
+                "id": "m2", "type": "agent_message",
+                "text": '{"ok":false}'}},
+        ))
+
+    monkeypatch.setattr(cb, "_run_codex_process", run)
+    with restricted_typed_judger_backend(backend) as restricted:
+        with pytest.raises(RoleError, match="disagrees"):
+            restricted.complete("judger", "fixed prompt", {
+                "_typed_adapter_judger_packet": packet,
+            })
+
+
+def test_typed_message_sequence_does_not_bypass_usage_protocol(
+    tmp_path, monkeypatch,
+):
+    state, _target, *_middle, packet = _fixture(tmp_path)
+    role = AgentRole("judger", "fixed prompt", {"ok": bool}, system="fixed")
+    backend = CodexBackend(
+        roles={"judger": role}, cwd=str(state), model="gpt-5.6-luna")
+
+    def run(command, **_kwargs):
+        response = '{"ok":true}'
+        Path(command[command.index("-o") + 1]).write_text(
+            response, encoding="utf-8")
+        stream = "\n".join(json.dumps(event) for event in (
+            {"type": "thread.started", "thread_id": "missing-usage"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {
+                "id": "m1", "type": "agent_message", "text": "progress"}},
+            {"type": "item.completed", "item": {
+                "id": "m2", "type": "agent_message", "text": response}},
+            {"type": "turn.completed"},
+        ))
+        return SimpleNamespace(returncode=0, stderr="", stdout=stream)
+
+    monkeypatch.setattr(cb, "_run_codex_process", run)
+    usage_path = tmp_path / "usage.jsonl"
+    with cb.codex_usage_ledger(str(usage_path), {str(state): {}}):
+        with restricted_typed_judger_backend(backend) as restricted:
+            with pytest.raises(RoleError, match="usage"):
+                restricted.complete("judger", "fixed prompt", {
+                    "_typed_adapter_judger_packet": packet,
+                })
+    row = json.loads(usage_path.read_text())
+    assert row["attempt_status"] == "telemetry_error"
+    assert row["usage_complete"] is False
+
+
+def test_typed_output_file_requires_strict_utf8(tmp_path, monkeypatch):
+    state, _target, *_middle, packet = _fixture(tmp_path)
+    role = AgentRole("judger", "fixed prompt", {"ok": str}, system="fixed")
+    backend = CodexBackend(
+        roles={"judger": role}, cwd=str(state), model="gpt-5.6-luna")
+
+    def run(command, **_kwargs):
+        Path(command[command.index("-o") + 1]).write_bytes(b'{"ok":"\xff"}')
+        return SimpleNamespace(returncode=0, stderr="", stdout=_stream(
+            {"type": "item.completed", "item": {
+                "id": "m", "type": "agent_message", "text": '{"ok":"�"}'}},
+        ))
+
+    monkeypatch.setattr(cb, "_run_codex_process", run)
+    with restricted_typed_judger_backend(backend) as restricted:
+        with pytest.raises(RoleError, match="not valid UTF-8"):
+            restricted.complete("judger", "fixed prompt", {
+                "_typed_adapter_judger_packet": packet,
+            })
+
+
 def test_native_and_observer_attempts_bind_one_packet_without_leaking(
     tmp_path, monkeypatch,
 ):
@@ -371,10 +497,14 @@ def test_native_and_observer_attempts_bind_one_packet_without_leaking(
         response = '{"ok":true}'
         Path(command[command.index("-o") + 1]).write_text(
             response, encoding="utf-8")
+        messages = ([{"type": "item.completed", "item": {
+            "id": "progress", "type": "agent_message",
+            "text": "working"}}] if len(calls) == 1 else [])
         stream = "\n".join(json.dumps(event) for event in (
             {"type": "thread.started",
              "thread_id": f"typed-audit-{len(calls)}"},
             {"type": "turn.started"},
+            *messages,
             {"type": "item.completed", "item": {
                 "id": "answer", "type": "agent_message",
                 "text": response}},

@@ -38,7 +38,7 @@ from .codex_backend import (
 from .schema import RoleError
 
 
-TYPED_JUDGER_BOUNDARY_VERSION = "gv-typed-judger-no-tools-v1"
+TYPED_JUDGER_BOUNDARY_VERSION = "gv-typed-judger-no-tools-v2"
 _TYPED_JUDGER_SCRATCH_IDENTITY = "/__gv_typed_judger_scratch__"
 _ADDITIONAL_DISABLED_FEATURES = (
     # Keep this list explicit. These newer integration gates are not all in
@@ -96,8 +96,8 @@ def _typed_judger_policy_identity() -> str:
 TYPED_JUDGER_POLICY_IDENTITY = _typed_judger_policy_identity()
 
 
-def validate_typed_judger_stream(stdout: str) -> None:
-    """Accept one fresh reasoning/message-only turn; reject every tool item."""
+def validate_typed_judger_stream(stdout: str) -> str:
+    """Return the final message of one fresh tool-free, complete turn."""
     try:
         validate_authority_stream(stdout)
     except (AuthorityBackendUnavailable, ValueError, TypeError,
@@ -107,12 +107,18 @@ def validate_typed_judger_stream(stdout: str) -> None:
         ) from error
     # The capability allowlist above deliberately has a tiny job. Reuse the
     # strict response parser as a second independent gate for duplicate JSON
-    # keys, non-finite values, item ids/lifecycles, exactly one final message,
-    # and an unambiguous terminal turn.
-    if _completed_response_without_usage(
-            stdout, permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE) is None:
+    # keys, non-finite values, item ids/lifecycles, a sequential nonempty
+    # message suffix, and an unambiguous terminal turn.  The last completed
+    # message is the role response and must also equal the CLI output file.
+    response = _completed_response_without_usage(
+        stdout,
+        permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE,
+        allow_message_sequence=True,
+    )
+    if response is None:
         raise TypedJudgerTransportError(
             "typed Judger emitted a malformed or ambiguous event stream")
+    return response
 
 
 class _TypedJudgerCodexBackend(CodexBackend):
@@ -145,9 +151,13 @@ class _TypedJudgerCodexBackend(CodexBackend):
     def _validate_attempt_stream(self, stdout):
         validate_typed_judger_stream(stdout)
 
+    def _validated_stream_response(self, stdout):
+        return validate_typed_judger_stream(stdout)
+
     def _recover_completed_response(self, stdout):
         return _completed_response_without_usage(
-            stdout, permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE)
+            stdout, permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE,
+            allow_message_sequence=True)
 
     @property
     def runtime_instruction_identity(self) -> str:
