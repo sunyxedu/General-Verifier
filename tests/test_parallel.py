@@ -51,15 +51,18 @@ class Discharger:
 
 
 def build(tmp_path, compile_map, script, *, parallel_obligations=1,
-          parallel_claims=1, trigger=TRIGGER_ON_COMMIT):
+          parallel_claims=1, trigger=TRIGGER_ON_COMMIT, live_world=True,
+          memory=None, compact_inspection=False):
     log = EventLog(os.path.join(tmp_path, "events.jsonl"))
     store = ClaimStore(trigger=trigger)
     backend = FixtureBackend({"obligations": lambda v: {
         "obligations": compile_map(v["claim_text"])}})
+    backend.compact_inspection = compact_inspection
     discharger = Discharger(script)
     kernel = Kernel(store, log, backend,
                     ArtifactStore(os.path.join(tmp_path, "art")),
                     critic_role=None, discharger=discharger,
+                    live_world=live_world, memory=memory,
                     parallel_obligations=parallel_obligations,
                     parallel_claims=parallel_claims)
     return store, kernel, log, discharger
@@ -187,6 +190,92 @@ def test_certificate_verifies_slice_concurrently(tmp_path):
     assert all(e["effective_status"] == "verified" for e in cert["slice"])
     assert d.peak >= 2
     assert elapsed < n * 0.2                      # not the sequential sum
+
+
+def test_parallel_certificate_submits_independent_final_first(tmp_path):
+    started = []
+    lock = threading.Lock()
+    final_started = threading.Event()
+
+    def compile_map(text):
+        if text == "final":
+            with lock:
+                started.append(text)
+                final_started.set()
+        else:
+            assert final_started.wait(1)
+            with lock:
+                started.append(text)
+        return [{"text": f"{text} holds", "required_basis": "world"}]
+
+    store, kernel, log, _d = build(
+        tmp_path, compile_map, {}, parallel_claims=2, trigger=TRIGGER_LAZY,
+        live_world=False, compact_inspection=True)
+    supports = [store.add_claim(Claim(CLAIM_ASSERTION, f"s{i}"))
+                for i in range(4)]
+    final = store.add_claim(Claim(CLAIM_FINAL, "final", deps=tuple(supports)))
+
+    certificate = request_certificate(
+        store, kernel, log,
+        ArtifactStore(os.path.join(tmp_path, "certificate-artifacts")),
+        final,
+    )
+
+    assert certificate["verdict"] == "verified"
+    assert started[0] == "final"
+    assert sorted(started) == ["final", "s0", "s1", "s2", "s3"]
+
+
+def test_parallel_certificate_preserves_order_for_mutable_inputs(tmp_path):
+    class Memory:
+        def hits_for_obligations(self, _text):
+            return "[]"
+
+        def record_obligations(self, _text, _obligations, _status):
+            pass
+
+        def record_attack(self, _claim, _target, _witness, *, kind):
+            pass
+
+    def first_started(label, *, live_world, memory, compact_inspection):
+        started = []
+        lock = threading.Lock()
+        support_started = threading.Event()
+        case_path = tmp_path / label
+        case_path.mkdir()
+
+        def compile_map(text):
+            if text == "support":
+                support_started.set()
+            else:
+                assert support_started.wait(1)
+            with lock:
+                started.append(text)
+            return [{"text": f"{text} holds", "required_basis": "world"}]
+
+        store, kernel, log, _d = build(
+            case_path, compile_map, {}, parallel_claims=1,
+            trigger=TRIGGER_LAZY, live_world=live_world, memory=memory,
+            compact_inspection=compact_inspection)
+        support = store.add_claim(Claim(CLAIM_ASSERTION, "support"))
+        final = store.add_claim(Claim(CLAIM_FINAL, "final", deps=(support,)))
+        kernel.parallel_claims = 2
+        request_certificate(
+            store, kernel, log,
+            ArtifactStore(os.path.join(case_path, "certificate")),
+            final,
+        )
+        return started[0]
+
+    assert first_started(
+        "live", live_world=True, memory=None,
+        compact_inspection=True) == "support"
+    assert first_started(
+        "memory", live_world=False, memory=Memory(),
+        compact_inspection=True) == "support"
+    assert first_started(
+        "expanded", live_world=False, memory=None,
+        compact_inspection=False) == "support"
 
 
 def test_verify_is_serialized_per_claim(tmp_path):

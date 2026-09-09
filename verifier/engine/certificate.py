@@ -55,6 +55,19 @@ def request_certificate(
                if store.status(cid) in (STATUS_UNVERIFIED, STATUS_STALE)]
     parallel = getattr(kernel, "parallel_claims", 1) or 1
     if parallel > 1 and len(pending) > 1:
+        # The final contract is compiled independently of solver-derived
+        # premises and its local verdict never waits on them.  Submit it first
+        # so a bounded worker pool does not put the task verdict behind a long
+        # support-claim queue; every slice claim still runs and the certificate
+        # still waits for all of them below.
+        immutable_compact_run = (
+            not getattr(kernel, "live_world", True)
+            and getattr(kernel, "memory", None) is None
+            and getattr(kernel.backend, "compact_inspection", False) is True
+        )
+        if immutable_compact_run and final_id in pending:
+            pending.remove(final_id)
+            pending.insert(0, final_id)
         # every claim's LOCAL verdict is conditional on its premises and
         # never blocks on them (the read-time fold charges premise state
         # to consumers), so the whole slice verifies concurrently; the
