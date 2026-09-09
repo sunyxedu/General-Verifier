@@ -178,7 +178,7 @@ def _event_predicate(value: Any, field: str) -> dict:
     if not isinstance(value, dict):
         raise AdapterNotApplicable(f"{field} must be an object")
     allowed = {
-        "event_type", "tool", "session", "agent", "decode", "tests",
+        "event_type", "seq", "tool", "session", "agent", "decode", "tests",
     }
     if set(value) - allowed or "event_type" not in value:
         raise AdapterNotApplicable(f"{field} has an invalid shape")
@@ -187,6 +187,12 @@ def _event_predicate(value: Any, field: str) -> dict:
         raise AdapterNotApplicable(
             f"{field}.event_type is not a source ledger event")
     normalized: dict[str, Any] = {"event_type": event_type}
+    if "seq" in value:
+        seq = value["seq"]
+        if type(seq) is not int or not 1 <= seq <= MAX_LEDGER_EVENTS:
+            raise AdapterNotApplicable(
+                f"{field}.seq must be an exact source-event sequence")
+        normalized["seq"] = seq
     if "tool" in value:
         tool = value["tool"]
         if not isinstance(tool, str) or not tool:
@@ -300,6 +306,8 @@ def _test_holds(actual: Any, spec: Mapping[str, Any]) -> bool:
 
 def _matches(event: Mapping[str, Any], predicate: Mapping[str, Any]) -> bool:
     if event["type"] != predicate["event_type"]:
+        return False
+    if "seq" in predicate and event.get("seq") != predicate["seq"]:
         return False
     payload = event["payload"]
     if not isinstance(payload, dict):
@@ -421,24 +429,53 @@ def _evaluate(
 
     if kind == "paired-exchange":
         relationships = _correlations(list(all_events))
-        matching_calls = [event for event in in_range
-                          if _matches(event, query["call"])]
         selected_pairs = []
         ambiguous = []
         by_seq = {event["seq"]: event for event in in_range}
-        for call in matching_calls:
-            relationship = relationships.get(call["seq"], {"status": "unpaired"})
+        result_anchor = query["result"].get("seq")
+        if result_anchor is not None:
+            result = by_seq.get(result_anchor)
+            relationship = relationships.get(
+                result_anchor, {"status": "unpaired"})
             if relationship.get("status") == "ambiguous":
-                ambiguous.append(call["seq"])
-                continue
-            if relationship.get("status") != "paired":
-                continue
-            result = by_seq.get(relationship.get("peer_seq"))
-            if (result is None or result["type"] != "tool_result"
-                    or not _matches(result, query["result"])):
-                continue
-            selected_pairs.append((call, result, relationship,
-                                   relationships[result["seq"]]))
+                raise AdapterNotApplicable(
+                    "the anchored result has ambiguous correlation metadata")
+            call = by_seq.get(relationship.get("peer_seq"))
+            matching_calls = (
+                [call] if call is not None
+                and relationship.get("status") == "paired"
+                and call["type"] == "tool_call"
+                and _matches(call, query["call"])
+                else []
+            )
+            if (matching_calls and result is not None
+                    and result["type"] == "tool_result"
+                    and _matches(result, query["result"])):
+                call_relationship = relationships.get(
+                    call["seq"], {"status": "unpaired"})
+                if call_relationship.get("status") == "ambiguous":
+                    raise AdapterNotApplicable(
+                        "the anchored call has ambiguous correlation metadata")
+                if call_relationship.get("status") == "paired":
+                    selected_pairs.append((
+                        call, result, call_relationship, relationship))
+        else:
+            matching_calls = [event for event in in_range
+                              if _matches(event, query["call"])]
+            for call in matching_calls:
+                relationship = relationships.get(
+                    call["seq"], {"status": "unpaired"})
+                if relationship.get("status") == "ambiguous":
+                    ambiguous.append(call["seq"])
+                    continue
+                if relationship.get("status") != "paired":
+                    continue
+                result = by_seq.get(relationship.get("peer_seq"))
+                if (result is None or result["type"] != "tool_result"
+                        or not _matches(result, query["result"])):
+                    continue
+                selected_pairs.append((call, result, relationship,
+                                       relationships[result["seq"]]))
         if ambiguous:
             raise AdapterNotApplicable(
                 "a matching call has ambiguous correlation metadata")
@@ -689,8 +726,12 @@ class RecordQueryAdapter(MethodAdapter):
             "event_predicate": {
                 "required": ["event_type"],
                 "optional": [
-                    "tool", "session", "agent", "decode", "tests",
+                    "seq", "tool", "session", "agent", "decode", "tests",
                 ],
+                "seq": (
+                    f"optional exact raw source-event sequence, integer "
+                    f"1..{MAX_LEDGER_EVENTS}"
+                ),
                 "decode": DECODER_POLICY,
                 "tests": {
                     "source": "payload|invocation",

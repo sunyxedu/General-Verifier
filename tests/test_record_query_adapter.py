@@ -399,6 +399,118 @@ def test_any_supported_decoded_call_pairs_with_exact_result(tmp_path):
         "content_addressed_evidence"]["raw_json_text"]
 
 
+def test_paired_exchange_can_bind_an_exact_result_sequence(tmp_path):
+    _state, log, artifacts, fallback, route, obligation = _environment(tmp_path)
+    _pair(log, "unrelated", call_id="ambiguous", result="same target")
+    log.append("tool_call", {
+        "tool": "exec", "tool_use_id": "ambiguous", "session": "session",
+        "agent": None, "input": _wrapper("another unrelated call"),
+    })
+    call, output = _pair(
+        log, "inspect frozen input", call_id="selected", result="same target")
+    query = {
+        "kind": "paired-exchange",
+        "call": {"event_type": "tool_call", "tests": []},
+        "result": {
+            "event_type": "tool_result", "seq": output["seq"],
+            "tests": [{
+                "source": "payload", "pointer": "/excerpt_truncated",
+                "predicate": "equals", "expected": False,
+            }, {
+                "source": "payload", "pointer": "/excerpt",
+                "predicate": "contains", "expected": "target",
+            }],
+        },
+    }
+
+    method, result = _run(
+        route, obligation, query, scope="prefix",
+        through_seq=output["seq"])
+
+    assert result.outcome == OUTCOME_HOLDS
+    assert fallback.calls == []
+    observation = artifacts.get(result.artifact)["execution"]["observation"]
+    assert observation["evaluation"]["matching_call_count"] == 1
+    selected = observation["evaluation"]["selected"]
+    assert [item["seq"] for item in selected] == [call["seq"], output["seq"]]
+    invocation = AdapterInvocation.from_method(method)
+    assert invocation is not None
+    assert typed_record_query_observation_is_complete(
+        invocation, artifacts.get(result.artifact), {
+            "outcome": result.outcome,
+            "witness": result.witness,
+            "witness_kind": result.witness_kind,
+        })
+
+
+@pytest.mark.parametrize("seq", [True, 0, -1, 1.5, "1"])
+def test_event_predicate_rejects_invalid_exact_sequence(tmp_path, seq):
+    _state, log, _artifacts, _fallback, _route, obligation = _environment(
+        tmp_path)
+    context = AdapterContext(str(tmp_path / "state"), False, log)
+    query = {
+        "kind": "exists",
+        "event": {"event_type": "message", "seq": seq, "tests": []},
+    }
+    invocation = AdapterInvocation.from_method(_method(query))
+    assert invocation is not None
+
+    with pytest.raises(AdapterNotApplicable):
+        RecordQueryAdapter().execute(invocation, obligation, context)
+
+
+def test_anchored_pair_rejects_a_truncated_result(tmp_path):
+    _state, log, _artifacts, fallback, route, obligation = _environment(tmp_path)
+    common = {
+        "tool": "exec", "tool_use_id": "selected", "session": "session",
+        "agent": None,
+    }
+    call = log.append("tool_call", {
+        **common, "input": _wrapper("inspect frozen input"),
+    })
+    output = log.append("tool_result", {
+        **common, "excerpt": "target", "excerpt_truncated": True,
+    })
+    query = {
+        "kind": "paired-exchange",
+        "call": {"event_type": "tool_call", "seq": call["seq"], "tests": []},
+        "result": {
+            "event_type": "tool_result", "seq": output["seq"],
+            "tests": [{
+                "source": "payload", "pointer": "/excerpt_truncated",
+                "predicate": "equals", "expected": False,
+            }],
+        },
+    }
+
+    _method_value, result = _run(route, obligation, query)
+
+    assert result.outcome == OUTCOME_FAILED
+    assert result.instrument == "adapter:record.query@1"
+    assert fallback.calls == []
+
+
+def test_anchored_pair_fails_closed_on_its_own_ambiguous_identity(tmp_path):
+    _state, log, _artifacts, fallback, route, obligation = _environment(tmp_path)
+    _call, output = _pair(log, "selected", call_id="duplicate", result="target")
+    log.append("tool_call", {
+        "tool": "exec", "tool_use_id": "duplicate", "session": "session",
+        "agent": None, "input": _wrapper("duplicate"),
+    })
+    query = {
+        "kind": "paired-exchange",
+        "call": {"event_type": "tool_call", "tests": []},
+        "result": {
+            "event_type": "tool_result", "seq": output["seq"], "tests": [],
+        },
+    }
+
+    _method_value, result = _run(route, obligation, query)
+
+    assert result.instrument == "agent:fallback"
+    assert len(fallback.calls) == 1
+
+
 @pytest.mark.parametrize(("tool", "input_value", "operation", "profile"), [
     ("exec_command", {"cmd": "structured"}, "exec_command",
      "structured-exec-command-v1"),

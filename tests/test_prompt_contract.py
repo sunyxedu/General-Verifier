@@ -203,6 +203,25 @@ def test_oracle_compiles_methods_without_executing_their_evidence_checks():
     assert "never refuted" in template
 
 
+def test_oracle_adapter_dispatch_is_basis_and_primitive_driven():
+    template = prompts.ORACLES_TEMPLATE
+    assert "TYPED-ADAPTER DISPATCH ORDER" in template
+    assert "record.query first" in template
+    assert "event-at, exists, paired-exchange" in template
+    assert "record.program only for bounded pure computation" in template
+    assert "filesystem, document, and evidence-program families" in template
+    assert "never by task name, domain, expected outcome" in template
+    assert "does not cover the whole obligation" in template
+    assert "DIRECT EFFECT-OUTPUT RECIPE" in template
+    assert "record.query@1 event-at" in template
+    assert "/excerpt_truncated equals false" in template
+    assert "Any producing verb/noun or described subject" in template
+    assert "paired-exchange with exact result seq=N" in template
+    assert "full correlated call, never event-at" in template
+    assert "already-selected call is fresh Judger evidence audit" in template
+    assert "not outside-world truth" in template
+
+
 def test_plain_reading_gate_is_refutation_only():
     """The careful-reader gate downgrades refutations only: discharge owns
     it, the judger mirrors it, and it must not spread to the seats that
