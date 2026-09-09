@@ -252,7 +252,7 @@ def run_worker(plan):
                             features = offline.score(
                                 str(state), **RUNTIME, seats="codex",
                                 max_rounds=3, parallel_claims=4,
-                                parallel_obligations=4, shared_dir=None,
+                                parallel_obligations=8, shared_dir=None,
                                 compact_inspection=False,
                                 judger_prefetch=True)
                             record["features"] = features

@@ -246,7 +246,7 @@ def main():
     ap.add_argument(
         "--parallel-obligations", type=int, default=None,
         help=("discharges run concurrently within one claim (default: "
-              "GV_PARALLEL_OBLIGATIONS or 4); an execution strategy, not "
+              "GV_PARALLEL_OBLIGATIONS or 8); an execution strategy, not "
               "part of the config identity"))
     ap.add_argument(
         "--parallel-claims", type=int, default=None,

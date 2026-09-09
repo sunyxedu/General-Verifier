@@ -445,8 +445,11 @@ def run_worker(plan):
                         **RUNTIME, seats="codex", max_rounds=3,
                         parallel_claims=4, parallel_obligations=4, shared_dir=None)
                     if plan["arm"] == "treatment":
+                        # the treatment source's shipped schedule: eight
+                        # obligation slots under the same 12-seat ceiling
                         kwargs.update(compact_inspection=False,
-                                      judger_prefetch=plan["judger_prefetch"])
+                                      judger_prefetch=plan["judger_prefetch"],
+                                      parallel_obligations=8)
                     features = offline.score(str(state), **kwargs)
         certificate = _certificate(state, features)
         role_audit = _audit_role_and_cache_records(

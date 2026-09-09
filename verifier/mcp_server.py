@@ -359,7 +359,7 @@ def _default_kernel(sc: Service, model, backend=None,
     if parallel_claims is None:
         parallel_claims = getattr(sc, "parallel_claims", None)
     if parallel_obligations is None:
-        parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 4)
+        parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 8)
     if parallel_claims is None:
         # online (live world): one claim at a time as commits arrive
         parallel_claims = (1 if sc.live_world

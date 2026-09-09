@@ -118,7 +118,7 @@ uv run python script/claim_graph.py --state-dir /path/to/run -o graph.svg
 
 `replay` reconstructs source claims and dependencies in a fresh store. It does not rerun checks or restore previously verified statuses; use the certificate or graph renderer to inspect saved judgments.
 
-`--max-rounds` controls extraction retries; `--critic-rounds` controls decomposition review. Codex scoring also accepts `--effort` and `--service-tier standard|fast`. These settings are recorded in the configuration identity. Offline concurrency defaults to four claims and four obligations at a time, bounded by a process-wide limit of 12 model seats; tune `GV_PARALLEL_CLAIMS`, `GV_PARALLEL_OBLIGATIONS`, and `GV_MAX_CONCURRENT_SEATS` to fit your usage budget.
+`--max-rounds` controls extraction retries; `--critic-rounds` controls decomposition review. Codex scoring also accepts `--effort` and `--service-tier standard|fast`. These settings are recorded in the configuration identity. Offline concurrency defaults to four claims and eight obligations at a time, bounded by a process-wide limit of 12 model seats; tune `GV_PARALLEL_CLAIMS`, `GV_PARALLEL_OBLIGATIONS`, and `GV_MAX_CONCURRENT_SEATS` to fit your usage budget.
 
 ## Interactive mode
 

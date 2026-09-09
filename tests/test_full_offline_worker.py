@@ -176,7 +176,8 @@ def test_full_score_called_once_and_failure_keeps_accounting(
     kwargs = calls[0][1]
     assert kwargs["seats"] == "codex" and kwargs["model"] == "gpt-5.6-luna"
     assert kwargs["shared_dir"] is None
-    assert kwargs["parallel_claims"] == kwargs["parallel_obligations"] == 4
+    assert kwargs["parallel_claims"] == 4
+    assert kwargs["parallel_obligations"] == (8 if arm == "treatment" else 4)
     assert kwargs["max_rounds"] == 3
     assert ("judger_prefetch" in kwargs) is (arm == "treatment")
     terminal = json.loads((Path(plan["output_root"]) / "worker-result.json").read_text())

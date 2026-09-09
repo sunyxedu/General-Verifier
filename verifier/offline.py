@@ -867,7 +867,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     trigger so replay does not verify claims one by one first), and
     ``shared_dir`` names a verifier-owned directory outside the state
     whose ``toolchain/`` and ``cache/`` are shared across trials. Defaults
-    come from GV_PARALLEL_OBLIGATIONS (4), GV_PARALLEL_CLAIMS (4), and
+    come from GV_PARALLEL_OBLIGATIONS (8), GV_PARALLEL_CLAIMS (4), and
     GV_SHARED_DIR (none).
     """
     def _env_int(name: str, fallback: int) -> int:
@@ -876,7 +876,10 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         except ValueError:
             return fallback
     if parallel_obligations is None:
-        parallel_obligations = _env_int("GV_PARALLEL_OBLIGATIONS", 4)
+        # A final contract commonly has five to eight obligations; with
+        # typed adapters most finish in seconds, so eight slots keep the
+        # agent-executed ones from queueing behind them.
+        parallel_obligations = _env_int("GV_PARALLEL_OBLIGATIONS", 8)
     if parallel_claims is None:
         parallel_claims = _env_int("GV_PARALLEL_CLAIMS", 4)
     if shared_dir is None:
