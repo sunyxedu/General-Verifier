@@ -323,3 +323,28 @@ def test_authority_scratch_is_accepted_only_for_contract_seats_under_prefix():
 def test_bad_authority_scratch_prefix_fails_before_analysis(prefix):
     with pytest.raises(ValueError, match="authority scratch"):
         analyze_rows(ledger(), authority_scratch_prefix=prefix, **PLAN)
+
+
+def test_typed_judger_scratch_is_accepted_only_for_judger_seats():
+    prefix = "/private/tmp/gv-typed-judger-"
+
+    def scratch_ledger(cwd, role):
+        rows = ledger()
+        for row in rows:
+            row["role"] = role
+        for row in rows[1:3]:
+            row["cwd"] = cwd
+        return rows
+
+    result = analyze_rows(scratch_ledger(prefix + "abc123", "judger"),
+                          typed_judger_scratch_prefix=prefix, **PLAN)
+    assert result["accounting_complete"] is True
+    assert result["typed_judger_scratch_attempts"] == 1
+    for cwd, role in ((prefix + "abc123", "discharge"),
+                      (prefix + "abc123/deeper", "judger")):
+        findings = analyze_rows(scratch_ledger(cwd, role),
+                                typed_judger_scratch_prefix=prefix,
+                                **PLAN)["findings"]
+        assert "execution_cwd_not_operator_bound" in findings, (cwd, role)
+    assert "execution_cwd_not_operator_bound" in analyze_rows(
+        scratch_ledger(prefix + "abc123", "judger"), **PLAN)["findings"]

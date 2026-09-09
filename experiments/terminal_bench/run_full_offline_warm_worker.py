@@ -281,7 +281,10 @@ def run_worker(plan):
                     **RUNTIME, session_summary=observation.summary(),
                     authority_scratch_prefix=os.path.join(
                         os.path.realpath(tempfile.gettempdir()),
-                        "gv-authority-"))
+                        "gv-authority-"),
+                    typed_judger_scratch_prefix=os.path.join(
+                        os.path.realpath(tempfile.gettempdir()),
+                        "gv-typed-judger-"))
                 if not accounting["accounting_complete"]:
                     failures.append("AccountingIncomplete")
             else:

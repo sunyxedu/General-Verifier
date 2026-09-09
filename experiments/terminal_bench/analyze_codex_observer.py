@@ -63,17 +63,30 @@ def _execution_roots(value, contexts):
 
 
 _AUTHORITY_SCRATCH_ROLES = frozenset({"obligations", "critic"})
+_TYPED_JUDGER_SCRATCH_ROLES = frozenset({"judger"})
 
 
-def _authority_scratch(value):
+def _scratch_prefix(value, label):
     if value is None:
         return None
     if (not isinstance(value, str) or not os.path.isabs(value)
             or not value.endswith("-")
             or os.path.realpath(os.path.dirname(value)) != os.path.dirname(value)):
         raise ValueError(
-            "authority scratch prefix must be a canonical absolute path prefix")
+            f"{label} scratch prefix must be a canonical absolute path prefix")
     return value
+
+
+def _authority_scratch(value):
+    return _scratch_prefix(value, "authority")
+
+
+def _in_scratch(cwd, prefix, roles, role):
+    return (prefix is not None and isinstance(cwd, str)
+            and cwd.startswith(prefix)
+            and "/" not in cwd[len(prefix):]
+            and len(cwd) > len(prefix)
+            and role in roles)
 
 
 def analyze_rows(
@@ -83,6 +96,7 @@ def analyze_rows(
     session_summary: Mapping[str, Any] | None = None,
     execution_cwds_by_state: Mapping[str, Iterable[str]] | None = None,
     authority_scratch_prefix: str | None = None,
+    typed_judger_scratch_prefix: str | None = None,
 ) -> dict[str, Any]:
     """Reject missing lifecycle events, attribution and actual-CLI profile drift.
 
@@ -94,11 +108,16 @@ def analyze_rows(
     prefix under which the verifier compiles a final contract through its
     candidate-blind authority boundary; only compiler and Critic seats may
     run there, each in a direct child of that prefix.
+    ``typed_judger_scratch_prefix`` likewise names the empty scratch of a
+    restricted no-tools Judger session; only Judger seats may run there.
     """
     execution_cwds_by_state = _execution_roots(
         execution_cwds_by_state, context_by_cwd)
     authority_scratch_prefix = _authority_scratch(authority_scratch_prefix)
+    typed_judger_scratch_prefix = _scratch_prefix(
+        typed_judger_scratch_prefix, "typed Judger")
     authority_scratch_attempts = 0
+    typed_judger_scratch_attempts = 0
     findings: set[str] = set()
     calls: dict[str, dict[str, tuple[int, Mapping[str, Any]]]] = {}
     attempts: dict[str, dict[str, tuple[int, Mapping[str, Any]]]] = {}
@@ -173,16 +192,14 @@ def analyze_rows(
                 allowed_cwds = (execution_cwds_by_state.get(state, ())
                                 if isinstance(state, str) else ())
             cwd = row.get("cwd")
-            in_authority_scratch = (
-                authority_scratch_prefix is not None
-                and isinstance(cwd, str)
-                and cwd.startswith(authority_scratch_prefix)
-                and "/" not in cwd[len(authority_scratch_prefix):]
-                and len(cwd) > len(authority_scratch_prefix)
-                and row.get("role") in _AUTHORITY_SCRATCH_ROLES)
-            if in_authority_scratch:
+            if _in_scratch(cwd, authority_scratch_prefix,
+                           _AUTHORITY_SCRATCH_ROLES, row.get("role")):
                 if kind.endswith("_started"):
                     authority_scratch_attempts += 1
+            elif _in_scratch(cwd, typed_judger_scratch_prefix,
+                             _TYPED_JUDGER_SCRATCH_ROLES, row.get("role")):
+                if kind.endswith("_started"):
+                    typed_judger_scratch_attempts += 1
             elif not isinstance(cwd, str) or cwd not in allowed_cwds:
                 findings.add("execution_cwd_not_operator_bound")
             if any(row.get("command_" + key) != expected
@@ -335,6 +352,7 @@ def analyze_rows(
         "findings": sorted(findings),
         "observed_event_counts": event_counts,
         "authority_scratch_attempts": authority_scratch_attempts,
+        "typed_judger_scratch_attempts": typed_judger_scratch_attempts,
         "call_count": len(calls), "attempt_count": len(attempts),
         "unknown_usage_attempts": unknown_usage,
         "logical_calls_returned": returned, "logical_calls_raised": raised,
