@@ -123,6 +123,8 @@ def test_compact_report_note_preserves_every_role_gate_and_failure():
         "Preserve every required output item",
         "never merge or omit claims, obligations, methods, defects",
         "retain each required label",
+        "<REQUIRED LABEL>: pass",
+        "sufficient=yes, faithful=yes, degradation=n/a",
         "every independently visible defect",
         "not permission to weaken a contract, skip a gate",
     ):
