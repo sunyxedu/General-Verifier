@@ -504,19 +504,26 @@ def test_oracle_repair_is_bounded_and_runs_duplicate_new_method_once(tmp_path):
 
 
 def test_empty_oracle_repair_is_unobtainable_offline(tmp_path):
-    g, _ = game(
+    discharger = SequenceDischarger([
+        ("unobtainable", "retained calibration is absent"),
+    ])
+    g, backend = game(
         tmp_path,
         {
             "oracles": oracle_with_repair({"methods": []}),
             "judger": JUDGE_INSUFFICIENT,
         },
         live_world=False,
+        discharger=discharger,
     )
 
     result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
 
     assert result.outcome == "unobtainable"
-    assert "fixed evidence boundary" in result.witness
+    assert "retained calibration is absent" in result.witness
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
+    assert len([c for c in backend.calls if c["role"] == "judger"]) == 0
+    assert len(discharger.methods) == 1
 
 
 def test_empty_oracle_repair_stays_failed_live(tmp_path):

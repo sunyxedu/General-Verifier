@@ -109,11 +109,16 @@ def test_adapter_preference_is_conditional_and_preserves_verification_scope():
     assert "omit all four fields unless" in text
     assert "never method sufficiency" in text
     assert "emit only the adapter-bound method" in text
+    assert "binding that adapter is mandatory" in text
     assert "do not put an equivalent unbound executor first" in text
     assert "decision procedure or evidence coverage materially differs" in text
     assert "lists only retained guarantees" in text
     assert "never infer further guarantees" in text
     assert "must not claim original bytes, complete text, listings" in text
+    assert "sufficiency still depends on the same" in text
+    assert "different available evidence" in text
+    assert "independently validated replacement" in text
+    assert "otherwise return methods=[]" in text
 
 
 def test_game_and_locus_contract_survive():
@@ -147,6 +152,13 @@ def test_strength_ladder_contract_survives():
     assert "STRENGTH AUDIT" in prompts.JUDGER_TEMPLATE
     assert "OPTIMALITY-REFUTATION PREFLIGHT" in prompts.ORACLES_SYSTEM
     assert "VERDICT-DIRECTION AT EXECUTION" in prompts.DISCHARGE_SYSTEM
+    assert "IRREPLACEABLE-PREREQUISITE SHORT-CIRCUIT" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "one bounded direct obtain attempt" in prompts.DISCHARGE_SYSTEM
+    assert "attempt failure alone never proves a permanent gap" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "do not parse, render, install, or inspect downstream material" \
+        in prompts.DISCHARGE_SYSTEM
 
 
 def test_oracle_compiles_methods_without_executing_their_evidence_checks():
