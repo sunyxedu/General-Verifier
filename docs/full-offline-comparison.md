@@ -27,7 +27,7 @@ compiled contracts, inject a replacement kernel, or score old derived state.
 | Contract cache / accepted-method reuse | Off / none | Off / none under fresh-prefetch profile |
 | Extraction retry bound | 3 | 3 |
 | Critic and backend retry bounds | Native defaults | Native defaults |
-| Parallel claims / obligations / seat ceiling | 4 / 4 / 12 | 4 / 4 / 12 |
+| Parallel claims / obligations / seat ceiling | 4 / 4 / 12 | 4 / 8 / 12 since `1799eb4` (the treatment source's shipped schedule) |
 
 Both arms receive the same separately pinned offline isolation policy and
 content-free attempt observer. This is an isolation-normalized original-source
