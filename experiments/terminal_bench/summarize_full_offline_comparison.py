@@ -64,13 +64,40 @@ def _event_counts(output):
     return counts
 
 
+def _reaccounted(output):
+    """Re-run the observer accounting with the current analyzer rules.
+
+    Read-only.  Used for jobs whose worker ran an older analyzer that did
+    not yet recognise a verifier-owned scratch directory; the retained
+    observer ledger is unchanged evidence.
+    """
+    try:
+        from . import reaccount_worker_output as tool
+    except ImportError:  # direct script execution
+        import reaccount_worker_output as tool
+    try:
+        return tool.reaccount(output).get("accounting_complete") is True
+    except Exception:
+        return False
+
+
+REACCOUNT = False
+
+
 def _job_record(candidate, arm, output, wall, verdict, final_obligations,
                 accounting_complete, worker_complete, labels):
     cost, complete, by_role, wall_by_role, calls = _cost(
         _rows(output / "native-usage.jsonl"))
     label = (labels or {}).get(candidate)
     events = _event_counts(output)
+    reaccounted = False
+    if REACCOUNT and not (accounting_complete and worker_complete):
+        reaccounted = _reaccounted(output)
+        if reaccounted:
+            accounting_complete = True
+            worker_complete = True
     return {
+        "reaccounted": reaccounted,
         "redos": events.get("method_redo", 0),
         "sufficiency_no": events.get("sufficiency_no", 0),
         "cache_hits": events.get("contract_cache_hit", 0)
@@ -135,8 +162,13 @@ def main():
     parser.add_argument("run_root")
     parser.add_argument("--labels", help="operator-manifest.json with truth labels")
     parser.add_argument("--control-root", help="pair with another run's control jobs")
+    parser.add_argument("--reaccount", action="store_true",
+                        help="re-run accounting with current analyzer rules "
+                             "for jobs the worker left incomplete")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    global REACCOUNT
+    REACCOUNT = args.reaccount
     labels = None
     if args.labels:
         manifest = json.loads(Path(args.labels).read_text())
@@ -160,7 +192,8 @@ def main():
               f"{job['redos']:4d} {job['sufficiency_no']:3d} "
               f"{str(job['verdict']):10s} {str(job['label']):>5s} "
               f"{str(job['agrees']):>4s} "
-              f"{'yes' if job['cost_complete'] and job['worker_complete'] else 'NO'}")
+              f"{'yes' if job['cost_complete'] and job['worker_complete'] else 'NO'}"
+              f"{' (re-accounted)' if job['reaccounted'] else ''}")
     print()
     control_cost = treatment_cost = control_wall = treatment_wall = 0.0
     counted = 0
