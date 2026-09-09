@@ -180,6 +180,7 @@ class AgentRole:
         """Two attempts (schema error fed back once), then RoleError."""
         last_error: Optional[RoleError] = None
         retry_feedback = ""
+        oracle_catalog_force_baseline = False
         # Start before acquiring SEAT_GATE: queueing is part of end-to-end
         # role latency, while each schema retry remains separately visible.
         with role_span(self.name):
@@ -195,6 +196,45 @@ class AgentRole:
                                 # and waste a complete paid backend call.
                                 attempt_variables = \
                                     refresh_source_evidence_variables(variables)
+                                catalog_snapshot = None
+                                if self.name == "oracles":
+                                    from ..execution.adapters import \
+                                        OracleCatalogView
+                                    catalog_view = attempt_variables.get(
+                                        "adapter_catalog")
+                                    if type(catalog_view) is OracleCatalogView:
+                                        permits_lazy_catalog = False
+                                        capability = getattr(
+                                            backend,
+                                            "allows_lazy_oracle_catalog",
+                                            None,
+                                        )
+                                        if callable(capability):
+                                            try:
+                                                permits_lazy_catalog = \
+                                                    capability(
+                                                        self.name,
+                                                        attempt_variables,
+                                                    ) is True
+                                            except Exception:
+                                                permits_lazy_catalog = False
+                                        if (oracle_catalog_force_baseline
+                                                or not permits_lazy_catalog):
+                                            attempt_variables = dict(
+                                                attempt_variables)
+                                            attempt_variables["adapter_catalog"] = \
+                                                catalog_view.fallback_catalog()
+                                        else:
+                                            catalog_snapshot = \
+                                                catalog_view.snapshot()
+                                            if catalog_snapshot is None:
+                                                oracle_catalog_force_baseline = \
+                                                    True
+                                                attempt_variables = dict(
+                                                    attempt_variables)
+                                                attempt_variables[
+                                                    "adapter_catalog"] = \
+                                                    catalog_view.fallback_catalog()
                                 source_view = attempt_variables.get(
                                     "_source_evidence_view")
                                 if (type(source_view) is SourceEvidenceView
@@ -208,10 +248,23 @@ class AgentRole:
                                     attempt_variables.pop(
                                         "_source_evidence_view", None)
                                     source_view = None
-                                prompt = (self.render(attempt_variables)
-                                          + retry_feedback)
-                                payload = backend.complete(
-                                    self.name, prompt, attempt_variables)
+                                catalog_changed = False
+                                try:
+                                    prompt = (self.render(attempt_variables)
+                                              + retry_feedback)
+                                    payload = backend.complete(
+                                        self.name, prompt, attempt_variables)
+                                finally:
+                                    if catalog_snapshot is not None:
+                                        catalog_changed = not \
+                                            catalog_snapshot.revalidate()
+                                        catalog_snapshot.close()
+                                        if catalog_changed:
+                                            oracle_catalog_force_baseline = True
+                                if catalog_changed:
+                                    raise RoleError(
+                                        "oracles: adapter catalog changed "
+                                        "during audit")
                             finally:
                                 seat_released(acquired)
                         if (type(source_view) is SourceEvidenceView
@@ -252,6 +305,20 @@ class AgentBackend:
         self.model = model
         self.permission_mode = permission_mode
         self.transcripts: List[Dict[str, Any]] = []
+
+    def allows_lazy_oracle_catalog(
+        self, role_name: str, variables: Dict[str, Any],
+    ) -> bool:
+        """Allow locators only for an actually read-only Oracle palette."""
+        if role_name != "oracles":
+            return False
+        role = self.roles.get(role_name)
+        read_only_tools = frozenset({
+            "Read", "Grep", "Glob", "WebSearch", "WebFetch",
+        })
+        return (role is not None
+                and all(isinstance(tool, str) for tool in role.tools)
+                and set(role.tools) <= read_only_tools)
 
     def complete(self, role_name: str, prompt: str, variables: Dict[str, Any]) -> Any:
         """

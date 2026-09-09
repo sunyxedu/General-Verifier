@@ -1,7 +1,10 @@
 """Typed adapter execution stays a fail-safe optimization of BindingGame."""
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -23,12 +26,16 @@ from verifier.engine.game import BindingGame
 from verifier.engine.method_cache import AcceptedMethodCache
 from verifier.execution.adapters import (
     EVIDENCE_SCHEMA,
+    ORACLE_CATALOG_INDEX_SCHEMA,
+    ORACLE_CATALOG_INLINE_BYTES,
+    ORACLE_CATALOG_MAX_DESCRIPTOR_BYTES,
     ORACLE_CATALOG_SLICE_SCHEMA,
     AdapterInvocation,
     AdapterNotApplicable,
     AdapterRegistry,
     AdapterRoutingDischarger,
     MethodAdapter,
+    OracleCatalogView,
     default_adapter_registry,
 )
 from verifier.execution.browser import (
@@ -37,7 +44,10 @@ from verifier.execution.browser import (
 )
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
+from verifier.llm.agents import AgentBackend, AgentRole
+from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.schema import FixtureBackend
+from verifier.llm.schema import RoleError
 from verifier.mcp_server import Service, _default_kernel
 
 
@@ -255,7 +265,7 @@ def test_oracle_catalog_slice_fails_open_to_exact_supplied_catalog():
         dishonest_full, BASIS_WORLD) == dishonest_full
 
 
-def test_binding_game_uses_same_world_catalog_view_for_initial_and_repair(
+def test_unknown_backend_uses_same_safe_world_baseline_for_initial_and_repair(
     tmp_path,
 ):
     _state, _world, artifacts, log, _fallback, routing = captured(tmp_path)
@@ -272,8 +282,352 @@ def test_binding_game_uses_same_world_catalog_view_for_initial_and_repair(
     assert [call["role"] for call in backend.calls] == ["oracles", "oracles"]
     views = [call["variables"]["adapter_catalog"] for call in backend.calls]
     assert views[0] == views[1]
+    assert type(views[0]) is str
     assert json.loads(views[0])["schema"] == ORACLE_CATALOG_SLICE_SCHEMA
     assert routing.adapter_catalog() == full_catalog
+
+
+@pytest.mark.parametrize(
+    ("live_world", "expected_schema", "expected_calls"),
+    [(False, ORACLE_CATALOG_INDEX_SCHEMA, 2),
+     (True, ORACLE_CATALOG_SLICE_SCHEMA, 1)],
+)
+def test_codex_catalog_capability_preserves_normal_call_count(
+    tmp_path, live_world, expected_schema, expected_calls,
+):
+    if live_world:
+        state = tmp_path / "live"
+        state.mkdir()
+        artifacts = ArtifactStore(str(state / "artifacts"))
+        log = EventLog(str(state / "events.jsonl"))
+        fallback = FallbackDischarger(artifacts)
+        routing = AdapterRoutingDischarger(
+            fallback, default_adapter_registry(), artifacts, log,
+            str(state), live_world=True)
+    else:
+        state, _world, artifacts, log, _fallback, routing = captured(tmp_path)
+
+    class RecordingCodexBackend(CodexBackend):
+        def __init__(self, cwd):
+            super().__init__(cwd=cwd)
+            self.observed_calls = []
+
+        def complete(self, role_name, _prompt, variables):
+            self.observed_calls.append({
+                "role": role_name,
+                "catalog": variables["adapter_catalog"],
+            })
+            return {"methods": []}
+
+    backend = RecordingCodexBackend(str(state))
+    result = BindingGame(
+        backend, artifacts, log, routing, live_world=live_world).run(
+            ROW, Obligation(
+                "c1", "a world fact needs an independent decision",
+                BASIS_WORLD))
+
+    assert result.outcome != OUTCOME_HOLDS
+    assert [call["role"] for call in backend.observed_calls] \
+        == ["oracles"] * expected_calls
+    catalogs = [call["catalog"] for call in backend.observed_calls]
+    assert len({str(catalog) for catalog in catalogs}) == 1
+    assert json.loads(catalogs[0])["schema"] == expected_schema
+    assert (type(catalogs[0]) is OracleCatalogView) is (not live_world)
+
+
+def test_agent_backend_lazy_catalog_capability_checks_actual_tool_palette():
+    backend = AgentBackend()
+    assert backend.allows_lazy_oracle_catalog("oracles", {}) is True
+
+    unsafe = AgentBackend(roles={
+        "oracles": AgentRole(
+            name="oracles", template="{adapter_catalog}",
+            schema={"methods": [str]}, tools=["Read", "Write"],
+        ),
+    })
+    assert unsafe.allows_lazy_oracle_catalog("oracles", {}) is False
+    assert backend.allows_lazy_oracle_catalog("judger", {}) is False
+
+
+def test_lazy_oracle_catalog_pages_reconstruct_the_exact_full_catalog(tmp_path):
+    state, _world, _artifacts, _log, _fallback, routing = captured(tmp_path)
+    full = routing.adapter_catalog()
+
+    for basis in (BASIS_WORLD, BASIS_RECORD):
+        document = json.loads(routing.oracle_adapter_catalog(full, basis))
+        assert document["schema"] == ORACLE_CATALOG_INDEX_SCHEMA
+        root = document["descriptor_root"]
+        assert os.path.isabs(root)
+        assert os.path.commonpath((str(state), root)) == str(state)
+        assert stat.S_IMODE(os.lstat(root).st_mode) & 0o222 == 0
+        entries = []
+        for filename in os.listdir(root):
+            path = os.path.join(root, filename)
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            assert filename == hashlib.sha256(raw).hexdigest() + ".json"
+            assert stat.S_IMODE(os.lstat(path).st_mode) & 0o222 == 0
+            entries.append(json.loads(raw))
+        entries.sort(key=lambda entry: (entry["name"], entry["version"]))
+        rebuilt = json.dumps(
+            entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if basis == BASIS_RECORD:
+            assert rebuilt == full
+            assert hashlib.sha256(rebuilt.encode()).hexdigest() \
+                == document["full_catalog_sha256"]
+        else:
+            expected_entries = [
+                entry for entry in json.loads(full)
+                if entry["basis"] == BASIS_WORLD]
+            assert entries == expected_entries
+        available = {
+            (entry["name"], entry["version"])
+            for entry in document["index"]
+            if entry["descriptor"] != "excluded-below-floor"
+        }
+        expected = {
+            (entry["name"], entry["version"])
+            for entry in json.loads(full)
+            if basis == BASIS_RECORD or entry["basis"] == BASIS_WORLD
+        }
+        assert available == expected
+        assert len(json.dumps(document).encode()) < len(full.encode())
+
+
+@pytest.mark.parametrize("basis", [BASIS_WORLD, BASIS_RECORD])
+def test_hybrid_catalog_budget_and_selection_are_deterministic(tmp_path, basis):
+    _state, _world, _artifacts, _log, _fallback, routing = captured(tmp_path)
+    full = routing.adapter_catalog()
+    first = routing.oracle_adapter_catalog(full, basis)
+    second = routing.oracle_adapter_catalog(full, basis)
+    assert type(first) is OracleCatalogView
+    assert str(first) == str(second)
+    document = json.loads(first)
+
+    pages = {}
+    for item in document["index"]:
+        if item["descriptor"] == "excluded-below-floor":
+            continue
+        path = os.path.join(document["descriptor_root"], item["descriptor"])
+        with open(path, "rb") as handle:
+            pages[item["descriptor"][:-5]] = handle.read()
+    ordered = sorted(pages.items(), key=lambda item: (len(item[1]), item[0]))
+    expected = set()
+    used = 0
+    for digest, encoded in ordered:
+        if used + len(encoded) > ORACLE_CATALOG_INLINE_BYTES:
+            break
+        expected.add(digest)
+        used += len(encoded)
+    actual = {
+        item["descriptor"][:-5] for item in document["index"]
+        if "inline_contract" in item}
+    assert actual == expected
+    assert document["inline_policy"]["used_bytes"] == used
+    assert used <= ORACLE_CATALOG_INLINE_BYTES
+    assert any(item["name"] == "filesystem.exists"
+               and "inline_contract" in item for item in document["index"])
+
+
+def test_lazy_catalog_preserves_unknown_extension_fields_losslessly(tmp_path):
+    class ExtensionAdapter(MethodAdapter):
+        name = "test.extension"
+        summary = "A general extension adapter."
+
+        def catalog_entry(self):
+            return {
+                **super().catalog_entry(),
+                "future_extension": {
+                    "opaque": "x" * 8_000,
+                    "nested": [{"meaning": "retained exactly"}],
+                },
+            }
+
+    state = tmp_path / "extension-state"
+    state.mkdir()
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    log = EventLog(str(state / "events.jsonl"))
+    fallback = FallbackDischarger(artifacts)
+    routing = AdapterRoutingDischarger(
+        fallback, AdapterRegistry([ExtensionAdapter()]), artifacts, log,
+        str(state), live_world=True)
+    full = routing.adapter_catalog()
+
+    document = json.loads(
+        routing.oracle_adapter_catalog(full, BASIS_WORLD))
+    assert document["schema"] == ORACLE_CATALOG_INDEX_SCHEMA
+    descriptor = document["index"][0]["descriptor"]
+    path = os.path.join(document["descriptor_root"], descriptor)
+    with open(path, "rb") as handle:
+        encoded = handle.read()
+    assert b"[" + encoded + b"]" == full.encode("utf-8")
+    assert json.loads(encoded)["future_extension"]["nested"] \
+        == [{"meaning": "retained exactly"}]
+
+
+def test_oversized_extension_fails_open_before_publication(tmp_path):
+    class OversizedAdapter(MethodAdapter):
+        name = "test.oversized"
+        summary = "An oversized extension contract."
+
+        def catalog_entry(self):
+            return {
+                **super().catalog_entry(),
+                "future_extension": "x" * (
+                    ORACLE_CATALOG_MAX_DESCRIPTOR_BYTES + 1),
+            }
+
+    state = tmp_path / "oversized-state"
+    state.mkdir()
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    log = EventLog(str(state / "events.jsonl"))
+    fallback = FallbackDischarger(artifacts)
+    routing = AdapterRoutingDischarger(
+        fallback, AdapterRegistry([OversizedAdapter()]), artifacts, log,
+        str(state), live_world=True)
+    full = routing.adapter_catalog()
+
+    baseline = routing.registry.oracle_catalog_view(full, BASIS_WORLD)
+    assert type(routing.oracle_adapter_catalog(full, BASIS_WORLD)) is str
+    assert routing.oracle_adapter_catalog(full, BASIS_WORLD) == baseline
+    assert not (state / "oracle_catalog").exists()
+
+
+def test_tampered_lazy_catalog_fails_open_to_full_inline_catalog(tmp_path):
+    _state, _world, _artifacts, _log, _fallback, routing = captured(tmp_path)
+    full = routing.adapter_catalog()
+    document = json.loads(
+        routing.oracle_adapter_catalog(full, BASIS_RECORD))
+    descriptor = next(iter(os.listdir(document["descriptor_root"])))
+    path = os.path.join(document["descriptor_root"], descriptor)
+    os.chmod(path, 0o600)
+    with open(path, "wb") as handle:
+        handle.write(b"{}")
+    os.chmod(path, 0o400)
+
+    assert routing.oracle_adapter_catalog(full, BASIS_RECORD) == full
+
+
+@pytest.mark.parametrize("backend_raises", [False, True])
+def test_call_time_catalog_tamper_discards_payload_and_retries_with_full_catalog(
+    tmp_path, backend_raises,
+):
+    _state, _world, artifacts, log, _fallback, routing = captured(tmp_path)
+    calls = []
+
+    class TamperingBackend:
+        def allows_lazy_oracle_catalog(self, role, _variables):
+            return role == "oracles"
+
+        def complete(self, role, _prompt, variables):
+            assert role == "oracles"
+            calls.append(str(variables["adapter_catalog"]))
+            if len(calls) == 1:
+                document = json.loads(variables["adapter_catalog"])
+                filename = next(iter(os.listdir(document["descriptor_root"])))
+                path = os.path.join(document["descriptor_root"], filename)
+                os.chmod(path, 0o600)
+                with open(path, "wb") as handle:
+                    handle.write(b"{}")
+                os.chmod(path, 0o400)
+                if backend_raises:
+                    raise RoleError("simulated backend failure")
+            return {"methods": []}
+
+    result = BindingGame(
+        TamperingBackend(), artifacts, log, routing, live_world=False).run(
+            ROW, Obligation("c1", "inspect one record fact", BASIS_RECORD))
+
+    assert result.outcome != OUTCOME_HOLDS
+    assert json.loads(calls[0])["schema"] == ORACLE_CATALOG_INDEX_SCHEMA
+    assert all(isinstance(json.loads(value), list) for value in calls[1:])
+
+
+def test_cleanup_does_not_remove_a_renamed_substitute_directory(
+    tmp_path, monkeypatch,
+):
+    state, _world, _artifacts, _log, _fallback, routing = captured(tmp_path)
+    full = routing.adapter_catalog()
+    real_rename = os.rename
+    raced = {}
+
+    def rename_then_substitute(source, destination, *, src_dir_fd, dst_dir_fd):
+        moved = source + ".moved"
+        real_rename(
+            source, moved, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        os.mkdir(source, 0o700, dir_fd=src_dir_fd)
+        raced.update(source=source, moved=moved)
+        raise OSError("simulated publication race")
+
+    monkeypatch.setattr("verifier.execution.adapters.os.rename",
+                        rename_then_substitute)
+    assert routing.oracle_adapter_catalog(full, BASIS_RECORD) == full
+
+    parent = state / "oracle_catalog"
+    assert (parent / raced["source"]).is_dir()
+    assert (parent / raced["moved"]).is_dir()
+    assert os.lstat(parent / raced["source"]).st_ino \
+        != os.lstat(parent / raced["moved"]).st_ino
+
+
+def test_concurrent_catalog_publication_has_one_complete_visible_tree(tmp_path):
+    state, _world, _artifacts, _log, _fallback, routing = captured(tmp_path)
+    full = routing.adapter_catalog()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        views = list(pool.map(
+            lambda _index: routing.oracle_adapter_catalog(full, BASIS_RECORD),
+            range(32)))
+
+    assert len({str(view) for view in views}) == 1
+    document = json.loads(views[0])
+    assert set(os.listdir(state / "oracle_catalog")) == {
+        document["descriptor_set_sha256"]}
+    assert not any(name.startswith(".") for name in os.listdir(
+        state / "oracle_catalog"))
+
+
+def test_catalog_snapshot_rejects_registry_contract_drift(tmp_path):
+    routing = captured(tmp_path / "default")[-1]
+    view = routing.oracle_adapter_catalog(
+        routing.adapter_catalog(), BASIS_WORLD)
+    assert type(view) is OracleCatalogView
+    original_baseline = view._baseline_catalog
+    registered = next(iter(routing.registry._adapters.values()))
+    registered.summary = registered.summary + " changed"
+    assert view.snapshot() is None
+    fresh_full = routing.registry.catalog()
+    fallback = view.fallback_catalog()
+    assert fallback != original_baseline
+    assert json.loads(fallback)["schema"] == ORACLE_CATALOG_SLICE_SCHEMA
+    assert json.loads(fallback)["full_catalog_sha256"] == hashlib.sha256(
+        fresh_full.encode("utf-8")).hexdigest()
+
+
+def test_online_and_offline_lazy_catalogs_have_same_identity_and_contracts(
+    tmp_path,
+):
+    offline_state, _world, offline_artifacts, offline_log, offline_fallback, \
+        offline = captured(tmp_path / "offline")
+    online_state = tmp_path / "online"
+    online_state.mkdir()
+    online_artifacts = ArtifactStore(str(online_state / "artifacts"))
+    online_log = EventLog(str(online_state / "events.jsonl"))
+    online_fallback = FallbackDischarger(online_artifacts)
+    online = AdapterRoutingDischarger(
+        online_fallback, default_adapter_registry(), online_artifacts,
+        online_log, str(online_state), live_world=True)
+
+    offline_document = json.loads(offline.oracle_adapter_catalog(
+        offline.adapter_catalog(), BASIS_RECORD))
+    online_document = json.loads(online.oracle_adapter_catalog(
+        online.adapter_catalog(), BASIS_RECORD))
+    assert offline_document["full_catalog_sha256"] \
+        == online_document["full_catalog_sha256"]
+    assert offline_document["index"] == online_document["index"]
+    assert offline_document["descriptor_root"] != online_document["descriptor_root"]
+    assert os.path.commonpath((str(offline_state),
+                               offline_document["descriptor_root"])) \
+        == str(offline_state)
 
 
 def test_file_exists_adapter_emits_auditable_world_evidence(tmp_path):

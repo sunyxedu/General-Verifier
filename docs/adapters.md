@@ -62,14 +62,26 @@ races, ambiguity, or any resource cap still use the agent fallback. The normal
 single Oracle repair remains available after failure; every positive result
 still receives a fresh independent Judger.
 
-For a world-basis obligation, the Oracle may receive a smaller catalog view:
-all world contracts remain complete, while record-only identities remain in a
-non-bindable index with the full-catalog digest. Those record methods are below
-the engine's mechanical basis floor and could not execute. Record-basis
-obligations receive the original catalog byte for byte because either basis may
-satisfy their floor. Any malformed or non-smaller view fails open to the full
-catalog. Execution, cache identity, and typed Judger replay always bind the full
-registry, never this display view.
+An Oracle backend receives the compact identity index only when its effective
+tool boundary is hard read-only. The default Agent backend checks the actual
+Oracle palette against its read-only allowlist; Codex uses the index only in
+its offline read-only execution profile. Live Codex and unknown or custom
+backends receive the established safe inline baseline (the old basis slice for
+world obligations and the full catalog for record obligations), so a model
+with write capability never sees a lazy pathname.
+
+Within the index, a fixed 4 KiB budget inlines as many complete small contracts
+as fit, ordered mechanically by canonical byte length and digest. Every other
+available entry points to an exact, read-only, content-addressed descriptor
+under verifier state; the Oracle cannot bind from a summary. Record-basis pages
+mechanically reconstruct the full catalog byte for byte. A world-basis root
+publishes only eligible world pages and marks record-only identities as below
+its basis floor. Publication, integrity, size, or registry-drift failure falls
+back to a freshly computed safe inline baseline. A page-integrity race discards
+that payload and uses the one existing schema retry with the inline baseline;
+normal initial and repair enumeration add no calls. Execution, cache identity,
+and typed Judger replay always bind the full registry, never this display view,
+and an unusable typed binding still follows the ordinary custom executor path.
 
 `filesystem.exists` reports `address`, `exists`, `actual_kind`,
 `expected_kind`, and `world_mode` for every substantive result. A missing

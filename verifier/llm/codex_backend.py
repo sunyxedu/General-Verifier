@@ -1967,6 +1967,13 @@ class CodexBackend:
             or (self.cwd is not None and role_name == "extract")
         )
 
+    def allows_lazy_oracle_catalog(
+        self, role_name: str, variables: Dict[str, Any],
+    ) -> bool:
+        """Expose descriptor paths only inside Codex's offline sandbox."""
+        return (role_name == "oracles"
+                and self._is_offline_execution(role_name, variables))
+
     def _offline_state_dir(self, variables: Dict[str, Any]) -> str:
         state_dir = self.cwd
         ledger_locator = (variables.get("_mixed_ledger_path")

@@ -19,6 +19,7 @@ import math
 import os
 import re
 import stat
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
@@ -68,6 +69,12 @@ from .instruments import ArtifactStore
 ADAPTER_SCHEMA = "gv-method-adapter-v1"
 EVIDENCE_SCHEMA = "gv-adapter-evidence-v1"
 ORACLE_CATALOG_SLICE_SCHEMA = "gv-oracle-adapter-catalog-slice-v1"
+ORACLE_CATALOG_INDEX_SCHEMA = "gv-oracle-adapter-catalog-index-v1"
+ORACLE_CATALOG_INLINE_BYTES = 4 * 1024
+ORACLE_CATALOG_MAX_BYTES = 4 * 1024 * 1024
+ORACLE_CATALOG_MAX_DESCRIPTOR_BYTES = 32 * 1024
+ORACLE_CATALOG_MAX_ENTRIES = 256
+ORACLE_CATALOG_MAX_SUMMARY_CHARS = 2048
 FIXED_INPUT_BINDING = "fixed-v1"
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -2976,6 +2983,142 @@ class AdapterRegistry:
                 MemoryError, OverflowError):
             return full_catalog
 
+    def oracle_catalog_index(
+        self, full_catalog: str, required_basis: str,
+    ) -> Optional[Tuple[Dict[str, Any], Dict[str, bytes]]]:
+        """Build a discovery index backed by exact content-addressed pages.
+
+        The index is never an execution contract.  It names every registered
+        identity and exposes a complete page only when that adapter can meet
+        the obligation's mechanical basis floor. ``pages`` contains every
+        exact eligible entry: it reconstructs the full record catalog or the
+        exact world-eligible projection without adapter-specific code. Any
+        uncertainty disables this display optimization.
+        """
+        if (not isinstance(full_catalog, str)
+                or required_basis not in {BASIS_RECORD, BASIS_WORLD}
+                or len(full_catalog.encode("utf-8", errors="strict"))
+                > ORACLE_CATALOG_MAX_BYTES):
+            return None
+        try:
+            entries = json.loads(
+                full_catalog,
+                object_pairs_hook=_object_without_duplicates,
+                parse_constant=_no_json_constants,
+            )
+            if (not isinstance(entries, list)
+                    or len(entries) > ORACLE_CATALOG_MAX_ENTRIES):
+                return None
+            expected = set(self._adapters)
+            seen = set()
+            index = []
+            pages: Dict[str, bytes] = {}
+            catalogued = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    return None
+                name = entry.get("name")
+                version = entry.get("version")
+                basis = entry.get("basis")
+                if (not isinstance(name, str) or type(version) is not int
+                        or basis not in {BASIS_RECORD, BASIS_WORLD}):
+                    return None
+                identity = (name, version)
+                adapter = self._adapters.get(identity)
+                if (identity in seen or adapter is None
+                        or adapter.name != name or adapter.version != version
+                        or adapter.basis != basis):
+                    return None
+                seen.add(identity)
+                encoded = json.dumps(
+                    entry,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8", errors="strict")
+                if len(encoded) > ORACLE_CATALOG_MAX_DESCRIPTOR_BYTES:
+                    return None
+                digest = hashlib.sha256(encoded).hexdigest()
+                eligible = basis_satisfies(basis, required_basis)
+                if eligible:
+                    summary = entry.get("summary")
+                    if (not isinstance(summary, str)
+                            or len(summary) > ORACLE_CATALOG_MAX_SUMMARY_CHARS):
+                        return None
+                    previous = pages.setdefault(digest, encoded)
+                    if previous != encoded:
+                        return None
+                catalogued.append((entry, encoded, digest, eligible))
+
+            inline = set()
+            inline_bytes = 0
+            for _entry, encoded, digest, eligible in sorted(
+                    catalogued, key=lambda item: (len(item[1]), item[2])):
+                if not eligible:
+                    continue
+                size = len(encoded)
+                if inline_bytes + size > ORACLE_CATALOG_INLINE_BYTES:
+                    break
+                inline.add(digest)
+                inline_bytes += size
+
+            for entry, _encoded, digest, eligible in catalogued:
+                name = entry["name"]
+                version = entry["version"]
+                basis = entry["basis"]
+                item = {
+                    "name": name,
+                    "version": version,
+                    "basis": basis,
+                    "descriptor": (
+                        digest + ".json" if eligible
+                        else "excluded-below-floor"),
+                }
+                if digest in inline:
+                    item["inline_contract"] = entry
+                elif eligible:
+                    summary = entry.get("summary")
+                    if isinstance(summary, str):
+                        item["summary"] = summary
+                index.append(item)
+            if seen != expected:
+                return None
+            rebuilt = json.dumps(
+                entries,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            if rebuilt != full_catalog:
+                return None
+            return ({
+                "schema": ORACLE_CATALOG_INDEX_SCHEMA,
+                "full_catalog_sha256": hashlib.sha256(
+                    full_catalog.encode("utf-8", errors="strict")).hexdigest(),
+                "descriptor_set_sha256": hashlib.sha256(json.dumps(
+                    sorted(pages), separators=(",", ":"),
+                ).encode("utf-8")).hexdigest(),
+                "selection": {
+                    "required_basis": required_basis,
+                    "rule": "basis-floor-v1",
+                },
+                "inline_policy": {
+                    "budget_bytes": ORACLE_CATALOG_INLINE_BYTES,
+                    "measure": "canonical-descriptor-utf8-bytes",
+                    "order": "byte-length-then-sha256",
+                    "used_bytes": inline_bytes,
+                },
+                "index": index,
+                "descriptor_access": (
+                    "read-only; join descriptor_root with the exact "
+                    "descriptor filename"),
+            }, pages)
+        except (TypeError, ValueError, UnicodeError, RecursionError,
+                MemoryError, OverflowError):
+            return None
+
     def bind_inputs(self, method: Mapping[str, Any]) -> Dict[str, Any]:
         """Lower an explicitly opted-in method without repairing model claims.
 
@@ -3208,6 +3351,483 @@ def default_adapter_registry(
     return AdapterRegistry(adapters)
 
 
+def _stat_identity(value: os.stat_result) -> Tuple[int, ...]:
+    return (
+        value.st_dev, value.st_ino, value.st_mode, value.st_nlink,
+        value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+    )
+
+
+def _require_catalog_directory(
+    descriptor: int, *, read_only: bool = False, private: bool = False,
+) -> os.stat_result:
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("oracle catalog path is not a real directory")
+    mode = stat.S_IMODE(info.st_mode)
+    if read_only and mode & 0o222:
+        raise ValueError("oracle catalog descriptor directory is writable")
+    if private and mode & 0o077:
+        raise ValueError("oracle catalog parent is not private")
+    return info
+
+
+def _validate_catalog_pages_at(
+    parent_fd: int, directory_name: str, pages: Mapping[str, bytes],
+) -> None:
+    flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    directory_fd = os.open(directory_name, flags, dir_fd=parent_fd)
+    try:
+        _require_catalog_directory(directory_fd, read_only=True)
+        expected_names = {digest + ".json" for digest in pages}
+        if set(os.listdir(directory_fd)) != expected_names:
+            raise ValueError("oracle catalog descriptor set changed")
+        for digest, expected in pages.items():
+            filename = digest + ".json"
+            descriptor = os.open(
+                filename,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+            try:
+                before = os.fstat(descriptor)
+                if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                        or stat.S_IMODE(before.st_mode) & 0o222
+                        or before.st_size != len(expected)):
+                    raise ValueError(
+                        "oracle catalog descriptor is not immutable")
+                actual = b""
+                while len(actual) <= len(expected):
+                    block = os.read(
+                        descriptor,
+                        min(64 * 1024, len(expected) + 1 - len(actual)),
+                    )
+                    if not block:
+                        break
+                    actual += block
+                after = os.fstat(descriptor)
+                if (_stat_identity(before) != _stat_identity(after)
+                        or actual != expected
+                        or hashlib.sha256(actual).hexdigest() != digest):
+                    raise ValueError("oracle catalog descriptor changed")
+            finally:
+                os.close(descriptor)
+    finally:
+        os.close(directory_fd)
+
+
+def _publish_catalog_pages(
+    state_dir: str, descriptor_set_sha256: str, pages: Mapping[str, bytes],
+) -> str:
+    """Publish exact descriptor pages atomically under the verifier state."""
+    state = os.path.abspath(state_dir)
+    flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    state_fd = os.open(state, flags)
+    try:
+        state_info = _require_catalog_directory(state_fd)
+        if (os.path.realpath(state) != state
+                or _stat_identity(os.lstat(state)) != _stat_identity(state_info)):
+            raise ValueError("oracle catalog state path changed")
+        try:
+            os.mkdir("oracle_catalog", 0o700, dir_fd=state_fd)
+        except FileExistsError:
+            pass
+        parent_fd = os.open("oracle_catalog", flags, dir_fd=state_fd)
+        try:
+            _require_catalog_directory(parent_fd, private=True)
+            try:
+                _validate_catalog_pages_at(
+                    parent_fd, descriptor_set_sha256, pages)
+                return os.path.join(
+                    state, "oracle_catalog", descriptor_set_sha256)
+            except FileNotFoundError:
+                pass
+
+            temporary = (
+                "." + descriptor_set_sha256 + "." + str(os.getpid()) + "."
+                + str(threading.get_ident()) + "." + str(time.time_ns()))
+            os.mkdir(temporary, 0o700, dir_fd=parent_fd)
+            temporary_fd = os.open(temporary, flags, dir_fd=parent_fd)
+            written = []
+            published = False
+            try:
+                _require_catalog_directory(temporary_fd, private=True)
+                for digest, encoded in pages.items():
+                    filename = digest + ".json"
+                    page_fd = os.open(
+                        filename,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                        | getattr(os, "O_NOFOLLOW", 0),
+                        0o600,
+                        dir_fd=temporary_fd,
+                    )
+                    try:
+                        offset = 0
+                        while offset < len(encoded):
+                            written_bytes = os.write(page_fd, encoded[offset:])
+                            if written_bytes <= 0:
+                                raise OSError(
+                                    "oracle catalog write made no progress")
+                            offset += written_bytes
+                        os.fsync(page_fd)
+                        os.fchmod(page_fd, 0o400)
+                    finally:
+                        os.close(page_fd)
+                    written.append(filename)
+                os.fchmod(temporary_fd, 0o500)
+                os.fsync(temporary_fd)
+                try:
+                    os.rename(
+                        temporary, descriptor_set_sha256,
+                        src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                    published = True
+                except OSError:
+                    # A concurrent registry may have won publication. Never
+                    # replace it; authenticate its complete contents instead.
+                    _validate_catalog_pages_at(
+                        parent_fd, descriptor_set_sha256, pages)
+                _validate_catalog_pages_at(
+                    parent_fd, descriptor_set_sha256, pages)
+                return os.path.join(
+                    state, "oracle_catalog", descriptor_set_sha256)
+            finally:
+                if not published:
+                    try:
+                        os.fchmod(temporary_fd, 0o700)
+                        for filename in written:
+                            os.unlink(filename, dir_fd=temporary_fd)
+                        named = os.stat(
+                            temporary, dir_fd=parent_fd,
+                            follow_symlinks=False)
+                        anchored = os.fstat(temporary_fd)
+                        if ((named.st_dev, named.st_ino)
+                                == (anchored.st_dev, anchored.st_ino)):
+                            os.rmdir(temporary, dir_fd=parent_fd)
+                    except OSError:
+                        pass
+                os.close(temporary_fd)
+        finally:
+            os.close(parent_fd)
+    finally:
+        os.close(state_fd)
+
+
+@dataclass(frozen=True)
+class _OracleCatalogPageBinding:
+    name: str
+    descriptor: int
+    identity: Tuple[int, ...]
+    content: bytes
+
+
+class OracleCatalogSnapshot:
+    """Open-file binding for one prompt-visible lazy catalog."""
+
+    def __init__(
+        self, root: str, root_fd: int, root_identity: Tuple[int, ...],
+        pages: Sequence[_OracleCatalogPageBinding],
+    ):
+        self.root = root
+        self._root_fd = root_fd
+        self._root_identity = root_identity
+        self._pages = tuple(pages)
+        self._closed = False
+
+    def revalidate(self) -> bool:
+        if self._closed:
+            return False
+        try:
+            root_info = os.fstat(self._root_fd)
+            path_info = os.lstat(self.root)
+            if (not stat.S_ISDIR(path_info.st_mode)
+                    or stat.S_IMODE(path_info.st_mode) & 0o222
+                    or _stat_identity(root_info) != self._root_identity
+                    or _stat_identity(path_info) != self._root_identity
+                    or set(os.listdir(self._root_fd))
+                    != {page.name for page in self._pages}):
+                return False
+            for page in self._pages:
+                linked = os.stat(
+                    page.name, dir_fd=self._root_fd, follow_symlinks=False)
+                before = os.fstat(page.descriptor)
+                if (_stat_identity(linked) != page.identity
+                        or _stat_identity(before) != page.identity):
+                    return False
+                os.lseek(page.descriptor, 0, os.SEEK_SET)
+                actual = b""
+                while len(actual) <= len(page.content):
+                    block = os.read(
+                        page.descriptor,
+                        min(64 * 1024,
+                            len(page.content) + 1 - len(actual)),
+                    )
+                    if not block:
+                        break
+                    actual += block
+                if (actual != page.content
+                        or _stat_identity(os.fstat(page.descriptor))
+                        != page.identity):
+                    return False
+            return True
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for page in self._pages:
+            try:
+                os.close(page.descriptor)
+            except OSError:
+                pass
+        try:
+            os.close(self._root_fd)
+        except OSError:
+            pass
+
+
+def snapshot_oracle_catalog(
+    raw_catalog: Any,
+) -> Tuple[bool, Optional[OracleCatalogSnapshot]]:
+    """Recognize and bind a lazy catalog for one complete Oracle call.
+
+    ``(False, None)`` means the input is a legacy catalog. ``(True, None)``
+    means a lazy catalog was recognized but failed closed validation.
+    """
+    if not isinstance(raw_catalog, str):
+        return False, None
+    if len(raw_catalog.encode("utf-8", errors="strict")) \
+            > ORACLE_CATALOG_MAX_BYTES:
+        return False, None
+    try:
+        document = json.loads(
+            raw_catalog,
+            object_pairs_hook=_object_without_duplicates,
+            parse_constant=_no_json_constants,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False, None
+    if (not isinstance(document, dict)
+            or document.get("schema") != ORACLE_CATALOG_INDEX_SCHEMA):
+        return False, None
+
+    root_fd = None
+    page_bindings = []
+    try:
+        if set(document) != {
+                "schema", "full_catalog_sha256", "descriptor_set_sha256",
+                "selection",
+                "inline_policy", "index", "descriptor_access",
+                "descriptor_root"}:
+            raise ValueError("lazy oracle catalog has the wrong shape")
+        full_digest = document["full_catalog_sha256"]
+        descriptor_set_digest = document["descriptor_set_sha256"]
+        selection = document["selection"]
+        policy = document["inline_policy"]
+        index = document["index"]
+        root = document["descriptor_root"]
+        if (_SHA256.fullmatch(full_digest or "") is None
+                or _SHA256.fullmatch(descriptor_set_digest or "") is None
+                or not isinstance(selection, dict)
+                or set(selection) != {"required_basis", "rule"}
+                or selection["required_basis"]
+                not in {BASIS_RECORD, BASIS_WORLD}
+                or selection["rule"] != "basis-floor-v1"
+                or not isinstance(policy, dict)
+                or set(policy) != {
+                    "budget_bytes", "measure", "order", "used_bytes"}
+                or policy.get("budget_bytes") != ORACLE_CATALOG_INLINE_BYTES
+                or policy.get("measure")
+                != "canonical-descriptor-utf8-bytes"
+                or policy.get("order") != "byte-length-then-sha256"
+                or type(policy.get("used_bytes")) is not int
+                or not 0 <= policy["used_bytes"] <= ORACLE_CATALOG_INLINE_BYTES
+                or not isinstance(index, list)
+                or len(index) > ORACLE_CATALOG_MAX_ENTRIES
+                or not isinstance(root, str) or not os.path.isabs(root)
+                or os.path.realpath(root) != root
+                or os.path.basename(root) != descriptor_set_digest
+                or os.path.basename(os.path.dirname(root)) != "oracle_catalog"):
+            raise ValueError("lazy oracle catalog metadata is invalid")
+
+        flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+        root_fd = os.open(root, flags)
+        root_info = _require_catalog_directory(root_fd, read_only=True)
+        expected_names = set()
+        identities = set()
+        page_entries = {}
+        inline_digests = set()
+        required_basis = selection["required_basis"]
+        for item in index:
+            if not isinstance(item, dict):
+                raise ValueError("lazy oracle catalog index item is invalid")
+            keys = set(item)
+            if not {"name", "version", "basis", "descriptor"} <= keys \
+                    or keys - {"name", "version", "basis", "descriptor",
+                               "summary", "inline_contract"}:
+                raise ValueError("lazy oracle catalog index item has wrong fields")
+            name, version = item["name"], item["version"]
+            basis, filename = item["basis"], item["descriptor"]
+            identity = (name, version)
+            eligible = (basis in {BASIS_RECORD, BASIS_WORLD}
+                        and basis_satisfies(basis, required_basis))
+            if (not isinstance(name, str) or _NAME.fullmatch(name) is None
+                    or type(version) is not int or version < 1
+                    or identity in identities):
+                raise ValueError("lazy oracle catalog identity is invalid")
+            identities.add(identity)
+            if not eligible:
+                if (filename != "excluded-below-floor"
+                        or keys != {"name", "version", "basis", "descriptor"}):
+                    raise ValueError("below-floor descriptor was exposed")
+                continue
+            if (not isinstance(filename, str) or not filename.endswith(".json")
+                    or _SHA256.fullmatch(filename[:-5]) is None
+                    or filename in expected_names):
+                raise ValueError("lazy oracle catalog descriptor is invalid")
+            expected_names.add(filename)
+            descriptor = os.open(
+                filename,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=root_fd,
+            )
+            try:
+                info = os.fstat(descriptor)
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                        or stat.S_IMODE(info.st_mode) & 0o222
+                        or info.st_size > ORACLE_CATALOG_MAX_DESCRIPTOR_BYTES):
+                    raise ValueError("lazy oracle descriptor is not immutable")
+                content = b""
+                while len(content) <= ORACLE_CATALOG_MAX_DESCRIPTOR_BYTES:
+                    block = os.read(descriptor, min(
+                        64 * 1024,
+                        ORACLE_CATALOG_MAX_DESCRIPTOR_BYTES + 1 - len(content)))
+                    if not block:
+                        break
+                    content += block
+                after = os.fstat(descriptor)
+                if (_stat_identity(info) != _stat_identity(after)
+                        or hashlib.sha256(content).hexdigest() != filename[:-5]):
+                    raise ValueError("lazy oracle descriptor digest changed")
+                entry = json.loads(
+                    content,
+                    object_pairs_hook=_object_without_duplicates,
+                    parse_constant=_no_json_constants,
+                )
+                canonical_entry = json.dumps(
+                    entry, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), allow_nan=False).encode("utf-8")
+                if (not isinstance(entry, dict) or canonical_entry != content
+                        or (entry.get("name"), entry.get("version")) != identity
+                        or entry.get("basis") != basis):
+                    raise ValueError("lazy oracle descriptor contract changed")
+                if "inline_contract" in item:
+                    if ("summary" in item or item["inline_contract"] != entry):
+                        raise ValueError("inline oracle contract is not exact")
+                    inline_digests.add(filename[:-5])
+                elif (set(keys) != {
+                        "name", "version", "basis", "descriptor", "summary"}
+                        or item["summary"] != entry.get("summary")):
+                    raise ValueError("lazy oracle discovery summary changed")
+                page_entries[identity] = (entry, content, filename[:-5])
+                page_bindings.append(_OracleCatalogPageBinding(
+                    filename, descriptor, _stat_identity(info), content))
+                descriptor = None
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        if set(os.listdir(root_fd)) != expected_names:
+            raise ValueError("prompt-visible catalog exposed another page")
+        expected_set_digest = hashlib.sha256(json.dumps(
+            sorted(name[:-5] for name in expected_names),
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        if descriptor_set_digest != expected_set_digest:
+            raise ValueError("lazy oracle descriptor-set identity changed")
+
+        ordered = sorted(
+            page_entries.values(), key=lambda item: (len(item[1]), item[2]))
+        expected_inline = set()
+        used = 0
+        for _entry, content, digest in ordered:
+            if used + len(content) > ORACLE_CATALOG_INLINE_BYTES:
+                break
+            expected_inline.add(digest)
+            used += len(content)
+        if inline_digests != expected_inline or policy["used_bytes"] != used:
+            raise ValueError("inline oracle budget selection changed")
+        if required_basis == BASIS_RECORD:
+            ordered_entries = [page_entries[(item["name"], item["version"])][0]
+                               for item in index]
+            rebuilt = json.dumps(
+                ordered_entries, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), allow_nan=False).encode("utf-8")
+            if hashlib.sha256(rebuilt).hexdigest() != full_digest:
+                raise ValueError("lazy oracle full catalog identity changed")
+        snapshot = OracleCatalogSnapshot(
+            root, root_fd, _stat_identity(root_info), page_bindings)
+        root_fd = None
+        page_bindings = []
+        return True, snapshot
+    except (KeyError, OSError, TypeError, ValueError, UnicodeError,
+            RecursionError, MemoryError, OverflowError):
+        return True, None
+    finally:
+        for page in page_bindings:
+            try:
+                os.close(page.descriptor)
+            except OSError:
+                pass
+        if root_fd is not None:
+            os.close(root_fd)
+
+
+class OracleCatalogView(str):
+    """Rendered lazy index carrying verifier-only fallback/recheck authority."""
+
+    def __new__(cls, rendered: str, registry: AdapterRegistry,
+                original_full_catalog: str, required_basis: str,
+                baseline_catalog: str):
+        value = super().__new__(cls, rendered)
+        value._registry = registry
+        value._original_full_catalog = original_full_catalog
+        value._required_basis = required_basis
+        value._baseline_catalog = baseline_catalog
+        return value
+
+    def fallback_catalog(self) -> str:
+        """Rebuild the established inline view from the current registry.
+
+        Registry drift invalidates the lazy page binding.  Recomputing the
+        basis slice keeps the old safe world prompt instead of needlessly
+        inflating it to the record catalog; any doubt retains the original
+        inline baseline captured with this view.
+        """
+        try:
+            current = self._registry.catalog()
+            if not isinstance(current, str):
+                return self._baseline_catalog
+            baseline = self._registry.oracle_catalog_view(
+                current, self._required_basis)
+            return baseline if isinstance(baseline, str) \
+                else self._baseline_catalog
+        except Exception:
+            return self._baseline_catalog
+
+    def snapshot(self) -> Optional[OracleCatalogSnapshot]:
+        try:
+            if self._registry.catalog() != self._original_full_catalog:
+                return None
+        except Exception:
+            return None
+        recognized, snapshot = snapshot_oracle_catalog(str(self))
+        return snapshot if recognized else None
+
+
 class AdapterRoutingDischarger:
     """Try a typed adapter, otherwise preserve the existing executor path."""
 
@@ -3219,6 +3839,7 @@ class AdapterRoutingDischarger:
         self.artifacts = artifacts
         self.log = log
         self.context = AdapterContext(state_dir, live_world, log)
+        self._oracle_catalog_lock = threading.Lock()
 
     def adapter_catalog(self) -> str:
         return self.registry.catalog()
@@ -3226,13 +3847,49 @@ class AdapterRoutingDischarger:
     def oracle_adapter_catalog(
         self, full_catalog: str, required_basis: str,
     ) -> str:
-        """Fail open to the exact full catalog on any display-view failure."""
+        """Publish a lossless lazy view or retain an established safe view."""
+        baseline = full_catalog
         try:
-            rendered = self.registry.oracle_catalog_view(
+            candidate = self.registry.oracle_catalog_view(
                 full_catalog, required_basis)
-            return rendered if isinstance(rendered, str) else full_catalog
+            if isinstance(candidate, str):
+                baseline = candidate
         except Exception:
-            return full_catalog
+            pass
+        try:
+            built = self.registry.oracle_catalog_index(
+                full_catalog, required_basis)
+            if built is None:
+                return baseline
+            document, pages = built
+            with self._oracle_catalog_lock:
+                descriptor_root = _publish_catalog_pages(
+                    self.context.state_dir,
+                    document["descriptor_set_sha256"],
+                    pages,
+                )
+            # Keep the state-specific absolute locator last.  The complete
+            # task-independent index before it remains a stable prompt prefix.
+            document["descriptor_root"] = descriptor_root
+            rendered = json.dumps(
+                document,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            if (len(rendered.encode("utf-8"))
+                    >= len(baseline.encode("utf-8"))):
+                return baseline
+            view = OracleCatalogView(
+                rendered, self.registry, full_catalog,
+                required_basis, baseline)
+            snapshot = view.snapshot()
+            if snapshot is None:
+                return baseline
+            snapshot.close()
+            return view
+        except Exception:
+            return baseline
 
     def prepare_method(self, method):
         try:
