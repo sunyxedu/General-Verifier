@@ -56,7 +56,7 @@ def _sha(path):
 
 
 def _support(name):
-    path = Path(__file__).with_name(name)
+    path = Path(__file__).with_name(name + ".py")
     module_name = "_gv_warm_support_" + name + "_" + _sha(path)[:16]
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)

@@ -188,3 +188,10 @@ def test_build_groups_candidates_by_task_family(tmp_path, monkeypatch, capsys):
     support = tmp_path / "run" / "support"
     assert (support / "run_full_offline_warm_worker.py").is_file()
     assert set(plan["support_sha256"]) == set(warm.PINNED)
+
+
+def test_support_loads_the_real_evaluation_helpers():
+    cold = warm._support("run_full_offline_worker")
+    assert callable(cold._clone) and callable(cold._environment)
+    analyzer = warm._support("analyze_codex_observer")
+    assert callable(analyzer.analyze_file)
