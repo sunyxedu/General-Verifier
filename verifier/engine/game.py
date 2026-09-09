@@ -146,10 +146,17 @@ class BindingGame:
         method_cache=None,
         typed_adapter_judger_packet: bool = False,
         sufficiency_role=None,
+        packet_method_reuse: bool = False,
     ):
         if type(typed_adapter_judger_packet) is not bool:
             raise ValueError("typed_adapter_judger_packet must be a bool")
+        if type(packet_method_reuse) is not bool:
+            raise ValueError("packet_method_reuse must be a bool")
         self.backend = backend
+        # An operator's explicit reuse request also covers the packet
+        # transports (prefetch, typed packet).  Default off: the packet
+        # experiments alone never acquire authority to skip a signer.
+        self.packet_method_reuse = packet_method_reuse
         # Optional pre-execution sufficiency audit of agent-executed methods.
         # None keeps the established Oracle/executor/Judger sequence.
         self.sufficiency_role = sufficiency_role
@@ -364,8 +371,9 @@ class BindingGame:
         # This transport protocol is deliberately fresh-review-only until its
         # semantic/result gates have passed.  It may reduce inspection turns;
         # it must not also acquire authority to skip either signer.
-        if (getattr(self.backend, "judger_prefetch", False) is True
-                or self.typed_adapter_judger_packet):
+        if (not self.packet_method_reuse
+                and (getattr(self.backend, "judger_prefetch", False) is True
+                     or self.typed_adapter_judger_packet)):
             return None
         state = os.path.dirname(os.path.abspath(self.log.path))
         catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()

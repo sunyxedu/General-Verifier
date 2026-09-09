@@ -10,6 +10,7 @@ from typing import Mapping, Optional
 TYPED_ADAPTERS_ENV = "GV_TYPED_ADAPTERS"
 TYPED_JUDGER_PACKET_ENV = "GV_TYPED_JUDGER_PACKET"
 CONTRACT_CACHE_ENV = "GV_CONTRACT_CACHE"
+METHOD_CACHE_ENV = "GV_METHOD_CACHE"
 APPEND_ONLY_DELTAS_ENV = "GV_APPEND_ONLY_DELTAS"
 SUFFICIENCY_PREAUDIT_ENV = "GV_SUFFICIENCY_PREAUDIT"
 FINAL_CONTRACT_PRECOMPILE_ENV = "GV_FINAL_CONTRACT_PRECOMPILE"
@@ -88,16 +89,32 @@ def offline_runtime_read_roots(
 
 
 def contract_cache_enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
-    """Parse the diagnostic contract-cache flag.
+    """Parse the process-local contract-cache flag.
 
-    Production online/offline kernel construction deliberately ignores this
-    flag so Obligation Compiler and Critic stages cannot be bypassed. Tests or
-    research harnesses may inject a cache directly into ``Kernel``.
+    Off by default.  When on, the default kernel shares one Critic-approved,
+    candidate-blind final contract per task authority across the candidates
+    scored in this process; the Compiler and Critic still run once per task
+    and every candidate still executes and audits its own evidence.
     """
     values = os.environ if environ is None else environ
     value = values.get(CONTRACT_CACHE_ENV, "0")
     if value not in ("0", "1"):
         raise ValueError(f"{CONTRACT_CACHE_ENV} must be exactly 0 or 1")
+    return value == "1"
+
+
+def method_cache_enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Parse the process-local accepted-method cache flag.
+
+    Off by default.  When on, the default kernel reuses Judger-accepted
+    typed methods for identical obligations of the same task authority in
+    the direction the Judger accepted; the adapter still executes afresh for
+    every candidate and unaccepted directions still get a fresh audit.
+    """
+    values = os.environ if environ is None else environ
+    value = values.get(METHOD_CACHE_ENV, "0")
+    if value not in ("0", "1"):
+        raise ValueError(f"{METHOD_CACHE_ENV} must be exactly 0 or 1")
     return value == "1"
 
 

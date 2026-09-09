@@ -155,7 +155,7 @@ Six model roles do the semantic work, plus one optional pre-execution auditor. E
 | Compiler | Claim, task, graph snapshot, premises | Read, Grep, Glob | Obligations with basis, severity, clause, absence flag |
 | Critic | Claim, proposed obligations, premises, game history | Read, Grep, Glob | `pass` or `insufficient` with a counterexample world and a repair instruction |
 | Oracle | Obligation, task, world description, record shape, prior feedback | Read, Grep, Glob, WebSearch, WebFetch | Candidate methods with basis, strength, and bridges |
-| Sufficiency auditor (optional, `GV_SUFFICIENCY_PREAUDIT=1`) | Obligation, task, evidence boundary, one proposed agent method; no evidence | none, one turn | `sufficient` yes or no with the structural gap, before the executor runs ([details](../sufficiency-preaudit.md)) |
+| Sufficiency auditor (optional, `GV_SUFFICIENCY_PREAUDIT=1`) | Obligation, task, evidence boundary, one proposed agent method; no evidence | none, one turn | `sufficient` yes or no with the structural gap, before the executor runs |
 | Executor | Obligation, one bound method, workspace, world mapping | Bash, Read, Write, Grep | Outcome, witness, artifact paths, declared inputs |
 | Judger | Obligation, method, the executor's artifact | Read, Bash, Grep | `sufficient`, `faithful`, `degradation`, reason |
 

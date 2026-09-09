@@ -284,6 +284,8 @@ def _default_kernel(sc: Service, model, backend=None,
                     parallel_claims: Optional[int] = None) -> Kernel:
     from .llm.agents import AgentBackend
     from .execution.config import (
+        contract_cache_enabled,
+        method_cache_enabled,
         sufficiency_preaudit_enabled,
         typed_adapters_enabled,
         typed_judger_packet_enabled,
@@ -317,7 +319,19 @@ def _default_kernel(sc: Service, model, backend=None,
         live_world=sc.live_world,
         store=sc.store,   # evidence-workspace index over the claim graph
         log=sc.log)
+    # Process-local, explicit opt-in reuse across the candidates of one task
+    # scored in this process.  Off by default: every candidate then follows
+    # the fresh Compiler/Critic/Oracle/executor/Judger sequence.
     method_cache = None
+    if method_cache_enabled():
+        from .engine.method_cache import default_accepted_method_cache
+        method_cache = default_accepted_method_cache()
+    contract_cache = None
+    if contract_cache_enabled():
+        from .engine.contract_cache import (
+            default_compiled_final_contract_cache,
+        )
+        contract_cache = default_compiled_final_contract_cache()
     typed_adapters = typed_adapters_enabled()
     typed_judger_packet = typed_judger_packet_enabled()
     if typed_judger_packet and not typed_adapters:
@@ -338,7 +352,8 @@ def _default_kernel(sc: Service, model, backend=None,
                          typed_adapter_judger_packet=typed_judger_packet,
                          sufficiency_role=(
                              roles["sufficiency"]
-                             if sufficiency_preaudit_enabled() else None))
+                             if sufficiency_preaudit_enabled() else None),
+                         packet_method_reuse=method_cache is not None)
     if parallel_obligations is None:
         parallel_obligations = getattr(sc, "parallel_obligations", None)
     if parallel_claims is None:
@@ -355,10 +370,7 @@ def _default_kernel(sc: Service, model, backend=None,
                   memory=sc.memory, live_world=sc.live_world,
                   record_boundary=sc.builder.commit_seq.get,
                   critic_rounds=critic_rounds,
-                  # Keep the production topology fixed: every final claim is
-                  # freshly compiled and criticised. Contract-cache research
-                  # remains available only through explicit Kernel injection.
-                  contract_cache=None,
+                  contract_cache=contract_cache,
                   parallel_obligations=parallel_obligations,
                   parallel_claims=parallel_claims)
 

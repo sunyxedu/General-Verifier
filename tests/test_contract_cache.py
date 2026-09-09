@@ -240,7 +240,7 @@ def test_failed_fill_wakes_waiters_without_caching_failure():
     assert len(cache) == 0
 
 
-def test_contract_cache_flag_is_diagnostic_not_production_score_identity(
+def test_contract_cache_flag_is_explicit_and_part_of_score_identity(
         monkeypatch):
     from verifier.execution.config import contract_cache_enabled
     from verifier.offline import config_fields
@@ -251,8 +251,10 @@ def test_contract_cache_flag_is_diagnostic_not_production_score_identity(
     assert contract_cache_enabled() is True
     after = config_fields(model="gpt-5.6-luna", seats="codex")
     assert before["contract_cache"] is False
-    assert after["contract_cache"] is False
-    assert before["config"] == after["config"]
+    # Reuse across candidates is a different verifier configuration: the
+    # score identity must never let a warm run resume a cold run's state.
+    assert after["contract_cache"] is True
+    assert before["config"] != after["config"]
     monkeypatch.setenv("GV_CONTRACT_CACHE", "true")
     with pytest.raises(ValueError, match="exactly 0 or 1"):
         contract_cache_enabled()
