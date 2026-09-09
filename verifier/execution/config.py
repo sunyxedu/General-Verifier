@@ -12,6 +12,7 @@ TYPED_JUDGER_PACKET_ENV = "GV_TYPED_JUDGER_PACKET"
 CONTRACT_CACHE_ENV = "GV_CONTRACT_CACHE"
 APPEND_ONLY_DELTAS_ENV = "GV_APPEND_ONLY_DELTAS"
 SUFFICIENCY_PREAUDIT_ENV = "GV_SUFFICIENCY_PREAUDIT"
+FINAL_CONTRACT_PRECOMPILE_ENV = "GV_FINAL_CONTRACT_PRECOMPILE"
 APPEND_ONLY_DELTA_PROTOCOL = "obligations-array-delta-v1"
 OFFLINE_RUNTIME_READ_ROOTS_ENV = "GV_OFFLINE_RUNTIME_READ_ROOTS"
 
@@ -167,3 +168,21 @@ def sufficiency_preaudit_enabled(
     if value == "0":
         return False
     raise ValueError(f"{SUFFICIENCY_PREAUDIT_ENV} must be 0 or 1")
+
+
+def final_contract_precompile_enabled(
+    environ: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether offline scoring compiles the candidate-blind final contract
+    concurrently with extraction.  A schedule, not a judgment: the kernel
+    adopts the result only under an identical contract key.  Explicit
+    ``0``/``1`` only; disabled unless requested."""
+    values = os.environ if environ is None else environ
+    if FINAL_CONTRACT_PRECOMPILE_ENV not in values:
+        return False
+    value = values[FINAL_CONTRACT_PRECOMPILE_ENV]
+    if value == "1":
+        return True
+    if value == "0":
+        return False
+    raise ValueError(f"{FINAL_CONTRACT_PRECOMPILE_ENV} must be 0 or 1")

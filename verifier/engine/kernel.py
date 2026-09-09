@@ -91,6 +91,34 @@ def _repair_oscillation(history: List[Dict]) -> bool:
     return False
 
 
+def compile_roles_for_backend(backend, obligations_role, critic_role):
+    """Treatment-only prompt specialization of the contract seats.
+
+    Clone (never mutate) the compiler and Critic seats, retaining their
+    schemas, tools, names, call/retry behavior, and the kernel's critic-round
+    budget.  Unknown injected role implementations are left untouched rather
+    than being wrapped with assumptions about their prompt protocol.  The
+    concurrent final-contract precompile applies the identical rule so its
+    contract key can match the kernel's.
+    """
+    if getattr(backend, "compact_inspection", False) is True:
+        if (type(obligations_role) is AgentRole
+                and obligations_role.name == "obligations"):
+            obligations_role = replace(
+                obligations_role,
+                system=(obligations_role.system
+                        + prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM),
+            )
+        if (type(critic_role) is AgentRole
+                and critic_role.name == "critic"):
+            critic_role = replace(
+                critic_role,
+                system=(critic_role.system
+                        + prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM),
+            )
+    return obligations_role, critic_role
+
+
 class Kernel:
     """
     Role seats (obligations compiler, discharger, binder) are injectable:
@@ -152,28 +180,12 @@ class Kernel:
         self.append_only_deltas = append_only_deltas_enabled()
         self.append_only_delta_protocol = (
             APPEND_ONLY_DELTA_PROTOCOL if self.append_only_deltas else None)
-        self.obligations_role = obligations_role or COMPILE_OBLIGATIONS_AGENT
-        self.critic_role = critic_role   # None -> no adversarial review
-        # Treatment-only prompt specialization.  Clone (never mutate) the
-        # compiler and Critic seats, retaining their schemas, tools, names,
-        # call/retry behavior, and the kernel's critic-round budget.  Unknown
-        # injected role implementations are left untouched rather than being
-        # wrapped with assumptions about their prompt protocol.
-        if getattr(backend, "compact_inspection", False) is True:
-            if (type(self.obligations_role) is AgentRole
-                    and self.obligations_role.name == "obligations"):
-                self.obligations_role = replace(
-                    self.obligations_role,
-                    system=(self.obligations_role.system
-                            + prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM),
-                )
-            if (type(self.critic_role) is AgentRole
-                    and self.critic_role.name == "critic"):
-                self.critic_role = replace(
-                    self.critic_role,
-                    system=(self.critic_role.system
-                            + prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM),
-                )
+        self.obligations_role, self.critic_role = compile_roles_for_backend(
+            backend, obligations_role or COMPILE_OBLIGATIONS_AGENT,
+            critic_role)   # critic None -> no adversarial review
+        # A final contract compiled concurrently with extraction; adopted
+        # only under an identical contract key (see engine.precompile).
+        self._precompiled_final = None
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),
@@ -707,6 +719,11 @@ class Kernel:
         )
         from ..llm.schema import validate
 
+        if self._precompiled_final is not None and self.contract_cache is None:
+            adopted, payload = self._adopt_precompiled_final(row, state)
+            if adopted:
+                return True, payload
+
         try:
             view = build_authority_compilation_view(state)
             with authority_compilation_backend(
@@ -790,6 +807,71 @@ class Kernel:
             self.log.append("contract_cache_bypass", {
                 "claim": row["id"], "reason": str(error)[:300]})
             return False, None
+
+    def adopt_precompiled_final_contract(self, handle) -> None:
+        """Register a concurrent authority-only compilation for the final."""
+        self._precompiled_final = handle
+
+    def _adopt_precompiled_final(self, row: Dict, state: str):
+        """Use the concurrent compilation only under an identical key.
+
+        The key covers the authority view, the withheld compile variables,
+        the backend and role identities and the critic budget.  A mismatch,
+        an authority bypass, or a failed thread all fall back to the
+        unchanged inline compile; a failed thread's work is not reused.
+        """
+        from ..llm.authority_backend import (
+            AuthorityBackendUnavailable, authority_compilation_backend,
+        )
+
+        handle = self._precompiled_final
+        self._precompiled_final = None
+        outcome = handle.wait()
+        event = {"claim": row["id"],
+                 "precompiled_claim": handle.pseudo_claim_id,
+                 "elapsed_seconds": round(outcome.elapsed_seconds, 3),
+                 "adopted": False}
+        if outcome.bypass_reason is not None:
+            event["reason"] = outcome.bypass_reason
+            self.log.append("contract_precompiled", event)
+            return False, None
+        if outcome.error is not None:
+            event["reason"] = (
+                f"precompile failed: {type(outcome.error).__name__}")
+            self.log.append("contract_precompiled", event)
+            return False, None
+        try:
+            view = build_authority_compilation_view(state)
+            with authority_compilation_backend(
+                    self.backend, self.obligations_role,
+                    self.critic_role) as session:
+                expected = contract_cache_key(
+                    view=view,
+                    variables=self._authority_contract_variables(view),
+                    backend_identity=session.identity,
+                    obligations_role=session.obligations_role,
+                    critic_role=session.critic_role,
+                    critic_rounds=self.critic_rounds,
+                    append_only_deltas=self.append_only_deltas,
+                    append_only_delta_protocol=self.append_only_delta_protocol)
+        except (AuthorityViewUnavailable, AuthorityBackendUnavailable) as error:
+            event["reason"] = str(error)[:300]
+            self.log.append("contract_precompiled", event)
+            return False, None
+        if expected != outcome.key:
+            event["reason"] = "contract key differs from this kernel's"
+            self.log.append("contract_precompiled", event)
+            return False, None
+        for kind, payload in outcome.events:
+            self.log.append(kind, {**payload, "claim": row["id"]})
+        for evidence in outcome.evidence:
+            self.store.record_evidence(row["id"], evidence)
+        event["adopted"] = True
+        event["critic_rounds_used"] = sum(
+            1 for kind, _payload in outcome.events
+            if kind == "decomposition_attacked")
+        self.log.append("contract_precompiled", event)
+        return True, outcome.payload
 
     @staticmethod
     def _authority_contract_variables(view):

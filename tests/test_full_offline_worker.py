@@ -93,6 +93,8 @@ def test_runtime_environment_keeps_auth_but_clears_ambient_evaluation_flags(monk
     assert env["GV_CONTRACT_CACHE"] == "0"
     assert env["GV_TYPED_ADAPTERS"] == "1"
     assert env["GV_TYPED_JUDGER_PACKET"] == "1"
+    assert env["GV_SUFFICIENCY_PREAUDIT"] == "1"
+    assert env["GV_FINAL_CONTRACT_PRECOMPILE"] == "1"
     assert env["GV_CERTIFICATE_SCOPE"] == "final"
     assert "GV_SHARED_DIR" not in env and "PYTHONPATH" not in env
     worker._environment({"arm": "control", "runtime_read_roots": []})

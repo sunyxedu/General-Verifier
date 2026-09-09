@@ -62,6 +62,7 @@ EVENT_TYPES = (
     "contract_cache_hit",
     "contract_cache_published",
     "contract_cache_bypass",
+    "contract_precompiled",
     
     # binding game
     "methods_enumerated",

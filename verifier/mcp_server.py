@@ -259,16 +259,30 @@ def _parallel_default(name: str, fallback: int) -> int:
         return fallback
 
 
+def harness_roles(state_dir: str) -> Dict[str, Any]:
+    """The role registry a state's kernel seats: the mounting harness's
+    ground truth (task.md / baseline/) is the toggle; when present
+    (experiment mounts write it; the interactive mount does not), the
+    obligation compiler is told to compile against it."""
+    from dataclasses import replace
+
+    from .llm import prompts
+    from .llm.agents import ALL_AGENT_ROLES, COMPILE_OBLIGATIONS_AGENT
+
+    obligations = COMPILE_OBLIGATIONS_AGENT
+    if os.path.exists(os.path.join(state_dir, "task.md")) or \
+            os.path.isdir(os.path.join(state_dir, "baseline")):
+        obligations = replace(
+            obligations, system=obligations.system + "\n"
+            + prompts.OBLIGATIONS_HARNESS_ADDENDUM)
+    return dict(ALL_AGENT_ROLES, obligations=obligations)
+
+
 def _default_kernel(sc: Service, model, backend=None,
                     critic_rounds: Optional[int] = None,
                     parallel_obligations: Optional[int] = None,
                     parallel_claims: Optional[int] = None) -> Kernel:
-    from dataclasses import replace
-
-    from .llm import prompts
-    from .llm.agents import (
-        ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
-    )
+    from .llm.agents import AgentBackend
     from .execution.config import (
         sufficiency_preaudit_enabled,
         typed_adapters_enabled,
@@ -277,18 +291,10 @@ def _default_kernel(sc: Service, model, backend=None,
     from .execution.discharge import AgentDischarger
     from .engine.game import BindingGame
 
-    # The mounting harness's ground truth (task.md / baseline/) is the
-    # toggle: when present (experiment mounts write it; the interactive
-    # mount does not), the obligation compiler is told to compile
-    # against it. The backend resolves roles by name, so the swapped
-    # role must go into its registry too, not just into the Kernel.
-    obligations = COMPILE_OBLIGATIONS_AGENT
-    if os.path.exists(os.path.join(sc.state_dir, "task.md")) or \
-            os.path.isdir(os.path.join(sc.state_dir, "baseline")):
-        obligations = replace(
-            obligations, system=obligations.system + "\n"
-            + prompts.OBLIGATIONS_HARNESS_ADDENDUM)
-    roles = dict(ALL_AGENT_ROLES, obligations=obligations)
+    # The backend resolves roles by name, so the harness-swapped role must
+    # go into its registry too, not just into the Kernel.
+    roles = harness_roles(sc.state_dir)
+    obligations = roles["obligations"]
     if backend is None:
         backend = AgentBackend(roles=roles, cwd=sc.state_dir, model=model)
     else:

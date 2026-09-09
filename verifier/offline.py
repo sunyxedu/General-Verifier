@@ -999,24 +999,50 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         invalid["immutable_input_seal_error"] = str(err)
         return _write_score(state_dir, invalid)
 
+    precompile = None
     if seats == "codex":
         if kernel_factory is None:
+            # One kernel backend for the whole run: the concurrent final
+            # contract precompile and the kernel must share its identity.
+            kernel_backend = CodexBackend(
+                cwd=state_dir, model=model,
+                effort=cfg["effort"],
+                service_tier=cfg["service_tier"],
+                compact_inspection=cfg["compact_inspection"],
+                judger_prefetch=cfg["judger_prefetch"],
+                offline_toolchain_dir=toolchain_dir,
+                offline_shared_cache_dir=cache_dir,
+                restricted_judger_cwd=restricted_judger_cwd)
+
             def kernel_factory(sc):
                 from .mcp_server import _default_kernel
                 return _default_kernel(
-                    sc, model,
-                    backend=CodexBackend(cwd=sc.state_dir, model=model,
-                                         effort=cfg["effort"],
-                                         service_tier=cfg["service_tier"],
-                                         compact_inspection=cfg["compact_inspection"],
-                                         judger_prefetch=cfg["judger_prefetch"],
-                                         offline_toolchain_dir=toolchain_dir,
-                                         offline_shared_cache_dir=cache_dir,
-                                         restricted_judger_cwd=(
-                                             restricted_judger_cwd)),
+                    sc, model, backend=kernel_backend,
                     critic_rounds=critic_rounds,
                     parallel_obligations=parallel_obligations,
                     parallel_claims=parallel_claims)
+
+            from .execution.config import final_contract_precompile_enabled
+            if (final_contract_precompile_enabled()
+                    and not _has_commits(
+                        os.path.join(state_dir, "events.jsonl"))):
+                from .engine.precompile import PrecompiledFinalContract
+                from .engine.kernel import compile_roles_for_backend
+                from .execution.config import (
+                    APPEND_ONLY_DELTA_PROTOCOL, append_only_deltas_enabled,
+                )
+                from .mcp_server import harness_roles
+                roles = harness_roles(state_dir)
+                compile_role, critic_role = compile_roles_for_backend(
+                    kernel_backend, roles["obligations"], roles["critic"])
+                deltas = append_only_deltas_enabled()
+                # Started before extraction so the candidate-blind contract
+                # and the Extractor run side by side; adopted by the kernel
+                # only under an identical contract key.
+                precompile = PrecompiledFinalContract.start(
+                    state_dir, kernel_backend, compile_role, critic_role,
+                    critic_rounds, deltas,
+                    APPEND_ONLY_DELTA_PROTOCOL if deltas else None)
 
     def run_verification() -> Dict[str, Any]:
         nonlocal extract_rounds
@@ -1086,6 +1112,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                      shared_cache_dir=cache_dir,
                      parallel_obligations=parallel_obligations,
                      parallel_claims=parallel_claims)
+        if precompile is not None:
+            sc.kernel.adopt_precompiled_final_contract(precompile)
         if not sc.builder.finals:
             return dict(_unscoreable(
                 "no final claim in trace", extract_rounds, fingerprint),
@@ -1100,6 +1128,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             "parallel_claims": parallel_claims,
             "shared_dir": shared_dir or None,
             "certificate_scope": cfg["certificate_scope"],
+            "final_contract_precompile": precompile is not None,
         }
         return features
 
