@@ -115,6 +115,43 @@ The pre-execution sufficiency audit stopped the executor before the two
 methods the Judger would have rejected after 200–330 s each on chess, and
 the fresh video pair no longer deadlocks on a runner-protocol append.
 
+### Warm batches, treatment `25f20be` (run `full-offline-warm-25f20be-tb8-20260909`)
+
+Both candidates of one task family scored in one process with the
+process-local contract and method caches on (`GV_CONTRACT_CACHE=1`,
+`GV_METHOD_CACHE=1`) over the same treatment profile; controls are the
+`82bef17` cohort's control jobs. The chess family ran from the earlier
+`01293a8` warm root.
+
+| Candidate (label) | Treatment verdict / cost / wall | Contract cache | cost × | latency × |
+| --- | --- | --- | ---: | ---: |
+| video `KFN5iFo` (1) | unverified / $0.106 / 427 s | miss, published | 1.83 | 1.39 |
+| video `tJdCJ8R` (0) | refuted / $0.060 / 159 s | hit | 6.99 | 8.33 |
+| gcode `ELuvDeE` (1) | unverified / $0.038 / 202 s | miss, published | 13.71 | 4.26 |
+| gcode `HFh2qJM` (0) | refuted / $0.053 / 212 s | hit | 5.26 | 3.33 |
+| sqlite `4JQh54h` (1) | unverified / $0.077 / 422 s | miss, published | 15.77 | 7.00 |
+| sqlite `hUXYSvy` (0) | unverified / $0.105 / 532 s | hit (+1 method reuse) | 4.06 | 1.69 |
+| **Six candidates** | **$0.439 / 1954 s** (control $3.052 / 7336 s) | | **6.96** | **3.75** |
+| chess `xGt6Pve` (1), `01293a8` root | unverified / $0.373 / 3598 s | miss, published | 1.75 | 0.34 |
+| chess `Da8xED4` (0), `01293a8` root | unverified / $0.166 / 927 s | hit | 5.11 | 1.59 |
+
+The second candidate of every family skipped the Compiler/Critic rounds
+through a contract-cache hit. Accepted-method reuse applied once: the
+`method_cache_bypass` telemetry added in `25f20be` shows that most settled
+methods end `failed` or `unobtainable` (no direction to reuse) or are agent
+methods without a reusable typed signature. The chess positive candidate's
+first warm run hit six Judger redo rounds on its semantic obligation,
+including one 1357 s Judger call; that is the redo budget doing its work on
+an obligation neither arm can decide, not a cache effect.
+
+Two profile gaps found while reading these runs are fixed after `25f20be`:
+the `01293a8` cold run still paid for a precompile thread failure
+(`TypeError`, inline fallback after 40–70 s on two candidates), and the warm
+profile never used the concurrent precompile because it was disabled
+whenever the contract cache was on. Commit `ee97910` composes the two: the
+thread yields to a published or in-flight key and otherwise the kernel's own
+miss adopts and publishes its result.
+
 ## Mechanisms and where their savings come from
 
 | Mechanism | Removes | Doc |
