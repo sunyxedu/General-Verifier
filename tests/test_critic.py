@@ -83,7 +83,7 @@ def test_pass_on_the_first_round_admits_the_decomposition(tmp_path):
     assert set(critic_vars) == {
         "claim_text", "claim_kind", "contract_locus", "task_context",
         "ledger_path", "world_mode", "world_path", "world_map",
-        "obligations_json",
+        "obligations_json", "excluded_json",
         "verified_deps", "pending_deps", "dependency_referent_context",
         "game_history",
     }

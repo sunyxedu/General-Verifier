@@ -949,23 +949,30 @@ class Kernel:
                     )
                 obligations = residual
         if record:
-            self._record_compiled_obligations(row, obligations)
+            self._record_compiled_obligations(
+                row, obligations, excluded=payload.get("excluded"))
         return obligations
 
     def _record_compiled_obligations(self, row: Dict,
-                                     obligations: List[Obligation]) -> None:
-        self.log.append(
-            "obligations_compiled",
-            {"claim": row["id"],
-             "obligations": [{"id": o.id, "text": o.text,
-                              "premise_scope": list(o.premise_scope),
-                              "required_basis": o.required_basis,
-                              "severity": o.severity,
-                              "clause": o.clause,
-                              "refutable_by_absence":
-                                  o.refutable_by_absence}
-                             for o in obligations]},
-        )
+                                     obligations: List[Obligation],
+                                     excluded=None) -> None:
+        event = {"claim": row["id"],
+                 "obligations": [{"id": o.id, "text": o.text,
+                                  "premise_scope": list(o.premise_scope),
+                                  "required_basis": o.required_basis,
+                                  "severity": o.severity,
+                                  "clause": o.clause,
+                                  "refutable_by_absence":
+                                      o.refutable_by_absence}
+                                 for o in obligations]}
+        if excluded:
+            # The compiler's exclusion ledger, as the Critic reviewed it:
+            # which candidate-facing clauses generated no obligation and why.
+            event["excluded"] = [
+                {"clause": str(item.get("clause", ""))[:300],
+                 "reason": str(item.get("reason", ""))[:300]}
+                for item in excluded if isinstance(item, dict)]
+        self.log.append("obligations_compiled", event)
 
     def _critique(self, row: Dict, payload: Dict, variables: Dict, *,
                   backend=None, obligations_role=None, critic_role=None):
@@ -1015,6 +1022,8 @@ class Kernel:
                         payload["obligations"],
                         ensure_ascii=False
                     ),
+                    "excluded_json": json.dumps(
+                        payload.get("excluded", []), ensure_ascii=False),
                     "verified_deps": variables["verified_deps"],
                     "pending_deps": variables["pending_deps"],
                     "dependency_referent_context":
@@ -1241,11 +1250,16 @@ class Kernel:
     @staticmethod
     def _merge_append_delta(previous: Dict, delta: Dict) -> Dict:
         """Construct a full contract without exposing old items to rewrite."""
-        return {
+        merged = {
             "obligations": (
                 copy.deepcopy(previous["obligations"])
                 + copy.deepcopy(delta["obligations"]))
         }
+        excluded = (list(previous.get("excluded") or [])
+                    + list(delta.get("excluded") or []))
+        if excluded:
+            merged["excluded"] = copy.deepcopy(excluded)
+        return merged
 
     @staticmethod
     def _bounded_context_value(value, limit: int) -> Dict:

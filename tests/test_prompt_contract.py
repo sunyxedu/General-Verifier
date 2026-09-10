@@ -46,7 +46,7 @@ def test_templates_render_exactly_the_variables_the_engine_supplies():
     assert _vars(prompts.CRITIC_TEMPLATE) == {
         "claim_text", "claim_kind", "contract_locus", "task_context",
         "ledger_path", "world_mode", "world_path", "world_map",
-        "obligations_json", "verified_deps", "pending_deps",
+        "obligations_json", "excluded_json", "verified_deps", "pending_deps",
         "dependency_referent_context", "game_history"}
     assert _vars(prompts.ORACLES_TEMPLATE) >= {
         "obligation_text", "required_basis", "severity", "clause",
@@ -306,7 +306,7 @@ def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
     assert "independently falsifiable semantic and process conditions" in compiler
     assert "apply the ACCEPTANCE COUNTERFACTUAL separately" in compiler
     assert "no acceptance condition is unmapped" in compiler
-    assert "Emit only the existing obligations schema" in compiler
+    assert "as an `excluded` entry {clause, reason}" in compiler
     assert "GOVERNING-SCOPE DISTRIBUTION" in compiler
     assert "subject, quantifier, modality" in compiler
     assert "Reading a child span in isolation never cancels inherited" in compiler

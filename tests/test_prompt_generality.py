@@ -111,4 +111,4 @@ def test_prompt_corpus_stays_bounded():
     # Raised from 17,000 for the frozen-record boundary sentences in the
     # executor and Judger templates, then to 17,800 for the pre-execution
     # sufficiency seat: mechanism descriptions and a new seat, not cases.
-    assert total <= 17_800, total
+    assert total <= 17_900, total

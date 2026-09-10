@@ -544,11 +544,17 @@ COMPILE_OBLIGATIONS_AGENT = AgentRole(
     # a presence requirement (the only shape an absence witness may
     # refute). Optional at the gate; the kernel defaults each to the
     # fail-closed reading (must, "", False).
+    # excluded is the compiler's exclusion ledger: source clauses that read
+    # as instructions to the candidate but generate no obligation under the
+    # runner-interface quotient or governing modality, each with its
+    # reason.  The Critic reviews these rulings with the contract; the
+    # kernel never verifies them.  Optional: absent reads as an empty ledger.
     schema={"obligations": [{"text": str,
                              "required_basis": ("world", "record"),
                              "severity?": ("must", "should"),
                              "clause?": str,
-                             "refutable_by_absence?": bool}]},
+                             "refutable_by_absence?": bool}],
+            "excluded?": [{"clause": str, "reason": str}]},
     tools=["Read", "Grep", "Glob"],
 )
 

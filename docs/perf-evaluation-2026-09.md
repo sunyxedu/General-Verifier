@@ -273,6 +273,35 @@ the ranking `verified > … > refuted` is decisive here without any tie. This
 is the first positive of this family the treatment verifies; it does so at
 a sixteenth of the control's cost for its verified positive.
 
+### Cold repeats of the 8-candidate cohort at `cadcb31` (runs `…-r2`, `…-r3`)
+
+Two more treatment-only cold runs of the same cohort at the same commit,
+paired with the same controls, to measure run-to-run spread.
+
+| Run | Treatment cost / wall | cost × | latency × | Notes |
+| --- | --- | ---: | ---: | --- |
+| `cadcb31` r1 | $0.410 / 1440 s | 11.12 | 6.97 | pre-audit stopped both semantic methods on sqlite and chess |
+| `cadcb31` r2 | $0.779 / 3368 s | 5.84 | 2.98 | video positive: contract retained two runner-protocol clauses, three Judger redo rounds (1251 s) and a **false refutation**; sqlite positive 828 s |
+| `cadcb31` r3 | $0.562 / 2361 s | 8.11 | 4.25 | chess and video positives read out `partial`, best-of-N correct in three families |
+
+Across the five cold runs of this cohort (`01293a8`, `ee97910`, `cadcb31`
+r1–r3) the cost ratio is 8.57×, 7.72×, 11.12×, 5.84×, 8.11× (mean 8.27×,
+all above 5×) and the latency ratio 4.27×, 3.50×, 6.97×, 2.98×, 4.25×
+(mean 4.39×, median 4.25×). The spread is the seats' run-to-run judgment
+on the two undecidable semantic obligations, not verifier scheduling: every
+second of treatment wall is inside a model call.
+
+The r2 video refutation is the one verdict regression observed in any
+treatment run: that run's Critic demanded the runner template's
+"at least one bash tool call" and "standalone completion command" clauses
+back into the contract (round 1), the executor's ledger scan then failed
+the exact-command check against the codex exec-wrapper dialect, and the
+positive candidate was refuted, exactly the control's failure mode on gcode
+and chess. Across all treatment runs the runner clauses survived compilation
+in 3 of 36 contracts (the control retained them in 8 of 12). The
+compiler's quotient ruling is now emitted as an explicit exclusion ledger
+the Critic reviews (`docs/exclusion-ledger.md`).
+
 ## Mechanisms and where their savings come from
 
 | Mechanism | Removes | Doc |
@@ -286,4 +315,5 @@ a sixteenth of the control's cost for its verified positive.
 | Sufficiency pre-audit | Executor runs on methods the Judger then rejects as insufficient | `sufficiency-preaudit.md` |
 | Concurrent final-contract compile | Extraction time on the critical path | `final-contract-precompile.md` |
 | Prior-attempt briefing for the executor | A replacement method's executor re-making the artifact the Judger just rejected | `executor-briefing.md` |
+| Compiler exclusion ledger | Runner-protocol clauses re-entering the contract as obligations (false refutations) | `exclusion-ledger.md` |
 | Process-local reuse (warm) | Repeated contract compilation and Oracle enumeration across candidates of one task | `contract-cache-proposal.md` |
