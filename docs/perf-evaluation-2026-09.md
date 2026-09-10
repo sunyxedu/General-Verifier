@@ -302,6 +302,45 @@ in 3 of 36 contracts (the control retained them in 8 of 12). The
 compiler's quotient ruling is now emitted as an explicit exclusion ledger
 the Critic reviews (`docs/exclusion-ledger.md`).
 
+### 8-candidate cohort, treatment `4b7cfac` cold (run `full-offline-4b7cfac-tb8-20260910`)
+
+Adds the compiler's exclusion ledger. Every contract carried its ledger
+(0–26 excluded clauses; the runner template's tool-call and completion
+clauses among them) and no runner-protocol clause was retained as an
+obligation in any of the eight contracts.
+
+| Candidate (label) | Treatment verdict / cost / wall | cost × | latency × |
+| --- | --- | ---: | ---: |
+| sqlite `4JQh54h` (1) | unverified / $0.159 / 934 s | 7.62 | 3.16 |
+| sqlite `hUXYSvy` (0) | refuted / $0.073 / 371 s | 5.82 | 2.42 |
+| chess `xGt6Pve` (1) | unverified / $0.035 / 174 s | 18.78 | 7.02 |
+| chess `Da8xED4` (0) | unverified / $0.087 / 582 s | 9.73 | 2.53 |
+| gcode `ELuvDeE` (1) | unverified / $0.032 / 134 s | 16.40 | 6.45 |
+| gcode `HFh2qJM` (0) | refuted / $0.036 / 137 s | 7.68 | 5.17 |
+| video `KFN5iFo` (1) | unverified / $0.062 / 273 s | 3.15 | 2.17 |
+| video `tJdCJ8R` (0) | refuted / $0.044 / 180 s | 9.48 | 7.33 |
+| **All eight** | **$0.528 / 2786 s** (control $4.553 / 10033 s) | **8.63** | **3.60** |
+
+Best-of-N is correct in sqlite, gcode and video and a tie in chess; no
+positive is refuted. The sqlite positive again spent two executor rounds
+(187 s and 201 s) on recovery checkers the Judger rejected as covering one
+page.
+
+## Summary across runs
+
+| Measure | Cold, 8-candidate cohort (6 runs) | Cold, 12 candidates | Warm |
+| --- | --- | --- | --- |
+| Cost ratio | 8.57, 7.72, 11.12, 5.84, 8.11, 8.63 (mean 8.33, min 5.84) | 9.26 | 6.96 (3 families), 5 sqlite candidates for $0.41 |
+| Latency ratio | 4.27, 3.50, 6.97, 2.98, 4.25, 3.60 (mean 4.26, median 3.9) | 5.18 | 3.75 |
+| Positive candidates refuted | 1 of 48 treatment jobs (r2 video, runner clause; ledger added after) | 0 of 4 | 0 of 11 |
+| Control positives refuted | 2 of 6 (gcode, chess) | 0 of 2 | — |
+
+The cost goal holds in every run. The latency goal is met in one cold run
+and in the twelve-candidate total, and missed on average; the remaining
+wall is the executor's and Judger's work on obligations the accepted
+method cannot decide, and their redo budget, which is a verification
+standard this work leaves unchanged.
+
 ## Mechanisms and where their savings come from
 
 | Mechanism | Removes | Doc |
