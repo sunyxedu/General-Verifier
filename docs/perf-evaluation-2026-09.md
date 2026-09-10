@@ -252,6 +252,27 @@ is refuted.
 cohort's cold run plus these four): control $10.850 / 20270 s, treatment
 $1.172 / 3910 s, cost **9.26×**, latency **5.18×**.
 
+### Five-candidate warm batch, sqlite, treatment `cadcb31` (run `full-offline-warm-cadcb31-sqlite5-20260909`)
+
+Package `terminal-bench-general-inputs-20260909-v2-sqlite5`: the four
+positive and one negative Terra recordings of `sqlite-db-truncate`, scored
+in one process with the contract and method caches on. Batch wall 2077 s,
+$0.410 for all five; the control arm's one scored positive of this family
+cost $1.211 / 2955 s on its own.
+
+| Candidate (label) | Verdict | cost | wall | contract cache |
+| --- | --- | ---: | ---: | --- |
+| `4JQh54h` (1) | unverified | $0.119 | 658 s | miss, published |
+| `QyunooX` (1) | unverified | $0.072 | 322 s | hit |
+| `a3tcWmA` (1) | unverified | $0.043 | 198 s | hit |
+| `j82uAN5` (1) | verified | $0.075 | 445 s | hit |
+| `hUXYSvy` (0) | refuted | $0.101 | 454 s | hit |
+
+Best-of-5 selects `j82uAN5` (a positive) and the one negative is refuted:
+the ranking `verified > … > refuted` is decisive here without any tie. This
+is the first positive of this family the treatment verifies; it does so at
+a sixteenth of the control's cost for its verified positive.
+
 ## Mechanisms and where their savings come from
 
 | Mechanism | Removes | Doc |
