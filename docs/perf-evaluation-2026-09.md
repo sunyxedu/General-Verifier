@@ -223,6 +223,35 @@ cost ratio is stable above 5×; the latency ratio's spread comes from whether
 the executor is allowed to spend its budget on an obligation it cannot
 decide, which is a seat judgment, not a verifier mechanism.
 
+### Two new task families, both arms, treatment `cadcb31` (run `full-offline-cadcb31-add4-20260909`)
+
+Package `terminal-bench-general-inputs-20260909-v2-add4`: one positive and
+one negative candidate each of `db-wal-recovery` (LAV-official recording)
+and `kv-store-grpc` (Terra recording); control and treatment both run fresh,
+sequentially, in the v1 coordinator.
+
+| Candidate (label) | Control verdict / cost / wall | Treatment verdict / cost / wall | cost × | latency × |
+| --- | --- | --- | ---: | ---: |
+| db-wal `amXNvqr` (1) | unverified / $1.030 / 1597 s | unverified / $0.094 / 355 s | 10.98 | 4.50 |
+| db-wal `FRSqXQr` (0) | partial⁴ / $2.462 / 4009 s | unverified / $0.192 / 641 s | 12.80 | 6.26 |
+| kv-store `bMG4XwH` (1) | partial / $0.972 / 1975 s | unverified / $0.229 / 877 s | 4.25 | 2.25 |
+| kv-store `D7cZcMk` (0) | partial / $1.832 / 2657 s | unverified / $0.247 / 598 s | 7.41 | 4.45 |
+| **All four** | **$6.297 / 10237 s** | **$0.762 / 2470 s** | **8.26** | **4.15** |
+
+⁴ The control's accounting is marked incomplete: one of its 272 codex calls
+raised before returning usage, so its cost is a lower bound.
+
+The kv-store contract has seven to nine obligations (server behaviours);
+the treatment ran up to five executors in parallel and two Judger redo
+rounds on one obligation (877 s). Neither arm decides these two families:
+the control reads out `partial` on both labels, the treatment `unverified`
+on both, so best-of-N is a tie either way, and again no positive candidate
+is refuted.
+
+**Twelve candidates, six families, treatment `cadcb31`** (the eight-candidate
+cohort's cold run plus these four): control $10.850 / 20270 s, treatment
+$1.172 / 3910 s, cost **9.26×**, latency **5.18×**.
+
 ## Mechanisms and where their savings come from
 
 | Mechanism | Removes | Doc |
