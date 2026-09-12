@@ -572,6 +572,8 @@ class Service:
         scope = {"profile": self._profile_pin,
                  "graph_revision": content_hash(revisions),
                  "capability_revision": self._evidence_manifest("obligations")["capability_revision"]}
+        if tool == "cyber_register_candidate":
+            scope["source"] = self.candidates.source_identity(args[0])
         if tool in ("cyber_finalize_candidate", "cyber_evaluate_candidate"):
             with self.candidates.lease(args[0]) as lease:
                 scope["subject"] = {key: lease.candidate[key]
@@ -612,6 +614,9 @@ class Service:
                         "verified": False, "materialized": False, "delivery_pending": True}
             if tool == "cyber_finalize_candidate":
                 return self.cyber_finalize_candidate(*args, retry=retry)
+            if tool == "cyber_register_candidate":
+                return self._cyber_register_candidate(
+                    *args, expected_identity=request["scope"]["source"])
             if tool == "commit" and self.store.trigger == TRIGGER_ON_COMMIT:
                 # On server recovery a recorded claim is already in SQLite.
                 # add_claim is a no-op for that identity, so it cannot fire the
@@ -670,11 +675,14 @@ class Service:
         return {"event_seq": event["seq"], "verified": False}
 
     def cyber_register_candidate(self, path: str, label: str = ""):
+        return self._cyber_register_candidate(path, label)
+
+    def _cyber_register_candidate(self, path, label="", *, expected_identity=None):
         if self.candidates is None:
             return {"error": "cyber profile is not active"}
         try:
             with self._cyber_lock:
-                return self.candidates.register(path, label)
+                return self.candidates.register(path, label, expected_identity=expected_identity)
         except (OSError, ValueError) as err:
             return {"error": str(err)}
 

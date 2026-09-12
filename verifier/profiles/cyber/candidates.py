@@ -198,9 +198,9 @@ class CandidateStore:
                 return candidate
         raise CandidateError("candidate was not registered in the canonical event log")
 
-    def register(self, path: str, label: str = "") -> dict[str, Any]:
-        if not isinstance(path, str) or not isinstance(label, str) or len(label) > 4096:
-            raise CandidateError("invalid candidate path or label")
+    def _source_bytes(self, path: str) -> tuple[str, bytes]:
+        if not isinstance(path, str):
+            raise CandidateError("invalid candidate path")
         absolute, _ = _parts(self.project_root, path)
         try:
             fd = _regular_fd(self.project_root, absolute)
@@ -210,7 +210,25 @@ class CandidateStore:
                 os.close(fd)
         except OSError as exc:
             raise CandidateError("candidate path is unavailable or contains a symlink") from exc
+        return absolute, data
+
+    def source_identity(self, path: str) -> dict[str, Any]:
+        """Bind a staging source safely before retaining a registration job."""
+        absolute, data = self._source_bytes(path)
+        return {"source_path": absolute, "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data)}
+
+    def register(self, path: str, label: str = "", *,
+                 expected_identity: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not isinstance(label, str) or len(label) > 4096:
+            raise CandidateError("invalid candidate path or label")
+        absolute, data = self._source_bytes(path)
         digest = hashlib.sha256(data).hexdigest()
+        actual_identity = {"source_path": absolute, "sha256": digest, "size": len(data)}
+        # Compare the bytes actually being registered, not a separate earlier
+        # hash/read. No blob, artifact or event may be written after a mismatch.
+        if expected_identity is not None and expected_identity != actual_identity:
+            raise CandidateError("candidate source changed while queued; resubmit")
         blob_path = os.path.join(self.blob_dir, digest)
         blob_fd = _parent_fd(self.state_dir, ["cyber", "blobs", digest])
         temporary = f".candidate-{secrets.token_hex(16)}"
