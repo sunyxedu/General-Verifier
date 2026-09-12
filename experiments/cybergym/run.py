@@ -16,6 +16,7 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -248,6 +249,27 @@ class Evaluation:
                 raise RuntimeError("controller stopped during startup")
         raise RuntimeError("runtime container startup readiness failed: " + name)
 
+    def probe_evidence_storage(self, runtime):
+        # Exercise the actual UID/native volume, not just the host seed. This
+        # readiness probe contains no task data and performs no submission.
+        code = (
+            "import os, stat, tempfile\n"
+            "for path in ('/state', '/state/cybergym-observations'):\n"
+            "    entry = os.lstat(path)\n"
+            "    if not stat.S_ISDIR(entry.st_mode) or stat.S_IMODE(entry.st_mode) != 0o700 or entry.st_uid != os.getuid():\n"
+            "        raise RuntimeError('private evidence storage readiness failed')\n"
+            "fd, path = tempfile.mkstemp(prefix='.readiness-', dir='/state/cybergym-observations')\n"
+            "try:\n"
+            "    os.write(fd, b'GV storage readiness')\n"
+            "    os.fsync(fd)\n"
+            "finally:\n"
+            "    os.close(fd)\n"
+            "    os.unlink(path)\n"
+        )
+        process = docker("exec", runtime["sidecar"], "python3", "-c", code, check=False)
+        if process.returncode:
+            raise RuntimeError("private evidence storage startup probe failed; solver was not started")
+
     def probe_submission(self, runtime):
         # GET never submits a candidate or accesses a private record.
         code = (
@@ -322,9 +344,10 @@ class Evaluation:
             "--server", self.server, "--difficulty", "level1", "--mask-map", OFFICIAL / "mask_map.json",
             cwd=OFFICIAL)
         private = directory / "private"
-        private.mkdir()
+        private.mkdir(mode=0o700)
         state = private / "state"
-        state.mkdir()
+        state.mkdir(mode=0o700)
+        (state / "cybergym-observations").mkdir(mode=0o700)
         readme = (workspace / "README.md").read_text()
         (state / "task.md").write_text(readme)
         submit = (workspace / "submit.sh").read_text()
@@ -342,6 +365,16 @@ class Evaluation:
         return workspace, private, readme + PROTOCOL
 
     def create_runtime(self, directory, workspace, private):
+        # The adapter deliberately refuses missing/substituted ancestors. Seed
+        # its private storage before launching anything, rather than losing the
+        # first real online response to a bootstrap error.
+        for path in (private / "state", private / "state/cybergym-observations"):
+            try:
+                entry = path.lstat()
+            except OSError as error:
+                raise RuntimeError("private evidence directory startup preflight failed") from error
+            if not stat.S_ISDIR(entry.st_mode) or stat.S_IMODE(entry.st_mode) != 0o700:
+                raise RuntimeError("private evidence directory startup preflight failed")
         suffix = hashlib.sha256(directory.name.encode()).hexdigest()[:16]
         network, sidecar, proxy, volume = ("gv-roles-net-" + suffix, "gv-roles-sidecar-" + suffix,
                                           "gv-roles-egress-" + suffix, "gv-roles-state-" + suffix)
@@ -411,6 +444,7 @@ class Evaluation:
             time.sleep(1)
         else:
             raise RuntimeError("sidecar health startup failed")
+        self.probe_evidence_storage(runtime)
         self.probe_submission(runtime)
         home = directory / "solver-home"
         with (home / "config.toml").open("a") as config:

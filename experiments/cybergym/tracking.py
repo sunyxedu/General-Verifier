@@ -25,6 +25,14 @@ MAX_JSONL_BYTES = 16 * 1024 * 1024
 USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens",
                 "reasoning_tokens", "reasoning_output_tokens")
 FINISHED_STATES = frozenset({"completed", "failed", "aborted", "error"})
+ADAPTER_OBSERVATION_SCHEMA = "gv-cybergym-vul-observation-v1"
+# Host/transport/evidence faults only. In particular, invalid_candidate is
+# not inferred to be infrastructure failure, nor is any target exit code.
+ADAPTER_INFRASTRUCTURE_ERRORS = frozenset({
+    "invalid_arguments", "invalid_configuration", "unexpected_redirect",
+    "unexpected_http_status", "transport_error", "invalid_response",
+    "response_too_large", "evidence_storage_error",
+})
 
 
 def _number(value: Any) -> float | None:
@@ -229,6 +237,62 @@ def _evaluator_calls(events: list[dict]) -> list[dict]:
     return list(calls.values())
 
 
+def _adapter_infrastructure_error(output: dict) -> str | None:
+    """Recognize complete static adapter faults; never retain raw stdout."""
+    stdout = output.get("stdout")
+    if not isinstance(stdout, str) or output.get("stdout_truncated") not in (None, False):
+        return None
+    try:
+        encoded = stdout.encode("utf-8")
+    except UnicodeError:
+        return None
+    if len(encoded) > MAX_JSON_BYTES:
+        return None
+    observed = _number(output.get("stdout_bytes_observed"))
+    if observed is not None and observed > len(encoded):
+        return None
+
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise ValueError("duplicate adapter field")
+            value[key] = item
+        return value
+
+    def invalid_constant(_):
+        raise ValueError("non-JSON adapter constant")
+
+    try:
+        value = json.loads(stdout, object_pairs_hook=pairs, parse_constant=invalid_constant)
+    except (ValueError, RecursionError):
+        return None
+    if (not isinstance(value, dict) or value.get("schema") != ADAPTER_OBSERVATION_SCHEMA
+            or set(value) != {"schema", "error"}):
+        return None
+    error = value.get("error")
+    return error if isinstance(error, str) and error in ADAPTER_INFRASTRUCTURE_ERRORS else None
+
+
+def _evaluator_infrastructure_diagnostics(events: list[dict], partial: bool) -> dict:
+    faults = {}
+    for row in events:
+        payload = row.get("payload", {})
+        if (row.get("type") != "tool_result" or not isinstance(payload, dict)
+                or payload.get("tool") != "cyber_evaluator"):
+            continue
+        call_id, output = payload.get("tool_use_id"), payload.get("output")
+        if not isinstance(call_id, str) or not call_id or not isinstance(output, dict):
+            continue
+        error = _adapter_infrastructure_error(output)
+        if error is not None:
+            faults[call_id] = {"error_code": error, "observed_unix": _number(row.get("ts"))}
+    latest = max(faults.values(), key=lambda value: value["observed_unix"] or 0, default=None)
+    return {"count": len(faults), "by_error": dict(sorted(Counter(
+        fault["error_code"] for fault in faults.values()).items())),
+        "latest": latest, "partial": partial, "scope": "retained_event_window"}
+
+
 def _phases(status: dict, now: float) -> dict:
     intervals = status.get("phase_intervals", [])
     calls = []
@@ -291,6 +355,7 @@ def attempt_snapshot(status_path: Path, root: Path, now: float, *, status: dict 
                           **summarize_calls(calls, now)},
         evaluator_timings={"available": bool(events), "partial": event_partial,
                            **summarize_calls(evaluator, now)},
+        evaluator_infrastructure_diagnostics=_evaluator_infrastructure_diagnostics(events, event_partial),
         backend_usage_by_role=_usage_summary(usage_rows),
         progress={"events_last_seq": events[-1].get("seq") if events else None,
             "events_in_window": len(events), "events_window_partial": event_partial,
@@ -320,7 +385,8 @@ def snapshot(root: Path | str, *, now: float | None = None, previous: dict | Non
         if not status:
             continue
         old = prior.get(status.get("attempt_id"), {})
-        if (old and _number(status.get("completed_unix")) is not None
+        if (old and "evaluator_infrastructure_diagnostics" in old
+                and _number(status.get("completed_unix")) is not None
                 and old.get("source_signature") == _source_signature(path, root)
                 and not old["verifier_timings"]["active_calls"]
                 and not old["evaluator_timings"]["active_calls"]):
@@ -341,6 +407,21 @@ def snapshot(root: Path | str, *, now: float | None = None, previous: dict | Non
             alerts.append({"type": "official_task_not_passed", "ts": now, **base})
         if value["outcome"] in {"infrastructure_error", "runner_error"} and old.get("outcome") != value["outcome"]:
             alerts.append({"type": "infrastructure_error", "ts": now, **base})
+        diagnostics = dict(value["evaluator_infrastructure_diagnostics"])
+        value["evaluator_infrastructure_diagnostics"] = diagnostics
+        previous_diagnostics = old.get("evaluator_infrastructure_diagnostics", {})
+        warned = previous_diagnostics.get("warned_error_codes", [])
+        if not isinstance(warned, list):
+            warned = []
+        seen = {code for code in warned if isinstance(code, str) and code in ADAPTER_INFRASTRUCTURE_ERRORS}
+        new_errors = set(diagnostics["by_error"]) - seen
+        diagnostics["warned_error_codes"] = sorted(seen | set(diagnostics["by_error"]))
+        if new_errors:
+            alerts.append({"type": "evaluator_infrastructure_warning", "ts": now,
+                **{key: value[key] for key in ("task_id", "attempt_id", "stage")},
+                "error_codes": sorted(new_errors),
+                "counts": {code: diagnostics["by_error"][code] for code in sorted(new_errors)},
+                "meaning": "Static adapter infrastructure diagnostic, not a candidate negative, official task result, timeout, or lifecycle instruction."})
     free = os.statvfs(root)
     # Counts describe attempts only. The runner independently authenticates
     # official identities and decides task-set gates; this module never does.

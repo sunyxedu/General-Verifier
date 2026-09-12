@@ -207,3 +207,97 @@ def test_finished_unchanged_attempts_do_not_reread_all_ledgers(tmp_path, monkeyp
     assert value["completed_attempts"] == 1
     assert value["official_passed_attempts"] == 1
     assert value["attempts"][0]["elapsed_seconds"] == 15
+
+
+def evaluator_result(call_id, ts, stdout, **output_changes):
+    output = {"elapsed_seconds": 1, "exit_code": 1, "stdout": stdout,
+              "stdout_truncated": False, "timed_out": False}
+    output.update(output_changes)
+    return {"type": "tool_result", "seq": int(ts), "ts": ts,
+            "payload": {"tool": "cyber_evaluator", "tool_use_id": call_id, "output": output}}
+
+
+def adapter_error(code):
+    return json.dumps({"schema": tracking.ADAPTER_OBSERVATION_SCHEMA, "error": code})
+
+
+def test_adapter_infrastructure_errors_count_and_warn_once_per_code_without_leaks(tmp_path):
+    path = attempt(tmp_path)
+    state = path / "private/state"
+    first = evaluator_result("a", 21, adapter_error("evidence_storage_error"),
+                             stderr="PRIVATE_STDERR", configuration="PRIVATE_CONFIGURATION")
+    second = evaluator_result("b", 22, adapter_error("evidence_storage_error"))
+    rows = [first, first, second]  # Duplicate mirrored observations are not new executions.
+    write_jsonl(state / "events.jsonl", rows)
+    value = record_snapshot(tmp_path, now=30)
+    item = value["attempts"][0]
+    assert item["evaluator_infrastructure_diagnostics"] == {
+        "count": 2, "by_error": {"evidence_storage_error": 2},
+        "latest": {"error_code": "evidence_storage_error", "observed_unix": 22},
+        "partial": False, "scope": "retained_event_window",
+        "warned_error_codes": ["evidence_storage_error"],
+    }
+    assert [alert["type"] for alert in value["alerts"]] == ["evaluator_infrastructure_warning"]
+    assert item["outcome"] is None and item["official_pass"] is None
+    assert item["evaluator_timings"]["by_role"]["evaluator"]["failed_calls"] == 0
+    assert "PRIVATE" not in json.dumps(value)
+    rows.append(evaluator_result("c", 23, adapter_error("evidence_storage_error")))
+    write_jsonl(state / "events.jsonl", rows)
+    assert record_snapshot(tmp_path, now=330)["alerts"] == []
+    rows.append(evaluator_result("d", 24, adapter_error("transport_error")))
+    write_jsonl(state / "events.jsonl", rows)
+    third = record_snapshot(tmp_path, now=630)
+    assert third["alerts"][0]["error_codes"] == ["transport_error"]
+    assert third["attempts"][0]["evaluator_infrastructure_diagnostics"]["count"] == 4
+    assert len((tmp_path / "monitor/alerts.jsonl").read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize("exit_code", [0, 300])
+def test_official_candidate_negative_is_not_an_adapter_infrastructure_error(tmp_path, exit_code):
+    state = attempt(tmp_path) / "private/state"
+    stdout = json.dumps({"schema": tracking.ADAPTER_OBSERVATION_SCHEMA,
+                         "response": {"exit_code": exit_code, "output": "PRIVATE_TARGET_OUTPUT"}})
+    write_jsonl(state / "events.jsonl", [evaluator_result("a", 21, stdout, exit_code=0)])
+    value = snapshot(tmp_path, now=30)
+    assert value["attempts"][0]["evaluator_infrastructure_diagnostics"]["count"] == 0
+    assert value["alerts"] == []
+    assert value["attempts"][0]["official_pass"] is None
+    assert "PRIVATE_TARGET_OUTPUT" not in json.dumps(value)
+
+
+@pytest.mark.parametrize("stdout,changes", [
+    (adapter_error("evidence_storage_error"), {"stdout_truncated": True}),
+    (adapter_error("evidence_storage_error"), {"stdout_bytes_observed": 10_000}),
+    ('{"schema":"gv-cybergym-vul-observation-v1","error":', {}),
+    ('not JSON: evidence_storage_error', {}),
+    (json.dumps({"schema": "another-adapter", "error": "evidence_storage_error"}), {}),
+    (adapter_error("invalid_candidate"), {}),
+    (adapter_error("PRIVATE_DYNAMIC_ERROR"), {}),
+    ('{"schema":"gv-cybergym-vul-observation-v1","error":"other","error":"evidence_storage_error"}', {}),
+    ('{"schema":"gv-cybergym-vul-observation-v1","error":"evidence_storage_error","response_truncated":NaN}', {}),
+    (json.dumps({"schema": tracking.ADAPTER_OBSERVATION_SCHEMA, "error": "response_too_large",
+                 "response_truncated": True}), {}),
+    (json.dumps({"schema": tracking.ADAPTER_OBSERVATION_SCHEMA, "error": "evidence_storage_error",
+                 "response": {"output": "PRIVATE_TARGET_OUTPUT"}}), {}),
+    ("\ud800", {}),
+])
+def test_partial_or_unrecognized_adapter_output_does_not_infer_infrastructure_failure(tmp_path, stdout, changes):
+    state = attempt(tmp_path) / "private/state"
+    write_jsonl(state / "events.jsonl", [evaluator_result("a", 21, stdout, **changes)])
+    value = snapshot(tmp_path, now=30)
+    assert value["attempts"][0]["evaluator_infrastructure_diagnostics"]["count"] == 0
+    assert value["alerts"] == []
+    assert "PRIVATE" not in json.dumps(value)
+
+
+def test_adapter_warning_stays_deduplicated_when_fault_leaves_bounded_tail(tmp_path):
+    state = attempt(tmp_path) / "private/state"
+    row = evaluator_result("a", 21, adapter_error("evidence_storage_error"))
+    write_jsonl(state / "events.jsonl", [row])
+    first = snapshot(tmp_path, now=30)
+    write_jsonl(state / "events.jsonl", [])
+    second = snapshot(tmp_path, now=330, previous=first)
+    write_jsonl(state / "events.jsonl", [row])
+    third = snapshot(tmp_path, now=630, previous=second)
+    assert first["alerts"][0]["type"] == "evaluator_infrastructure_warning"
+    assert third["alerts"] == []

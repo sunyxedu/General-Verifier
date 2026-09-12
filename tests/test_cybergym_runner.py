@@ -4,8 +4,10 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 from types import SimpleNamespace
 import tarfile
 import threading
@@ -41,7 +43,9 @@ def selected(controller):
     directory = controller.root / "attempts" / "fixture-agent"
     workspace, private = directory / "workspace", directory / "private"
     workspace.mkdir(parents=True)
-    private.mkdir()
+    private.mkdir(mode=0o700)
+    (private / "state").mkdir(mode=0o700)
+    (private / "state/cybergym-observations").mkdir(mode=0o700)
     candidate = workspace / "final_poc"
     candidate.write_bytes(b"\x00designated raw input\xff")
     receipt = {"sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
@@ -297,6 +301,130 @@ def test_prepare_rejects_source_history_before_agent_workspace(controller, monke
     assert all(args[0] == "curl" for args in commands)
 
 
+def test_prepare_creates_private_evidence_storage_with_explicit_secure_modes(controller, monkeypatch, tmp_path):
+    prepare_fake(monkeypatch, tmp_path)
+    directory = tmp_path / "fixture-agent"
+    directory.mkdir()
+    previous_umask = os.umask(0)
+    try:
+        _workspace, private, _prompt = controller.prepare("arvo:23296", directory)
+    finally:
+        os.umask(previous_umask)
+    for path in (private, private / "state", private / "state/cybergym-observations"):
+        info = path.lstat()
+        assert stat.S_ISDIR(info.st_mode) and not path.is_symlink()
+        assert stat.S_IMODE(info.st_mode) == 0o700
+    config = json.loads((private / "evaluator.json").read_text())
+    assert config["observations_dir"] == "/state/cybergym-observations"
+
+
+@pytest.mark.parametrize("relative", ["state", "state/cybergym-observations"])
+@pytest.mark.parametrize("defect", ["missing", "file", "symlink", "mode755", "mode777"])
+def test_runtime_evidence_directory_preflight_fails_before_any_docker_or_cleanup(
+        controller, selected, monkeypatch, tmp_path, relative, defect):
+    directory, _candidate, _receipt = selected
+    private, workspace = directory / "private", directory / "workspace"
+    target = private / relative
+    if defect in {"missing", "file", "symlink"}:
+        saved = tmp_path / "original-evidence-directory"
+        target.rename(saved)
+        if defect == "file":
+            target.write_text("not a directory")
+        elif defect == "symlink":
+            target.symlink_to(saved, target_is_directory=True)
+    else:
+        target.chmod(0o755 if defect == "mode755" else 0o777)
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("invalid private evidence storage must fail before Docker or cleanup")
+    monkeypatch.setattr(run, "docker", forbidden)
+    monkeypatch.setattr(controller, "_create_runtime", forbidden)
+    monkeypatch.setattr(controller, "cleanup_runtime", forbidden)
+    with pytest.raises(RuntimeError, match="private evidence directory startup preflight failed"):
+        controller.create_runtime(directory, workspace, private)
+
+
+def native_storage_probe_fakes(monkeypatch, tmp_path, *, relative=".", defect=None):
+    """Execute the actual trusted probe locally, redirecting /state into tmp."""
+    native = tmp_path / "native-state"
+    native.mkdir(mode=0o700)
+    observations = native / "cybergym-observations"
+    observations.mkdir(mode=0o700)
+    target = native if relative == "." else observations
+    if defect in {"missing", "symlink"}:
+        saved = tmp_path / "saved-native-directory"
+        target.rename(saved)
+        if defect == "symlink":
+            target.symlink_to(saved, target_is_directory=True)
+    elif defect == "badmode":
+        target.chmod(0o755)
+    calls, operations = [], []
+    original_lstat, original_write = os.lstat, os.write
+    original_fsync, original_unlink = os.fsync, os.unlink
+    def docker(*args, **kwargs):
+        assert args[:4] == ("exec", "fixture-sidecar", "python3", "-c")
+        assert kwargs == {"check": False}
+        program = args[4]
+        calls.append(program)
+        assert "urllib" not in program and "requests" not in program
+        assert "submit" not in program and "checksum" not in program
+        def lstat(path, *extra, **options):
+            info = original_lstat(path, *extra, **options)
+            if defect == "owner" and Path(path) == target:
+                return SimpleNamespace(st_mode=info.st_mode, st_uid=os.getuid() + 1)
+            return info
+        def write(fd, data):
+            operations.append(("write", data))
+            return original_write(fd, data)
+        def fsync(fd):
+            operations.append(("fsync",))
+            if defect == "fsync":
+                raise OSError("fixture fsync unavailable")
+            return original_fsync(fd)
+        def unlink(path, *extra, **options):
+            operations.append(("unlink", str(path)))
+            return original_unlink(path, *extra, **options)
+        with monkeypatch.context() as local:
+            local.setattr(os, "lstat", lstat)
+            local.setattr(os, "write", write)
+            local.setattr(os, "fsync", fsync)
+            local.setattr(os, "unlink", unlink)
+            try:
+                exec(compile(program.replace("/state", str(native)), "<native-storage-probe>", "exec"), {})
+            except (OSError, RuntimeError):
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(run, "docker", docker)
+    return native, observations, calls, operations
+
+
+def test_native_storage_probe_really_writes_fsyncs_and_removes_readiness_file(controller, monkeypatch, tmp_path):
+    _native, observations, calls, operations = native_storage_probe_fakes(monkeypatch, tmp_path)
+    controller.probe_evidence_storage({"sidecar": "fixture-sidecar"})
+    assert len(calls) == 1
+    assert [operation[0] for operation in operations] == ["write", "fsync", "unlink"]
+    assert operations[0][1] == b"GV storage readiness"
+    assert list(observations.iterdir()) == []
+
+
+@pytest.mark.parametrize("relative", [".", "cybergym-observations"])
+@pytest.mark.parametrize("defect", ["missing", "symlink", "badmode", "owner"])
+def test_native_storage_probe_rejects_invalid_volume_before_writing(
+        controller, monkeypatch, tmp_path, relative, defect):
+    _native, _observations, calls, operations = native_storage_probe_fakes(
+        monkeypatch, tmp_path, relative=relative, defect=defect)
+    with pytest.raises(RuntimeError, match="private evidence storage startup probe failed; solver was not started"):
+        controller.probe_evidence_storage({"sidecar": "fixture-sidecar"})
+    assert len(calls) == 1 and operations == []
+
+
+def test_native_storage_probe_fsync_failure_still_removes_temporary_file(controller, monkeypatch, tmp_path):
+    _native, observations, _calls, operations = native_storage_probe_fakes(monkeypatch, tmp_path, defect="fsync")
+    with pytest.raises(RuntimeError, match="private evidence storage startup probe failed"):
+        controller.probe_evidence_storage({"sidecar": "fixture-sidecar"})
+    assert [operation[0] for operation in operations] == ["write", "fsync", "unlink"]
+    assert list(observations.iterdir()) == []
+
+
 def startup_fakes(monkeypatch, controller):
     """No process, Docker, HTTP, model, or evaluator is actually started."""
     calls = []
@@ -542,12 +670,12 @@ def test_route_probe_runs_before_solver_configuration_and_cleans_on_failure(cont
     home = directory / "solver-home"
     home.mkdir()
     (home / "config.toml").write_text(run.MODEL_CONFIG)
-    (private / "state").mkdir()
     (private / "verifier-home").mkdir()
     monkeypatch.setattr(run, "docker", lambda *_args, **_kwargs:
                         SimpleNamespace(returncode=0, stdout="true\n", stderr=""))
     monkeypatch.setattr(controller, "wait_running", lambda _name: None)
     monkeypatch.setattr(controller, "sidecar_get", lambda *_args: {"status": "ready"})
+    monkeypatch.setattr(controller, "probe_evidence_storage", lambda _runtime: None)
     cleaned, probed = [], []
     monkeypatch.setattr(controller, "cleanup_runtime",
                         lambda runtime, where, secret: cleaned.append((runtime, where, secret)))
@@ -562,6 +690,32 @@ def test_route_probe_runs_before_solver_configuration_and_cleans_on_failure(cont
     assert len(probed) == 1 and len(cleaned) == 1
     assert cleaned[0] == (probed[0], directory, private)
     assert not (home / "hooks.json").exists()
+
+
+def test_native_storage_probe_failure_prevents_route_probe_and_solver_configuration(controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    private, workspace = directory / "private", directory / "workspace"
+    home = directory / "solver-home"
+    home.mkdir()
+    (home / "config.toml").write_text(run.MODEL_CONFIG)
+    (private / "verifier-home").mkdir()
+    monkeypatch.setattr(run, "docker", lambda *_args, **_kwargs:
+                        SimpleNamespace(returncode=0, stdout="true\n", stderr=""))
+    monkeypatch.setattr(controller, "sidecar_get", lambda *_args: {"status": "ready"})
+    cleaned, probes = [], []
+    monkeypatch.setattr(controller, "cleanup_runtime",
+                        lambda runtime, where, secret: cleaned.append((runtime, where, secret)))
+    def reject(runtime):
+        probes.append(runtime)
+        raise RuntimeError("fixture native storage readiness failed")
+    monkeypatch.setattr(controller, "probe_evidence_storage", reject)
+    monkeypatch.setattr(controller, "probe_submission", lambda _runtime: pytest.fail("route probe must follow storage readiness"))
+    monkeypatch.setattr(controller, "run_solver", lambda *_args: pytest.fail("invalid storage must not launch a model"))
+    with pytest.raises(RuntimeError, match="native storage readiness failed"):
+        controller.create_runtime(directory, workspace, private)
+    assert len(probes) == 1 and cleaned == [(probes[0], directory, private)]
+    assert not (home / "hooks.json").exists()
+    assert (home / "config.toml").read_text() == run.MODEL_CONFIG
 
 
 @pytest.mark.parametrize("stage", ["volume", "egress", "sidecar"])
@@ -633,7 +787,6 @@ def test_evaluator_snapshot_is_native_readonly_and_both_native_dependencies_are_
     home = directory / "solver-home"
     home.mkdir()
     (home / "config.toml").write_text(run.MODEL_CONFIG)
-    (private / "state").mkdir()
     (private / "verifier-home").mkdir()
     calls = []
     def docker(*args, **_kwargs):
@@ -642,6 +795,7 @@ def test_evaluator_snapshot_is_native_readonly_and_both_native_dependencies_are_
     monkeypatch.setattr(run, "docker", docker)
     monkeypatch.setattr(controller, "wait_running", lambda _name: None)
     monkeypatch.setattr(controller, "sidecar_get", lambda *_args: {"status": "ready"})
+    monkeypatch.setattr(controller, "probe_evidence_storage", lambda _runtime: None)
     probes = []
     monkeypatch.setattr(controller, "probe_submission", lambda runtime: probes.append(runtime))
     runtime = controller.create_runtime(directory, workspace, private)
