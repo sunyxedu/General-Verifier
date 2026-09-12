@@ -26,10 +26,11 @@ from verifier.llm.schema import RoleError
 from verifier.mcp_server import Service, _default_kernel, build_server
 from verifier.profiles.cyber.evaluator import EvaluatorSpec
 
+from experiments.cybergym.model_config import (
+    AUTO_COMPACT_TOKEN_LIMIT, CONTEXT_WINDOW, EFFORT, MODEL, SERVICE_TIER,
+    context_cli_args,
+)
 
-MODEL = "gpt-5.6-luna"
-EFFORT = "max"
-SERVICE_TIER = "fast"
 MAX_HOOK_BODY = 4 * 1024 * 1024
 PROFILE_ROOT = Path(__file__).resolve().parents[2]
 ORIGIN = "solver-origin-untrusted"
@@ -96,7 +97,7 @@ class SandboxedVerifierBackend(CodexBackend):
         args[index] = args[index][:-1] + "," + denied + "}"
         index = network[0]
         args[index] = args[index].rsplit("=", 1)[0] + "=false"
-        return args
+        return args + context_cli_args()
 
     def _diagnostic(self, record):
         # The log is outside writable verifier scratch; it contains no prompt,
@@ -121,7 +122,9 @@ class SandboxedVerifierBackend(CodexBackend):
         call_id = uuid.uuid4().hex
         started = time.monotonic()
         common = {"call_id": call_id, "role": role_name, "model": MODEL,
-                  "service_tier": SERVICE_TIER}
+                  "service_tier": SERVICE_TIER,
+                  "model_context_window": CONTEXT_WINDOW,
+                  "model_auto_compact_token_limit": AUTO_COMPACT_TOKEN_LIMIT}
         self._diagnostic({**common, "type": "role_call_started", "ts": time.time(),
                           "status": "running"})
         status = "failed"

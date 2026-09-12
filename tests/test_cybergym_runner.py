@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import sys
 from types import SimpleNamespace
 import tarfile
 import threading
@@ -221,6 +222,8 @@ def test_solver_runtime_uses_luna_max_fast_and_isolated_homes(controller, select
                                         "attempt-solver", "generic fixture prompt", thread)
     assert command[command.index("-m") + 1] == "gpt-5.6-luna"
     assert 'model_reasoning_effort="max"' in command and 'service_tier="fast"' in command
+    assert "model_context_window=1050000" in command
+    assert "model_auto_compact_token_limit=880000" in command
     assert "--enable" in command and "fast_mode" in command
     assert "resume" in command if thread else "resume" not in command
     mounts = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "-v"]
@@ -929,3 +932,327 @@ def test_frozen_manifest_preserves_no_task_or_role_deadline_and_no_fresh_solver_
     assert manifest["fresh_thread_recovery"] is False
     assert manifest["model"] == "gpt-5.6-luna"
     assert manifest["reasoning_effort"] == "max" and manifest["service_tier"] == "fast"
+    assert manifest["model_context_window"] == 1_050_000
+    assert manifest["model_auto_compact_token_limit"] == 880_000
+    assert manifest["solver_egress_domains"] == list(run.EGRESS_DOMAINS)
+    assert manifest["web_search"] == "disabled"
+    assert manifest["verifier_shell_network_enabled"] is False
+    assert manifest["poc_execution_network"] == "none"
+
+
+def test_context_home_configuration_and_cli_share_the_supported_luna_policy():
+    import tomllib
+    from experiments.cybergym import model_config
+    configuration = tomllib.loads(run.MODEL_CONFIG)
+    assert configuration["model"] == "gpt-5.6-luna"
+    assert configuration["web_search"] == "disabled"
+    assert configuration["model_context_window"] == model_config.CONTEXT_WINDOW == 1_050_000
+    assert configuration["model_auto_compact_token_limit"] == model_config.AUTO_COMPACT_TOKEN_LIMIT == 880_000
+    assert 0 < model_config.AUTO_COMPACT_TOKEN_LIMIT < 922_000
+    assert model_config.AUTO_COMPACT_TOKEN_LIMIT + 128_000 <= model_config.CONTEXT_WINDOW
+    overrides = model_config.context_cli_args()
+    assert overrides == ["-c", "model_context_window=1050000",
+                         "-c", "model_auto_compact_token_limit=880000"]
+
+
+def mirror_failure():
+    # Docker output is deliberately sensitive. Diagnostic envelopes must not
+    # accidentally serialize CalledProcessError.cmd/output/stderr or str(error).
+    return run.subprocess.CalledProcessError(
+        1, ["docker", "cp", "private-command-sentinel"],
+        output="private-output-sentinel", stderr="Bearer private-credential-sentinel")
+
+
+def solver_process_fakes(monkeypatch, controller, receipts, *, exited=False):
+    """Exercise the real controller loop without Docker, HTTP, or model calls."""
+    class Process:
+        waits = 0
+
+        def poll(self):
+            return 0 if exited else None
+
+        def wait(self, **_kwargs):
+            self.waits += 1
+            return 0
+
+    process, calls = Process(), []
+    values = iter(receipts)
+    monkeypatch.setattr(run.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(controller, "solver_command", lambda *_args: ["fixture-solver"])
+    monkeypatch.setattr(controller, "sidecar_get", lambda *_args: next(values))
+    monkeypatch.setattr(controller.stop, "wait", lambda _seconds: False)
+    monkeypatch.setattr(run, "docker", lambda *args, **_kwargs:
+                        calls.append(tuple(args)) or SimpleNamespace(returncode=0))
+    return process, calls
+
+
+@pytest.mark.parametrize("exited", [False, True])
+def test_periodic_and_final_trace_copy_failure_cannot_abort_certified_solver(
+        controller, selected, monkeypatch, exited):
+    directory, _candidate, receipt = selected
+    runtime = {"sidecar": "fixture-owned-sidecar"}
+    receipts = [receipt] if exited else [None, receipt, receipt]
+    process, calls = solver_process_fakes(monkeypatch, controller, receipts, exited=exited)
+    copies = []
+
+    def unavailable(_runtime, _private):
+        copies.append(True)
+        raise mirror_failure()
+
+    monkeypatch.setattr(controller, "mirror", unavailable)
+    state = {"official_pass": None}
+    actual = controller.run_solver(directory, directory / "workspace", runtime, "fixture", state)
+    assert actual == receipt
+    assert json.loads((directory / "final-selection.json").read_text()) == receipt
+    assert len(copies) == (1 if exited else 2)
+    assert state["official_pass"] is None, "telemetry does not manufacture a score"
+    assert state.get("outcome") is None
+    assert process.waits == (0 if exited else 1)
+    assert [call[0] for call in calls] == ([] if exited else ["stop"])
+    diagnostics = directory / "private/telemetry-mirror-errors.jsonl"
+    rows = [json.loads(line) for line in diagnostics.read_text().splitlines()]
+    assert [row["phase"] for row in rows] == (["final"] if exited else ["periodic", "final"])
+    assert not (directory / "private/state/events.jsonl").exists()
+    raw = diagnostics.read_text()
+    assert all(sentinel not in raw for sentinel in (
+        "private-command-sentinel", "private-output-sentinel", "private-credential-sentinel"))
+
+
+def test_receipt_recheck_failure_is_still_fatal_not_a_trace_warning(
+        controller, selected, monkeypatch):
+    directory, _candidate, receipt = selected
+    _process, calls = solver_process_fakes(monkeypatch, controller, [receipt, None])
+    monkeypatch.setattr(controller, "mirror", lambda *_args: pytest.fail("receipt must be checked first"))
+    with pytest.raises(RuntimeError, match="delivery changed"):
+        controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-sidecar"},
+                              "fixture", {})
+    assert [call[0] for call in calls] == ["stop"]
+    assert not (directory / "final-selection.json").exists()
+    assert not (directory / "private/telemetry-mirror-errors.jsonl").exists()
+
+
+def test_receipt_transport_error_is_not_suppressed_by_trace_recovery(
+        controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    solver_process_fakes(monkeypatch, controller, [])
+
+    def unavailable(*_args):
+        raise OSError("fixture receipt unavailable")
+
+    monkeypatch.setattr(controller, "sidecar_get", unavailable)
+    with pytest.raises(OSError, match="receipt unavailable"):
+        controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-sidecar"},
+                              "fixture", {})
+    assert not (directory / "final-selection.json").exists()
+    assert not (directory / "private/telemetry-mirror-errors.jsonl").exists()
+
+
+def test_safe_trace_copy_success_has_no_failure_diagnostics(controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    calls = []
+    monkeypatch.setattr(controller, "mirror", lambda *args: calls.append(args))
+    runtime, private = {"sidecar": "fixture-sidecar"}, directory / "private"
+    assert controller.safe_mirror(runtime, private, phase="periodic") is True
+    assert calls == [(runtime, private)]
+    assert not (private / "telemetry-mirror-errors.jsonl").exists()
+
+
+def test_mirror_error_stderr_is_bounded_private_and_not_model_evidence(
+        controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    private = directory / "private"
+
+    def unavailable(*_args):
+        error = mirror_failure()
+        error.stderr += "x" * 100_000 + "private-tail-sentinel"
+        raise error
+
+    monkeypatch.setattr(controller, "mirror", unavailable)
+    assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private, phase="final") is False
+    metadata = private / "telemetry-mirror-errors.jsonl"
+    stderr_file = private / "telemetry-mirror-stderr.jsonl"
+    assert stat.S_IMODE(metadata.stat().st_mode) == 0o600
+    assert stat.S_IMODE(stderr_file.stat().st_mode) == 0o600
+    assert "private-credential-sentinel" not in metadata.read_text()
+    assert "private-output-sentinel" not in metadata.read_text()
+    assert "private-credential-sentinel" in stderr_file.read_text()
+    assert "private-tail-sentinel" not in stderr_file.read_text()
+    assert stderr_file.stat().st_size < 66_500
+    assert not list((private / "state").glob("*.jsonl"))
+
+
+def test_mirror_and_diagnostic_storage_failure_remains_nonfatal(controller, monkeypatch, tmp_path):
+    private = tmp_path / "not-a-directory"
+    private.write_text("fixture diagnostic destination unavailable")
+
+    def unavailable(*_args):
+        raise mirror_failure()
+
+    monkeypatch.setattr(controller, "mirror", unavailable)
+    assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private, phase="periodic") is False
+    assert private.read_text() == "fixture diagnostic destination unavailable"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires a native FIFO")
+def test_fifo_diagnostic_destination_cannot_block_trace_recovery(selected):
+    directory, _candidate, _receipt = selected
+    private = directory / "private"
+    destination = private / "telemetry-mirror-errors.jsonl"
+    os.mkfifo(destination, 0o600)
+    # A subprocess makes this regression bounded even if O_NONBLOCK is removed.
+    # This is a local fixture guard, not an agent/evaluation time budget.
+    code = """import sys
+from pathlib import Path
+from experiments.cybergym.run import Evaluation
+evaluation = object.__new__(Evaluation)
+def unavailable(*args):
+    raise OSError('fixture mirror unavailable')
+evaluation.mirror = unavailable
+if evaluation.safe_mirror({}, Path(sys.argv[1]), phase='periodic') is not False:
+    raise SystemExit(1)
+"""
+    process = run.subprocess.run([sys.executable, "-c", code, str(private)],
+                                 cwd=run.PROFILE, capture_output=True, timeout=5)
+    assert process.returncode == 0, process.stderr.decode("utf-8", errors="replace")
+    assert stat.S_ISFIFO(destination.lstat().st_mode)
+
+
+def test_hardlinked_diagnostic_destination_preserves_other_file_content_and_mode(
+        controller, selected, monkeypatch, tmp_path):
+    directory, _candidate, _receipt = selected
+    private = directory / "private"
+    retained = tmp_path / "retained-user-file"
+    retained.write_bytes(b"unrelated user document")
+    retained.chmod(0o640)
+    destination = private / "telemetry-mirror-errors.jsonl"
+    os.link(retained, destination)
+
+    def unavailable(*_args):
+        raise mirror_failure()
+
+    monkeypatch.setattr(controller, "mirror", unavailable)
+    assert controller.safe_mirror({}, private, phase="periodic") is False
+    assert retained.read_bytes() == b"unrelated user document"
+    assert destination.read_bytes() == b"unrelated user document"
+    assert stat.S_IMODE(retained.stat().st_mode) == 0o640
+    assert retained.stat().st_ino == destination.stat().st_ino
+
+
+def test_existing_regular_diagnostic_log_is_restricted_to_mode600_before_append(controller, selected):
+    directory, _candidate, _receipt = selected
+    destination = directory / "private/telemetry-mirror-errors.jsonl"
+    destination.write_text('{"reason":"previous fixture"}\n')
+    destination.chmod(0o666)
+    controller._append_private_telemetry(destination, {"reason": "new fixture"})
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+    assert [json.loads(line) for line in destination.read_text().splitlines()] == [
+        {"reason": "previous fixture"}, {"reason": "new fixture"}]
+
+
+@pytest.mark.parametrize("official_pass", [False, True])
+def test_trace_copy_failure_does_not_change_official_task_outcome(
+        controller, selected, monkeypatch, official_pass):
+    _selected_directory, candidate, receipt = selected
+    runtime = {"sidecar": "fixture-owned-sidecar"}
+    monkeypatch.setattr(controller, "pull", lambda *_args: ("fixture-vulnerable-image", False))
+
+    def prepare(_task, directory):
+        workspace, private = directory / "workspace", directory / "private"
+        workspace.mkdir()
+        private.mkdir(mode=0o700)
+        (private / "state").mkdir(mode=0o700)
+        (workspace / "final_poc").write_bytes(candidate.read_bytes())
+        return workspace, private, "generic fixture task"
+
+    monkeypatch.setattr(controller, "prepare", prepare)
+    monkeypatch.setattr(controller, "create_runtime", lambda *_args: runtime)
+    solver_process_fakes(monkeypatch, controller, [None, receipt, receipt])
+
+    def unavailable(*_args):
+        raise mirror_failure()
+
+    monkeypatch.setattr(controller, "mirror", unavailable)
+    scores = []
+
+    def score(task, directory, _state, final):
+        scores.append(task)
+        assert final == receipt
+        assert run.digest(directory / "workspace/final_poc") == receipt["sha256"]
+        return official_pass
+
+    monkeypatch.setattr(controller, "score", score)
+    monkeypatch.setattr(controller, "cleanup_runtime", lambda *_args: [{"error": "mirror_failed"}])
+    state = controller.run_task("arvo:23296")
+    assert scores == ["arvo:23296"]
+    assert state["official_pass"] is official_pass
+    assert state["outcome"] == ("pass" if official_pass else "fail")
+    assert state["stage"] == "completed"
+    assert controller.results["arvo:23296"] == state
+    assert json.loads((controller.root / "results.json").read_text())["arvo:23296"] == state
+
+
+def cleanup_runtime_fakes(monkeypatch, controller, selected, *, stop_fails=None):
+    directory, _candidate, _receipt = selected
+    runtime = {"sidecar": "fixture-owned-sidecar", "proxy": "fixture-owned-egress",
+               "network": "fixture-owned-network", "volume": "fixture-owned-state"}
+    solver = "fixture-owned-solver"
+    (directory / "status.json").write_text(json.dumps({"solver_container": solver}))
+    calls, stopped = [], set()
+
+    def docker(*args, **_kwargs):
+        calls.append(tuple(args))
+        if args[0] == "inspect":
+            if args[args.index("--format") + 1] == "{{.State.Running}}":
+                return SimpleNamespace(returncode=0, stdout="false\n" if args[-1] in stopped else "true\n",
+                                       stderr="")
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "gv.experiment": controller.experiment, "gv.attempt_id": directory.name}), stderr="")
+        if args[0] == "stop":
+            if args[-1] != stop_fails:
+                stopped.add(args[-1])
+            return SimpleNamespace(returncode=1 if args[-1] == stop_fails else 0, stdout="", stderr="")
+        pytest.fail("unexpected Docker operation")
+
+    def mirror(*_args):
+        calls.append(("mirror",))
+        raise mirror_failure()
+
+    def logs(*args, **_kwargs):
+        calls.append(tuple(args))
+        raise OSError("fixture trace log unavailable")
+
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(controller, "mirror", mirror)
+    monkeypatch.setattr(run, "execute", logs)
+    return runtime, solver, calls
+
+
+def test_cleanup_quiesces_owned_solver_and_sidecar_before_best_effort_archive(
+        controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    runtime, solver, calls = cleanup_runtime_fakes(monkeypatch, controller, selected)
+    issues = controller.cleanup_runtime(runtime, directory, directory / "private")
+    stopped = [call[-1] for call in calls if call[0] == "stop"]
+    assert stopped == [solver, runtime["sidecar"], runtime["proxy"]]
+    archive_indices = [index for index, call in enumerate(calls)
+                       if call[0] == "mirror" or call[:2] == ("docker", "logs")]
+    assert archive_indices
+    sidecar_stop = calls.index(("stop", "--time", "10", runtime["sidecar"]))
+    assert min(archive_indices) > sidecar_stop
+    assert issues, "archive errors stay diagnostic instead of stranding containers"
+    assert (directory / "cleanup-issues.json").exists()
+    assert not any(call[:2] in (("volume", "rm"), ("network", "rm")) for call in calls)
+
+
+@pytest.mark.parametrize("component", ["solver", "sidecar"])
+def test_cleanup_never_calls_quiescent_state_archive_if_an_owned_writer_did_not_stop(
+        controller, selected, monkeypatch, component):
+    directory, _candidate, _receipt = selected
+    failed_name = "fixture-owned-solver" if component == "solver" else "fixture-owned-sidecar"
+    runtime, _solver, calls = cleanup_runtime_fakes(
+        monkeypatch, controller, selected, stop_fails=failed_name)
+    issues = controller.cleanup_runtime(runtime, directory, directory / "private")
+    assert not any(call[0] == "mirror" for call in calls)
+    assert any(issue["error"] == "container_stop_failed" for issue in issues)
+    assert {call[-1] for call in calls if call[0] == "stop"} == {
+        "fixture-owned-solver", runtime["sidecar"], runtime["proxy"]}

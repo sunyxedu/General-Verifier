@@ -125,9 +125,12 @@ def test_every_role_has_readonly_shell_denied_credentials_and_no_network(tmp_pat
     args = backend._execution_policy_args(role, variables)
     assert variables == before
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
+    assert "--ignore-user-config" in args
     assert 'approval_policy="never"' in args
     assert any(value.endswith('.extends=":read-only"') for value in args)
     assert any('.network.enabled=false' in value for value in args)
+    assert "model_context_window=1050000" in args
+    assert "model_auto_compact_token_limit=880000" in args
     filesystem = next(value for value in args if '.filesystem=' in value)
     assert f'"{tmp_path / "work"}"="write"' in filesystem
     for root in backend.DENIED_ROOTS:
@@ -177,6 +180,8 @@ def test_role_tracking_logs_times_without_prompt_output_or_credentials(tmp_path,
     assert records[1]["duration_seconds"] >= 0
     assert records[1]["status"] == ("failed" if fail else "completed")
     assert all(r["model"] == sidecar.MODEL and r["service_tier"] == "fast" for r in records)
+    assert all(r["model_context_window"] == 1_050_000
+               and r["model_auto_compact_token_limit"] == 880_000 for r in records)
 
 
 def test_receipt_uses_current_authenticated_exact_bytes_without_new_verifier_calls(tmp_path):
