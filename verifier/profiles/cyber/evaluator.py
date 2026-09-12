@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import selectors
 import signal
@@ -19,6 +20,7 @@ from ...execution.instruments import ArtifactStore
 from .candidates import CandidateError, _identity, _read_fd, _regular_fd
 
 MAX_OUTPUT_BYTES = 64 * 1024  # independently bounded stdout and stderr
+_PIN_IDENTITY_FIELDS = ("device", "inode", "mode", "size", "mtime_ns", "ctime_ns")
 
 
 class EvaluatorError(ValueError):
@@ -45,6 +47,22 @@ def _file_pin(path: str, executable: bool = False) -> tuple[str, tuple[int, ...]
             os.close(fd)
     except (OSError, CandidateError) as exc:
         raise EvaluatorError("evaluator executable is unavailable or contains a symlink") from exc
+
+
+def _changed_pin_error(prefix: str, expected: tuple[str, tuple[int, ...]],
+                       actual: tuple[str, tuple[int, ...]],
+                       dependency_index: int | None = None) -> EvaluatorError:
+    """Explain strict rejection without paths, bytes, hashes, or re-pinning."""
+    expected_digest, expected_identity = expected
+    actual_digest, actual_identity = actual
+    details = {"sha256_changed": actual_digest != expected_digest,
+               "identity_changed": [name for name, before, after in
+                    zip(_PIN_IDENTITY_FIELDS, expected_identity, actual_identity)
+                    if before != after]}
+    if dependency_index is not None:
+        details["dependency_index"] = dependency_index
+    return EvaluatorError(prefix + ": " + json.dumps(details, sort_keys=True,
+                                                    separators=(",", ":")))
 
 
 @dataclass(frozen=True)
@@ -96,12 +114,15 @@ class EvaluatorSpec:
         return content_hash(self.identity)
 
     def validate(self) -> None:
-        digest, identity = _file_pin(self.argv[0], executable=True)
-        if digest != self._executable_sha256 or identity != self._executable_identity:
-            raise EvaluatorError("evaluator executable pin changed")
-        for path, digest, identity in self._file_pins:
-            if _file_pin(path) != (digest, identity):
-                raise EvaluatorError("evaluator declared dependency pin changed")
+        actual = _file_pin(self.argv[0], executable=True)
+        expected = self._executable_sha256, self._executable_identity
+        if actual != expected:
+            raise _changed_pin_error("evaluator executable pin changed", expected, actual)
+        for index, (path, digest, identity) in enumerate(self._file_pins):
+            actual = _file_pin(path)
+            if actual != (digest, identity):
+                raise _changed_pin_error("evaluator declared dependency pin changed",
+                                         (digest, identity), actual, dependency_index=index)
 
 
 class Evaluator:

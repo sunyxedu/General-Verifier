@@ -295,3 +295,483 @@ def test_prepare_rejects_source_history_before_agent_workspace(controller, monke
     with pytest.raises(RuntimeError, match="git history"):
         controller.prepare("arvo:23296", directory)
     assert all(args[0] == "curl" for args in commands)
+
+
+def startup_fakes(monkeypatch, controller):
+    """No process, Docker, HTTP, model, or evaluator is actually started."""
+    calls = []
+    class Judge:
+        pid = 901
+        terminated = 0
+        def poll(self):
+            return None if not self.terminated else 0
+        def terminate(self):
+            self.terminated += 1
+        def wait(self, **_kwargs):
+            return 0
+    judge = Judge()
+    monkeypatch.setattr(run.subprocess, "Popen", lambda *_args, **_kwargs: judge)
+    def host_open(request, **_kwargs):
+        url = request.full_url if hasattr(request, "full_url") else request
+        if urllib.parse.urlsplit(url).path == "/openapi.json":
+            return io.BytesIO(b"{}")
+        assert urllib.parse.urlsplit(url).path == "/query-poc"
+        raise urllib.error.HTTPError(url, 422, "fixture identity challenge", {}, None)
+    monkeypatch.setattr(run.urllib.request, "urlopen", host_open)
+    def docker(*args, **_kwargs):
+        calls.append(tuple(args))
+        if args == ("inspect", controller.proxy):
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="true\n", stderr="")
+    monkeypatch.setattr(run, "docker", docker)
+    def execute(*args, **_kwargs):
+        calls.append(tuple(args))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(run, "execute", execute)
+    monkeypatch.setattr(controller, "wait_running",
+                        lambda name: calls.append(("wait_running", name)))
+    monkeypatch.setattr(controller, "wait_listener",
+                        lambda name, port: calls.append(("wait_listener", name, port)))
+    return calls, judge
+
+
+def test_submission_proxy_starts_on_bridge_before_authority_network(controller, monkeypatch):
+    calls, _judge = startup_fakes(monkeypatch, controller)
+    controller.start_services()
+    launched = next(call for call in calls if call[0] == "run" and controller.proxy in call)
+    assert launched[launched.index("--network") + 1] == "bridge"
+    connected = ("network", "connect", "cybergym-internal", controller.proxy)
+    ready = ("wait_running", controller.proxy)
+    checked = ("exec", controller.proxy, "nginx", "-t")
+    listening = ("wait_listener", controller.proxy, 80)
+    assert calls.index(launched) < calls.index(connected) < calls.index(ready)
+    assert calls.index(ready) < calls.index(checked) < calls.index(listening)
+    assert controller.created_proxy is True
+
+
+def test_dead_submission_proxy_prevents_batch_and_cleans_services(controller, monkeypatch):
+    calls, judge = startup_fakes(monkeypatch, controller)
+    controller.pin = lambda: None
+    batches = []
+    controller.batch = lambda *args: batches.append(args)
+    def dead(_name):
+        raise RuntimeError("fixture submission proxy startup failed")
+    monkeypatch.setattr(controller, "wait_running", dead)
+    with pytest.raises(RuntimeError, match="submission proxy startup"):
+        controller.run()
+    assert batches == []
+    assert ("stop", "--time", "10", controller.proxy) in calls
+    assert judge.terminated == 1 and controller.stop.is_set()
+
+
+def test_unbound_submission_proxy_prevents_batch_and_cleans_services(controller, monkeypatch):
+    calls, judge = startup_fakes(monkeypatch, controller)
+    controller.pin = lambda: None
+    batches = []
+    controller.batch = lambda *args: batches.append(args)
+    def unbound(_name, _port):
+        raise RuntimeError("fixture listener startup readiness failed")
+    monkeypatch.setattr(controller, "wait_listener", unbound)
+    with pytest.raises(RuntimeError, match="listener startup readiness"):
+        controller.run()
+    assert batches == []
+    assert ("exec", controller.proxy, "nginx", "-t") in calls
+    assert ("stop", "--time", "10", controller.proxy) in calls
+    assert judge.terminated == 1 and controller.stop.is_set()
+
+
+def test_wait_running_observes_running_before_allowing_progress(controller, monkeypatch):
+    replies = iter((json.dumps({"Running": False, "Status": "created"}),
+                    json.dumps({"Running": True, "Status": "running"})))
+    calls = []
+    def inspect(*args, **_kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout=next(replies), stderr="")
+    monkeypatch.setattr(run, "docker", inspect)
+    monkeypatch.setattr(controller.stop, "wait", lambda _seconds: False)
+    controller.wait_running("fixture-submission-proxy")
+    assert len(calls) == 2
+    assert all("inspect" in call and "fixture-submission-proxy" in call for call in calls)
+
+
+def test_wait_listener_requires_bound_socket_not_just_running_pid(controller, monkeypatch):
+    replies = iter((1, 0))
+    calls, waits = [], []
+    def docker(*args, **kwargs):
+        calls.append(args)
+        assert kwargs["check"] is False
+        if args[0] == "inspect":
+            assert args == ("inspect", "--format", "{{.State.Running}}", controller.proxy)
+            return SimpleNamespace(returncode=0, stdout="true\n")
+        assert args[:4] == ("exec", controller.proxy, "sh", "-c")
+        assert "/:0050$/" in args[4]
+        assert '$4 == "0A"' in args[4]
+        assert "/proc/net/tcp /proc/net/tcp6" in args[4]
+        return SimpleNamespace(returncode=next(replies), stdout="")
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(controller.stop, "wait", lambda seconds: waits.append(seconds) or False)
+    controller.wait_listener(controller.proxy, 80)
+    assert [call[0] for call in calls] == ["inspect", "exec", "inspect", "exec"]
+    assert waits == [1]
+
+
+@pytest.mark.parametrize("inspect_code,running", [(0, "false\n"), (1, "")])
+def test_wait_listener_exited_or_missing_proxy_fails_immediately(controller, monkeypatch, inspect_code, running):
+    calls = []
+    def docker(*args, **_kwargs):
+        calls.append(args)
+        assert args[0] == "inspect"
+        return SimpleNamespace(returncode=inspect_code, stdout=running)
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(controller.stop, "wait", lambda _seconds: pytest.fail("must not wait on dead proxy"))
+    with pytest.raises(RuntimeError, match="stopped before listening"):
+        controller.wait_listener(controller.proxy, 80)
+    assert len(calls) == 1
+
+
+def test_wait_listener_stop_signal_interrupts_startup(controller, monkeypatch):
+    calls, waits = [], []
+    def docker(*args, **_kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0 if args[0] == "inspect" else 1, stdout="true\n")
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(controller.stop, "wait", lambda seconds: waits.append(seconds) or True)
+    with pytest.raises(RuntimeError, match="stopped during listener startup"):
+        controller.wait_listener(controller.proxy, 80)
+    assert len(calls) == 2 and waits == [1]
+
+
+def test_wait_listener_startup_readiness_has_bounded_retries(controller, monkeypatch):
+    calls, waits = [], []
+    def docker(*args, **_kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0 if args[0] == "inspect" else 1, stdout="true\n")
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(controller.stop, "wait", lambda seconds: waits.append(seconds) or False)
+    with pytest.raises(RuntimeError, match="listener startup readiness failed"):
+        controller.wait_listener(controller.proxy, 80)
+    assert len(calls) == 120 and waits == [1] * 60
+
+
+def probe_fakes(monkeypatch, controller, statuses, *, route_policy="submit-vul-only"):
+    """Execute the actual trusted probe code with every URL mocked locally."""
+    calls, programs, handlers_seen = [], [], []
+    class Response(io.BytesIO):
+        def __init__(self, status, headers):
+            super().__init__(b"")
+            self.status, self.headers = status, headers
+        def getcode(self):
+            return self.status
+    class Opener:
+        def open(self, request, *, timeout):
+            url = request.full_url if hasattr(request, "full_url") else request
+            path = urllib.parse.urlsplit(url).path
+            calls.append((path, timeout))
+            status = statuses[path]
+            headers = ({"X-GV-Route-Policy": route_policy}
+                       if path != "/submit-vul" and route_policy is not None else {})
+            if status is None:
+                raise urllib.error.URLError("fixture direct connection failed")
+            if status >= 400:
+                raise urllib.error.HTTPError(url, status, "fixture probe", headers, None)
+            return Response(status, headers)
+    def build(*handlers):
+        handlers_seen.extend(handlers)
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], run.urllib.request.ProxyHandler)
+        assert handlers[0].proxies == {}, "NO_PROXY alone is not a direct-route boundary"
+        return Opener()
+    monkeypatch.setattr(run.urllib.request, "build_opener", build)
+    monkeypatch.setenv("HTTP_PROXY", "http://fixture-egress.invalid:3128")
+    def forbidden_urlopen(*_args, **_kwargs):
+        raise AssertionError("probe must use its explicit credential-free direct opener")
+    monkeypatch.setattr(run.urllib.request, "urlopen", forbidden_urlopen)
+    def docker(*args, **kwargs):
+        assert args[0] == "exec" and args[1] == "fixture-sidecar"
+        code = args[args.index("-c") + 1]
+        programs.append(code)
+        out, err, returncode = io.StringIO(), io.StringIO(), 0
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                exec(compile(code, "<trusted-startup-probe>", "exec"), {})
+            except SystemExit as error:
+                returncode = error.code if isinstance(error.code, int) else 1
+            except Exception:
+                returncode = 1
+        if returncode and kwargs.get("check", True):
+            raise run.subprocess.CalledProcessError(returncode, ("fixture-docker-exec",))
+        return SimpleNamespace(returncode=returncode, stdout=out.getvalue(), stderr=err.getvalue())
+    monkeypatch.setattr(run, "docker", docker)
+    return calls, programs, handlers_seen
+
+
+def test_actual_probe_checks_public_route_and_authenticated_private_route_denials(controller, monkeypatch):
+    statuses = {"/submit-vul": 405, "/query-poc": 404, "/submit-fix": 404, "/openapi.json": 404}
+    calls, programs, handlers = probe_fakes(monkeypatch, controller, statuses)
+    controller.probe_submission({"sidecar": "fixture-sidecar"})
+    assert len(programs) == 1 and handlers
+    assert {path for path, _timeout in calls} == set(statuses)
+    assert len(calls) == 4 and all(timeout == 5 for _path, timeout in calls)
+    assert controller.api_key not in programs[0]
+
+
+@pytest.mark.parametrize("path,status", [
+    ("/submit-vul", 502), ("/submit-vul", None),
+    ("/query-poc", 200), ("/submit-fix", 200), ("/openapi.json", 200),
+])
+def test_actual_probe_rejects_transport_failure_or_private_route_exposure(
+        controller, monkeypatch, path, status):
+    statuses = {"/submit-vul": 405, "/query-poc": 404, "/submit-fix": 404, "/openapi.json": 404}
+    statuses[path] = status
+    probe_fakes(monkeypatch, controller, statuses)
+    with pytest.raises((RuntimeError, run.subprocess.CalledProcessError)):
+        controller.probe_submission({"sidecar": "fixture-sidecar"})
+
+
+@pytest.mark.parametrize("route_policy", [None, "unrelated-proxy-policy"])
+def test_private_404_is_not_enough_without_host_route_policy_header(controller, monkeypatch, route_policy):
+    statuses = {"/submit-vul": 405, "/query-poc": 404, "/submit-fix": 404, "/openapi.json": 404}
+    probe_fakes(monkeypatch, controller, statuses, route_policy=route_policy)
+    with pytest.raises((RuntimeError, run.subprocess.CalledProcessError)):
+        controller.probe_submission({"sidecar": "fixture-sidecar"})
+
+
+def test_route_probe_runs_before_solver_configuration_and_cleans_on_failure(controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    private, workspace = directory / "private", directory / "workspace"
+    home = directory / "solver-home"
+    home.mkdir()
+    (home / "config.toml").write_text(run.MODEL_CONFIG)
+    (private / "state").mkdir()
+    (private / "verifier-home").mkdir()
+    monkeypatch.setattr(run, "docker", lambda *_args, **_kwargs:
+                        SimpleNamespace(returncode=0, stdout="true\n", stderr=""))
+    monkeypatch.setattr(controller, "wait_running", lambda _name: None)
+    monkeypatch.setattr(controller, "sidecar_get", lambda *_args: {"status": "ready"})
+    cleaned, probed = [], []
+    monkeypatch.setattr(controller, "cleanup_runtime",
+                        lambda runtime, where, secret: cleaned.append((runtime, where, secret)))
+    def reject(runtime):
+        probed.append(runtime)
+        assert not (home / "hooks.json").exists()
+        assert (home / "config.toml").read_text() == run.MODEL_CONFIG
+        raise RuntimeError("fixture submission route rejected")
+    monkeypatch.setattr(controller, "probe_submission", reject)
+    with pytest.raises(RuntimeError, match="submission route rejected"):
+        controller.create_runtime(directory, workspace, private)
+    assert len(probed) == 1 and len(cleaned) == 1
+    assert cleaned[0] == (probed[0], directory, private)
+    assert not (home / "hooks.json").exists()
+
+
+@pytest.mark.parametrize("stage", ["volume", "egress", "sidecar"])
+def test_partial_startup_cleanup_always_receives_initialized_runtime_names(controller, selected, monkeypatch, stage):
+    directory, _candidate, _receipt = selected
+    workspace, private = directory / "workspace", directory / "private"
+    cleanup = []
+    def fail(where, project, secret, runtime):
+        assert (where, project, secret) == (directory, workspace, private)
+        assert all(runtime.get(key) for key in ("network", "sidecar", "proxy", "volume"))
+        raise RuntimeError("fixture partial startup failure at " + stage)
+    monkeypatch.setattr(controller, "_create_runtime", fail)
+    monkeypatch.setattr(controller, "cleanup_runtime",
+                        lambda runtime, where, secret: cleanup.append((runtime, where, secret)))
+    with pytest.raises(RuntimeError, match="partial startup failure"):
+        controller.create_runtime(directory, workspace, private)
+    assert len(cleanup) == 1 and cleanup[0][1:] == (directory, private)
+
+
+@pytest.mark.parametrize("foreign_key", ["sidecar", "proxy"])
+@pytest.mark.parametrize("wrong_label", ["gv.experiment", "gv.attempt_id"])
+def test_cleanup_is_best_effort_label_scoped_and_preserves_forensic_volumes(
+        controller, selected, monkeypatch, foreign_key, wrong_label):
+    directory, _candidate, _receipt = selected
+    private = directory / "private"
+    runtime = {"sidecar": "gv-roles-sidecar-fixture-a", "proxy": "gv-roles-egress-fixture-a",
+               "network": "gv-roles-net-fixture-a", "volume": "gv-roles-state-fixture-a",
+               "token": "fixture-only-isolation-token"}
+    calls = []
+    def docker(*args, **_kwargs):
+        calls.append(tuple(args))
+        if "inspect" in args:
+            name = next((value for value in args if value in (runtime["sidecar"], runtime["proxy"])), None)
+            assert name is not None
+            labels = {"gv.experiment": controller.experiment, "gv.attempt_id": directory.name}
+            if name == runtime[foreign_key]:
+                labels[wrong_label] = "unrelated-owner"
+            if "--format" in args:
+                fmt = args[args.index("--format") + 1]
+                if "gv.experiment" in fmt and "gv.attempt_id" not in fmt:
+                    output = labels["gv.experiment"]
+                elif "gv.attempt_id" in fmt and "gv.experiment" not in fmt:
+                    output = labels["gv.attempt_id"]
+                elif "Labels" in fmt:
+                    output = json.dumps(labels)
+                else:
+                    output = "true"
+            else:
+                output = json.dumps([{"Config": {"Labels": labels},
+                                      "State": {"Running": True, "Status": "running"}}])
+            return SimpleNamespace(returncode=0, stdout=output + "\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(run, "docker", docker)
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("fixture forensic mirror or log copy unavailable")
+    monkeypatch.setattr(controller, "mirror", unavailable)
+    monkeypatch.setattr(run, "execute", unavailable)
+    controller.cleanup_runtime(runtime, directory, private)
+    stopped = [call[-1] for call in calls if call[0] == "stop"]
+    owned_key = "proxy" if foreign_key == "sidecar" else "sidecar"
+    assert stopped == [runtime[owned_key]]
+    assert not any(call[:2] in (("volume", "rm"), ("network", "rm")) for call in calls)
+
+
+def test_evaluator_snapshot_is_native_readonly_and_both_native_dependencies_are_pinned(
+        controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    private, workspace = directory / "private", directory / "workspace"
+    home = directory / "solver-home"
+    home.mkdir()
+    (home / "config.toml").write_text(run.MODEL_CONFIG)
+    (private / "state").mkdir()
+    (private / "verifier-home").mkdir()
+    calls = []
+    def docker(*args, **_kwargs):
+        calls.append(tuple(args))
+        return SimpleNamespace(returncode=0, stdout="true\n", stderr="")
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(controller, "wait_running", lambda _name: None)
+    monkeypatch.setattr(controller, "sidecar_get", lambda *_args: {"status": "ready"})
+    probes = []
+    monkeypatch.setattr(controller, "probe_submission", lambda runtime: probes.append(runtime))
+    runtime = controller.create_runtime(directory, workspace, private)
+    assert probes == [runtime]
+    sidecar = next(call for call in calls if call[0] == "run" and "--name" in call
+                   and call[call.index("--name") + 1] == runtime["sidecar"])
+    mounts = [sidecar[i + 1] for i, word in enumerate(sidecar[:-1]) if word == "-v"]
+    assert runtime["evaluator_volume"] + ":/evaluator:ro" in mounts
+    assert all(str(private / "evaluator.json") not in mount for mount in mounts)
+    assert all(str(run.SOURCE / "evaluator.py") not in mount for mount in mounts)
+    command = json.loads(sidecar[sidecar.index("--cyber-evaluator-command-json") + 1])
+    assert command == ["/usr/bin/python3.11", "/evaluator/evaluator.py",
+                       "/evaluator/config.json", "{candidate}"]
+    pins = [sidecar[i + 1] for i, word in enumerate(sidecar[:-1])
+            if word == "--cyber-evaluator-pin"]
+    assert pins == ["/evaluator/evaluator.py", "/evaluator/config.json"]
+    seed = next(call for call in calls if call[0] == "run"
+                and runtime["evaluator_volume"] + ":/snapshot" in call)
+    assert calls.index(seed) < calls.index(sidecar)
+    assert "--network" in seed and seed[seed.index("--network") + 1] == "none"
+    assert str(run.SOURCE / "evaluator.py") + ":/seed-evaluator.py:ro" in seed
+    assert str(private / "evaluator.json") + ":/seed-config.json:ro" in seed
+    seed_program = seed[seed.index("-c") + 1]
+    assert "cp /seed-evaluator.py /snapshot/evaluator.py" in seed_program
+    assert "cp /seed-config.json /snapshot/config.json" in seed_program
+    assert "chmod 400" in seed_program
+
+
+def stopped_run_fakes(monkeypatch, controller):
+    controller.pin = lambda: None
+    controller.start_services = lambda: None
+    monkeypatch.setattr(tracking, "record_snapshot", lambda _root: None)
+    monkeypatch.setattr(run.threading, "Thread", lambda **_kwargs: SimpleNamespace(start=lambda: None))
+
+
+@pytest.mark.parametrize("stop_after", ["pilot5", "fixed30"])
+def test_stop_after_completed_batch_cannot_expand_to_next_stage(controller, monkeypatch, stop_after):
+    stopped_run_fakes(monkeypatch, controller)
+    calls = []
+    def batch(tasks, stage):
+        calls.append(stage)
+        if stage == stop_after:
+            controller.stop.set()
+        return 5 if stage == "pilot5" else 26
+    controller.batch = batch
+    controller.run()
+    assert calls == (["pilot5"] if stop_after == "pilot5" else ["pilot5", "fixed30"])
+    assert json.loads((controller.root / "controller.json").read_text())["stage"] == "stopped"
+
+
+def test_stop_during_catalog_read_cannot_start_all1507(controller, monkeypatch, tmp_path):
+    stopped_run_fakes(monkeypatch, controller)
+    official = tmp_path / "official"
+    official.mkdir()
+    catalog = official / "mask_map.json"
+    catalog.write_text(json.dumps({"arvo:23296": "masked-a", "arvo:extra": "masked-b"}))
+    monkeypatch.setattr(run, "OFFICIAL", official)
+    read_text = Path.read_text
+    def interrupted_read(path, *args, **kwargs):
+        raw = read_text(path, *args, **kwargs)
+        if path == catalog:
+            controller.stop.set()  # A SIGTERM can arrive in this exact window.
+        return raw
+    monkeypatch.setattr(Path, "read_text", interrupted_read)
+    calls = []
+    def batch(tasks, stage):
+        calls.append(stage)
+        return 5 if stage == "pilot5" else 26
+    controller.batch = batch
+    controller.run()
+    assert calls == ["pilot5", "fixed30"]
+    assert json.loads((controller.root / "controller.json").read_text())["stage"] == "stopped"
+
+
+def test_stopped_batch_does_not_queue_or_overwrite_real_outcomes(controller, monkeypatch):
+    controller.stop.set()
+    controller.results = {"passed": {"official_pass": True, "outcome": "pass"},
+                          "failed": {"official_pass": False, "outcome": "fail"}}
+    before = json.dumps(controller.results, sort_keys=True)
+    def forbidden_pool(*_args, **_kwargs):
+        raise AssertionError("a stopped batch must not queue tasks")
+    monkeypatch.setattr(run.concurrent.futures, "ThreadPoolExecutor", forbidden_pool)
+    assert controller.batch(["passed", "failed", "not-yet-started"], "all1507") == 1
+    assert json.dumps(controller.results, sort_keys=True) == before
+    assert not (controller.root / "controller.json").exists()
+    assert not (controller.root / "all1507-summary.json").exists()
+
+
+@pytest.mark.parametrize("stop_fails", [False, True])
+def test_service_diagnostic_failure_never_strands_owned_judge(controller, monkeypatch, stop_fails):
+    controller.created_proxy = True
+    class Judge:
+        terminated = 0
+        def poll(self):
+            return None
+        def terminate(self):
+            self.terminated += 1
+        def wait(self, **_kwargs):
+            return 0
+    controller.judge_process = Judge()
+    calls = []
+    def unavailable(*_args, **_kwargs):
+        raise OSError("fixture diagnostic unavailable")
+    monkeypatch.setattr(run, "execute", unavailable)
+    def docker(*args, **_kwargs):
+        calls.append(tuple(args))
+        if stop_fails:
+            raise RuntimeError("fixture relay stop unavailable")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(run, "docker", docker)
+    controller.cleanup_services()
+    assert calls == [("stop", "--time", "10", controller.proxy)]
+    assert controller.judge_process.terminated == 1
+
+
+def test_frozen_manifest_preserves_no_task_or_role_deadline_and_no_fresh_solver_thread(
+        controller, monkeypatch, tmp_path):
+    official = tmp_path / "official"
+    official.mkdir()
+    (official / "mask_map.json").write_text("{}")
+    monkeypatch.setattr(run, "OFFICIAL", official)
+    def git(*args, **_kwargs):
+        output = run.OFFICIAL_COMMIT if args[-2:] == ("rev-parse", "HEAD") else ""
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+    monkeypatch.setattr(run, "execute", git)
+    controller.pin()
+    manifest = json.loads((controller.root / "manifest.json").read_text())
+    assert manifest["task_timeout_seconds"] is None
+    assert manifest["role_timeout_seconds"] is None
+    assert manifest["evaluator_timeout_seconds"] is None
+    assert manifest["fresh_thread_recovery"] is False
+    assert manifest["model"] == "gpt-5.6-luna"
+    assert manifest["reasoning_effort"] == "max" and manifest["service_tier"] == "fast"

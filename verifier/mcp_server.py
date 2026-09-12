@@ -31,10 +31,13 @@ Claude Code config (.mcp.json):
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import hashlib
+import stat
 import threading
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -309,9 +312,14 @@ class Service:
             if row["status"] != "verified":
                 result.update(_residue(self.store, claim_id))
             return result
+        # New commits and hook Effects may add labels on another worker.
+        # Snapshot only the mapping under the existing feed lock, then release
+        # it before querying the store; status does not hold a verification lock.
+        with self._event_feed_lock:
+            labels = tuple(self.builder.labels.items())
         return {
             label: self.store.status(cid)
-            for label, cid in self.builder.labels.items()
+            for label, cid in labels
         }
 
     def _pin_profile(self, model):
@@ -687,6 +695,72 @@ def _default_kernel(sc: Service, model, backend=None,
 
 # MCP wiring
 
+class _ToolDispatcher:
+    """Keep synchronous verifier work off the MCP transport's event loop.
+
+    Cyber transport diagnostics are metadata only, outside the evidence log.
+    Cancelling a request does not stop its worker or manufacture a verdict.
+    """
+
+    def __init__(self, service):
+        self.service = service
+        self._diagnostic_lock = threading.Lock()
+        self._diagnostic_path = None
+        if service.profile.name == "cyber":
+            state_dir = getattr(service, "state_dir", None)
+            if isinstance(state_dir, (str, os.PathLike)):
+                self._diagnostic_path = os.path.join(state_dir, "transport_calls.jsonl")
+
+    def _record(self, call_id, tool, phase, started, error_type=None):
+        if self._diagnostic_path is None:
+            return
+        record = {"schema": 1, "call_id": call_id, "tool": tool,
+                  "phase": phase, "ts": time.time(),
+                  "elapsed_seconds": max(0.0, time.monotonic() - started)}
+        if error_type is not None:
+            record["error_type"] = error_type
+        # Never follow a solver-created symlink or block on a special file.
+        # Failure to retain diagnostics cannot affect verification.
+        flags = (os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+        try:
+            with self._diagnostic_lock:
+                fd = os.open(self._diagnostic_path, flags, 0o600)
+                try:
+                    info = os.fstat(fd)
+                    if (not stat.S_ISREG(info.st_mode)
+                            or info.st_uid != os.geteuid() or info.st_nlink != 1):
+                        return
+                    encoded = (json.dumps(record, ensure_ascii=True) + "\n").encode("utf-8")
+                    while encoded:
+                        written = os.write(fd, encoded)
+                        if written == 0:
+                            break
+                        encoded = encoded[written:]
+                finally:
+                    os.close(fd)
+        except OSError:
+            pass
+
+    async def call(self, tool, *args):
+        call_id, started = uuid.uuid4().hex, time.monotonic()
+        # Telemetry is filesystem I/O too; it must not block transport health.
+        if self._diagnostic_path is not None:
+            await asyncio.to_thread(self._record, call_id, tool, "received", started)
+
+        def invoke():
+            self._record(call_id, tool, "invoked", started)
+            try:
+                result = getattr(self.service, tool)(*args)
+            except BaseException as exc:
+                self._record(call_id, tool, "failed", started, type(exc).__name__)
+                raise
+            self._record(call_id, tool, "finished", started)
+            return result
+
+        return await asyncio.to_thread(invoke)
+
+
 _PROTOCOL_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "protocol", "solver-protocol.md")
@@ -709,65 +783,66 @@ def build_server(service: Service):
     from mcp.server.fastmcp import FastMCP
 
     server = FastMCP("gv", instructions=_solver_protocol(service.profile))
+    dispatcher = _ToolDispatcher(service)
 
     @server.tool()
-    def commit(label: str, kind: CLAIM_KINDS, text: str, deps: List[str],
-               revises: str = "") -> str:
+    async def commit(label: str, kind: CLAIM_KINDS, text: str, deps: List[str],
+                     revises: str = "") -> str:
         """Commit a claim (kind: assertion|effect|final). deps is a list of
         labels of already-committed claims (including effect:<seq>). The claim
         is VERIFIED BEFORE THIS RETURNS, so the call blocks for as long as its
         checks take; the result carries the resulting status, and on anything
         but `verified` the obligation that failed plus its counterexample."""
         return json.dumps(
-            service.commit(label, kind, text, deps,
-                           revises or None),
+            await dispatcher.call("commit", label, kind, text, deps,
+                                  revises or None),
             ensure_ascii=False)
 
     @server.tool()
-    def verify(label: str) -> str:
+    async def verify(label: str) -> str:
         """Verify a committed claim now; returns its status."""
-        return json.dumps(service.verify(label), ensure_ascii=False)
+        return json.dumps(await dispatcher.call("verify", label), ensure_ascii=False)
 
     @server.tool()
-    def certificate(final_label: str) -> str:
+    async def certificate(final_label: str) -> str:
         """Certify a final claim: settle the dependency closure, freeze the
         certificate, and return the verdict plus a slice summary."""
-        return json.dumps(service.certificate(final_label), ensure_ascii=False)
+        return json.dumps(await dispatcher.call("certificate", final_label), ensure_ascii=False)
 
     @server.tool()
-    def status(label: str = "") -> str:
+    async def status(label: str = "") -> str:
         """Query the status of one label or of all labels."""
-        return json.dumps(service.status(label or None), ensure_ascii=False)
+        return json.dumps(await dispatcher.call("status", label or None), ensure_ascii=False)
 
     if service.profile.name == "cyber":
         @server.tool()
-        def cyber_checkpoint(working_theory: str, next_actions: List[str]) -> str:
+        async def cyber_checkpoint(working_theory: str, next_actions: List[str]) -> str:
             """Retain exploration notes in the ledger. These are not verified claims."""
-            return json.dumps(service.cyber_checkpoint(working_theory, next_actions), ensure_ascii=False)
+            return json.dumps(await dispatcher.call("cyber_checkpoint", working_theory, next_actions), ensure_ascii=False)
 
         @server.tool()
-        def cyber_register_candidate(path: str, label: str = "") -> str:
+        async def cyber_register_candidate(path: str, label: str = "") -> str:
             """Snapshot exact bytes from a staging file. Records identity, not correctness."""
-            return json.dumps(service.cyber_register_candidate(path, label), ensure_ascii=False)
+            return json.dumps(await dispatcher.call("cyber_register_candidate", path, label), ensure_ascii=False)
 
         @server.tool()
-        def cyber_candidates() -> str:
+        async def cyber_candidates() -> str:
             """List immutable candidate identities; this tool makes no ranking or verdict."""
-            return json.dumps(service.cyber_candidates(), ensure_ascii=False)
+            return json.dumps(await dispatcher.call("cyber_candidates"), ensure_ascii=False)
 
         if service.evaluator is not None:
             @server.tool()
-            def cyber_evaluate_candidate(candidate_id: str) -> str:
+            async def cyber_evaluate_candidate(candidate_id: str) -> str:
                 """Run the configured task-authorized evaluator on the exact candidate.
                 Returns retained observations and an ordinary Effect reference, not a certificate."""
-                return json.dumps(service.cyber_evaluate_candidate(candidate_id), ensure_ascii=False)
+                return json.dumps(await dispatcher.call("cyber_evaluate_candidate", candidate_id), ensure_ascii=False)
 
         @server.tool()
-        def cyber_finalize_candidate(candidate_id: str, destination: str = "") -> str:
+        async def cyber_finalize_candidate(candidate_id: str, destination: str = "") -> str:
             """Verify the candidate through the normal GV roles, then copy certified bytes.
             A verified candidate certificate is scoped to content; materialization has its own
             receipt. Neither the receipt nor a candidate signal asserts an official task score."""
-            return json.dumps(service.cyber_finalize_candidate(candidate_id, destination), ensure_ascii=False)
+            return json.dumps(await dispatcher.call("cyber_finalize_candidate", candidate_id, destination), ensure_ascii=False)
 
     return server
 

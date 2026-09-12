@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -205,11 +206,68 @@ class Evaluation:
         config.write_text('events {}\nhttp { server { listen 80; client_max_body_size 16m; '
             'location = /submit-vul { proxy_pass http://host.docker.internal:' + str(self.port) +
             '; proxy_read_timeout 2147483647s; proxy_send_timeout 2147483647s; } '
-            'location / { return 404; } } }\n')
-        docker("run", "-d", "--name", self.proxy, "--init", "--network", "cybergym-internal",
+            'location / { add_header X-GV-Route-Policy submit-vul-only always; return 404; } } }\n')
+        # An internal-only network has no host DNS/default route on Docker
+        # Desktop. Only the relay gains bridge egress, never the solver.
+        docker("run", "-d", "--name", self.proxy, "--init", "--network", "bridge",
             "--label", "gv.experiment=" + self.experiment, "-v", str(config) + ":/etc/nginx/nginx.conf:ro",
             NGINX_IMAGE)
         self.created_proxy = True
+        docker("network", "connect", "cybergym-internal", self.proxy)
+        self.wait_running(self.proxy)
+        docker("exec", self.proxy, "nginx", "-t")
+        self.wait_listener(self.proxy, 80)
+
+    def wait_listener(self, name, port):
+        # Running PID1 / nginx -t alone do not mean the master has bound the
+        # socket yet. Readiness is local and bounded, not a task deadline.
+        port_hex = format(port, "04X")
+        command = "awk '$2 ~ /:" + port_hex + "$/ && $4 == \"0A\" {found=1} END {exit !found}' /proc/net/tcp /proc/net/tcp6"
+        for _ in range(60):
+            state = docker("inspect", "--format", "{{.State.Running}}", name, check=False)
+            if state.returncode or state.stdout.strip() != "true":
+                raise RuntimeError("runtime container stopped before listening: " + name)
+            listener = docker("exec", name, "sh", "-c", command, check=False)
+            if listener.returncode == 0:
+                return
+            if self.stop.wait(1):
+                raise RuntimeError("controller stopped during listener startup")
+        raise RuntimeError("runtime listener startup readiness failed: " + name)
+
+    def wait_running(self, name):
+        # Startup readiness only, never a solver/evaluator search deadline.
+        for _ in range(60):
+            process = docker("inspect", "--format", "{{json .State}}", name, check=False)
+            if process.returncode == 0:
+                state = json.loads(process.stdout)
+                if state.get("Running") is True:
+                    return
+                if state.get("Status") in ("exited", "dead"):
+                    raise RuntimeError("runtime container failed startup: " + name)
+            if self.stop.wait(1):
+                raise RuntimeError("controller stopped during startup")
+        raise RuntimeError("runtime container startup readiness failed: " + name)
+
+    def probe_submission(self, runtime):
+        # GET never submits a candidate or accesses a private record.
+        code = (
+            "import urllib.request, urllib.error\n"
+            "opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))\n"
+            "for path, expected in [('/submit-vul',405),('/query-poc',404),"
+            "('/submit-fix',404),('/openapi.json',404)]:\n"
+            "    try:\n"
+            "        response = opener.open(" + repr(self.server) + " + path, timeout=5)\n"
+            "    except urllib.error.HTTPError as error:\n"
+            "        response = error\n"
+            "    with response:\n"
+            "        if response.getcode() != expected:\n"
+            "            raise RuntimeError('submission route startup probe failed')\n"
+            "        if expected == 404 and response.headers.get('X-GV-Route-Policy') != 'submit-vul-only':\n"
+            "            raise RuntimeError('private route policy startup probe failed')\n"
+        )
+        process = docker("exec", runtime["sidecar"], "python3", "-c", code, check=False)
+        if process.returncode:
+            raise RuntimeError("submission relay startup probe failed; solver was not started")
 
     def request(self, endpoint, value):
         request = urllib.request.Request(self.host_server + endpoint,
@@ -287,7 +345,18 @@ class Evaluation:
         suffix = hashlib.sha256(directory.name.encode()).hexdigest()[:16]
         network, sidecar, proxy, volume = ("gv-roles-net-" + suffix, "gv-roles-sidecar-" + suffix,
                                           "gv-roles-egress-" + suffix, "gv-roles-state-" + suffix)
-        token = secrets.token_urlsafe(48)
+        runtime = {"network": network, "sidecar": sidecar, "proxy": proxy, "volume": volume,
+                   "evaluator_volume": "gv-roles-evaluator-" + suffix,
+                   "token": secrets.token_urlsafe(48)}
+        try:
+            return self._create_runtime(directory, workspace, private, runtime)
+        except Exception:
+            self.cleanup_runtime(runtime, directory, private)
+            raise
+
+    def _create_runtime(self, directory, workspace, private, runtime):
+        network, sidecar, proxy, volume, token = (runtime[key] for key in
+            ("network", "sidecar", "proxy", "volume", "token"))
         labels = ["--label", "gv.experiment=" + self.experiment,
                   "--label", "gv.attempt_id=" + directory.name]
         docker("network", "create", "--internal", *labels, network)
@@ -295,6 +364,16 @@ class Evaluation:
         docker("run", "--rm", "--network", "none", "--user", "0:0",
             "-v", volume + ":/state", "-v", str(private / "state") + ":/seed:ro",
             "--entrypoint", "sh", IMAGE, "-c", "cp -a /seed/. /state/ && chown -R 1000:1000 /state && chmod 700 /state")
+        # Isolate strict pins from macOS host-bind inode/ctime churn. Both
+        # dependencies are copied before pinning and remain read-only.
+        docker("volume", "create", *labels, runtime["evaluator_volume"])
+        docker("run", "--rm", "--network", "none", "--user", "0:0", *labels,
+            "-v", runtime["evaluator_volume"] + ":/snapshot",
+            "-v", str(SOURCE / "evaluator.py") + ":/seed-evaluator.py:ro",
+            "-v", str(private / "evaluator.json") + ":/seed-config.json:ro",
+            "--entrypoint", "sh", IMAGE, "-c",
+            "cp /seed-evaluator.py /snapshot/evaluator.py && cp /seed-config.json /snapshot/config.json"
+            " && chown -R 1000:1000 /snapshot && chmod 500 /snapshot && chmod 400 /snapshot/*.py /snapshot/*.json")
         squid = private / "squid.conf"
         squid.write_text('http_port 3128\nacl SSL_ports port 443\nacl CONNECT method CONNECT\n'
             'acl openai dstdomain .openai.com .chatgpt.com .oaistatic.com .oaiusercontent.com\n'
@@ -314,15 +393,14 @@ class Evaluation:
             "--security-opt", "seccomp=unconfined", *env,
             "-v", str(workspace) + ":/task", "-v", volume + ":/state",
             "-v", str(private / "verifier-home") + ":/codex-home", "-v", str(PROFILE) + ":/gv:ro",
-            "-v", str(private / "evaluator.json") + ":/evaluator/config.json:ro",
+            "-v", runtime["evaluator_volume"] + ":/evaluator:ro",
             "-w", "/task", "--entrypoint", "python3", IMAGE, "/gv/experiments/cybergym/sidecar.py",
             "--state-dir", "/state", "--project-root", "/task", "--server-hostname", sidecar,
             "--cyber-evaluator-command-json", json.dumps(["/usr/bin/python3.11",
-                "/gv/experiments/cybergym/evaluator.py", "/evaluator/config.json", "{candidate}"]),
-            "--cyber-evaluator-pin", "/gv/experiments/cybergym/evaluator.py",
+                "/evaluator/evaluator.py", "/evaluator/config.json", "{candidate}"]),
+            "--cyber-evaluator-pin", "/evaluator/evaluator.py",
             "--cyber-evaluator-pin", "/evaluator/config.json")
         docker("network", "connect", "cybergym-internal", sidecar)
-        runtime = {"network": network, "sidecar": sidecar, "proxy": proxy, "volume": volume, "token": token}
         # Controller stores secret separately; diagnostics do not echo it.
         atomic_json(private / "runtime-secret.json", runtime)
         for _ in range(60):
@@ -333,6 +411,7 @@ class Evaluation:
             time.sleep(1)
         else:
             raise RuntimeError("sidecar health startup failed")
+        self.probe_submission(runtime)
         home = directory / "solver-home"
         with (home / "config.toml").open("a") as config:
             # Codex exposes a finite transport fault guard, not an unlimited
@@ -346,6 +425,44 @@ class Evaluation:
             "type": "command", "command": "python3 /codex-home/hook_relay.py " + kind}]}]
             for name, kind in (("PreToolUse", "pre"), ("PostToolUse", "post"))}})
         return runtime
+
+    def cleanup_runtime(self, runtime, directory, private):
+        """Best-effort cleanup, never stop a foreign container or erase evidence."""
+        issues = []
+        names = [runtime["sidecar"], runtime["proxy"]]
+        status = directory / "status.json"
+        if status.exists():
+            solver = json.loads(status.read_text()).get("solver_container")
+            if solver:
+                names.insert(0, solver)
+        for name in names:
+            try:
+                inspected = docker("inspect", "--format", "{{json .Config.Labels}}", name, check=False)
+                if inspected.returncode:
+                    continue
+                labels = json.loads(inspected.stdout)
+                if (labels.get("gv.experiment") != self.experiment
+                        or labels.get("gv.attempt_id") != directory.name):
+                    issues.append({"component": name, "error": "foreign_container_refused"})
+                    continue
+                if name == runtime["sidecar"]:
+                    try:
+                        self.mirror(runtime, private)
+                    except Exception as error:
+                        issues.append({"component": name, "error": "mirror_failed", "type": type(error).__name__})
+                try:
+                    with (directory / (name + ".log")).open("wb") as log:
+                        execute("docker", "logs", name, check=False, stdout=log, stderr=subprocess.STDOUT)
+                except Exception as error:
+                    issues.append({"component": name, "error": "log_copy_failed", "type": type(error).__name__})
+                stopped = docker("stop", "--time", "10", name, check=False)
+                if stopped.returncode:
+                    issues.append({"component": name, "error": "container_stop_failed"})
+            except Exception as error:
+                issues.append({"component": name, "error": "cleanup_failed", "type": type(error).__name__})
+        if issues:
+            atomic_json(directory / "cleanup-issues.json", issues)
+        return issues  # Native volumes and stopped containers remain intact.
 
     def sidecar_get(self, runtime, path):
         code = "import json,os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8000" + path + \
@@ -486,6 +603,8 @@ class Evaluation:
                  "profile_commit": self.frozen_commit, "official_pass": None}
         runtime, owned_image = None, None
         try:
+            if self.stop.is_set():
+                raise RuntimeError("controller stopped before task startup")
             self.phase(directory, state, "preparing")
             image, owned = self.pull(task, "vul", directory, state)
             owned_image = image if owned else None
@@ -506,11 +625,7 @@ class Evaluation:
                        reason=type(error).__name__ + ": " + str(error))
         finally:
             if runtime:
-                self.mirror(runtime, directory / "private")
-                for name in (runtime["sidecar"], runtime["proxy"]):
-                    with (directory / (name + ".log")).open("wb") as log:
-                        execute("docker", "logs", name, check=False, stdout=log, stderr=subprocess.STDOUT)
-                    docker("stop", "--time", "10", name, check=False)
+                self.cleanup_runtime(runtime, directory, directory / "private")
             # Retain nativevolumes and stoppedcontainers for trace audit.
             if owned_image:
                 with image_lock():
@@ -522,6 +637,9 @@ class Evaluation:
         return state
 
     def batch(self, tasks, stage):
+        if self.stop.is_set():
+            return sum(self.results.get(task, {}).get("official_pass") is True
+                       for task in tasks)
         atomic_json(self.root / "controller.json", {"pid": os.getpid(), "stage": stage,
             "updated_unix": time.time(), "profile_commit": self.frozen_commit})
         pending = [task for task in tasks if task not in self.results]
@@ -544,21 +662,56 @@ class Evaluation:
                     self.stop.wait(300)
             monitor_thread = threading.Thread(target=monitor, daemon=True)
             monitor_thread.start()
-            if self.batch(FIXED30[:5], "pilot5") != 5:
+            pilot_passed = self.batch(FIXED30[:5], "pilot5")
+            if self.stop.is_set():
+                atomic_json(self.root / "controller.json", {"stage": "stopped", "updated_unix": time.time()})
+                return
+            if pilot_passed != 5:
                 atomic_json(self.root / "controller.json", {"stage": "needs-pilot-bug-audit", "updated_unix": time.time()})
                 return
-            if self.batch(FIXED30, "fixed30") < 26:
+            fixed_passed = self.batch(FIXED30, "fixed30")
+            if self.stop.is_set():
+                atomic_json(self.root / "controller.json", {"stage": "stopped", "updated_unix": time.time()})
+                return
+            if fixed_passed < 26:
                 atomic_json(self.root / "controller.json", {"stage": "needs-fixed30-bug-audit", "updated_unix": time.time()})
                 return
             all_tasks = list(json.loads((OFFICIAL / "mask_map.json").read_text()))
+            if self.stop.is_set():
+                atomic_json(self.root / "controller.json", {"stage": "stopped", "updated_unix": time.time()})
+                return
             self.batch(all_tasks, "all1507")
         finally:
             self.stop.set()
-            if self.created_proxy:
-                docker("stop", "--time", "10", self.proxy, check=False)
-            if self.judge_process is not None and self.judge_process.poll() is None:
+            self.cleanup_services()
+
+    def cleanup_services(self):
+        """Do not let a diagnostic I/O failure strand the owned services."""
+        issues = []
+        if self.created_proxy:
+            try:
+                with (self.root / "server/proxy.log").open("wb") as log:
+                    execute("docker", "logs", self.proxy, check=False, stdout=log, stderr=subprocess.STDOUT)
+            except Exception as error:
+                issues.append({"component": "submission_relay", "error": "log_copy_failed", "type": type(error).__name__})
+            try:
+                process = docker("stop", "--time", "10", self.proxy, check=False)
+                if process.returncode:
+                    issues.append({"component": "submission_relay", "error": "stop_failed"})
+            except Exception as error:
+                issues.append({"component": "submission_relay", "error": "stop_failed", "type": type(error).__name__})
+        if self.judge_process is not None and self.judge_process.poll() is None:
+            try:
                 self.judge_process.terminate()
                 self.judge_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.judge_process.kill()
+                self.judge_process.wait()
+            except Exception as error:
+                issues.append({"component": "official_judge", "error": "stop_failed", "type": type(error).__name__})
+        if issues:
+            with contextlib.suppress(OSError):
+                atomic_json(self.root / "server/cleanup-issues.json", issues)
 
 
 def main():
@@ -569,7 +722,15 @@ def main():
     args.root.mkdir(parents=True, exist_ok=True)
     with (args.root / "controller.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        Evaluation(args.root, args.port).run()
+        evaluation = Evaluation(args.root, args.port)
+        previous = {kind: signal.getsignal(kind) for kind in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            for kind in previous:
+                signal.signal(kind, lambda _signum, _frame: evaluation.stop.set())
+            evaluation.run()
+        finally:
+            for kind, handler in previous.items():
+                signal.signal(kind, handler)
 
 
 if __name__ == "__main__":
