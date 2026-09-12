@@ -27,7 +27,10 @@ MAX_JSONL_BYTES = 16 * 1024 * 1024
 MAX_ROLLOUT_BYTES = 2 * 1024 * 1024
 PROGRESS_SCHEMA = "gv-verification-progress-v1"
 JOB_STATES = frozenset({"queued", "running", "completed", "failed", "interrupted"})
-VERIFICATION_TOOLS = frozenset({"commit", "verify", "certificate", "cyber_finalize_candidate"})
+# Durable service jobs include candidate registration/evaluation as well as
+# adjudication. This is an operational verb inventory, not verified outcomes.
+VERIFICATION_TOOLS = frozenset({"commit", "verify", "certificate", "cyber_register_candidate",
+    "cyber_evaluate_candidate", "cyber_finalize_candidate"})
 TRANSPORT_TOOLS = VERIFICATION_TOOLS | frozenset({"status", "cyber_checkpoint",
     "cyber_register_candidate", "cyber_candidates", "cyber_evaluate_candidate",
     "verification_job", "verification_jobs", "verification_retry"})
