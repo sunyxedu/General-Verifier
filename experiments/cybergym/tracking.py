@@ -23,6 +23,7 @@ import time
 from typing import Any
 
 MAX_JSON_BYTES = 1024 * 1024
+MAX_MONITOR_PREVIOUS_BYTES = 64 * 1024 * 1024
 MAX_JSONL_BYTES = 16 * 1024 * 1024
 MAX_ROLLOUT_BYTES = 2 * 1024 * 1024
 PROGRESS_SCHEMA = "gv-verification-progress-v1"
@@ -90,6 +91,49 @@ def _json(path: Path, root: Path) -> dict:
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def read_monitor_previous_snapshot(root: Path | str) -> tuple[dict, dict]:
+    """Larger bounded host-only cache; task/evaluator JSON limits stay unchanged."""
+    root = Path(root).absolute()
+    path = root / "monitor/latest.json"
+    diagnostic = {"schema": "gv-monitor-previous-read-v1", "available": False,
+        "reason_code": "missing", "limit_bytes": MAX_MONITOR_PREVIOUS_BYTES,
+        "bytes_observed": 0}
+    try:
+        if root.resolve() != root or not root.is_dir() or not _safe_file(path, root):
+            # Missing on the first tick is normal; unsafe ancestors/files are not.
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                return {}, diagnostic
+            diagnostic["reason_code"] = "unsafe"
+            return {}, diagnostic
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                             | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                diagnostic["reason_code"] = "unsafe"
+                return {}, diagnostic
+            # Do not rely on a prior stat: atomic replacement/growth may race us.
+            raw = stream.read(MAX_MONITOR_PREVIOUS_BYTES + 1)
+        diagnostic["bytes_observed"] = len(raw)
+        if len(raw) > MAX_MONITOR_PREVIOUS_BYTES:
+            diagnostic["reason_code"] = "oversized"
+            return {}, diagnostic
+        value = json.loads(raw)
+        if (not isinstance(value, dict) or value.get("schema") != "cybergym-tracking-v1"
+                or not isinstance(value.get("attempts"), list)
+                or any(not isinstance(attempt, dict) for attempt in value["attempts"])):
+            diagnostic["reason_code"] = "malformed"
+            return {}, diagnostic
+        diagnostic.update(available=True, reason_code=None)
+        return value, diagnostic
+    except (ValueError, UnicodeError, RecursionError):
+        diagnostic["reason_code"] = "malformed"
+    except OSError:
+        diagnostic["reason_code"] = "unreadable"
+    return {}, diagnostic
 
 
 def _jsonl(path: Path, root: Path, *, limit_bytes: int = MAX_JSONL_BYTES) -> tuple[list[dict], bool]:
@@ -856,7 +900,16 @@ def record_snapshot(root: Path | str, *, now: float | None = None) -> dict:
     for name in ("latest.json", "history.jsonl", "alerts.jsonl"):
         if (monitor / name).is_symlink():
             raise ValueError("monitor output must not be a symlink")
-    value = snapshot(root, now=now, previous=_json(monitor / "latest.json", root))
+    previous, previous_diagnostic = read_monitor_previous_snapshot(root)
+    value = snapshot(root, now=now, previous=previous)
+    value["monitor_previous_snapshot"] = previous_diagnostic
+    if not previous_diagnostic["available"] and previous_diagnostic["reason_code"] != "missing":
+        value["alerts"].append({"type": "monitor_previous_snapshot_oversized_warning"
+            if previous_diagnostic["reason_code"] == "oversized"
+            else "monitor_previous_snapshot_unavailable_warning",
+            "ts": value["checked_unix"], "diagnostic_only": True, "lifecycle_action": None,
+            **{key: previous_diagnostic[key] for key in
+               ("available", "reason_code", "limit_bytes", "bytes_observed")}})
     with (monitor / "history.jsonl").open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
     if value["alerts"]:
