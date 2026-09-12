@@ -1,0 +1,11 @@
+# Supply the inspected existing Codex agent image ID via --build-arg BASE_IMAGE=...
+# Requires a Debian/Ubuntu apt-based base with Python, GCC/Make and user node.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        clang libclang-rt-dev cmake ninja-build llvm lld gdb \
+    && rm -rf /var/lib/apt/lists/*
+USER node
