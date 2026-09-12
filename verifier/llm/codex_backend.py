@@ -406,6 +406,7 @@ class CodexBackend:
         self.effort = effort
         self.service_tier = normalize_service_tier(service_tier)
         self.timeout = timeout
+        self.search_roles = _SEARCH_ROLES
         # A discharge and its independent judger must inspect exactly the same
         # captured bytes, even if an executor later mutates its writable state.
         # Kernel construction shares one backend across both seats.
@@ -779,7 +780,7 @@ class CodexBackend:
         instruction = (
             (role.system + "\n\n" if role.system else "")
             + prompt
-            + (_SEARCH_NOTE if role_name in _SEARCH_ROLES else "")
+            + (_SEARCH_NOTE if role_name in self.search_roles else "")
             + image_note
             + "\n\nYour FINAL message must be exactly one JSON object "
               "matching this JSON Schema, with no other prose around it:\n"
@@ -809,8 +810,10 @@ class CodexBackend:
                 os.chmod(handle.name, 0o400)
             cmd = ["codex", "exec", "--model", role_model,
                    "--skip-git-repo-check"]
-            if role_name in _SEARCH_ROLES:
+            if role_name in self.search_roles:
                 cmd.extend(["-c", "tools.web_search=true"])
+            elif self.search_roles != _SEARCH_ROLES:
+                cmd.extend(["-c", "tools.web_search=false"])
             if usage_target is not None:
                 cmd.append("--json")
             cmd.extend(service_tier_cli_args(self.service_tier))

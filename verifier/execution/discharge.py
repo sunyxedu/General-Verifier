@@ -87,7 +87,8 @@ class AgentDischarger:
                  state_dir: Optional[str] = None,
                  live_world: bool = True,
                  store=None,
-                 shared_cache_dir: Optional[str] = None):
+                 shared_cache_dir: Optional[str] = None,
+                 context_provider=None):
         self.backend = backend
         # verifier-owned install caches shared across trials (the codex
         # backend points the executor's package caches at it and grants it
@@ -96,6 +97,7 @@ class AgentDischarger:
                                  if shared_cache_dir else None)
         self.artifacts = artifacts
         self.role = role
+        self.context_provider = context_provider or (lambda role, claim: "")
         # ClaimStore (duck-typed, optional): lets each discharge see the
         # claim's premises and the prior settled evidence in its dependency
         # closure — the evidence-workspace index. Without it the executor
@@ -247,6 +249,8 @@ class AgentDischarger:
             "world_map": world_map(self.state_dir,
                                    live_world=self.live_world),
             "snapshot_per_file_cap": SNAPSHOT_PER_FILE_CAP,
+            **({"profile_context": self.context_provider("discharge", row["id"])}
+               if "{profile_context}" in self.role.template else {}),
         }
         try:
             payload = self.role.call(self.backend, variables)

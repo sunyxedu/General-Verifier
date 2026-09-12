@@ -28,7 +28,7 @@ premises and any poisoning refuted premise disclosed for audit.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict
+from typing import Dict, Optional
 
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
@@ -43,7 +43,8 @@ from ..core.store import ClaimStore
 
 def request_certificate(
     store: ClaimStore, kernel: Kernel, log: EventLog,
-    artifacts: ArtifactStore, final_id: str,
+    artifacts: ArtifactStore, final_id: str, *,
+    profile_metadata: Optional[Dict] = None,
 ) -> Dict:
     if store.get(final_id)["kind"] != CLAIM_FINAL:
         raise ValueError("a certificate requires a final claim")
@@ -147,6 +148,8 @@ def request_certificate(
         "verdict_strength": verdict_strength,
         "slice": entries,
     }
+    if profile_metadata is not None:
+        certificate["profile_metadata"] = profile_metadata
     digest = artifacts.put(certificate)
     certificate["certificate_id"] = digest
     log.append("certificate", {"final": final_id, "verdict": verdict,

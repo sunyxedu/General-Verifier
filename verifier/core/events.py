@@ -46,6 +46,12 @@ EVENT_TYPES = (
     
     # memory (advisory)
     "memory_recorded",
+    # Host-owned profile/evidence metadata; never accepted from hook feeds.
+    "verification_profile",
+    "cyber_candidate_registered",
+    "cyber_observation_recorded",
+    "cyber_checkpoint",
+    "cyber_materialized",
 )
 
 

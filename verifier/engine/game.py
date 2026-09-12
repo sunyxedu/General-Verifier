@@ -107,6 +107,7 @@ class BindingGame:
         memory=None,
         live_world: bool = True,
         judger_error_retries: int = 1,
+        context_provider=None,
     ):
         self.backend = backend
         self.artifacts = artifacts
@@ -125,6 +126,7 @@ class BindingGame:
         self.registry = registry
         self.memory = memory  # advisory; feeds the oracle's registry slot
         self.live_world = live_world
+        self.context_provider = context_provider or (lambda role, claim: "")
 
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
@@ -703,6 +705,8 @@ class BindingGame:
                 "world_path": world,
                 "world_manifest": manifest,
                 "world_map": world_map(state, live_world=self.live_world),
+                **({"profile_context": self.context_provider("oracles", row["id"])}
+                   if "{profile_context}" in self.oracles_role.template else {}),
             },
         )
         methods = payload["methods"]
@@ -784,6 +788,8 @@ class BindingGame:
             "world_manifest": manifest,
             "world_map": world_map(state, live_world=self.live_world),
             "evidence": json.dumps(evidence, ensure_ascii=False),
+            **({"profile_context": self.context_provider("judger", obligation.claim_id)}
+               if "{profile_context}" in self.judger_role.template else {}),
         }
         total_calls = self.judger_error_retries + 1
         for call_no in range(1, total_calls + 1):

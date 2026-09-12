@@ -101,6 +101,8 @@ class Kernel:
         critic_rounds: Optional[int] = None,
         parallel_obligations: int = 1,
         parallel_claims: int = 1,
+        context_provider=None,
+        context_id_provider=None,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -132,6 +134,8 @@ class Kernel:
             live_world=live_world, store=store)
         self.binder = binder      # binding game; None -> direct discharge (tests)
         self.memory = memory      # advisory stores; None -> static hints
+        self.context_provider = context_provider or (lambda role, claim: "")
+        self.context_id_provider = context_id_provider or (lambda claim: "")
         store.on_trigger(self.verify)  # the single rule wires straight in
 
     # locks and pools
@@ -522,6 +526,8 @@ class Kernel:
             "graph": json.dumps(graph, ensure_ascii=False),
             "memory_hits": memory_hits,
             "critic_feedback": "",
+            **({"profile_context": self.context_provider("obligations", row["id"])}
+               if "{profile_context}" in self.obligations_role.template else {}),
         }
         payload = self.obligations_role.call(self.backend, variables)
         payload = self._critique(row, payload, variables)
@@ -538,7 +544,8 @@ class Kernel:
                        clause=str(o.get("clause") or ""),
                        refutable_by_absence=bool(
                            o.get("refutable_by_absence", False)),
-                       premise_scope=tuple(self._premises_in_force(row)))
+                       premise_scope=tuple(self._premises_in_force(row)),
+                       verification_context=self.context_id_provider(row["id"]))
             for o in payload["obligations"]
         ]
         if not independent_final:
@@ -571,6 +578,8 @@ class Kernel:
             {"claim": row["id"],
              "obligations": [{"id": o.id, "text": o.text,
                               "premise_scope": list(o.premise_scope),
+                              **({"verification_context": o.verification_context}
+                                 if o.verification_context else {}),
                               "required_basis": o.required_basis,
                               "severity": o.severity,
                               "clause": o.clause,
@@ -627,6 +636,8 @@ class Kernel:
                     "dependency_referent_context":
                         variables["dependency_referent_context"],
                     "game_history": json.dumps(history, ensure_ascii=False),
+                    **({"profile_context": self.context_provider("critic", row["id"])}
+                       if "{profile_context}" in self.critic_role.template else {}),
                 },
             )
             self.log.append(

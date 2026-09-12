@@ -305,7 +305,8 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
                   effort: Optional[str] = None,
                   max_rounds: int = 3,
                   critic_rounds: Optional[int] = None,
-                  service_tier: Optional[str] = None) -> Dict[str, Any]:
+                  service_tier: Optional[str] = None,
+                  profile: str = "default") -> Dict[str, Any]:
     """The full identity of a scoring run's judgment: the pipeline
     fingerprint plus the resolved run configuration, as plaintext fields
     with a content hash (`config`). Two configs must never share derived
@@ -346,6 +347,10 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
             "endpoint_fingerprint": content_hash(provider.ANTHROPIC_BASE_URL),
             "text_only": provider.TEXT_ONLY,
         })
+    from .profiles import get_profile
+    selected_profile = get_profile(profile)
+    if selected_profile.name != "default":
+        fields["profile_id"] = selected_profile.id
     fields["config"] = content_hash(
         {"pipeline": pipeline_fingerprint(), **fields})[:16]
     return fields
@@ -354,10 +359,11 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
 def config_id(model: Optional[str] = None, seats: Optional[str] = None,
               effort: Optional[str] = None, max_rounds: int = 3,
               critic_rounds: Optional[int] = None,
-              service_tier: Optional[str] = None) -> str:
+              service_tier: Optional[str] = None,
+              profile: str = "default") -> str:
     return config_fields(
         model, seats, effort, max_rounds, critic_rounds,
-        service_tier=service_tier,
+        service_tier=service_tier, profile=profile,
     )["config"]
 
 
@@ -447,7 +453,8 @@ def _apply_commits(log: EventLog, commits: List[Dict[str, Any]]) -> Optional[str
 
 def extract(state_dir: str, backend=None, model: Optional[str] = None,
             max_rounds: int = 3,
-            stamp: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            stamp: Optional[Dict[str, Any]] = None,
+            profile: str = "default") -> Dict[str, Any]:
     """
     Reconstruct commit events for the trace in `state_dir` and write
     the full events.jsonl. Retries feed back structural errors only.
@@ -455,10 +462,18 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
     fails. On success returns (and persists to extract.json) the meta;
     `stamp` (e.g. the caller's config id) is merged into it.
     """
+    from .llm.agents import ALL_AGENT_ROLES, AgentBackend
+    from .profiles import get_profile
+
+    selected_profile = get_profile(profile)
+    roles = selected_profile.apply_roles(ALL_AGENT_ROLES)
+    extractor_role = roles["extract"]
     if backend is None:
-        from .llm.agents import AgentBackend
-        backend = AgentBackend(cwd=state_dir, model=model)
-    from .llm.agents import EXTRACT_CLAIMS_AGENT
+        backend = AgentBackend(roles=roles, cwd=state_dir, model=model)
+    elif selected_profile.name != "default":
+        backend.roles = roles
+        if selected_profile.disable_external_search and hasattr(backend, "search_roles"):
+            backend.search_roles = frozenset()
 
     input_seal = ((stamp or {}).get("immutable_input_seal")
                   or immutable_input_seal(state_dir))
@@ -466,6 +481,11 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
     candidate = os.path.join(state_dir, "events.extract.jsonl")
     task = _read(os.path.join(state_dir, "task.md"))
     final_answer = _read(os.path.join(state_dir, "final.txt"))
+    profile_pins = [
+        event["payload"]
+        for event in EventLog(os.path.join(state_dir, "events.jsonl")).replay()
+        if event["type"] == "verification_profile"
+    ]
 
     feedback, last_error = "", None
     for round_no in range(1, max_rounds + 1):
@@ -475,6 +495,10 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             os.remove(candidate)
         log = EventLog(candidate)
         ingest_feed(feed, log)
+        # Retain host-owned identity after hooks so existing effect:<seq>
+        # anchors retain their original numbering across extraction resets.
+        for pin in profile_pins:
+            log.append("verification_profile", pin)
         variables = {
             "task": task,
             "final_answer": final_answer,
@@ -482,8 +506,14 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             "ledger_path": os.path.abspath(candidate),
             "feedback": feedback,
         }
+        if "{profile_context}" in extractor_role.template:
+            variables["profile_context"] = canonical({
+                "profile": selected_profile.name,
+                "profile_id": selected_profile.id,
+                "certificate_scope": "task",
+            })
         try:
-            payload = EXTRACT_CLAIMS_AGENT.call(backend, variables)
+            payload = extractor_role.call(backend, variables)
         except RoleError as err:
             last_error = feedback = str(err)
             continue
@@ -620,7 +650,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           service_tier: Optional[str] = None,
           parallel_obligations: Optional[int] = None,
           parallel_claims: Optional[int] = None,
-          shared_dir: Optional[str] = None) -> Dict[str, Any]:
+          shared_dir: Optional[str] = None,
+          profile: str = "default") -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -662,7 +693,9 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             os.makedirs(path, exist_ok=True)
     cfg = config_fields(model=model, seats=seats, effort=effort,
                         max_rounds=max_rounds, critic_rounds=critic_rounds,
-                        service_tier=service_tier)
+                        service_tier=service_tier, profile=profile)
+    from .profiles import get_profile
+    selected_profile = get_profile(profile)
     critic_rounds = cfg["critic_rounds"]
     fingerprint = pipeline_fingerprint()
     extract_rounds = 0
@@ -671,7 +704,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         if backend is None:
             backend = CodexBackend(cwd=state_dir, model=model,
                                    effort=cfg["effort"],
-                                   service_tier=cfg["service_tier"])
+                                   service_tier=cfg["service_tier"],
+                                   **({"timeout": None} if selected_profile.name == "cyber" else {}))
         elif (isinstance(backend, CodexBackend)
               and backend.service_tier != cfg["service_tier"]):
             raise ValueError(
@@ -720,10 +754,43 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                     sc, model,
                     backend=CodexBackend(cwd=sc.state_dir, model=model,
                                          effort=cfg["effort"],
-                                         service_tier=cfg["service_tier"]),
+                                         service_tier=cfg["service_tier"],
+                                         **({"timeout": None} if selected_profile.name == "cyber" else {})),
                     critic_rounds=critic_rounds,
                     parallel_obligations=parallel_obligations,
                     parallel_claims=parallel_claims)
+
+    profile_service_args = {}
+    if selected_profile.name != "default":
+        profile_service_args = {
+            "profile": selected_profile,
+            "seats": cfg["seats"],
+            "effort": cfg["effort"] if seats == "codex" else None,
+            "service_tier": cfg["service_tier"] if seats == "codex" else None,
+        }
+    events_path = os.path.join(state_dir, "events.jsonl")
+    profile_pins = [
+        event["payload"] for event in EventLog(events_path).replay()
+        if event["type"] == "verification_profile"
+    ]
+    if selected_profile.name != "default" or profile_pins:
+        # Establish/validate the host identity before creating source commits.
+        # Lazy replay does not ask any agent to judge during this preflight.
+        from .mcp_server import Service
+        from .core.store import TRIGGER_LAZY
+        preflight = Service(
+            state_dir, kernel_factory=kernel_factory, model=model,
+            trigger=TRIGGER_LAZY, live_world=False,
+            critic_rounds=critic_rounds,
+            toolchain_dir=toolchain_dir, shared_cache_dir=cache_dir,
+            parallel_obligations=parallel_obligations,
+            parallel_claims=parallel_claims, **profile_service_args,
+        )
+        profile_pins = [
+            event["payload"] for event in preflight.log.replay()
+            if event["type"] == "verification_profile"
+        ]
+        preflight.store.db.close()
 
     def run_verification() -> Dict[str, Any]:
         nonlocal extract_rounds
@@ -732,6 +799,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         verification_path = os.path.join(state_dir, "verification.json")
         stamp = {"fingerprint": fingerprint, "config": cfg["config"],
                  "immutable_input_seal": immutable_seal}
+        if "profile_id" in cfg:
+            stamp["profile_id"] = cfg["profile_id"]
         meta = json.loads(
             _read(extraction_path) or "{}")
         if os.path.exists(extraction_path) and (
@@ -748,12 +817,16 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                 path = os.path.join(state_dir, name)
                 if os.path.exists(path):
                     os.remove(path)
+            if profile_pins:
+                reset_log = EventLog(events_path)
+                for pin in profile_pins:
+                    reset_log.append("verification_profile", pin)
             meta = {}
         if not _has_commits(events_path):
             try:
                 meta = extract(state_dir, backend=backend, model=model,
                                max_rounds=max_rounds,
-                               stamp=stamp)
+                               stamp=stamp, profile=profile)
                 extract_rounds = meta["rounds"]
             except ExtractionError as err:
                 return dict(
@@ -788,14 +861,17 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                      toolchain_dir=toolchain_dir,
                      shared_cache_dir=cache_dir,
                      parallel_obligations=parallel_obligations,
-                     parallel_claims=parallel_claims)
+                     parallel_claims=parallel_claims,
+                     **profile_service_args)
         if not sc.builder.finals:
             return dict(_unscoreable(
                 "no final claim in trace", extract_rounds, fingerprint),
                 **cfg)
+        metadata = sc._certificate_metadata(sc.builder.finals[-1])
         cert = request_certificate(
             sc.store, sc.kernel, sc.log, sc.artifacts,
-            sc.builder.finals[-1])
+            sc.builder.finals[-1],
+            **({"profile_metadata": metadata} if metadata is not None else {}))
         features = dict(_features(cert, extract_rounds, fingerprint), **cfg)
         features["execution"] = {
             "parallel_obligations": parallel_obligations,
