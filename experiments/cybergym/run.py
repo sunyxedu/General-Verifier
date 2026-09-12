@@ -10,6 +10,7 @@ import concurrent.futures
 import contextlib
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -48,6 +49,14 @@ PERIODIC_STATE_ENTRIES = ("events.jsonl", "role_calls.jsonl", "backend_usage.jso
     "cyber", "cybergym-observations")
 PROGRESS_INTERVAL_SECONDS = 60
 MIN_TASK_FREE_BYTES = 25 * 1024**3
+# Explicit /24s avoid Docker's small default bridge pool, and retain ample
+# endpoints for stopped solver-continuation containers. Only Docker IPAM
+# inventory is consulted; this is not a guarantee about host/VPN routes.
+ISOLATED_NETWORK_POOLS = ("10.240.0.0/12", "10.128.0.0/9",
+                          "172.16.0.0/12", "192.168.0.0/16")
+ISOLATED_NETWORK_PREFIX = 24
+MAX_NETWORK_ALLOCATION_RACES = 16
+_NETWORK_IO_LOCK = threading.Lock()
 AUTH = PROFILE.parent / "cybergym-luna-core-cyber30/codex-home-base/auth.json"
 FIXED30 = ("arvo:23296", "arvo:11256", "arvo:9471", "arvo:52243", "arvo:30051",
     "arvo:28216", "arvo:52049", "arvo:3438", "arvo:22560", "arvo:38283",
@@ -107,6 +116,87 @@ def image_lock():
         yield
 
 
+@contextlib.contextmanager
+def network_lock():
+    """Serialize allocation across task threads and sibling GV controllers."""
+    path = PROFILE.parent / ".cybergym-shared-locks/network-io.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _NETWORK_IO_LOCK, path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+class NetworkAllocationError(RuntimeError):
+    """Static infrastructure codes; never expose daemon stderr or inventory."""
+
+
+def _network_inventory():
+    listed = docker("network", "ls", "--quiet", check=False)
+    if listed.returncode:
+        raise NetworkAllocationError("isolated_network_inventory_unavailable")
+    ids = listed.stdout.split()
+    if any(re.fullmatch(r"[0-9a-f]{12,64}", item) is None for item in ids):
+        raise NetworkAllocationError("isolated_network_inventory_invalid")
+    if not ids:
+        return []
+    inspected = docker("network", "inspect", *ids, check=False)
+    if inspected.returncode:
+        raise NetworkAllocationError("isolated_network_inventory_unavailable")
+    try:
+        rows = json.loads(inspected.stdout)
+        if not isinstance(rows, list) or len(rows) != len(ids):
+            raise ValueError("invalid inventory shape")
+        networks = []
+        for row in rows:
+            ipam = row["IPAM"]
+            if not isinstance(ipam, dict):
+                raise ValueError("invalid IPAM shape")
+            configurations = ipam.get("Config")
+            if configurations is None:
+                configurations = []
+            if not isinstance(configurations, list):
+                raise ValueError("invalid IPAM configuration")
+            for configuration in configurations:
+                subnet = configuration.get("Subnet")
+                if not subnet:
+                    continue
+                if not isinstance(subnet, str):
+                    raise ValueError("invalid IPAM subnet")
+                network = ipaddress.ip_network(subnet, strict=False)
+                if network.version == 4:
+                    networks.append(network)
+        return networks
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise NetworkAllocationError("isolated_network_inventory_invalid") from None
+
+
+def _available_private_subnet(occupied):
+    """Find the first free /24 by jumping merged occupied IPv4 intervals."""
+    intervals = sorted((int(network.network_address), int(network.broadcast_address))
+                       for network in occupied)
+    merged = []
+    for start, end in intervals:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    size = 1 << (32 - ISOLATED_NETWORK_PREFIX)
+    for specification in ISOLATED_NETWORK_POOLS:
+        pool = ipaddress.IPv4Network(specification)
+        address, last = int(pool.network_address), int(pool.broadcast_address) - size + 1
+        for start, end in merged:
+            if end < address:
+                continue
+            if start > address + size - 1:
+                break
+            address = (end // size + 1) * size
+            if address > last:
+                break
+        if address <= last:
+            return ipaddress.IPv4Network((address, ISOLATED_NETWORK_PREFIX))
+    raise NetworkAllocationError("isolated_network_capacity_exhausted")
+
+
 def image_name(task, flavor):
     kind, number = task.split(":")
     repository = "n132/arvo" if kind == "arvo" else "cybergym/oss-fuzz"
@@ -156,6 +246,8 @@ class Evaluation:
             "solver_egress_domains": list(EGRESS_DOMAINS),
             "web_search": "disabled", "verifier_shell_network_enabled": False,
             "poc_execution_network": "none",
+            "isolated_network_allocation": {"pools": list(ISOLATED_NETWORK_POOLS),
+                "prefix_length": ISOLATED_NETWORK_PREFIX, "internal": True},
             "image": IMAGE, "egress_image": EGRESS_IMAGE,
             "mask_map_sha256": digest(OFFICIAL / "mask_map.json"),
             "experiment": self.experiment, "judge_port": self.port}
@@ -429,7 +521,7 @@ class Evaluation:
             ("network", "sidecar", "proxy", "volume", "token"))
         labels = ["--label", "gv.experiment=" + self.experiment,
                   "--label", "gv.attempt_id=" + directory.name]
-        docker("network", "create", "--internal", *labels, network)
+        runtime["subnet"] = self.create_isolated_network(network, labels)
         docker("volume", "create", *labels, volume)
         docker("run", "--rm", "--network", "none", "--user", "0:0",
             "-v", volume + ":/state", "-v", str(private / "state") + ":/seed:ro",
@@ -496,6 +588,27 @@ class Evaluation:
             "type": "command", "command": "python3 /codex-home/hook_relay.py " + kind}]}]
             for name, kind in (("PreToolUse", "pre"), ("PostToolUse", "post"))}})
         return runtime
+
+    def create_isolated_network(self, name, labels):
+        with network_lock():
+            rejected = []
+            for _attempt in range(MAX_NETWORK_ALLOCATION_RACES):
+                if self.stop.is_set():
+                    raise NetworkAllocationError("isolated_network_startup_stopped")
+                subnet = _available_private_subnet([*_network_inventory(), *rejected])
+                if self.stop.is_set():
+                    raise NetworkAllocationError("isolated_network_startup_stopped")
+                result = docker("network", "create", "--internal", "--subnet", str(subnet),
+                                *labels, name, check=False)
+                if result.returncode == 0:
+                    return str(subnet)
+                # A foreign controller need not honor our lock. Reinspect on
+                # genuine IPAM overlap only; all other failures stop startup.
+                error = (result.stderr or "").lower()
+                if "pool overlaps with other one on this address space" not in error:
+                    raise NetworkAllocationError("isolated_network_create_failed")
+                rejected.append(subnet)
+            raise NetworkAllocationError("isolated_network_allocation_race_exhausted")
 
     def cleanup_runtime(self, runtime, directory, private):
         """Quiesce owned containers before best-effort telemetry archival."""

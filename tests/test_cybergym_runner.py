@@ -33,7 +33,7 @@ def patch_mirror(monkeypatch, controller, callback):
 
 
 @pytest.fixture
-def controller(tmp_path):
+def controller(tmp_path, monkeypatch):
     evaluation = object.__new__(run.Evaluation)
     evaluation.root = tmp_path
     evaluation.port = 18676
@@ -48,6 +48,10 @@ def controller(tmp_path):
     evaluation.frozen_commit = "fixture-commit"
     evaluation.judge_process = None
     evaluation.created_proxy = False
+    # IPAM behavior has separate allocator regressions; legacy runtime
+    # fixtures must never read or allocate the host's real Docker networks.
+    monkeypatch.setattr(evaluation, "create_isolated_network",
+                        lambda _name, _labels: "10.240.0.0/24")
     return evaluation
 
 
