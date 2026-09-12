@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import locale
 import os
 import posixpath
 import re
@@ -42,9 +43,9 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Mapping, Optional
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 
-from .agents import ALL_AGENT_ROLES, to_json_schema
+from .agents import ALL_AGENT_ROLES, ExhaustedInfrastructureError, to_json_schema
 from .codex_service import (
     DEFAULT_SERVICE_TIER,
     SERVICE_TIERS,
@@ -165,7 +166,7 @@ def _exact_nonnegative_int(value: Any, field: str) -> int:
     return value
 
 
-class TransientBackendError(RoleError):
+class TransientBackendError(ExhaustedInfrastructureError):
     """Provider-side transient failure (capacity, rate limit, transport):
     the request never got a completed turn, so retrying with backoff is
     sound — nothing semantic was produced to second-guess."""
@@ -192,6 +193,7 @@ def _transient_failure_reason(stdout: str, returncode: int) -> str:
     matches a known transient pattern, or a process that died before even
     starting a thread."""
     saw_thread = False
+    saw_completion = False
     messages = []
     for raw in (stdout or "").splitlines():
         raw = raw.strip()
@@ -205,12 +207,18 @@ def _transient_failure_reason(stdout: str, returncode: int) -> str:
             continue
         if event.get("type") == "thread.started":
             saw_thread = True
+        elif event.get("type") == "turn.completed":
+            saw_completion = True
         elif event.get("type") == "error":
             messages.append(str(event.get("message") or ""))
         elif event.get("type") == "turn.failed":
             error = event.get("error")
             if isinstance(error, dict):
                 messages.append(str(error.get("message") or ""))
+    # The CLI can recover an earlier stream error inside the same turn.
+    # A completed turn must not be sampled again as a capacity retry.
+    if saw_completion:
+        return ""
     for message in messages:
         lowered = message.lower()
         # Quota exhaustion is permanent until the account resets: it must
@@ -387,7 +395,8 @@ class CodexBackend:
     def __init__(self, roles: Optional[Dict[str, Any]] = None,
                  cwd: Optional[str] = None, model: Optional[str] = None,
                  effort: str = "medium", timeout: int = 1800,
-                 service_tier: str = DEFAULT_SERVICE_TIER):
+                 service_tier: str = DEFAULT_SERVICE_TIER,
+                 phase_observer: Optional[Callable[[Dict[str, Any]], None]] = None):
         self.roles = dict(roles) if roles is not None else dict(ALL_AGENT_ROLES)
         self.cwd = cwd
         # Compound model spec: "base[;role=model...]" — e.g.
@@ -406,6 +415,12 @@ class CodexBackend:
         self.effort = effort
         self.service_tier = normalize_service_tier(service_tier)
         self.timeout = timeout
+        self.phase_observer = phase_observer
+        self.phase_heartbeat_seconds = 30.0
+        self._phase_lock = threading.Lock()
+        # A backend is shared by parallel seats. Correlate diagnostics by the
+        # opaque call ID, never by a mutable "currently running role" field.
+        self._phase_roles: Dict[str, str] = {}
         self.search_roles = _SEARCH_ROLES
         # A discharge and its independent judger must inspect exactly the same
         # captured bytes, even if an executor later mutates its writable state.
@@ -736,6 +751,194 @@ class CodexBackend:
     def _model_for(self, role_name: str) -> str:
         return self.model_overrides.get(role_name, self.model)
 
+    def _phase(self, call_id: str, attempt: int, phase: str, **metadata) -> None:
+        """Best-effort metadata only; observability must not change a verdict."""
+        if self.phase_observer is None:
+            return
+        record = {"type": "backend_phase", "ts": time.time(), "call_id": call_id,
+                  "attempt": attempt, "phase": phase, **metadata}
+        try:
+            with self._phase_lock:
+                record["role"] = self._phase_roles.get(call_id, "unknown")
+                self.phase_observer(record)
+        except Exception:
+            # Never echo callback exception strings: they can contain paths,
+            # credentials or a partially serialized record.
+            pass
+
+    def _run_observed_exec(self, cmd, execution_cwd, devnull, call_id, attempt):
+        """Consume both pipes live without logging their payloads.
+
+        JSON event names, counters and local elapsed intervals are observable;
+        server queue, inference and internal transport waits are NOT separated
+        by the CLI protocol and remain unknown. Polling below is a heartbeat,
+        not a role/task deadline. A configured non-None timeout keeps the
+        pre-existing subprocess.run path; cyber explicitly requests None.
+        """
+        if self.timeout is not None:
+            self._phase(call_id, attempt, "exec_dispatch", streaming=False,
+                        wait_category="unknown", child_pid=None)
+            process = subprocess.run(cmd, cwd=execution_cwd, stdin=devnull,
+                                     capture_output=True, text=True, timeout=self.timeout)
+            self._phase(call_id, attempt, "exec_returned", streaming=False,
+                        returncode=process.returncode, child_pid=None)
+            return process
+        began = time.monotonic()
+        self._phase(call_id, attempt, "exec_dispatch", streaming=True,
+                    wait_category="unknown", child_pid=None)
+        try:
+            process = subprocess.Popen(cmd, cwd=execution_cwd, stdin=devnull,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError:
+            self._phase(call_id, attempt, "exec_spawn_failed", child_pid=None)
+            raise
+        self._phase(call_id, attempt, "exec_spawned", child_pid=process.pid,
+                    wait_category="cli_startup_unknown")
+        buffers = {"stdout": [], "stderr": []}
+        counts = {"stdout_bytes": 0, "stderr_bytes": 0, "cli_events": 0,
+                  "unparsed_stdout_lines": 0, "active_tool_items": 0,
+                  "last_cli_event": None, "item_state_complete": True}
+        lock = threading.Lock()
+        active = {}
+        failures = []
+        item_kinds = {"command_execution", "mcp_tool_call", "web_search", "file_change",
+                      "agent_message", "reasoning", "plan_update"}
+        tool_kinds = {"command_execution", "mcp_tool_call", "web_search"}
+
+        def wait_category(snapshot):
+            if snapshot["last_cli_event"] in ("turn.completed", "turn.failed"):
+                return "cli_finalization_unknown"
+            if not snapshot["item_state_complete"]:
+                return "cli_activity_unknown"
+            if snapshot["active_tool_items"]:
+                return "cli_tool_item_active"
+            if snapshot["last_cli_event"] in (None, "thread.started"):
+                return "cli_startup_unknown"
+            return "model_wait_unknown"
+
+        def line_event(raw):
+            try:
+                event = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeError):
+                with lock:
+                    counts["unparsed_stdout_lines"] += 1
+                    counts["item_state_complete"] = False
+                return
+            if not isinstance(event, dict):
+                with lock:
+                    counts["unparsed_stdout_lines"] += 1
+                    counts["item_state_complete"] = False
+                return
+            kind = event.get("type")
+            if not isinstance(kind, str) or kind not in {"thread.started", "turn.started", "turn.completed", "turn.failed",
+                            "item.started", "item.updated", "item.completed", "error"}:
+                return
+            details = {"child_pid": process.pid, "event_type": kind}
+            with lock:
+                counts["cli_events"] += 1
+                counts["last_cli_event"] = kind
+                if kind in ("turn.completed", "turn.failed"):
+                    active.clear()
+                    counts["active_tool_items"] = 0
+                if kind.startswith("item."):
+                    item = event.get("item")
+                    if not isinstance(item, dict):
+                        return
+                    item_kind = item.get("type")
+                    if not isinstance(item_kind, str):
+                        item_kind = "other"
+                    details["item_kind"] = item_kind if item_kind in item_kinds else "other"
+                    # IDs are used locally for duration correlation, never logged.
+                    item_id = item.get("id")
+                    if isinstance(item_id, str) and len(item_id) <= 128:
+                        if kind == "item.started":
+                            active.setdefault(item_id, (time.monotonic(), item_kind in tool_kinds))
+                        elif kind == "item.completed":
+                            previous = active.pop(item_id, None)
+                            details["item_duration_seconds"] = (
+                                time.monotonic() - previous[0] if previous else None)
+                    counts["active_tool_items"] = sum(value[1] for value in active.values())
+                details["active_tool_items"] = counts["active_tool_items"]
+                details["wait_category"] = wait_category(counts)
+            self._phase(call_id, attempt, "cli_event", **details)
+
+        def drain(pipe, name):
+            pending, dropping = b"", False
+            try:
+                while True:
+                    chunk = os.read(pipe.fileno(), 65536)
+                    if not chunk:
+                        break
+                    buffers[name].append(chunk)
+                    with lock:
+                        counts[name + "_bytes"] += len(chunk)
+                    if name != "stdout":
+                        continue
+                    pending += chunk
+                    while b"\n" in pending:
+                        line, pending = pending.split(b"\n", 1)
+                        if not dropping:
+                            line_event(line)
+                        dropping = False
+                    # Retain complete raw output but bound live metadata parsing.
+                    if len(pending) > 2 * 1024 * 1024:
+                        pending, dropping = b"", True
+                        with lock:
+                            counts["unparsed_stdout_lines"] += 1
+                            counts["item_state_complete"] = False
+                if name == "stdout" and pending and not dropping:
+                    line_event(pending)
+            except Exception:
+                failures.append(name)
+                # A failed reader must not leave a pipe full and stall the CLI.
+                try:
+                    while os.read(pipe.fileno(), 65536):
+                        pass
+                except OSError:
+                    pass
+            finally:
+                pipe.close()
+
+        readers = [threading.Thread(target=drain, args=(process.stdout, "stdout"), daemon=True),
+                   threading.Thread(target=drain, args=(process.stderr, "stderr"), daemon=True)]
+        for reader in readers:
+            reader.start()
+        while True:
+            try:
+                process.wait(timeout=self.phase_heartbeat_seconds)
+                break
+            except subprocess.TimeoutExpired:
+                with lock:
+                    snapshot = dict(counts)
+                self._phase(call_id, attempt, "exec_heartbeat", child_pid=process.pid,
+                            elapsed_seconds=time.monotonic() - began,
+                            wait_category=wait_category(snapshot), **snapshot)
+        self._phase(call_id, attempt, "exec_process_exited", child_pid=process.pid,
+                    returncode=process.returncode, elapsed_seconds=time.monotonic() - began)
+        # A descendant may still hold a pipe after the CLI itself exits.
+        # Keep that wait visible without killing it or inventing a deadline.
+        for reader in readers:
+            while reader.is_alive():
+                reader.join(timeout=self.phase_heartbeat_seconds)
+                if reader.is_alive():
+                    with lock:
+                        snapshot = dict(counts)
+                    self._phase(call_id, attempt, "pipe_drain_heartbeat", child_pid=process.pid,
+                                process_running=False, elapsed_seconds=time.monotonic() - began,
+                                wait_category="pipe_drain_unknown", **snapshot)
+        with lock:
+            snapshot = dict(counts)
+        self._phase(call_id, attempt, "exec_returned", child_pid=process.pid,
+                    returncode=process.returncode, elapsed_seconds=time.monotonic() - began,
+                    reader_failed=bool(failures), **snapshot)
+        if failures:
+            raise RoleError("codex exec output pipe could not be completely retained")
+        encoding = locale.getpreferredencoding(False)
+        return subprocess.CompletedProcess(
+            cmd, process.returncode,
+            b"".join(buffers["stdout"]).decode(encoding),
+            b"".join(buffers["stderr"]).decode(encoding))
+
     def complete(self, role_name: str, prompt: str,
                  variables: Dict[str, Any]) -> Any:
         role = self.roles.get(role_name)
@@ -796,6 +999,9 @@ class CodexBackend:
         out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
         out.close()
         image_paths = []
+        if self.phase_observer is not None:
+            with self._phase_lock:
+                self._phase_roles[call_id] = role_name
         try:
             for item in images:
                 suffix = (".jpg" if item.mime == "image/jpeg"
@@ -814,7 +1020,7 @@ class CodexBackend:
                 cmd.extend(["-c", "tools.web_search=true"])
             elif self.search_roles != _SEARCH_ROLES:
                 cmd.extend(["-c", "tools.web_search=false"])
-            if usage_target is not None:
+            if usage_target is not None or self.phase_observer is not None:
                 cmd.append("--json")
             cmd.extend(service_tier_cli_args(self.service_tier))
             cmd.extend(policy_args)
@@ -833,10 +1039,14 @@ class CodexBackend:
                     # stdin MUST be closed: codex otherwise waits on it forever
                     started_at_unix_ns = time.time_ns()
                     started_at_monotonic_ns = time.monotonic_ns()
-                    proc = subprocess.run(
-                        cmd, cwd=execution_cwd, stdin=devnull,
-                        capture_output=True,
-                        text=True, timeout=self.timeout)
+                    if self.phase_observer is None:
+                        proc = subprocess.run(
+                            cmd, cwd=execution_cwd, stdin=devnull,
+                            capture_output=True,
+                            text=True, timeout=self.timeout)
+                    else:
+                        proc = self._run_observed_exec(
+                            cmd, execution_cwd, devnull, call_id, attempt)
                     finished_at_unix_ns = time.time_ns()
                     duration_ns = (time.monotonic_ns()
                                    - started_at_monotonic_ns)
@@ -844,16 +1054,22 @@ class CodexBackend:
                     proc.stdout or "", proc.returncode)
                 if not reason:
                     break
+                self._phase(call_id, attempt, "backend_transient_failure",
+                            returncode=proc.returncode)
                 if attempt >= TRANSIENT_RETRIES:
                     raise TransientBackendError(
                         f"{role_name}: transient codex failure persisted "
                         f"through {TRANSIENT_RETRIES} retries: {reason}")
                 wait = TRANSIENT_BACKOFF_SECONDS[
                     min(attempt, len(TRANSIENT_BACKOFF_SECONDS) - 1)]
-                print(f"[codex-backend] transient failure ({reason}); "
-                      f"retry {attempt + 1}/{TRANSIENT_RETRIES} "
-                      f"in {wait}s", file=sys.stderr, flush=True)
+                self._phase(call_id, attempt, "backend_backoff_started", wait_seconds=wait,
+                            retry_number=attempt + 1, retry_limit=TRANSIENT_RETRIES)
+                if self.phase_observer is None:
+                    print(f"[codex-backend] transient failure ({reason}); "
+                          f"retry {attempt + 1}/{TRANSIENT_RETRIES} "
+                          f"in {wait}s", file=sys.stderr, flush=True)
                 time.sleep(wait)
+                self._phase(call_id, attempt, "backend_backoff_finished", wait_seconds=wait)
             if proc.returncode != 0:
                 raise RoleError(
                     f"{role_name}: codex exec failed "
@@ -904,6 +1120,20 @@ class CodexBackend:
             if not text:
                 text = (telemetry.last_message if telemetry is not None
                         else (proc.stdout or "").strip())
+                if telemetry is None and self.phase_observer is not None:
+                    # JSON instrumentation must not let a thread/event object
+                    # masquerade as the role's final semantic answer.
+                    text = ""
+                    for line in (proc.stdout or "").splitlines():
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(event, dict) and event.get("type") == "item.completed":
+                            item = event.get("item")
+                            if isinstance(item, dict) and item.get("type") == "agent_message":
+                                if isinstance(item.get("text"), str):
+                                    text = item["text"].strip()
             if not text:
                 raise RoleError(
                     f"{role_name}: codex exec produced no output "
@@ -915,6 +1145,9 @@ class CodexBackend:
             raise RoleError(
                 f"{role_name}: codex exec timed out after {self.timeout}s")
         finally:
+            if self.phase_observer is not None:
+                with self._phase_lock:
+                    self._phase_roles.pop(call_id, None)
             for path in [out.name, *image_paths]:
                 try:
                     os.remove(path)

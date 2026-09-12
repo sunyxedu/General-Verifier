@@ -50,6 +50,9 @@ def test_observation_is_bound_exactly_without_success_inference(subject):
     assert observation["evaluator_id"] == runner.spec.id
     assert observation["authority_scope"] == "candidate_signal"
     assert observation["environment"] == "custom-build-digest"
+    assert observation["started_unix"] <= observation["completed_unix"] <= time.time()
+    assert observation["process_started"] is True
+    assert observation["process_completed"] is True
     assert not ({"verified", "success", "score", "reward", "outcome"} & observation.keys())
     artifact = runner.artifacts.get(observation["artifact_id"])
     assert artifact["stdout"] == observation["stdout"]
@@ -74,6 +77,20 @@ def test_candidate_substitution_is_literal_and_no_shell(subject):
     output = runner.run(candidate)
     assert base64.b64decode(output["stdout_base64"]) == b"\x00binary\xff"
     assert not output["stdout_truncated"]
+
+
+def test_failed_process_start_is_a_capture_attempt_not_completed_execution(subject, monkeypatch):
+    runner, candidate = evaluator(subject, "print('not reached')")
+
+    def unavailable(*args, **kwargs):
+        raise OSError("fixture launch unavailable")
+
+    monkeypatch.setattr("verifier.profiles.cyber.evaluator.subprocess.Popen", unavailable)
+    observation = runner.run(candidate)
+    assert observation["process_started"] is False
+    assert observation["process_completed"] is False
+    assert observation["exit_code"] is None
+    assert observation["execution_error"] is not None
 
 
 @pytest.mark.parametrize("argv", [(), (PYTHON, "-V"),

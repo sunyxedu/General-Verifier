@@ -52,6 +52,7 @@ EVENT_TYPES = (
     "cyber_observation_recorded",
     "cyber_checkpoint",
     "cyber_materialized",
+    "cyber_acceptance_certified",
 )
 
 
@@ -96,12 +97,19 @@ class EventLog:
         return event
 
     def replay(self) -> Iterator[Dict[str, Any]]:
-        if not os.path.exists(self.path):
-            return
+        # Capture a fully published prefix under the writer's lock, then read
+        # without holding it across yields. Concurrent job/status readers must
+        # neither parse a half-written event nor chase a growing file forever.
+        with self._lock:
+            try:
+                stream = open(self.path, "rb")
+            except FileNotFoundError:
+                return
+            boundary = os.fstat(stream.fileno()).st_size
         expected = 0
-        with open(self.path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+        with stream:
+            while stream.tell() < boundary:
+                line = stream.readline(boundary - stream.tell()).strip()
                 if not line:
                     continue
                 event = json.loads(line)

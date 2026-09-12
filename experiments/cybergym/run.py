@@ -41,6 +41,12 @@ IMAGE = "sha256:a0893649e78329694a5d1d91a3fa9a6b76c2d4e103be9a95cf395497602d85a3
 EGRESS_IMAGE = "sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029"
 NGINX_IMAGE = "sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3"
 EGRESS_DOMAINS = (".openai.com", ".chatgpt.com", ".oaistatic.com", ".oaiusercontent.com")
+# Private, durable telemetry/evidence only. Agent scratch and extracted/build
+# trees are not progress signals and must not be recopied every five minutes.
+PERIODIC_STATE_ENTRIES = ("events.jsonl", "role_calls.jsonl", "backend_usage.jsonl",
+    "transport_calls.jsonl", "verification_jobs.jsonl", "task.md", "artifacts",
+    "cyber", "cybergym-observations")
+PROGRESS_INTERVAL_SECONDS = 60
 AUTH = PROFILE.parent / "cybergym-luna-core-cyber30/codex-home-base/auth.json"
 FIXED30 = ("arvo:23296", "arvo:11256", "arvo:9471", "arvo:52243", "arvo:30051",
     "arvo:28216", "arvo:52049", "arvo:3438", "arvo:22560", "arvo:38283",
@@ -521,12 +527,87 @@ class Evaluation:
         return json.loads(process.stdout)
 
     def mirror(self, runtime, private):
-        docker("cp", runtime["sidecar"] + ":/state/.", str(private / "state"))
+        """Full forensic snapshot into a fresh tree, never a merging copy."""
+        private = self._mirror_destination(runtime, private)
+        with tempfile.TemporaryDirectory(prefix=".state-mirror-", dir=private) as temporary:
+            staged = Path(temporary) / "state"
+            staged.mkdir(mode=0o700)
+            docker("cp", runtime["sidecar"] + ":/state/.", str(staged))
+            self._publish_mirror_entry(staged, private / "state")
+
+    def mirror_metadata(self, runtime, private):
+        """Small periodic snapshot; absent not-yet-created ledgers are normal."""
+        private = self._mirror_destination(runtime, private)
+        code = ("import json,os,stat; names=" + repr(PERIODIC_STATE_ENTRIES) + "; "
+            "entries=[]\nfor name in names:\n"
+            " p='/state/'+name\n"
+            " try: mode=os.lstat(p).st_mode\n"
+            " except FileNotFoundError: continue\n"
+            " if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)): "
+            "raise RuntimeError('unsafe telemetry entry')\n"
+            " entries.append(name)\nprint(json.dumps(entries))")
+        entries = json.loads(docker("exec", runtime["sidecar"], "python3", "-c", code).stdout)
+        if (not isinstance(entries, list) or len(set(entries)) != len(entries)
+                or any(not isinstance(name, str) or name not in PERIODIC_STATE_ENTRIES for name in entries)):
+            raise RuntimeError("invalid telemetry manifest")
+        with tempfile.TemporaryDirectory(prefix=".metadata-mirror-", dir=private) as temporary:
+            staged = Path(temporary)
+            for name in entries:
+                docker("cp", runtime["sidecar"] + ":/state/" + name, str(staged / name))
+            state = private / "state"
+            if not state.exists():
+                state.mkdir(mode=0o700)
+            self._require_mirror_directory(state)
+            # Publish only after every requested copy succeeds. Directory
+            # replacement removes stale members without touching scratch.
+            for name in entries:
+                self._publish_mirror_entry(staged / name, state / name)
+
+    def _mirror_destination(self, runtime, private):
+        private = Path(private).absolute()
+        self._require_mirror_directory(private)
+        state = private / "state"
+        if state.exists() or state.is_symlink():
+            self._require_mirror_directory(state)
+        labels = json.loads(docker("inspect", "--format", "{{json .Config.Labels}}", runtime["sidecar"]).stdout)
+        if (labels.get("gv.experiment") != self.experiment
+                or labels.get("gv.attempt_id") != private.parent.name):
+            raise RuntimeError("foreign telemetry source refused")
+        return private
+
+    @staticmethod
+    def _require_mirror_directory(path):
+        info = path.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or path.resolve() != path
+                or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
+            raise RuntimeError("unsafe private telemetry directory")
+
+    @staticmethod
+    def _publish_mirror_entry(source, destination):
+        """Replace an owned mirror atomically; a failed publish keeps the old tree."""
+        if destination.is_symlink():
+            raise RuntimeError("unsafe telemetry destination")
+        with tempfile.TemporaryDirectory(prefix=".mirror-backup-", dir=destination.parent) as temporary:
+            previous = Path(temporary) / "previous"
+            existed = destination.exists()
+            if existed:
+                os.replace(destination, previous)
+            try:
+                os.replace(source, destination)
+            except BaseException:
+                if existed:
+                    os.replace(previous, destination)
+                raise
 
     def safe_mirror(self, runtime, private, phase="periodic"):
         """Telemetry only: copy or diagnostics failure cannot decide a task."""
+        started = time.monotonic()
+        operation_status = "failed"
         try:
-            self.mirror(runtime, private)
+            if phase in {"periodic", "final"}:
+                self.mirror_metadata(runtime, private)
+            else:
+                self.mirror(runtime, private)
         except Exception as error:
             record = {"ts": time.time(), "phase": phase, "reason": "mirror_failed",
                       "type": type(error).__name__}
@@ -551,7 +632,36 @@ class Evaluation:
             with contextlib.suppress(Exception):
                 self._append_private_telemetry(private / "telemetry-mirror-errors.jsonl", record)
             return False
-        return True
+        else:
+            operation_status = "completed"
+            return True
+        finally:
+            with contextlib.suppress(Exception):
+                self._append_private_telemetry(private / "telemetry-mirror-calls.jsonl", {
+                    "ts": time.time(), "phase": phase,
+                    "status": operation_status,
+                    "duration_seconds": max(0.0, time.monotonic() - started)})
+
+    def observe_progress(self, runtime, private):
+        """Poll lightweight native job metadata without changing task lifecycle."""
+        from .tracking import project_progress
+        started = time.monotonic()
+        operation_status = "failed"
+        try:
+            progress = project_progress(self.sidecar_get(runtime, "/progress"))
+            atomic_json(private / "native-progress.json", progress)
+            operation_status = "completed"
+            return True
+        except Exception as error:
+            with contextlib.suppress(Exception):
+                self._append_private_telemetry(private / "telemetry-progress-errors.jsonl", {
+                    "ts": time.time(), "reason": "progress_unavailable", "type": type(error).__name__})
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                self._append_private_telemetry(private / "telemetry-progress-calls.jsonl", {
+                    "ts": time.time(), "status": operation_status,
+                    "duration_seconds": max(0.0, time.monotonic() - started)})
 
     @staticmethod
     def _append_private_telemetry(path, record):
@@ -605,7 +715,7 @@ class Evaluation:
             with log_path.open("ab") as log, (directory / "solver.stderr").open("ab") as errors:
                 process = subprocess.Popen(self.solver_command(directory, workspace, runtime, name, prompt, thread),
                                            stdout=log, stderr=errors)
-                last_mirror = 0
+                last_mirror, last_progress = 0, 0
                 while process.poll() is None:
                     receipt = self.sidecar_get(runtime, "/receipt")
                     if receipt is not None:
@@ -619,6 +729,9 @@ class Evaluation:
                         self.safe_mirror(runtime, directory / "private", phase="final")
                         atomic_json(directory / "final-selection.json", receipt)
                         return receipt
+                    if time.time() - last_progress >= PROGRESS_INTERVAL_SECONDS:
+                        self.observe_progress(runtime, directory / "private")
+                        last_progress = time.time()
                     if time.time() - last_mirror >= 300:
                         self.safe_mirror(runtime, directory / "private", phase="periodic")
                         last_mirror = time.time()
@@ -757,7 +870,15 @@ class Evaluation:
             from .tracking import record_snapshot
             def monitor():
                 while not self.stop.is_set():
-                    record_snapshot(self.root)
+                    try:
+                        record_snapshot(self.root)
+                    except Exception as error:
+                        # A diagnostics failure must not silently kill active
+                        # tracking or become a solver/official result failure.
+                        with contextlib.suppress(Exception):
+                            atomic_json(self.root / "monitor-error.json", {
+                                "ts": time.time(), "reason": "tracking_failed",
+                                "type": type(error).__name__})
                     self.stop.wait(300)
             monitor_thread = threading.Thread(target=monitor, daemon=True)
             monitor_thread.start()

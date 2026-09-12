@@ -4,6 +4,10 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +19,254 @@ from verifier.llm.codex_backend import (
     service_tier_cli_args,
 )
 from verifier.llm.schema import RoleError
+
+
+def _observed_synthetic_backend(tmp_path, monkeypatch, program, observer):
+    """A real local Python child replaces Codex; never a model/API call."""
+    original = subprocess.Popen
+    commands = []
+
+    def synthetic(cmd, **kwargs):
+        commands.append(cmd)
+        assert "--json" in cmd
+        assert "timeout" not in kwargs
+        out = cmd[cmd.index("-o") + 1]
+        return original([sys.executable, "-u", "-c", program, out], **kwargs)
+
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.Popen", synthetic)
+    backend = CodexBackend(roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
+                           cwd=str(tmp_path), timeout=None, phase_observer=observer)
+    backend.phase_heartbeat_seconds = 0.02
+    return backend, commands
+
+
+def test_observed_exec_drains_both_large_pipes_and_redacts_payloads(tmp_path, monkeypatch):
+    records = []
+    secret = "synthetic-secret-never-log"
+    program = r'''
+import json,os,sys,time
+with open(sys.argv[1],"w") as f: json.dump({"ok":True},f)
+def emit(value): os.write(1,(json.dumps(value)+"\n").encode())
+emit({"type":"thread.started","thread_id":"synthetic-secret-never-log"})
+emit({"type":"turn.started"})
+emit({"type":"item.started","item":{"id":"synthetic-secret-never-log","type":"command_execution","command":"synthetic-secret-never-log"}})
+os.write(2,b"synthetic-secret-never-log"*130000)
+emit({"type":"item.completed","item":{"id":"synthetic-secret-never-log","type":"command_execution","aggregated_output":"synthetic-secret-never-log"*130000}})
+time.sleep(.07)
+emit({"type":"turn.completed","usage":{}})
+'''
+    backend, commands = _observed_synthetic_backend(tmp_path, monkeypatch, program, records.append)
+    assert backend.complete("critic", secret, {}) == {"ok": True}
+    assert len(commands) == 1
+    assert secret not in json.dumps(records)
+    returned = next(row for row in records if row["phase"] == "exec_returned")
+    assert returned["stdout_bytes"] > 3_000_000 and returned["stderr_bytes"] > 3_000_000
+    assert returned["reader_failed"] is False
+    assert any(row["phase"] == "exec_heartbeat" for row in records)
+    assert any(row.get("wait_category") == "cli_activity_unknown" for row in records)
+    assert returned["active_tool_items"] == 0 and returned["item_state_complete"] is False
+    assert any(row.get("item_kind") == "command_execution" for row in records)
+    assert any(row["phase"] == "exec_process_exited" for row in records)
+    assert all("thread_id" not in row and "command" not in row and "message" not in row for row in records)
+    assert all(row["role"] == "critic" for row in records)
+    assert backend._phase_roles == {}
+
+
+def test_observed_exec_handles_chunked_utf8_and_no_output_file(tmp_path, monkeypatch):
+    records = []
+    program = r'''
+import json,os,sys,time
+value={"type":"item.completed","item":{"type":"agent_message","text":json.dumps({"ok":True,"note":"汉字"},ensure_ascii=False)}}
+raw=(json.dumps(value,ensure_ascii=False)+"\n").encode()
+for index in range(0,len(raw),3):
+ os.write(1,raw[index:index+3]);time.sleep(.001)
+'''
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, records.append)
+    assert backend.complete("critic", "synthetic prompt", {})["ok"] is True
+    assert any(row.get("item_kind") == "agent_message" for row in records)
+    assert "汉字" not in json.dumps(records, ensure_ascii=False)
+
+
+def test_observed_bad_json_is_only_a_metadata_gap_with_valid_final_file(tmp_path, monkeypatch):
+    records = []
+    program = r'''
+import json,os,sys
+with open(sys.argv[1],"w") as f: json.dump({"ok":True},f)
+os.write(1,b"not json\n{broken\n{\"type\":[]}\n{\"type\":\"item.started\",\"item\":{\"type\":[]}}\n")
+'''
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, records.append)
+    assert backend.complete("critic", "synthetic prompt", {}) == {"ok": True}
+    assert backend._phase_roles == {}
+    assert next(row for row in records if row["phase"] == "exec_returned")["unparsed_stdout_lines"] == 2
+
+
+def test_phase_roles_stay_bound_to_parallel_call_ids_and_are_cleaned(tmp_path, monkeypatch):
+    records = []
+    roles = {name: SimpleNamespace(system="", schema={"ok": bool})
+             for name in ("critic", "judger")}
+    backend = CodexBackend(roles=roles, cwd=str(tmp_path), timeout=None,
+                           phase_observer=records.append)
+    barrier = threading.Barrier(2)
+    expected = {}
+    expected_lock = threading.Lock()
+
+    def simultaneous(cmd, cwd, devnull, call_id, attempt):
+        name = "critic" if cmd[-1].startswith("critic fixture") else "judger"
+        with expected_lock:
+            expected[call_id] = name
+        barrier.wait(timeout=2)  # A fixture synchronization guard, not a role deadline.
+        backend._phase(call_id, attempt, "exec_dispatch")
+        backend._phase(call_id, attempt, "exec_returned")
+        with open(cmd[cmd.index("-o") + 1], "w") as output:
+            json.dump({"ok": True}, output)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backend, "_run_observed_exec", simultaneous)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = [pool.submit(backend.complete, name, name + " fixture", {})
+                   for name in roles]
+        assert [future.result() for future in pending] == [{"ok": True}, {"ok": True}]
+    assert len(expected) == 2 and len(records) == 4
+    assert all(record["role"] == expected[record["call_id"]] for record in records)
+    assert backend._phase_roles == {}
+
+
+def test_failed_observed_call_cleans_role_and_unknown_is_not_guessed(tmp_path, monkeypatch):
+    records = []
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, 'print("not a final response")',
+                                             records.append)
+    with pytest.raises(RoleError, match="produced no output"):
+        backend.complete("critic", "synthetic fixture", {})
+    assert backend._phase_roles == {}
+    assert all(record["role"] == "critic" for record in records)
+    backend._phase("unassociated", 0, "exec_dispatch")
+    assert records[-1]["role"] == "unknown"
+
+
+def test_observer_write_failure_cannot_change_verdict(tmp_path, monkeypatch):
+    def fail(record):
+        raise OSError("synthetic-private-path-or-credential-do-not-echo")
+
+    program = 'import json,sys; json.dump({"ok":True},open(sys.argv[1],"w")); print("{\\\"type\\\":\\\"turn.started\\\"}")'
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, fail)
+    assert backend.complete("critic", "synthetic prompt", {}) == {"ok": True}
+
+
+def test_exited_cli_with_inherited_open_pipe_has_visible_drain_wait(tmp_path, monkeypatch):
+    records=[]
+    program=r'''
+import json,subprocess,sys
+with open(sys.argv[1],"w") as f: json.dump({"ok":True},f)
+subprocess.Popen([sys.executable,"-c","import time;time.sleep(.12)"])
+'''
+    backend,_=_observed_synthetic_backend(tmp_path,monkeypatch,program,records.append)
+    assert backend.complete("critic","synthetic task",{}) == {"ok":True}
+    drain=[row for row in records if row["phase"]=="pipe_drain_heartbeat"]
+    assert drain and all(row["process_running"] is False for row in drain)
+    assert all(row["wait_category"]=="pipe_drain_unknown" for row in drain)
+    phases=[row["phase"] for row in records]
+    assert phases.index("exec_process_exited") < phases.index("pipe_drain_heartbeat") < phases.index("exec_returned")
+
+
+def test_observed_backend_retries_and_backoff_are_safe_metadata(tmp_path,monkeypatch,capsys):
+    records=[]
+    backend=CodexBackend(roles={"critic":SimpleNamespace(system="",schema={"ok":bool})},
+                         cwd=str(tmp_path),timeout=None,phase_observer=records.append)
+    calls=[]
+
+    def transient_then_success(cmd,cwd,devnull,call_id,attempt):
+        calls.append(attempt)
+        if attempt==0:
+            return SimpleNamespace(returncode=1,stderr="",stdout=(
+                '{"type":"thread.started","thread_id":"synthetic"}\n'
+                '{"type":"turn.failed","error":{"message":"at capacity synthetic-secret-do-not-log"}}\n'))
+        with open(cmd[cmd.index("-o")+1],"w") as f: json.dump({"ok":True},f)
+        return SimpleNamespace(returncode=0,stdout="",stderr="")
+
+    monkeypatch.setattr(backend,"_run_observed_exec",transient_then_success)
+    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep",lambda _:None)
+    assert backend.complete("critic","synthetic",{}) == {"ok":True}
+    assert calls==[0,1]
+    phases=[row["phase"] for row in records]
+    assert phases==["backend_transient_failure","backend_backoff_started","backend_backoff_finished"]
+    assert records[1]["wait_seconds"]==15 and records[1]["retry_number"]==1
+    assert "synthetic-secret-do-not-log" not in json.dumps(records)+capsys.readouterr().err
+
+
+def test_observed_thread_event_cannot_masquerade_as_final_answer(tmp_path, monkeypatch):
+    program = 'print(\'{"type":"thread.started","thread_id":"synthetic"}\')'
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, lambda _: None)
+    with pytest.raises(RoleError, match="produced no output"):
+        backend.complete("critic", "synthetic prompt", {})
+
+
+def test_completed_turn_is_not_retried_for_an_earlier_recovered_error(tmp_path, monkeypatch):
+    commands = []
+    backend = CodexBackend(roles={"critic":SimpleNamespace(system="",schema={"ok":bool})},cwd=str(tmp_path))
+
+    def recover(cmd, **kwargs):
+        commands.append(cmd)
+        with open(cmd[cmd.index("-o")+1],"w") as f: json.dump({"ok":True},f)
+        return SimpleNamespace(returncode=0,stderr="",stdout=(
+            '{"type":"thread.started","thread_id":"synthetic"}\n'
+            '{"type":"error","message":"at capacity"}\n'
+            '{"type":"turn.completed","usage":{}}\n'))
+
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.run",recover)
+    assert backend.complete("critic","synthetic",{}) == {"ok":True}
+    assert len(commands) == 1
+
+
+def test_exhausted_codex_infrastructure_does_not_repeat_generation(tmp_path, monkeypatch):
+    from verifier.llm.agents import AgentRole
+    from verifier.llm.codex_backend import TRANSIENT_RETRIES, TransientBackendError
+    calls = []
+    role = AgentRole("critic", "{statement}", {"ok":bool})
+    backend = CodexBackend(roles={"critic":role},cwd=str(tmp_path))
+
+    def capacity(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1,stderr="",stdout=(
+            '{"type":"thread.started","thread_id":"synthetic"}\n'
+            '{"type":"turn.failed","error":{"message":"at capacity"}}\n'))
+
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.run",capacity)
+    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep",lambda _:None)
+    with pytest.raises(TransientBackendError):
+        role.call(backend,{"statement":"synthetic original task"})
+    assert len(calls) == TRANSIENT_RETRIES+1
+    assert all("previous attempt failed" not in cmd[-1] for cmd in calls)
+
+
+def test_true_schema_generation_errors_still_retry_once():
+    from verifier.llm.agents import AgentRole
+    role = AgentRole("critic", "synthetic task", {"ok":bool})
+
+    class Backend:
+        def __init__(self): self.prompts=[]
+        def complete(self, name, prompt, variables):
+            self.prompts.append(prompt)
+            return {"ok":"wrong type"} if len(self.prompts)==1 else {"ok":True}
+
+    backend=Backend()
+    assert role.call(backend,{}) == {"ok":True}
+    assert len(backend.prompts)==2 and "previous attempt failed" in backend.prompts[1]
+
+
+def test_sdk_exhaustion_preserves_the_same_non_generation_contract(monkeypatch):
+    from verifier.llm.agents import AgentBackend, AgentRole, ExhaustedInfrastructureError, _TransientSDKError
+    role=AgentRole("critic","synthetic task",{"ok":bool})
+    backend=AgentBackend(roles={"critic":role})
+    backend.transient_delays=(0,0,0)
+    prompts=[]
+
+    async def fail(seat,prompt):
+        prompts.append(prompt)
+        raise _TransientSDKError("synthetic transient transport")
+
+    monkeypatch.setattr(backend,"_attempt",fail)
+    with pytest.raises(ExhaustedInfrastructureError): role.call(backend,{})
+    assert prompts == ["synthetic task"]*3
 
 
 PNG_A = b"\x89PNG\r\n\x1a\nfirst-fixed-image"

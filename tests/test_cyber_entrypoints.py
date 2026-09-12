@@ -27,7 +27,8 @@ def tool_names(tmp_path, profile, evaluator_spec=None):
 def test_mcp_exposes_one_original_verifier_with_optional_evidence_tools(tmp_path):
     ordinary = {"commit", "verify", "certificate", "status"}
     evidence = {"cyber_checkpoint", "cyber_register_candidate",
-                "cyber_candidates", "cyber_finalize_candidate"}
+                "cyber_candidates", "cyber_finalize_candidate",
+                "verification_job", "verification_jobs", "verification_retry"}
     assert tool_names(tmp_path, "default") == ordinary
     assert tool_names(tmp_path, "cyber") == ordinary | evidence
     second = tmp_path / "with-evaluator"
@@ -41,7 +42,8 @@ def test_cyber_solver_protocol_preserves_revision_and_effect_mechanics():
     original = Path(mcp_server._PROTOCOL_PATH).read_text()
     assert mcp_server._solver_protocol(get_profile()) == original
     cyber = mcp_server._solver_protocol(get_profile("cyber"))
-    assert cyber == original + "\n\n" + get_profile("cyber").solver_instructions
+    assert cyber.startswith(original + "\n\n" + get_profile("cyber").solver_instructions)
+    assert "stable job_id" in cyber and "verification_job(job_id)" in cyber
     assert "revises" in cyber and "effect:" in cyber
 
 

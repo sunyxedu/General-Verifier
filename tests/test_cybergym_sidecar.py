@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -132,7 +133,18 @@ def test_every_role_has_readonly_shell_denied_credentials_and_no_network(tmp_pat
     assert "model_context_window=1050000" in args
     assert "model_auto_compact_token_limit=780000" in args
     filesystem = next(value for value in args if '.filesystem=' in value)
-    assert f'"{tmp_path / "work"}"="write"' in filesystem
+    grants = tomllib.loads("grants=" + filesystem.split("=", 1)[1])["grants"]
+    assert grants[str(tmp_path / "work")] == ("deny" if role in ("obligations", "critic") else "write")
+    assert grants[str(tmp_path / "verifier-home")] == "deny"
+    if role in ("obligations", "critic"):
+        for hidden in ("cybergym-observations", "hook_feed.jsonl", "artifacts", "cyber", "workspace"):
+            assert grants[str(tmp_path / hidden)] == "deny"
+        assert grants[str(tmp_path / "_blind" / role)] == "write"
+        assert grants["/task"] == "deny"
+        env_arg = next(value for value in args if value.startswith("shell_environment_policy.set="))
+        env = tomllib.loads(env_arg)["shell_environment_policy"]["set"]
+        assert env["HOME"] == str(tmp_path / "_blind" / role / "home")
+        assert Path(env["TMPDIR"]).is_dir()
     for root in backend.DENIED_ROOTS:
         assert f'"{root}"="deny"' in filesystem
 

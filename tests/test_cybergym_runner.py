@@ -20,6 +20,11 @@ import pytest
 from experiments.cybergym import run, tracking
 
 
+def patch_mirror(monkeypatch, controller, callback):
+    monkeypatch.setattr(controller, "mirror", callback)
+    monkeypatch.setattr(controller, "mirror_metadata", callback)
+
+
 @pytest.fixture
 def controller(tmp_path):
     evaluation = object.__new__(run.Evaluation)
@@ -774,7 +779,7 @@ def test_cleanup_is_best_effort_label_scoped_and_preserves_forensic_volumes(
     monkeypatch.setattr(run, "docker", docker)
     def unavailable(*_args, **_kwargs):
         raise RuntimeError("fixture forensic mirror or log copy unavailable")
-    monkeypatch.setattr(controller, "mirror", unavailable)
+    patch_mirror(monkeypatch, controller, unavailable)
     monkeypatch.setattr(run, "execute", unavailable)
     controller.cleanup_runtime(runtime, directory, private)
     stopped = [call[-1] for call in calls if call[0] == "stop"]
@@ -980,7 +985,12 @@ def solver_process_fakes(monkeypatch, controller, receipts, *, exited=False):
     values = iter(receipts)
     monkeypatch.setattr(run.subprocess, "Popen", lambda *_args, **_kwargs: process)
     monkeypatch.setattr(controller, "solver_command", lambda *_args: ["fixture-solver"])
-    monkeypatch.setattr(controller, "sidecar_get", lambda *_args: next(values))
+    monkeypatch.setattr(controller, "sidecar_get", lambda _runtime, path:
+                        next(values) if path == "/receipt" else {
+                            "schema": tracking.PROGRESS_SCHEMA, "checked_unix": 100, "jobs": []})
+    # Existing receipt/failure tests inject a mirror failure for both routes;
+    # independent metadata snapshot tests exercise the real implementation.
+    monkeypatch.setattr(controller, "mirror_metadata", lambda *args: controller.mirror(*args))
     monkeypatch.setattr(controller.stop, "wait", lambda _seconds: False)
     monkeypatch.setattr(run, "docker", lambda *args, **_kwargs:
                         calls.append(tuple(args)) or SimpleNamespace(returncode=0))
@@ -1000,7 +1010,7 @@ def test_periodic_and_final_trace_copy_failure_cannot_abort_certified_solver(
         copies.append(True)
         raise mirror_failure()
 
-    monkeypatch.setattr(controller, "mirror", unavailable)
+    patch_mirror(monkeypatch, controller, unavailable)
     state = {"official_pass": None}
     actual = controller.run_solver(directory, directory / "workspace", runtime, "fixture", state)
     assert actual == receipt
@@ -1023,7 +1033,7 @@ def test_receipt_recheck_failure_is_still_fatal_not_a_trace_warning(
         controller, selected, monkeypatch):
     directory, _candidate, receipt = selected
     _process, calls = solver_process_fakes(monkeypatch, controller, [receipt, None])
-    monkeypatch.setattr(controller, "mirror", lambda *_args: pytest.fail("receipt must be checked first"))
+    patch_mirror(monkeypatch, controller, lambda *_args: pytest.fail("receipt must be checked first"))
     with pytest.raises(RuntimeError, match="delivery changed"):
         controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-sidecar"},
                               "fixture", {})
@@ -1051,7 +1061,7 @@ def test_receipt_transport_error_is_not_suppressed_by_trace_recovery(
 def test_safe_trace_copy_success_has_no_failure_diagnostics(controller, selected, monkeypatch):
     directory, _candidate, _receipt = selected
     calls = []
-    monkeypatch.setattr(controller, "mirror", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller, "mirror_metadata", lambda *args: calls.append(args))
     runtime, private = {"sidecar": "fixture-sidecar"}, directory / "private"
     assert controller.safe_mirror(runtime, private, phase="periodic") is True
     assert calls == [(runtime, private)]
@@ -1068,7 +1078,7 @@ def test_mirror_error_stderr_is_bounded_private_and_not_model_evidence(
         error.stderr += "x" * 100_000 + "private-tail-sentinel"
         raise error
 
-    monkeypatch.setattr(controller, "mirror", unavailable)
+    patch_mirror(monkeypatch, controller, unavailable)
     assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private, phase="final") is False
     metadata = private / "telemetry-mirror-errors.jsonl"
     stderr_file = private / "telemetry-mirror-stderr.jsonl"
@@ -1089,7 +1099,7 @@ def test_mirror_and_diagnostic_storage_failure_remains_nonfatal(controller, monk
     def unavailable(*_args):
         raise mirror_failure()
 
-    monkeypatch.setattr(controller, "mirror", unavailable)
+    patch_mirror(monkeypatch, controller, unavailable)
     assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private, phase="periodic") is False
     assert private.read_text() == "fixture diagnostic destination unavailable"
 
@@ -1109,6 +1119,7 @@ evaluation = object.__new__(Evaluation)
 def unavailable(*args):
     raise OSError('fixture mirror unavailable')
 evaluation.mirror = unavailable
+evaluation.mirror_metadata = unavailable
 if evaluation.safe_mirror({}, Path(sys.argv[1]), phase='periodic') is not False:
     raise SystemExit(1)
 """
@@ -1131,7 +1142,7 @@ def test_hardlinked_diagnostic_destination_preserves_other_file_content_and_mode
     def unavailable(*_args):
         raise mirror_failure()
 
-    monkeypatch.setattr(controller, "mirror", unavailable)
+    patch_mirror(monkeypatch, controller, unavailable)
     assert controller.safe_mirror({}, private, phase="periodic") is False
     assert retained.read_bytes() == b"unrelated user document"
     assert destination.read_bytes() == b"unrelated user document"
@@ -1172,7 +1183,7 @@ def test_trace_copy_failure_does_not_change_official_task_outcome(
     def unavailable(*_args):
         raise mirror_failure()
 
-    monkeypatch.setattr(controller, "mirror", unavailable)
+    patch_mirror(monkeypatch, controller, unavailable)
     scores = []
 
     def score(task, directory, _state, final):
@@ -1223,7 +1234,7 @@ def cleanup_runtime_fakes(monkeypatch, controller, selected, *, stop_fails=None)
         raise OSError("fixture trace log unavailable")
 
     monkeypatch.setattr(run, "docker", docker)
-    monkeypatch.setattr(controller, "mirror", mirror)
+    patch_mirror(monkeypatch, controller, mirror)
     monkeypatch.setattr(run, "execute", logs)
     return runtime, solver, calls
 
@@ -1257,3 +1268,167 @@ def test_cleanup_never_calls_quiescent_state_archive_if_an_owned_writer_did_not_
     assert any(issue["error"] == "container_stop_failed" for issue in issues)
     assert {call[-1] for call in calls if call[0] == "stop"} == {
         "fixture-owned-solver", runtime["sidecar"], runtime["proxy"]}
+
+
+def mirror_fixture(monkeypatch, controller, selected, tmp_path, *, foreign=False):
+    """Tiny native fixture: no real Docker calls or large-tree benchmarks."""
+    directory, _candidate, _receipt = selected
+    native = tmp_path / "native-state"
+    native.mkdir(mode=0o700)
+    calls = []
+
+    def docker(*args, **_kwargs):
+        calls.append(args)
+        if args[0] == "inspect":
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "gv.experiment": "foreign" if foreign else controller.experiment,
+                "gv.attempt_id": directory.name}))
+        if args[0] == "exec":
+            # Execute the actual manifest program locally, with only its fixed
+            # native prefix redirected into this credential-free fixture.
+            code = args[-1].replace("'/state/'", repr(str(native) + "/"))
+            return run.execute(sys.executable, "-c", code, capture_output=True, text=True)
+        assert args[0] == "cp"
+        relative = args[1].split(":/state/", 1)[1]
+        source = native if relative == "." else native / relative
+        destination = Path(args[2])
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+        else:
+            shutil.copyfile(source, destination)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(run, "docker", docker)
+    return native, directory / "private", calls
+
+
+def test_periodic_snapshot_excludes_scratch_and_replaces_stale_evidence_members(
+        monkeypatch, controller, selected, tmp_path):
+    native, private, calls = mirror_fixture(monkeypatch, controller, selected, tmp_path)
+    (native / "events.jsonl").write_text('{"seq":1}\n')
+    (native / "artifacts").mkdir()
+    (native / "artifacts/proof.json").write_text("durable evidence")
+    (native / "work").mkdir()
+    (native / "work/large-build.o").write_text("must not be copied")
+    (native / "workspace").mkdir()
+    (native / "workspace/source.c").write_text("must not be copied")
+    (private / "state/artifacts").mkdir()
+    (private / "state/artifacts/stale.json").write_text("previous deleted native member")
+    controller.mirror_metadata({"sidecar": "fixture-sidecar"}, private)
+    copied = [call[1] for call in calls if call[0] == "cp"]
+    assert copied == ["fixture-sidecar:/state/events.jsonl", "fixture-sidecar:/state/artifacts"]
+    assert not (private / "state/work").exists() and not (private / "state/workspace").exists()
+    assert (private / "state/artifacts/proof.json").read_text() == "durable evidence"
+    assert not (private / "state/artifacts/stale.json").exists()
+    assert not list(private.glob(".*mirror-*"))
+
+
+def test_final_snapshot_is_exact_and_removes_only_old_mirror_members(
+        monkeypatch, controller, selected, tmp_path):
+    native, private, _calls = mirror_fixture(monkeypatch, controller, selected, tmp_path)
+    (private / "state/stale-build.o").write_text("stale mirror only")
+    outside = private / "do-not-touch.json"
+    outside.write_text("controller authority remains private")
+    (native / "role_calls.jsonl").write_text("retained role calls")
+    (native / "work").mkdir()
+    (native / "work/current-build.o").write_text("current native forensic data")
+    controller.mirror({"sidecar": "fixture-sidecar"}, private)
+    assert not (private / "state/stale-build.o").exists()
+    assert (private / "state/work/current-build.o").read_text() == "current native forensic data"
+    assert outside.read_text() == "controller authority remains private"
+    assert stat.S_IMODE((private / "state").stat().st_mode) == 0o700
+    assert not list(private.glob(".*mirror-*"))
+
+
+def test_receipt_snapshot_is_metadata_only_and_score_preserves_host_authority(
+        monkeypatch, controller, selected, tmp_path):
+    directory, candidate, receipt = selected
+    native, private, calls = mirror_fixture(monkeypatch, controller, selected, tmp_path)
+    authority_before = (private / "evaluator.json").read_bytes()
+    final_before = candidate.read_bytes()
+    run.atomic_json(directory / "final-selection.json", receipt)
+    (native / "events.jsonl").write_text('{"seq":1}\n')
+    (native / "work").mkdir()
+    (native / "work/build.o").write_text("must wait until quiescent cleanup archive")
+    (native / "evaluator.json").write_text("must not replace host authority")
+    assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private, phase="final") is True
+    assert not (private / "state/work").exists()
+    assert all(":/state/." not in call[1] for call in calls if call[0] == "cp")
+    row = official_row(receipt, vul_exit_code=0, fix_exit_code=None)
+    monkeypatch.setattr(controller, "request", lambda *_args: [row])
+    state = {"official_pass": None}
+    actual = controller.score("arvo:23296", directory, state, receipt)
+    assert actual is False  # Official negative, not a mirror verdict.
+    assert (private / "evaluator.json").read_bytes() == authority_before
+    assert candidate.read_bytes() == final_before
+    assert json.loads((directory / "final-selection.json").read_text()) == receipt
+
+
+def test_failed_snapshot_publish_restores_previous_state(monkeypatch, controller, selected, tmp_path):
+    native, private, _calls = mirror_fixture(monkeypatch, controller, selected, tmp_path)
+    (private / "state/retained.json").write_text("old valid evidence")
+    (native / "new.json").write_text("new native evidence")
+    replace = run.os.replace
+
+    def fail_publish(source, destination):
+        if Path(source).name == "state" and Path(destination) == private / "state":
+            raise OSError("fixture publication failure")
+        return replace(source, destination)
+
+    monkeypatch.setattr(run.os, "replace", fail_publish)
+    assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private, phase="cleanup") is False
+    assert (private / "state/retained.json").read_text() == "old valid evidence"
+    assert not (private / "state/new.json").exists()
+    assert not list(private.glob(".*mirror-*"))
+
+
+def test_snapshot_refuses_foreign_container_before_copy(monkeypatch, controller, selected, tmp_path):
+    _native, private, calls = mirror_fixture(monkeypatch, controller, selected, tmp_path, foreign=True)
+    assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private, phase="cleanup") is False
+    assert [call[0] for call in calls] == ["inspect"]
+
+
+def test_snapshot_refuses_host_symlink_before_any_docker_call(monkeypatch, controller, selected, tmp_path):
+    _native, private, calls = mirror_fixture(monkeypatch, controller, selected, tmp_path)
+    shutil.rmtree(private / "state")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "authority.json").write_text("private authority sentinel")
+    (private / "state").symlink_to(outside, target_is_directory=True)
+    assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private) is False
+    assert calls == []
+    assert (outside / "authority.json").read_text() == "private authority sentinel"
+
+
+def test_metadata_snapshot_refuses_native_symlink(monkeypatch, controller, selected, tmp_path):
+    native, private, calls = mirror_fixture(monkeypatch, controller, selected, tmp_path)
+    (native / "events.jsonl").symlink_to("/not-a-telemetry-file")
+    assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private) is False
+    assert not [call for call in calls if call[0] == "cp"]
+
+
+def test_progress_poll_projects_metadata_and_never_delivers_job_result(
+        monkeypatch, controller, selected):
+    directory, _candidate, _receipt = selected
+    monkeypatch.setattr(controller, "sidecar_get", lambda _runtime, path: {
+        "schema": tracking.PROGRESS_SCHEMA, "checked_unix": 100, "jobs": [{
+            "job_id": "job-1", "tool": "commit", "state": "running", "created_unix": 90,
+            "attempts": 1, "reused_count": 4, "request": "PRIVATE_REQUEST",
+            "result": "PRIVATE_RESULT"}], "runtime_secret": "PRIVATE_SECRET"})
+    assert controller.observe_progress({}, directory / "private") is True
+    raw = (directory / "private/native-progress.json").read_text()
+    assert "PRIVATE" not in raw
+    assert json.loads(raw)["active_job_ids"] == ["job-1"]
+    assert not (directory / "final-selection.json").exists()
+
+
+def test_progress_poll_failure_is_private_nonfatal_and_keeps_previous_metadata(
+        monkeypatch, controller, selected):
+    directory, _candidate, _receipt = selected
+    previous = directory / "private/native-progress.json"
+    previous.write_text("previous telemetry")
+    monkeypatch.setattr(controller, "sidecar_get", lambda *_args: None)
+    assert controller.observe_progress({}, directory / "private") is False
+    assert previous.read_text() == "previous telemetry"
+    assert (directory / "private/telemetry-progress-errors.jsonl").exists()
+    assert not (directory / "final-selection.json").exists()

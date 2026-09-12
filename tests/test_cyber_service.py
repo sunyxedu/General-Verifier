@@ -600,7 +600,9 @@ def test_unverified_host_candidate_can_be_retried_when_method_becomes_available(
     assert first["verdict"] == "unverified"
     assert first["materialized"] is False
     backend.fixtures["oracles"] = RecordingBackend().fixtures["oracles"]
-    second = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin")
+    # Reconnecting is idempotent. A changed capability may be explicitly
+    # retried without changing candidate bytes or manufacturing observations.
+    second = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin", retry=True)
     assert second["verdict"] == "verified", second
     assert second["materialized"] is True, second
     assert (project / "answer.bin").read_bytes() == CANDIDATE_BYTES

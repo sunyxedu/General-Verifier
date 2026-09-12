@@ -19,9 +19,12 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import uuid
 
-from verifier.llm.codex_backend import CodexBackend, _toml_string, codex_usage_ledger
+from verifier.llm.codex_backend import (
+    CodexBackend, _ensure_verifier_owned_chain, _toml_string, codex_usage_ledger,
+)
 from verifier.llm.schema import RoleError
 from verifier.mcp_server import Service, _default_kernel, build_server
 from verifier.profiles.cyber.evaluator import EvaluatorSpec
@@ -64,9 +67,12 @@ class SandboxedVerifierBackend(CodexBackend):
                     "/root/.codex", "/home/node/.codex")
     _diagnostic_lock = threading.Lock()
 
-    def __init__(self, *, cwd: str):
+    def __init__(self, *, cwd: str, project_root: str = "/task"):
         super().__init__(cwd=cwd, model=MODEL, effort=EFFORT,
-                         service_tier=SERVICE_TIER, timeout=None)
+                         service_tier=SERVICE_TIER, timeout=None,
+                         phase_observer=self._diagnostic)
+        self.project_root = project_root
+        self._diagnostic_failures = 0
         self.search_roles = frozenset()
 
     def _is_offline_execution(self, role_name, variables):
@@ -92,11 +98,48 @@ class SandboxedVerifierBackend(CodexBackend):
                 or 'approval_policy="never"' not in args
                 or not args[filesystem[0]].endswith("}")):
             raise RoleError("inherited verifier permissions did not fail closed")
-        denied = ",".join(f"{_toml_string(path)}=\"deny\"" for path in self.DENIED_ROOTS)
         index = filesystem[0]
-        args[index] = args[index][:-1] + "," + denied + "}"
+        prefix, table = args[index].split("=", 1)
+        grants = tomllib.loads("grants=" + table)["grants"]
+        grants.update({path: "deny" for path in self.DENIED_ROOTS})
+        grants[str(state / "verifier-home")] = "deny"
         index = network[0]
         args[index] = args[index].rsplit("=", 1)[0] + "=false"
+        if role_name in ("obligations", "critic"):
+            # Codex exposes a shell independently of AgentRole.tools. Keep
+            # answer blindness enforceable without relying on prompt wording.
+            hidden = ("events.jsonl", "claims.sqlite", "claims.sqlite-wal",
+                      "claims.sqlite-shm", "artifacts", "cyber", "work", "workspace",
+                      "cybergym-observations", "hook_feed.jsonl", "_blind",
+                      "verification_jobs.jsonl", "transport_calls.jsonl", "role_calls.jsonl",
+                      "role_phases.jsonl")
+            grants.update({str(state / path): "deny" for path in hidden})
+            grants[self.project_root] = "deny"
+            for path, grant in tuple(grants.items()):
+                if grant == "write" and any(Path(path).is_relative_to(root)
+                        for root in (state / "work", state / "workspace", Path(self.project_root))):
+                    grants[path] = "deny"
+            blind = state / "_blind" / role_name
+            _ensure_verifier_owned_chain(str(state), str(blind))
+            grants[str(blind)] = "write"
+            # Shell HOME/cache/TMP must not remain under the denied historical
+            # work tree. Give each answer-blind seat an isolated empty home.
+            environment = [i for i, value in enumerate(args)
+                           if value.startswith("shell_environment_policy.set=")]
+            if len(environment) != 1:
+                raise RoleError("inherited shell environment did not fail closed")
+            env_index = environment[0]
+            env = tomllib.loads(args[env_index])["shell_environment_policy"]["set"]
+            old_home = str(state / "work" / "_offline_home")
+            for key, value in env.items():
+                if isinstance(value, str) and value.startswith(old_home):
+                    env[key] = str(blind / "home") + value[len(old_home):]
+                    _ensure_verifier_owned_chain(str(state), env[key])
+            args[env_index] = "shell_environment_policy.set={" + ",".join(
+                f"{key}={_toml_string(value)}" for key, value in env.items()) + "}"
+        args[filesystem[0]] = prefix + "={" + ",".join(
+            f"{_toml_string(path)}={_toml_string(grant)}"
+            for path, grant in grants.items()) + "}"
         return args + context_cli_args()
 
     def _diagnostic(self, record):
@@ -104,19 +147,25 @@ class SandboxedVerifierBackend(CodexBackend):
         # response, exception text, auth token, or evaluator configuration.
         path = Path(self.cwd) / "role_calls.jsonl"
         raw = (json.dumps(record, sort_keys=True) + "\n").encode()
-        with self._diagnostic_lock:
-            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT
-                         | getattr(os, "O_NOFOLLOW", 0), 0o600)
-            try:
-                info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
-                    raise RoleError("unsafe role diagnostic log")
-                view = memoryview(raw)
-                while view:
-                    written = os.write(fd, view)
-                    view = view[written:]
-            finally:
-                os.close(fd)
+        try:
+            with self._diagnostic_lock:
+                fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
+                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                try:
+                    info = os.fstat(fd)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                            or info.st_nlink != 1 or info.st_mode & 0o077):
+                        raise OSError("unsafe role diagnostic log")
+                    view = memoryview(raw)
+                    while view:
+                        written = os.write(fd, view)
+                        if written <= 0:
+                            raise OSError("role diagnostic write failed")
+                        view = view[written:]
+                finally:
+                    os.close(fd)
+        except OSError:
+            self._diagnostic_failures += 1  # Telemetry must not decide a verdict.
 
     def complete(self, role_name, prompt, variables):
         call_id = uuid.uuid4().hex
@@ -139,7 +188,7 @@ class SandboxedVerifierBackend(CodexBackend):
 
 
 def kernel_factory(service):
-    backend = SandboxedVerifierBackend(cwd=service.state_dir)
+    backend = SandboxedVerifierBackend(cwd=service.state_dir, project_root=service.project_root)
     return _default_kernel(service, model=MODEL, backend=backend)
 
 
@@ -162,10 +211,14 @@ def create_service(args) -> Service:
     spec = EvaluatorSpec(tuple(command), environment=args.cyber_evaluator_environment,
                          authority_scope="candidate_signal", timeout=None,
                          pinned_files=tuple(args.cyber_evaluator_pin))
+    from verifier.profiles.cyber.evidence import SeatCapabilities
     return Service(str(state), kernel_factory=kernel_factory, profile="cyber",
                    project_root=str(project), evaluator_spec=spec,
                    final_destination="final_poc", seats="codex", model=MODEL,
-                   effort=EFFORT, service_tier=SERVICE_TIER)
+                   effort=EFFORT, service_tier=SERVICE_TIER,
+                   seat_capabilities=SeatCapabilities(read_retained_artifacts=True,
+                       read_candidate_blobs=True, execute_local_checks=True,
+                       invoke_controller_evaluator=False))
 
 
 class ReceiptBusy(ValueError):
@@ -198,12 +251,13 @@ def _delivery_receipt_locked(service: Service) -> dict:
             payload = event["payload"]
             final_id = payload["final_claim_id"]
             candidate_id = payload["candidate_id"]
-            certificate = service._auth_artifact(payload["certificate_id"])
+            certificate, full = service._authenticate_candidate_certificate(
+                payload["certificate_id"], final_id, payload.get("full_certificate_id"))
             binding = service._cyber_bindings.get(final_id)
             if (binding is None or certificate.get("verdict") != "verified"
                     or certificate.get("final") != final_id
                     or service.store.status(final_id) != "verified"
-                    or certificate.get("profile_metadata") != service._certificate_metadata(final_id)
+                    or full.get("profile_metadata") != service._certificate_metadata(final_id)
                     or binding["subject"]["candidate_id"] != candidate_id
                     or payload["receipt"].get("candidate_id") != candidate_id
                     or payload["receipt"].get("destination") != service.final_destination):
@@ -221,6 +275,8 @@ def _delivery_receipt_locked(service: Service) -> dict:
                     "candidate_id": candidate_id, "sha256": candidate["sha256"],
                     "size": candidate["size"], "destination": receipt["destination"],
                     "certificate_id": payload["certificate_id"], "final_claim_id": final_id,
+                    **({"full_certificate_id": payload["full_certificate_id"]}
+                       if "full_certificate_id" in payload else {}),
                     "receipt_event_seq": event["seq"], "receipt": receipt,
                     "profile_id": service.profile.id,
                     "task_sha256": binding["task_sha256"]}
@@ -294,6 +350,12 @@ class ProtectedApplication:
         if not self.authorized(scope):
             return await self.response(send, 401, {"error": "unauthorized"})
         path, method = scope.get("path", ""), scope.get("method", "GET")
+        if path == "/progress":
+            if method != "GET":
+                return await self.response(send, 405, {"error": "method not allowed"})
+            # Operational metadata only, independent of graph/ledger locks.
+            progress = await asyncio.to_thread(self.service.verification_jobs)
+            return await self.response(send, 200, progress)
         if path in ("/health", "/receipt"):
             if method != "GET":
                 return await self.response(send, 405, {"error": "method not allowed"})

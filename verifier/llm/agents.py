@@ -47,6 +47,10 @@ class _TransientSDKError(RuntimeError):
     """Infrastructure failure worth backing off and retrying (internal)."""
 
 
+class ExhaustedInfrastructureError(RoleError):
+    """A backend exhausted its infrastructure retries, not a generation defect."""
+
+
 # Raster formats the CLI's Read tool renders as image content blocks. On a
 # text-only provider such a block makes the whole request unroutable
 # (e.g. OpenRouter: 404 "No endpoints found that support image input"), so
@@ -179,6 +183,11 @@ class AgentRole:
                 validate(self.schema, payload)
                 return payload
             except RoleError as err:
+                if isinstance(err, ExhaustedInfrastructureError):
+                    # The backend already backed off. Re-prompting would
+                    # duplicate that budget and inject provider faults into
+                    # the semantic task, not repair a malformed generation.
+                    raise
                 last_error = err
                 prompt = prompt + f"\n\n[previous attempt failed; fix it and retry] {err}"
         raise RoleError(f"{self.name}: failed twice: {last_error}")
@@ -248,7 +257,8 @@ class AgentBackend:
                 return await self._attempt(role, prompt)
             except _TransientSDKError as err:
                 last = str(err)
-        raise RoleError(f"{role.name}: transient sdk failure persisted: {last}")
+        raise ExhaustedInfrastructureError(
+            f"{role.name}: transient sdk failure persisted: {last}")
 
     async def _attempt(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
         stderr_tail: List[str] = []

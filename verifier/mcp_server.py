@@ -35,6 +35,7 @@ import asyncio
 import json
 import os
 import hashlib
+import inspect
 import stat
 import threading
 import time
@@ -121,7 +122,8 @@ class Service:
                  final_destination: Optional[str] = None,
                  seats: str = "sdk",
                  effort: Optional[str] = None,
-                 service_tier: Optional[str] = None):
+                 service_tier: Optional[str] = None,
+                 seat_capabilities=None):
         self.toolchain_dir = toolchain_dir
         # a verifier-owned cache root shared across trials (install caches
         # for the executor's instruments); None keeps every cache
@@ -138,6 +140,8 @@ class Service:
         self._event_feed_lock = threading.RLock()
         self._cyber_lock = threading.RLock()
         self._cyber_bindings = {}
+        self._cyber_adjudications = {}
+        self._seat_capabilities = seat_capabilities
         self.candidates = None
         self.evaluator = None
         os.makedirs(state_dir, exist_ok=True)
@@ -176,6 +180,10 @@ class Service:
             if event["type"] == "commit" and "cybergv_binding" in event["payload"]:
                 self._restore_binding(event["payload"])
             self.builder.feed(event)
+        self._jobs = None
+        if self.profile.name == "cyber":
+            from .service_jobs import VerificationJobs
+            self._jobs = VerificationJobs(self.state_dir)
 
     # hook feed
     def _ingest_hook_event(self, raw_event: Dict[str, Any]) -> None:
@@ -183,7 +191,11 @@ class Service:
         if etype not in HOOK_EVENT_TYPES:
             return  # unknown feed line: ignored, the feed is untrusted input
         with self._event_feed_lock:
-            event = self.log.append(etype, raw_event.get("payload", {}))
+            payload = raw_event.get("payload", {})
+            if self.profile.name == "cyber":
+                payload = {**payload, "origin": "solver-origin-untrusted",
+                           "authority_scope": "untrusted_solver_observation"}
+            event = self.log.append(etype, payload)
             self.builder.feed(event)
 
     def drain_hooks(self) -> int:
@@ -301,6 +313,28 @@ class Service:
         return result
 
     def status(self, label: Optional[str] = None) -> Dict[str, Any]:
+        if self._jobs is not None:
+            if not self._event_feed_lock.acquire(blocking=False):
+                return {"pending": True, "verified": False,
+                        "status_snapshot": "unavailable_while_verifying",
+                        "jobs": self._jobs.progress()["jobs"]}
+            try:
+                self._feed.poll()
+                if label is None:
+                    labels = tuple(self.builder.labels.items())
+                else:
+                    claim_id = self.builder.resolve(label)
+            except TraceError as err:
+                return {"error": str(err)}
+            finally:
+                self._event_feed_lock.release()
+            if label is None:
+                return {name: self.store.status(cid) for name, cid in labels}
+            row = self.store.get(claim_id)
+            result = {key: row[key] for key in ("id", "kind", "text", "status")}
+            if row["status"] != "verified":
+                result.update(_residue(self.store, claim_id))
+            return result
         self.drain_hooks()
         if label is not None:
             try:
@@ -391,6 +425,13 @@ class Service:
             raise ValueError("candidate binding belongs to a different profile")
         if binding.get("task_sha256") != self._task_digest():
             raise ValueError("authoritative task changed after candidate certification")
+        # History remains evidence, but a new binding authorizes delivery only
+        # within the host capability scope under which it was certified.
+        # Legacy bindings without this field retain their existing rules.
+        if ("capability_revision" in binding
+                and binding["capability_revision"] != self._evidence_manifest(
+                    "obligations")["capability_revision"]):
+            raise ValueError("candidate host capability scope changed")
         # Artifact metadata alone cannot authenticate the current blob bytes.
         with self.candidates.lease(binding["subject"]["candidate_id"]) as lease:
             candidate = lease.candidate
@@ -434,6 +475,56 @@ class Service:
         if claim.id in self.builder.labels.values() and claim.id not in self._cyber_bindings:
             raise ValueError("host scope cannot promote an earlier ordinary claim during replay")
         self._cyber_bindings[claim.id] = binding
+        self._cyber_adjudications[self._adjudication_key(binding)] = {
+            "claim_id": claim.id, "label": payload["label"], "binding": binding}
+
+    @staticmethod
+    def _adjudication_key(binding):
+        return content_hash({key: value for key, value in binding.items()
+                             if key not in ("context_id", "verification_epoch")})
+
+    def _evidence_manifest(self, role, claim_id=None, binding=None):
+        from .profiles.cyber.evidence import SeatCapabilities, build_evidence_manifest
+        capabilities = self._seat_capabilities or SeatCapabilities()
+        observations = []
+        events = {}
+        calls = {}
+        if role not in ("obligations", "critic"):
+            snapshot = list(self.log.replay())
+            events = {event["seq"]: event for event in snapshot}
+            if binding is not None:
+                observations = binding["observations"]
+            elif claim_id is not None:
+                closure = set(self.store.backward_slice(claim_id))
+                observations = [event["payload"] for event in snapshot
+                    if event["type"] == "cyber_observation_recorded"
+                    and event["payload"].get("effect_claim_id") in closure]
+            needed = {events[observation["event_seq"]]["payload"].get("tool_use_id")
+                      for observation in observations}
+            for event in snapshot:
+                if (event["type"] == "tool_call"
+                        and event["payload"].get("tool") == "cyber_evaluator"
+                        and event["payload"].get("tool_use_id") in needed
+                        and event["payload"].get("authority_scope") != "untrusted_solver_observation"):
+                    call_id = event["payload"].get("tool_use_id")
+                    if call_id in calls:
+                        raise ValueError("duplicate host evaluator execution identity")
+                    calls[call_id] = event
+
+        def subject(candidate_id):
+            with self.candidates.lease(candidate_id) as lease:
+                candidate = dict(lease.candidate)
+                self.candidates.validate(lease)
+            return candidate
+
+        return build_evidence_manifest(
+            evaluator_spec=self.evaluator.spec if self.evaluator else None,
+            capabilities=capabilities, observations=observations,
+            candidate_provider=subject, artifact_provider=self._auth_artifact,
+            artifact_root=self.artifacts.root,
+            event_provider=events.get, tool_call_provider=calls.get,
+            effect_resolver=self.builder.resolve,
+            answer_blind=role in ("obligations", "critic"))
 
     def profile_context(self, role, claim_id):
         context = {"profile": self.profile.name, "profile_id": self.profile.id,
@@ -443,7 +534,98 @@ class Service:
             context.update({k: v for k, v in binding.items() if k != "observations"})
             if role not in ("obligations", "critic"):
                 context["observations"] = binding["observations"]
+        if self.profile.name == "cyber":
+            context["execution_capabilities"] = self._evidence_manifest(role, claim_id, binding)
         return canonical(context)
+
+    def _job_request(self, tool, args):
+        self._check_task()
+        snapshot = list(self.log.replay())
+        revisions = []
+        for event in snapshot:
+            payload = event["payload"]
+            if event["type"] != "commit" or not payload.get("revises"):
+                continue
+            # A revision's own output does not change that request's identity.
+            same_request = (tool == "commit" and len(args) == 5
+                and [payload.get("label"), payload.get("kind"), payload.get("text"),
+                     payload.get("deps", []), payload.get("revises")] == args)
+            if not same_request:
+                revisions.append(EventLog.event_digest(event))
+        scope = {"profile": self._profile_pin,
+                 "graph_revision": content_hash(revisions),
+                 "capability_revision": self._evidence_manifest("obligations")["capability_revision"]}
+        if tool in ("cyber_finalize_candidate", "cyber_evaluate_candidate"):
+            with self.candidates.lease(args[0]) as lease:
+                scope["subject"] = {key: lease.candidate[key]
+                                    for key in ("candidate_id", "sha256", "size")}
+                self.candidates.validate(lease)
+            if self.evaluator is not None:
+                self.evaluator.spec.validate()
+            scope["observations"] = self._observations(args[0])
+            if tool == "cyber_finalize_candidate":
+                address = os.path.abspath(os.path.join(self.project_root,
+                    args[1] or self.final_destination or ""))
+                if not args[1] and self.final_destination is None:
+                    raise ValueError("a canonical destination must be specified")
+                if self.final_destination and address != self.final_destination:
+                    raise ValueError("destination differs from host-required canonical path")
+                prior = next((event["payload"] for event in reversed(list(self.log.replay()))
+                    if event["type"] == "cyber_materialized"
+                    and event["payload"].get("candidate_id") == args[0]
+                    and event["payload"].get("receipt", {}).get("destination") == address), None)
+                if prior is None:
+                    self.candidates.preflight_destination(address)
+                else:
+                    self._authenticate_candidate_certificate(prior["certificate_id"],
+                        prior["final_claim_id"], prior.get("full_certificate_id"))
+                    self.candidates.verify_delivery(prior["receipt"])
+                # Aliases of the same canonical address are one request.
+                args = [args[0], address]
+        return {"tool": tool, "args": args, "scope": scope}
+
+    def _job_operation(self, request):
+        tool, args = request["tool"], request["args"]
+
+        def operation(retry):
+            # Request identity is checked again when the serialized worker gets
+            # to it. Evidence may have changed while another job was running.
+            if self._job_request(tool, args) != request:
+                return {"error": "verification inputs changed while queued; resubmit",
+                        "verified": False, "materialized": False, "delivery_pending": True}
+            if tool == "cyber_finalize_candidate":
+                return self.cyber_finalize_candidate(*args, retry=retry)
+            if tool == "commit" and self.store.trigger == TRIGGER_ON_COMMIT:
+                # On server recovery a recorded claim is already in SQLite.
+                # add_claim is a no-op for that identity, so it cannot fire the
+                # on-commit trigger a second time. Resume only that unresolved
+                # recorded claim, without recompiling settled obligation nodes.
+                known = args[0] in self.builder.labels
+                result = self.commit(*args)
+                if known and not result.get("error") and result.get("status") in ("unverified", "stale"):
+                    return self.verify(args[0])
+                return result
+            return getattr(self, tool)(*args)
+        return operation
+
+    def verification_job(self, job_id: str):
+        if self._jobs is None:
+            return {"error": "recoverable jobs require the cyber profile"}
+        return self._jobs.status(job_id)
+
+    def verification_jobs(self):
+        return self._jobs.progress() if self._jobs is not None else {"jobs": []}
+
+    def verification_retry(self, job_id: str):
+        if self._jobs is None:
+            return {"error": "recoverable jobs require the cyber profile"}
+        try:
+            request = self._jobs.request(job_id)
+            if self._job_request(request["tool"], request["args"]) != request:
+                raise ValueError("verification inputs changed; resubmit the original operation")
+            return self._jobs.retry(job_id, self._job_operation(request))
+        except (OSError, ValueError) as err:
+            return {"error": str(err), "verified": False}
 
     def profile_context_id(self, claim_id):
         if self.profile.name == "default":
@@ -493,6 +675,7 @@ class Service:
                 with self._event_feed_lock:
                     self.builder.feed(self.log.append("tool_call", {
                         "tool": "cyber_evaluator", "tool_use_id": call_id,
+                        "origin": "verifier_controller", "authority_scope": "host_evaluator_execution",
                         "input": {"candidate_id": candidate_id,
                                   "evaluator_id": self.evaluator.spec.id}}))
                 try:
@@ -502,6 +685,7 @@ class Service:
                 with self._event_feed_lock:
                     event = self.log.append("tool_result", {
                         "tool": "cyber_evaluator", "tool_use_id": call_id,
+                        "origin": "verifier_controller", "authority_scope": "host_evaluator_execution",
                         "output": result})
                     self.builder.feed(event)
                     effect_ref = f"effect:{event['seq']}"
@@ -521,7 +705,103 @@ class Service:
         except (OSError, ValueError) as err:
             return {"error": str(err)}
 
-    def cyber_finalize_candidate(self, candidate_id: str, destination: str = ""):
+    def _certificate_matches_store(self, certificate):
+        """Check a retained snapshot without scheduling any verification work."""
+        final_id = certificate.get("final")
+        entries = certificate.get("slice")
+        if not isinstance(entries, list) or [entry.get("id") for entry in entries] \
+                != self.store.backward_slice(final_id):
+            raise ValueError("certificate dependency slice changed")
+        memo = {}
+        for entry in entries:
+            row = self.store.get(entry["id"])
+            effective = self.store.effective(entry["id"], memo)
+            expected = {key: row[key] for key in ("kind", "text", "status", "reason", "basis", "strength")}
+            expected.update({key: effective[key] for key in (
+                "effective_status", "effective_basis", "effective_strength", "open_premises", "premise_refuted")})
+            if any(entry.get(key) != value for key, value in expected.items()) \
+                    or entry.get("evidence") != self.store.evidence_for(entry["id"]):
+                raise ValueError("certificate no longer matches the settled graph")
+            nodes = self.store.obligation_children(entry["id"])
+            exported = entry.get("obligations")
+            if not isinstance(exported, list) or len(nodes) != len(exported):
+                raise ValueError("certificate obligation slice changed")
+            for node, retained in zip(nodes, exported):
+                expected_node = {key: node[key] for key in ("id", "text", "status", "reason", "basis", "strength")}
+                expected_node.update(severity=node.get("severity", "must"),
+                    clause=node.get("clause", ""),
+                    refutable_by_absence=bool(node.get("refutable_by_absence", False)),
+                    evidence=self.store.evidence_for(node["id"]))
+                if retained != expected_node:
+                    raise ValueError("certificate obligation evidence changed")
+
+    def _authenticate_candidate_certificate(self, certificate_id, final_id, full_certificate_id=None):
+        """Authenticate the full GV verdict and, when present, its narrow scope.
+
+        A MUST acceptance certificate cannot overwrite the full GV verdict. It
+        links that artifact and is recomputed from its currently settled graph.
+        No positive evaluator observation can enter this authorization path.
+        """
+        artifact = self._auth_artifact(certificate_id)
+        if self.evaluator is not None:
+            self.evaluator.spec.validate()
+        binding = self._cyber_bindings.get(final_id)
+        if binding is None or artifact.get("final") != final_id \
+                or self.store.status(final_id) != "verified":
+            raise ValueError("certificate has no matching current candidate final")
+        self._validate_binding(binding)
+        if binding["observations"] != self._observations(binding["subject"]["candidate_id"]):
+            raise ValueError("new candidate observations require fresh adjudication")
+        full = artifact
+        if artifact.get("schema") == "gv-cyber-candidate-acceptance-v1":
+            from .profiles.cyber.acceptance import build_candidate_acceptance
+            if full_certificate_id is None or artifact.get("full_certificate_id") != full_certificate_id:
+                raise ValueError("acceptance certificate has no designated full certificate")
+            full = self._auth_artifact(full_certificate_id)
+            if build_candidate_acceptance(full, binding) != artifact:
+                raise ValueError("acceptance certificate does not match the full GV audit")
+        elif full_certificate_id is not None or artifact.get("verdict") != "verified":
+            raise ValueError("full candidate certificate is not verified")
+        if (full.get("final") != final_id
+                or full.get("profile_metadata") != self._certificate_metadata(final_id)):
+            raise ValueError("certificate does not authorize the exact candidate binding")
+        self._certificate_matches_store(full)
+        # Evidence identities are not enough if their designated executor
+        # snapshot has disappeared or changed. Follow only schema-defined
+        # winning links, never arbitrary paths or digest-looking solver text.
+        for entry in full["slice"]:
+            if entry["id"] != final_id:
+                continue
+            for node in entry["obligations"]:
+                if node.get("status") != "verified" or not node.get("evidence"):
+                    continue
+                digest = node["evidence"][-1].get("artifact")
+                if not digest:
+                    continue  # Legacy direct/graph evidence keeps its semantics.
+                evidence = self._auth_artifact(digest)
+                if evidence.get("instrument") == "binding-game" and evidence.get("bound") is not None:
+                    bound = evidence["bound"]
+                    if not isinstance(bound, dict) or not bound.get("discharge_artifact"):
+                        raise ValueError("winning evidence has no executor snapshot")
+                    self._auth_artifact(bound["discharge_artifact"])
+        return artifact, full
+
+    def _retained_candidate_certificate(self, final_id):
+        for event in reversed(list(self.log.replay())):
+            if event["type"] == "certificate" and event["payload"].get("final") == final_id:
+                digest = event["payload"]["digest"]
+                artifact = self._auth_artifact(digest)
+                if artifact.get("final") != final_id \
+                        or artifact.get("profile_metadata") != self._certificate_metadata(final_id):
+                    raise ValueError("retained candidate certificate has different scope")
+                self._certificate_matches_store(artifact)
+                return {"verdict": artifact["verdict"], "certificate_id": digest,
+                        "profile_metadata": artifact["profile_metadata"],
+                        "slice": [{key: entry[key] for key in ("text", "status")}
+                                  for entry in artifact["slice"]]}
+        return None
+
+    def cyber_finalize_candidate(self, candidate_id: str, destination: str = "", *, retry: bool = False):
         if self.candidates is None:
             return {"error": "cyber profile is not active"}
         receipt = None
@@ -540,14 +820,10 @@ class Service:
                             and event["payload"].get("candidate_id") == candidate_id
                             and event["payload"]["receipt"].get("destination") == address):
                         prior = event["payload"]
-                        artifact = self._auth_artifact(prior["certificate_id"])
                         final_id = prior["final_claim_id"]
                         binding = self._cyber_bindings.get(final_id)
-                        if (binding is None or artifact.get("final") != final_id
-                                or artifact.get("verdict") != "verified"
-                                or self.store.status(final_id) != "verified"
-                                or artifact.get("profile_metadata") != self._certificate_metadata(final_id)):
-                            raise ValueError("prior receipt has no matching verified candidate certificate")
+                        artifact, _ = self._authenticate_candidate_certificate(prior["certificate_id"],
+                            final_id, prior.get("full_certificate_id"))
                         with self.candidates.lease(candidate_id) as lease:
                             self._validate_binding(binding)
                             if binding["observations"] != self._observations(candidate_id):
@@ -555,6 +831,8 @@ class Service:
                             self.candidates.verify_delivery(prior["receipt"])
                             self.candidates.validate(lease)
                         return {"verdict": "verified", "certificate_id": prior["certificate_id"],
+                                **({"full_certificate_id": prior["full_certificate_id"],
+                                    "full_verdict": artifact["full_verdict"]} if "full_certificate_id" in prior else {}),
                                 "final_claim_id": final_id, "profile_metadata": artifact["profile_metadata"],
                                 "receipt": prior["receipt"], "receipt_event_seq": event["seq"],
                                 "materialized": True, "delivery_pending": False, "official_score": None}
@@ -564,6 +842,7 @@ class Service:
                     candidate = lease.candidate
                     binding = {"certificate_scope": "candidate", "profile_id": self.profile.id,
                         "task_sha256": self._task_digest(), "delivery_pending": True,
+                        "capability_revision": self._evidence_manifest("obligations")["capability_revision"],
                         # A live world is not an immutable capture. Separate
                         # attempts cannot blindly inherit world conclusions.
                         "verification_epoch": uuid.uuid4().hex,
@@ -571,22 +850,61 @@ class Service:
                         "observations": self._observations(candidate_id)}
                     binding["subject"]["address"] = address
                     binding["subject"]["address_source"] = ("host_required" if self.final_destination else "candidate_proposal")
-                    binding["context_id"] = content_hash(binding)
-                    label = "cyber-final:" + uuid.uuid4().hex
-                    commit = self._commit(label, "final",
-                        canonical({"schema": "gv-cyber-candidate-v1", "binding": binding}),
-                        [o["effect_ref"] for o in binding["observations"]], binding=binding)
-                    if "claim_id" not in commit or commit.get("error"):
-                        return {**commit, "delivery_pending": True, "materialized": False}
-                    cert = self.certificate(label)
+                    key = self._adjudication_key(binding)
+                    prior = self._cyber_adjudications.get(key)
+                    cert = None
+                    if prior is not None and retry:
+                        retained = self._retained_candidate_certificate(prior["claim_id"])
+                        if retained is not None and retained.get("verdict") == "verified":
+                            retry = False  # Retry delivery, not an already complete proof.
+                        elif retained is not None and retained.get("verdict") == "supported":
+                            from .profiles.cyber.acceptance import AcceptanceError, build_candidate_acceptance
+                            try:
+                                build_candidate_acceptance(self._auth_artifact(retained["certificate_id"]), prior["binding"])
+                                retry = False
+                            except AcceptanceError:
+                                pass
+                    if prior is not None and not retry:
+                        binding, label = prior["binding"], prior["label"]
+                        self._validate_binding(binding)
+                        commit = {"claim_id": prior["claim_id"]}
+                        cert = self._retained_candidate_certificate(commit["claim_id"])
+                    else:
+                        binding["context_id"] = content_hash(binding)
+                        label = "cyber-final:" + uuid.uuid4().hex
+                        # Record the stable identity before entering the kernel.
+                        # A restarted service restores it from the commit event.
+                        commit = self._commit(label, "final",
+                            canonical({"schema": "gv-cyber-candidate-v1", "binding": binding}),
+                            [o["effect_ref"] for o in binding["observations"]], binding=binding)
+                        if "claim_id" in commit:
+                            self._cyber_adjudications[key] = {"binding": binding,
+                                "label": label, "claim_id": commit["claim_id"]}
+                        if "claim_id" not in commit or commit.get("error"):
+                            return {**commit, "delivery_pending": True, "materialized": False}
+                    if cert is None:
+                        cert = self.certificate(label)
                     cert["final_claim_id"] = commit["claim_id"]
+                    if cert.get("verdict") == "supported":
+                        from .profiles.cyber.acceptance import AcceptanceError, build_candidate_acceptance
+                        try:
+                            full_id = cert["certificate_id"]
+                            full = self._auth_artifact(full_id)
+                            self._certificate_matches_store(full)
+                            acceptance = build_candidate_acceptance(full, binding)
+                            digest = self.artifacts.put(acceptance)
+                            self.log.append("cyber_acceptance_certified", {
+                                "final": commit["claim_id"], "digest": digest,
+                                "full_certificate_id": full_id, "context_id": binding["context_id"]})
+                            cert.update(verdict="verified", certificate_id=digest,
+                                full_certificate_id=full_id, full_verdict=full["verdict"],
+                                profile_metadata=acceptance["profile_metadata"])
+                        except AcceptanceError as err:
+                            cert["acceptance_rejection"] = err.reason_code
                     if cert.get("verdict") != "verified":
                         return {**cert, "delivery_pending": True, "materialized": False}
-                    artifact = self._auth_artifact(cert["certificate_id"])
-                    if (self.store.status(commit["claim_id"]) != "verified"
-                            or artifact.get("final") != commit["claim_id"] or artifact.get("verdict") != "verified"
-                            or artifact.get("profile_metadata") != self._certificate_metadata(commit["claim_id"])):
-                        raise ValueError("certificate does not authorize the exact candidate binding")
+                    self._authenticate_candidate_certificate(cert["certificate_id"],
+                        commit["claim_id"], cert.get("full_certificate_id"))
                     self._validate_binding(binding)
                     if binding["observations"] != self._observations(candidate_id):
                         raise ValueError("new candidate observations invalidate the prepared certificate")
@@ -594,16 +912,24 @@ class Service:
                     receipt = self.candidates.materialize(lease, address)
                 # Lease exit validates once more before authenticating delivery.
                 self.candidates.verify_delivery(receipt)
-                event = self.log.append("cyber_materialized", {
-                    "receipt": receipt, "candidate_id": candidate_id,
-                    "certificate_id": cert["certificate_id"], "final_claim_id": commit["claim_id"]})
+                with self._event_feed_lock:
+                    # Revalidate after byte writing/lease exit as well: a
+                    # concurrent graph revision must not leave an authorized
+                    # receipt that the next host poll would immediately reject.
+                    self._authenticate_candidate_certificate(cert["certificate_id"],
+                        commit["claim_id"], cert.get("full_certificate_id"))
+                    self.candidates.verify_delivery(receipt)
+                    event = self.log.append("cyber_materialized", {
+                        "receipt": receipt, "candidate_id": candidate_id,
+                        **({"full_certificate_id": cert["full_certificate_id"]} if "full_certificate_id" in cert else {}),
+                        "certificate_id": cert["certificate_id"], "final_claim_id": commit["claim_id"]})
                 return {**cert, "materialized": True, "delivery_pending": False,
                         "receipt": receipt, "receipt_event_seq": event["seq"],
                         "official_score": None}
         except (OSError, ValueError, KeyError) as err:
             if receipt is not None:
                 self.candidates.rollback(receipt)
-            return {**cert, "error": str(err), "delivery_pending": True, "materialized": False}
+            return {**(cert or {}), "error": str(err), "delivery_pending": True, "materialized": False}
 
 def _parallel_default(name: str, fallback: int) -> int:
     """Per-trial parallelism defaults: GV_PARALLEL_OBLIGATIONS (discharges
@@ -695,6 +1021,15 @@ def _default_kernel(sc: Service, model, backend=None,
 
 # MCP wiring
 
+_JOB_VERBS = frozenset({"commit", "verify", "certificate", "cyber_register_candidate",
+                        "cyber_evaluate_candidate", "cyber_finalize_candidate"})
+_JOB_CONTRACT = (
+    "Cyber transport overrides blocking-return semantics: pending=true with job_id "
+    "means adjudication is still running, not success or failure. Query "
+    "verification_job(job_id) to recover the same result; identical requests "
+    "reconnect without starting another adjudication. Disconnecting a waiter "
+    "does not cancel the worker.")
+
 class _ToolDispatcher:
     """Keep synchronous verifier work off the MCP transport's event loop.
 
@@ -748,6 +1083,42 @@ class _ToolDispatcher:
         if self._diagnostic_path is not None:
             await asyncio.to_thread(self._record, call_id, tool, "received", started)
 
+        jobs = self.service.__dict__.get("_jobs")
+        if jobs is not None and tool in _JOB_VERBS:
+            # Retain before returning a handle. The background adjudication is
+            # independent of this request Task and any solver code-mode cell.
+            frozen_args = json.loads(canonical(list(args)))
+
+            def submit():
+                try:
+                    request = self.service._job_request(tool, frozen_args)
+                    operation = self.service._job_operation(request)
+
+                    def invoke_job(retry):
+                        self._record(call_id, tool, "invoked", started)
+                        try:
+                            result = operation(retry)
+                        except BaseException as exc:
+                            self._record(call_id, tool, "failed", started, type(exc).__name__)
+                            raise
+                        self._record(call_id, tool, "finished", started)
+                        return result
+
+                    handle = jobs.submit(request, invoke_job)
+                    retained = jobs.wait(handle["job_id"], 0.1)
+                    self._record(call_id, tool, "responded", started)
+                    if retained.get("state") == "completed":
+                        return {**retained["result"], "job_id": retained["job_id"],
+                                "job_state": "completed", "pending": False,
+                                "result_is_retained": True}
+                    return {**retained, "job_state": retained.get("state")}
+                except VERB_ERRORS + (OSError, KeyError) as exc:
+                    self._record(call_id, tool, "failed", started, type(exc).__name__)
+                    return {"error": str(exc), "verified": False,
+                            "materialized": False, "delivery_pending": True}
+
+            return await asyncio.to_thread(submit)
+
         def invoke():
             self._record(call_id, tool, "invoked", started)
             try:
@@ -775,7 +1146,19 @@ def _solver_protocol(profile=None) -> str:
     with open(_PROTOCOL_PATH, encoding="utf-8") as f:
         protocol = f.read()
     if profile is not None and profile.solver_instructions:
-        return protocol + "\n\n" + profile.solver_instructions
+        protocol += "\n\n" + profile.solver_instructions
+    if profile is not None and profile.name == "cyber":
+        # Operational protocol only, not a task-solving prompt or a soundness
+        # assumption. This overrides synchronous-transport wording above.
+        protocol += (
+            "\n\nCyber transport: commit, verify, certificate, candidate registration, "
+            "evaluation and finalization may return pending=true with a stable job_id. "
+            "That response is not a verdict. Use verification_job(job_id) to recover "
+            "the existing result; verification_jobs lists outstanding work. A lost "
+            "waiter does not cancel the worker. Repeated identical requests reconnect. "
+            "Only verification_retry explicitly retries terminal non-verified work. "
+            "Retained job results describe completion time, not current delivery or "
+            "an official score. The controller authenticates current delivery separately.")
     return protocol
 
 
@@ -785,7 +1168,13 @@ def build_server(service: Service):
     server = FastMCP("gv", instructions=_solver_protocol(service.profile))
     dispatcher = _ToolDispatcher(service)
 
+    def recoverable_contract(function):
+        if service.profile.name == "cyber":
+            function.__doc__ = inspect.cleandoc(function.__doc__ or "") + "\n\n" + _JOB_CONTRACT
+        return function
+
     @server.tool()
+    @recoverable_contract
     async def commit(label: str, kind: CLAIM_KINDS, text: str, deps: List[str],
                      revises: str = "") -> str:
         """Commit a claim (kind: assertion|effect|final). deps is a list of
@@ -799,11 +1188,13 @@ def build_server(service: Service):
             ensure_ascii=False)
 
     @server.tool()
+    @recoverable_contract
     async def verify(label: str) -> str:
         """Verify a committed claim now; returns its status."""
         return json.dumps(await dispatcher.call("verify", label), ensure_ascii=False)
 
     @server.tool()
+    @recoverable_contract
     async def certificate(final_label: str) -> str:
         """Certify a final claim: settle the dependency closure, freeze the
         certificate, and return the verdict plus a slice summary."""
@@ -821,6 +1212,7 @@ def build_server(service: Service):
             return json.dumps(await dispatcher.call("cyber_checkpoint", working_theory, next_actions), ensure_ascii=False)
 
         @server.tool()
+        @recoverable_contract
         async def cyber_register_candidate(path: str, label: str = "") -> str:
             """Snapshot exact bytes from a staging file. Records identity, not correctness."""
             return json.dumps(await dispatcher.call("cyber_register_candidate", path, label), ensure_ascii=False)
@@ -832,17 +1224,36 @@ def build_server(service: Service):
 
         if service.evaluator is not None:
             @server.tool()
+            @recoverable_contract
             async def cyber_evaluate_candidate(candidate_id: str) -> str:
                 """Run the configured task-authorized evaluator on the exact candidate.
                 Returns retained observations and an ordinary Effect reference, not a certificate."""
                 return json.dumps(await dispatcher.call("cyber_evaluate_candidate", candidate_id), ensure_ascii=False)
 
         @server.tool()
+        @recoverable_contract
         async def cyber_finalize_candidate(candidate_id: str, destination: str = "") -> str:
             """Verify the candidate through the normal GV roles, then copy certified bytes.
             A verified candidate certificate is scoped to content; materialization has its own
             receipt. Neither the receipt nor a candidate signal asserts an official task score."""
             return json.dumps(await dispatcher.call("cyber_finalize_candidate", candidate_id, destination), ensure_ascii=False)
+
+        @server.tool()
+        async def verification_job(job_id: str) -> str:
+            """Query an existing verification job without restarting it.
+            A completed result is retained history; current delivery is authenticated separately."""
+            return json.dumps(await dispatcher.call("verification_job", job_id), ensure_ascii=False)
+
+        @server.tool()
+        async def verification_jobs() -> str:
+            """List recoverable verification jobs and their progress; starts no verification."""
+            return json.dumps(await dispatcher.call("verification_jobs"), ensure_ascii=False)
+
+        @server.tool()
+        async def verification_retry(job_id: str) -> str:
+            """Explicitly retry a terminal, non-verified job; pending jobs are only reconnected.
+            Changed inputs require resubmission. Never retry merely to recover a disconnected waiter."""
+            return json.dumps(await dispatcher.call("verification_retry", job_id), ensure_ascii=False)
 
     return server
 

@@ -15,13 +15,14 @@ from types import SimpleNamespace
 
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.types import CallToolResult, TextContent
 
 from verifier.engine.kernel import Kernel
 from verifier.core.store import TRIGGER_LAZY
 from verifier.core.model import content_hash
 from verifier.execution.discharge import DischargeResult
 from verifier.llm.schema import FixtureBackend
-from verifier.mcp_server import Service, _ToolDispatcher, build_server
+from verifier.mcp_server import Service, _ToolDispatcher, build_server, _JOB_CONTRACT, _JOB_VERBS
 from verifier.profiles import get_profile
 
 
@@ -38,6 +39,9 @@ CASES = [
     ("cyber_candidates", {}, []),
     ("cyber_evaluate_candidate", {"candidate_id": "subject"}, ["subject"]),
     ("cyber_finalize_candidate", {"candidate_id": "subject"}, ["subject", ""]),
+    ("verification_job", {"job_id": "job"}, ["job"]),
+    ("verification_jobs", {}, []),
+    ("verification_retry", {"job_id": "job"}, ["job"]),
 ]
 CONTRACT = {
     "commit": (("label", "kind", "text", "deps"), ("revises",)),
@@ -49,6 +53,9 @@ CONTRACT = {
     "cyber_candidates": ((), ()),
     "cyber_evaluate_candidate": (("candidate_id",), ()),
     "cyber_finalize_candidate": (("candidate_id",), ("destination",)),
+    "verification_job": (("job_id",), ()),
+    "verification_jobs": ((), ()),
+    "verification_retry": (("job_id",), ()),
 }
 DESCRIPTIONS = {
     "commit": "Commit a claim (kind: assertion|effect|final). deps is a list of\n"
@@ -68,6 +75,11 @@ DESCRIPTIONS = {
     "cyber_finalize_candidate": "Verify the candidate through the normal GV roles, then copy certified bytes.\n"
                                 "            A verified candidate certificate is scoped to content; materialization has its own\n"
                                 "            receipt. Neither the receipt nor a candidate signal asserts an official task score.",
+    "verification_job": "Query an existing verification job without restarting it.\n"
+                        "            A completed result is retained history; current delivery is authenticated separately.",
+    "verification_jobs": "List recoverable verification jobs and their progress; starts no verification.",
+    "verification_retry": "Explicitly retry a terminal, non-verified job; pending jobs are only reconnected.\n"
+                          "            Changed inputs require resubmission. Never retry merely to recover a disconnected waiter.",
 }
 
 
@@ -99,6 +111,28 @@ def decode(result):
     return json.loads(result.content[0].text)
 
 
+async def completed_call(client, name, arguments):
+    """These legacy tests assert settled semantics, not blocking transport.
+
+    New job tests separately require that an in-flight request returns promptly.
+    Polling here is fixture-only: never a timeout or retry of an adjudication.
+    """
+    reply = await client.call_tool(name, arguments)
+    data = decode(reply)
+    if data.get("pending") and data.get("job_id"):
+        while data.get("pending"):
+            await asyncio.sleep(0.005)
+            data = decode(await client.call_tool("verification_job", {"job_id": data["job_id"]}))
+        assert data.get("state") == "completed", data
+        return CallToolResult(content=[TextContent(type="text", text=json.dumps(data["result"]))])
+    if name == "status" and data.get("status_snapshot") == "unavailable_while_verifying":
+        while data.get("pending"):
+            await asyncio.sleep(0.005)
+            reply = await client.call_tool(name, arguments)
+            data = decode(reply)
+    return reply
+
+
 def read_diagnostics(path):
     return [json.loads(line) for line in path.read_text().splitlines()]
 
@@ -109,7 +143,7 @@ def test_real_mcp_dispatch_preserves_arguments_and_worker_thread(name, arguments
 
     async def scenario():
         async with create_connected_server_and_client_session(build_server(service)) as client:
-            result = decode(await client.call_tool(name, arguments))
+            result = decode(await completed_call(client, name, arguments))
             assert result == {"method": name, "args": expected, "unicode": "安全"}
         assert service.calls[0][2] != threading.get_ident()
 
@@ -131,13 +165,13 @@ def test_blocking_verifier_keeps_real_mcp_ping_and_status_responsive(profile, na
 
     async def scenario():
         async with create_connected_server_and_client_session(build_server(service)) as client:
-            pending = asyncio.create_task(client.call_tool(name, arguments))
+            pending = asyncio.create_task(completed_call(client, name, arguments))
             watchdog.start()
             try:
                 assert await asyncio.wait_for(asyncio.to_thread(service.entered.wait, 4.0), 4.5)
                 assert not pending.done()
                 await asyncio.wait_for(client.send_ping(), 1.0)
-                result = decode(await asyncio.wait_for(client.call_tool("status", {}), 1.0))
+                result = decode(await asyncio.wait_for(completed_call(client, "status", {}), 1.0))
                 assert result["method"] == "status"
                 assert not service.release.is_set(), "transport waited for the blocked verifier"
                 assert not pending.done()
@@ -185,7 +219,11 @@ def test_exact_tool_contract_metadata_and_profile_selection(profile, evaluator):
                 "properties": {"result": {"title": "Result", "type": "string"}},
                 "required": ["result"], "title": tool.name + "Output", "type": "object",
             }
-            assert tool.description == DESCRIPTIONS[tool.name]
+            expected_description = DESCRIPTIONS[tool.name]
+            if profile == "cyber" and tool.name in _JOB_VERBS:
+                import inspect
+                expected_description = inspect.cleandoc(expected_description) + "\n\n" + _JOB_CONTRACT
+            assert tool.description == expected_description
             assert tool.title is None and tool.annotations is None and tool.meta is None
 
     asyncio.run(scenario())
@@ -265,12 +303,12 @@ def test_actual_service_kernel_claim_and_certificate_through_mcp_worker(profile,
 
     async def scenario():
         async with create_connected_server_and_client_session(build_server(service)) as client:
-            committed = decode(await client.call_tool("commit", {
+            committed = decode(await completed_call(client, "commit", {
                 "label": "final", "kind": "final", "text": "fixture condition holds", "deps": [],
             }))
             assert committed["status"] == "verified"
-            assert decode(await client.call_tool("verify", {"label": "final"}))["status"] == "verified"
-            assert decode(await client.call_tool("certificate", {"final_label": "final"}))["verdict"] == "verified"
+            assert decode(await completed_call(client, "verify", {"label": "final"}))["status"] == "verified"
+            assert decode(await completed_call(client, "certificate", {"final_label": "final"}))["verdict"] == "verified"
         assert discharging_threads and all(t != threading.get_ident() for t in discharging_threads)
 
     asyncio.run(scenario())
@@ -307,20 +345,20 @@ def test_real_mcp_status_snapshots_labels_before_concurrent_commit(profile, tmp_
 
     async def scenario():
         async with create_connected_server_and_client_session(build_server(service)) as client:
-            pending = asyncio.create_task(client.call_tool("status", {}))
+            pending = asyncio.create_task(completed_call(client, "status", {}))
             watchdog.start()
             try:
                 assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 2.0), 2.5)
                 # This must complete while status is querying its snapshot;
                 # holding the feed lock over store queries would block it.
-                committed = decode(await asyncio.wait_for(client.call_tool("commit", {
+                committed = decode(await asyncio.wait_for(completed_call(client, "commit", {
                     "label": "new", "kind": "assertion", "text": "new condition", "deps": [],
                 }), 1.0))
                 assert committed["status"] == "unverified"
                 assert not release.is_set()
                 release.set()
                 assert decode(await asyncio.wait_for(pending, 1.0)) == {"seed": "unverified"}
-                assert decode(await client.call_tool("status", {})) == {
+                assert decode(await completed_call(client, "status", {})) == {
                     "seed": "unverified", "new": "unverified",
                 }
             finally:
@@ -360,16 +398,16 @@ def test_concurrent_actual_mcp_claims_certificates_keep_ledger_and_verdict_bound
 
     async def scenario():
         async with create_connected_server_and_client_session(build_server(service)) as client:
-            commits = await asyncio.gather(*(client.call_tool("commit", {
+            commits = await asyncio.gather(*(completed_call(client, "commit", {
                 "label": label, "kind": "final", "text": ("failing " if i % 2 else "passing ") + label,
                 "deps": [],
             }) for i, label in enumerate(labels)))
             assert [decode(reply)["status"] for reply in commits] == [
                 "refuted" if i % 2 else "verified" for i in range(16)
             ]
-            requests = ([client.call_tool("certificate", {"final_label": label}) for label in labels]
-                        + [client.call_tool("verify", {"label": label}) for label in labels]
-                        + [client.call_tool("status", {}) for _ in range(4)])
+            requests = ([completed_call(client, "certificate", {"final_label": label}) for label in labels]
+                        + [completed_call(client, "verify", {"label": label}) for label in labels]
+                        + [completed_call(client, "status", {}) for _ in range(4)])
             results = await asyncio.gather(*requests)
             for i, reply in enumerate(results[:16]):
                 result = decode(reply)
@@ -382,13 +420,13 @@ def test_concurrent_actual_mcp_claims_certificates_keep_ledger_and_verdict_bound
             ]
             expected = {label: "refuted" if i % 2 else "verified" for i, label in enumerate(labels)}
             assert all(decode(reply) == expected for reply in results[32:])
-            decode(await client.call_tool("commit", {
+            decode(await completed_call(client, "commit", {
                 "label": "ordinary", "kind": "assertion", "text": "passing ordinary assertion", "deps": [],
             }))
-            invalid = decode(await client.call_tool("certificate", {"final_label": "ordinary"}))
+            invalid = decode(await completed_call(client, "certificate", {"final_label": "ordinary"}))
             assert "error" in invalid and "final claim" in invalid["error"]
             assert "certificate_id" not in invalid
-            reserved = decode(await client.call_tool("commit", {
+            reserved = decode(await completed_call(client, "commit", {
                 "label": "cyber-final:unowned", "kind": "final", "text": "passing", "deps": [],
             }))
             assert "error" in reserved and "claim_id" not in reserved
@@ -401,8 +439,13 @@ def test_concurrent_actual_mcp_claims_certificates_keep_ledger_and_verdict_bound
         calls = {}
         for event in read_diagnostics(state / "transport_calls.jsonl"):
             calls.setdefault(event["call_id"], []).append(event["phase"])
-        assert len(calls) == 55
-        assert all(phases == ["received", "invoked", "finished"] for phases in calls.values())
+        assert len(calls) >= 55
+        for phases in calls.values():
+            assert phases[0] == "received"
+            assert set(phases) <= {"received", "invoked", "finished", "responded"}
+            assert phases.count("invoked") == phases.count("finished")
+            if "invoked" in phases:
+                assert phases.index("invoked") < phases.index("finished")
 
 
 @pytest.mark.parametrize("profile", ["default", "cyber"])
@@ -436,11 +479,11 @@ def test_concurrent_verify_and_certificate_share_one_actual_kernel_discharge(pro
 
     async def scenario():
         async with create_connected_server_and_client_session(build_server(service)) as client:
-            assert decode(await client.call_tool("commit", {
+            assert decode(await completed_call(client, "commit", {
                 "label": "final", "kind": "final", "text": "fixture condition holds", "deps": [],
             }))["status"] == "unverified"
-            requests = ([client.call_tool("verify", {"label": "final"}) for _ in range(6)]
-                        + [client.call_tool("certificate", {"final_label": "final"}) for _ in range(6)])
+            requests = ([completed_call(client, "verify", {"label": "final"}) for _ in range(6)]
+                        + [completed_call(client, "certificate", {"final_label": "final"}) for _ in range(6)])
             pending = asyncio.gather(*requests)
             watchdog.start()
             try:
@@ -485,7 +528,7 @@ def test_concurrent_label_collision_cannot_rebind_certificate_subject(profile, t
 
     async def scenario():
         async with create_connected_server_and_client_session(build_server(service)) as client:
-            replies = await asyncio.gather(*(client.call_tool("commit", {
+            replies = await asyncio.gather(*(completed_call(client, "commit", {
                 "label": "same", "kind": "final", "text": text, "deps": [],
             }) for text in ("passing subject", "failing different subject")))
             results = [decode(reply) for reply in replies]
@@ -493,7 +536,7 @@ def test_concurrent_label_collision_cannot_rebind_certificate_subject(profile, t
             accepted = next(result for result in results if "error" not in result)
             subject = service.builder.resolve("same")
             assert subject == accepted["claim_id"]
-            certificates = await asyncio.gather(*(client.call_tool("certificate", {"final_label": "same"})
+            certificates = await asyncio.gather(*(completed_call(client, "certificate", {"final_label": "same"})
                                                   for _ in range(8)))
             for reply in certificates:
                 certificate = decode(reply)

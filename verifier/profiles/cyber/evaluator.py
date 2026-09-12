@@ -177,6 +177,7 @@ class Evaluator:
         candidate_identity = self._candidate_identity(candidate)
         argv = [candidate["blob_path"] if v == "{candidate}" else v
                 for v in self.spec.argv]
+        started_unix = time.time()
         started = time.monotonic()
         captured = {"stdout": bytearray(), "stderr": bytearray()}
         totals = {"stdout": 0, "stderr": 0}
@@ -267,6 +268,9 @@ class Evaluator:
             "candidate_sha256": candidate["sha256"], "candidate_size": candidate["size"],
             "environment": self.spec.environment, "authority_scope": self.spec.authority_scope,
             "exit_code": exit_code, "timed_out": timed_out,
+            "process_started": process is not None,
+            "process_completed": process is not None and process.returncode is not None,
+            "started_unix": started_unix, "completed_unix": time.time(),
             "elapsed_seconds": round(time.monotonic() - started, 6),
             "execution_error": execution_error,
         }

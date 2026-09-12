@@ -301,3 +301,373 @@ def test_adapter_warning_stays_deduplicated_when_fault_leaves_bounded_tail(tmp_p
     third = snapshot(tmp_path, now=630, previous=second)
     assert first["alerts"][0]["type"] == "evaluator_infrastructure_warning"
     assert third["alerts"] == []
+
+
+def native_progress(path, **changes):
+    job = {"job_id": "job-1", "tool": "cyber_finalize_candidate", "state": "running",
+           "created_unix": 20, "started_unix": 21, "updated_unix": 22,
+           "attempts": 1, "reused_count": 0}
+    job.update(changes)
+    write_json(path / "private/native-progress.json", {
+        "schema": tracking.PROGRESS_SCHEMA, "checked_unix": 700, "jobs": [job],
+        "runtime_secret": "PRIVATE_RUNTIME", "request": "PRIVATE_REQUEST"})
+
+
+def test_native_job_projection_has_no_request_result_or_secret_leak(tmp_path):
+    path = attempt(tmp_path)
+    native_progress(path, result="PRIVATE_RESULT", request="PRIVATE_JOB_REQUEST")
+    value = snapshot(tmp_path, now=30)
+    job = value["attempts"][0]["verification_progress"]["jobs"][0]
+    assert job["job_id"] == "job-1" and job["state"] == "running"
+    assert "PRIVATE" not in json.dumps(value)
+    assert value["official_passed_attempts"] == 0 and value["alerts"] == []
+
+
+def test_native_progress_accepts_actual_stable_job_id_prefix(tmp_path):
+    path = attempt(tmp_path)
+    job_id = "verification:" + "a" * 32
+    native_progress(path, job_id=job_id)
+    value = snapshot(tmp_path, now=30)
+    assert value["attempts"][0]["verification_progress"]["available"] is True
+    assert value["attempts"][0]["verification_progress"]["active_job_ids"] == [job_id]
+
+
+@pytest.mark.parametrize("changes", [
+    {"job_id": "../private-secret"}, {"tool": ["commit"]},
+    {"state": "unknown"}, {"state": ["running"]}, {"job_id": None},
+])
+def test_invalid_progress_metadata_is_unknown_not_a_task_failure(tmp_path, changes):
+    path = attempt(tmp_path)
+    native_progress(path, **changes)
+    value = snapshot(tmp_path, now=30)
+    assert value["attempts"][0]["verification_progress"]["available"] is False
+    assert value["attempts"][0]["official_pass"] is None and value["alerts"] == []
+
+
+def test_long_roles_and_jobs_warn_once_without_timeout_restart_or_failure(tmp_path):
+    path = attempt(tmp_path)
+    native_progress(path)
+    write_jsonl(path / "private/state/role_calls.jsonl", [{
+        "type": "role_call_started", "call_id": "role-1", "role": "judger", "ts": 21}])
+    first = snapshot(tmp_path, now=700)
+    assert {alert["type"] for alert in first["alerts"]} == {
+        "long_role_call_warning", "long_verification_job_warning"}
+    assert snapshot(tmp_path, now=800, previous=first)["alerts"] == []
+    assert all(alert["diagnostic_only"] and alert["lifecycle_action"] is None for alert in first["alerts"])
+    assert first["attempts"][0]["official_pass"] is None
+    assert first["attempts"][0]["completed_unix"] is None
+
+
+def test_reused_job_polls_are_not_redo_or_new_progress(tmp_path):
+    path = attempt(tmp_path)
+    native_progress(path, state="completed", reused_count=0)
+    first = snapshot(tmp_path, now=30)
+    native_progress(path, state="completed", reused_count=1000, updated_unix=330)
+    second = snapshot(tmp_path, now=330, previous=first)
+    assert second["attempts"][0]["unchanged_snapshots"] == 2
+    assert second["alerts"] == []
+
+
+def test_explicit_repeated_job_execution_warns_but_reuse_count_does_not(tmp_path):
+    path = attempt(tmp_path)
+    native_progress(path, state="completed", attempts=3, reused_count=1000)
+    value = snapshot(tmp_path, now=30)
+    assert [alert["type"] for alert in value["alerts"]] == ["verification_job_redo_warning"]
+    assert value["attempts"][0]["official_pass"] is None
+
+
+@pytest.mark.parametrize("state", ["failed", "interrupted"])
+def test_failed_or_interrupted_native_job_warns_without_official_failure_or_retry(tmp_path, state):
+    path = attempt(tmp_path)
+    native_progress(path, state=state)
+    first = snapshot(tmp_path, now=30)
+    assert [alert["type"] for alert in first["alerts"]] == ["verification_job_state_warning"]
+    assert first["alerts"][0]["lifecycle_action"] is None
+    assert first["attempts"][0]["official_pass"] is None
+    assert snapshot(tmp_path, now=330, previous=first)["alerts"] == []
+
+
+def test_wait_termination_is_explicit_client_cancel_not_timeout_or_job_failure(tmp_path):
+    path = attempt(tmp_path)
+    native_progress(path)
+    rollout = path / "solver-home/sessions/2026/09/12/rollout-fixture.jsonl"
+    write_jsonl(rollout, [
+        {"type": "response_item", "timestamp": "1970-01-01T00:00:25Z", "payload": {
+            "type": "function_call", "name": "wait", "call_id": "cancel-1",
+            "arguments": json.dumps({"cell_id": "62", "terminate": True})}},
+        {"type": "response_item", "timestamp": "1970-01-01T00:00:26Z", "payload": {
+            "type": "reasoning", "encrypted_content": "PRIVATE_REASONING"}},
+        {"type": "response_item", "timestamp": "1970-01-01T00:00:27Z", "payload": {
+            "type": "function_call_output", "output": "PRIVATE_OUTPUT"}}])
+    value = snapshot(tmp_path, now=30)
+    assert value["attempts"][0]["solver_wait_cancellations"]["count_in_window"] == 1
+    assert [alert["type"] for alert in value["alerts"]] == ["solver_wait_cancelled_while_verification_active"]
+    assert "PRIVATE" not in json.dumps(value)
+    assert value["attempts"][0]["verification_progress"]["jobs"][0]["state"] == "running"
+    assert value["attempts"][0]["official_pass"] is None
+
+
+def test_new_epoch_claim_ids_without_new_candidate_evidence_warn_as_repeat(tmp_path):
+    path = attempt(tmp_path)
+    rows = [{"seq": index, "type": "commit", "ts": index, "payload": {
+        "cybergv_binding": {"certificate_scope": "candidate", "profile_id": "fixture-profile",
+            "task_sha256": "fixture-task", "verification_epoch": str(index), "context_id": str(index),
+            "subject": {"candidate_id": "PRIVATE_SUBJECT", "address": "/task/final_poc"},
+            "observations": ["PRIVATE_OBSERVATION"]}}} for index in range(1, 4)]
+    write_jsonl(path / "private/state/events.jsonl", rows)
+    value = snapshot(tmp_path, now=30)
+    assert [alert["type"] for alert in value["alerts"]] == ["repeated_finalization_warning"]
+    assert value["alerts"][0]["count"] == 3
+    assert "PRIVATE" not in json.dumps(value)
+    assert value["attempts"][0]["official_pass"] is None
+
+
+def test_outstanding_service_call_warns_without_claiming_shell_is_hung(tmp_path):
+    path = attempt(tmp_path)
+    write_jsonl(path / "private/state/transport_calls.jsonl", [
+        {"call_id": "call-1", "tool": "commit", "phase": "received", "ts": 21},
+        {"call_id": "call-1", "tool": "commit", "phase": "invoked", "ts": 21.001,
+         "arguments": "PRIVATE_ARGS", "output": "PRIVATE_OUTPUT"}])
+    value = snapshot(tmp_path, now=700)
+    assert [alert["type"] for alert in value["alerts"]] == ["long_service_call_warning"]
+    assert value["attempts"][0]["transport_timings"]["active_calls"][0]["age_seconds"] == 679
+    assert "PRIVATE" not in json.dumps(value)
+    assert value["attempts"][0]["official_pass"] is None
+
+
+def test_mirror_timing_is_measured_and_telemetry_faults_warn_without_secret_leak(tmp_path):
+    path = attempt(tmp_path)
+    write_jsonl(path / "private/telemetry-mirror-calls.jsonl", [{
+        "ts": 30, "phase": "periodic", "duration_seconds": 5}])
+    write_jsonl(path / "private/telemetry-progress-errors.jsonl", [{
+        "ts": 31, "reason": "progress_unavailable", "stderr": "PRIVATE_STDERR"}])
+    value = snapshot(tmp_path, now=40)
+    assert value["attempts"][0]["mirror_timings"]["call_work_seconds_sum"] == 5
+    assert [alert["type"] for alert in value["alerts"]] == ["telemetry_infrastructure_warning"]
+    assert "PRIVATE" not in json.dumps(value)
+    assert value["attempts"][0]["official_pass"] is None
+
+
+def backend_row(phase, ts, *, call_id="backend-local-1", attempt=1, **metadata):
+    return {"type": "backend_phase", "call_id": call_id, "attempt": attempt,
+            "phase": phase, "ts": ts, **metadata}
+
+
+def backend_fixture(path, *rows, mirror_unix=None, outer_rows=None):
+    write_jsonl(path / "private/state/role_calls.jsonl", [
+        *([{"type": "role_call_started", "call_id": "outer-role-1", "ts": 20,
+            "role": "critic"}] if outer_rows is None else outer_rows), *rows])
+    if mirror_unix is not None:
+        write_jsonl(path / "private/telemetry-mirror-calls.jsonl", [{
+            "ts": mirror_unix, "phase": "periodic", "status": "completed", "duration_seconds": 2}])
+
+
+def alert_types(value):
+    return {alert["type"] for alert in value["alerts"]}
+
+
+def test_journal_unavailable_is_metadata_only_and_not_an_official_failure(tmp_path):
+    path = attempt(tmp_path)
+    native_progress(path, state="completed")
+    progress_path = path / "private/native-progress.json"
+    raw = json.loads(progress_path.read_text())
+    raw.update(journal_available=False, metadata_snapshot_unix=25, result="PRIVATE_RESULT")
+    write_json(progress_path, raw)
+    first = snapshot(tmp_path, now=30)
+    projected = first["attempts"][0]["verification_progress"]
+    assert projected["journal_available"] is False
+    assert projected["metadata_snapshot_unix"] == 25
+    assert projected["metadata_snapshot_age_seconds"] == 5
+    assert alert_types(first) == {"verification_journal_unavailable_warning"}
+    assert "PRIVATE" not in json.dumps(first)
+    assert first["attempts"][0]["official_pass"] is None
+    assert first["alerts"][0]["lifecycle_action"] is None
+    assert snapshot(tmp_path, now=330, previous=first)["alerts"] == []
+
+
+def test_old_journal_snapshot_is_not_a_deadline_and_polled_reuse_is_not_progress(tmp_path):
+    path = attempt(tmp_path)
+    native_progress(path)
+    progress_path = path / "private/native-progress.json"
+    raw = json.loads(progress_path.read_text())
+    raw.update(journal_available=True, metadata_snapshot_unix=20)
+    write_json(progress_path, raw)
+    first = snapshot(tmp_path, now=700)
+    raw.update(checked_unix=800, metadata_snapshot_unix=800)
+    raw["jobs"][0].update(reused_count=1000, updated_unix=800)
+    write_json(progress_path, raw)
+    second = snapshot(tmp_path, now=800, previous=first)
+    assert second["attempts"][0]["unchanged_snapshots"] == 2
+    assert second["alerts"] == []
+    assert "stale_native_progress_warning" not in alert_types(first)
+
+
+def test_backend_projection_keeps_distinct_ids_and_scrubs_nonmetadata(tmp_path):
+    path = attempt(tmp_path)
+    backend_fixture(path,
+        backend_row("exec_dispatch", 21, role="critic", streaming=True, prompt="PRIVATE_PROMPT"),
+        backend_row("exec_spawned", 22, child_pid=41, wait_category="cli_startup_unknown"),
+        backend_row("cli_event", 23, event_type="item.started", item_kind="command_execution",
+                    active_tool_items=1, wait_category="cli_tool_item_active", command="PRIVATE_COMMAND"),
+        backend_row("cli_event", 28, event_type="item.completed", item_kind="command_execution",
+                    active_tool_items=0, item_duration_seconds=5, item_id="PRIVATE_ITEM"),
+        backend_row("exec_heartbeat", 29, child_pid=41, cli_events=2, stdout_bytes=40,
+                    stderr_bytes=5, wait_category="model_wait_unknown", stdout="PRIVATE_OUTPUT"))
+    value = snapshot(tmp_path, now=30)
+    activity = value["attempts"][0]["backend_activity"]
+    call = activity["calls"][0]
+    assert call["backend_call_id"] == "backend-local-1"
+    assert call["outer_role_call_id"] == "outer-role-1"
+    assert call["role_association"] == "unique_role_interval"
+    assert call["role"] == "critic" and call["wait_category"] == "model_wait_unknown"
+    assert call["process_running"] is True and call["heartbeat_age_seconds"] == 1
+    assert call["last_cli_event_age_seconds"] == 2
+    assert call["completed_tool_items"] == {"command_execution": {"count": 1, "work_seconds_sum": 5}}
+    assert activity["provider_queue_vs_inference"] == "unknown"
+    assert "PRIVATE" not in json.dumps(value) and value["alerts"] == []
+
+
+@pytest.mark.parametrize("second_role,expected_id,association", [
+    ("judger", "outer-role-1", "unique_role_interval"),
+    ("critic", None, "ambiguous_interval"),
+])
+def test_backend_outer_association_uses_role_and_time_not_same_call_id(tmp_path, second_role, expected_id, association):
+    path = attempt(tmp_path)
+    backend_fixture(path, backend_row("exec_dispatch", 25, role="critic", streaming=True),
+        outer_rows=[
+            {"type": "role_call_started", "call_id": "outer-role-1", "role": "critic", "ts": 20},
+            {"type": "role_call_started", "call_id": "outer-role-2", "role": second_role, "ts": 21}])
+    call = snapshot(tmp_path, now=30)["attempts"][0]["backend_activity"]["calls"][0]
+    assert call["outer_role_call_id"] == expected_id
+    assert call["role_association"] == association
+
+
+def test_backend_role_remains_known_when_bounded_tail_has_no_outer_start(tmp_path):
+    path = attempt(tmp_path)
+    backend_fixture(path, backend_row("exec_heartbeat", 29, role="judger"), outer_rows=[])
+    activity = snapshot(tmp_path, now=30)["attempts"][0]["backend_activity"]
+    assert activity["calls"][0]["role"] == "judger"
+    assert activity["calls"][0]["outer_role_call_id"] is None
+    assert activity["calls"][0]["role_association"] == "unknown"
+
+
+@pytest.mark.parametrize("wait_category,warning", [
+    ("cli_tool_item_active", "backend_tool_item_long_warning"),
+    ("model_wait_unknown", "backend_cli_output_stale_warning"),
+    ("PRIVATE_DYNAMIC_WAIT", "backend_cli_output_stale_warning"),
+])
+def test_fresh_heartbeat_distinguishes_observed_tool_state_from_unknown_model_wait(tmp_path, wait_category, warning):
+    path = attempt(tmp_path)
+    backend_fixture(path,
+        backend_row("exec_dispatch", 21, role="critic", streaming=True),
+        backend_row("exec_spawned", 22),
+        backend_row("cli_event", 23, event_type="item.started", item_kind="mcp_tool_call",
+                    active_tool_items=1, wait_category=wait_category),
+        backend_row("exec_heartbeat", 699, active_tool_items=1, wait_category=wait_category),
+        mirror_unix=700)
+    first = snapshot(tmp_path, now=700)
+    assert alert_types(first) == {"long_role_call_warning", warning}
+    long_call = next(alert for alert in first["alerts"] if alert["type"] == "long_role_call_warning")
+    backend = long_call["backend_activity"][0]
+    assert backend["outer_role_call_id"] == "outer-role-1"
+    assert backend["wait_category"] == (wait_category if wait_category in tracking.BACKEND_WAIT_CATEGORIES else "unknown")
+    assert backend["heartbeat_age_seconds"] == 1
+    assert "PRIVATE" not in json.dumps(first)
+    assert all(alert["lifecycle_action"] is None for alert in first["alerts"])
+    assert first["attempts"][0]["official_pass"] is None
+    assert snapshot(tmp_path, now=710, previous=first)["alerts"] == []
+
+
+@pytest.mark.parametrize("mirror_unix,warning", [
+    (700, "backend_heartbeat_stale_warning"),
+    (30, "backend_observability_stale_warning"),
+    (None, "backend_observability_stale_warning"),
+])
+def test_missing_heartbeat_is_not_inferred_from_a_stale_host_mirror(tmp_path, mirror_unix, warning):
+    path = attempt(tmp_path)
+    backend_fixture(path,
+        backend_row("exec_dispatch", 21, role="critic", streaming=True),
+        backend_row("exec_spawned", 22), mirror_unix=mirror_unix)
+    value = snapshot(tmp_path, now=700)
+    assert alert_types(value) == {"long_role_call_warning", warning}
+    assert value["attempts"][0]["official_pass"] is None
+    if mirror_unix != 700:
+        assert "backend_heartbeat_stale_warning" not in alert_types(value)
+
+
+def test_nonstreaming_legacy_backend_has_no_false_missing_heartbeat_warning(tmp_path):
+    path = attempt(tmp_path)
+    backend_fixture(path, backend_row("exec_dispatch", 21, role="critic", streaming=False), mirror_unix=700)
+    assert alert_types(snapshot(tmp_path, now=700)) == {"long_role_call_warning"}
+
+
+def test_pipe_drain_is_visible_early_after_cli_exit_without_guessing_cause(tmp_path):
+    path = attempt(tmp_path)
+    backend_fixture(path,
+        backend_row("exec_dispatch", 21, streaming=True),
+        backend_row("exec_spawned", 22),
+        backend_row("exec_process_exited", 25),
+        backend_row("pipe_drain_heartbeat", 45, process_running=False,
+                    wait_category="pipe_drain_unknown", stdout_bytes=50, stderr="PRIVATE_STDERR"))
+    first = snapshot(tmp_path, now=46)
+    assert alert_types(first) == {"backend_pipe_drain_warning"}
+    alert = first["alerts"][0]
+    assert alert["process_running"] is False and alert["wait_category"] == "pipe_drain_unknown"
+    assert alert["lifecycle_action"] is None
+    assert "unknown" in alert["meaning"] and "PRIVATE" not in json.dumps(first)
+    assert snapshot(tmp_path, now=50, previous=first)["alerts"] == []
+
+
+def test_completed_short_backoff_and_transient_retry_remain_visible(tmp_path):
+    path = attempt(tmp_path)
+    backend_fixture(path,
+        backend_row("backend_transient_failure", 22, role="critic", stderr="PRIVATE_STDERR"),
+        backend_row("backend_backoff_started", 23, wait_seconds=2, retry_number=1, retry_limit=8),
+        backend_row("backend_backoff_finished", 25, wait_seconds=2))
+    first = snapshot(tmp_path, now=30)
+    assert alert_types(first) == {"backend_transient_retry_warning"}
+    alert = first["alerts"][0]
+    assert alert["backoff_wait_seconds"] == 2 and alert["retry_number"] == 1
+    assert "PRIVATE" not in json.dumps(first)
+    assert alert["lifecycle_action"] is None
+    assert snapshot(tmp_path, now=330, previous=first)["alerts"] == []
+
+
+@pytest.mark.parametrize("mirror_unix,overrun", [(100, True), (None, False)])
+def test_backoff_overrun_requires_fresh_copied_metadata_and_never_cancels(tmp_path, mirror_unix, overrun):
+    path = attempt(tmp_path)
+    backend_fixture(path,
+        backend_row("backend_backoff_started", 23, wait_seconds=2, role="critic"), mirror_unix=mirror_unix)
+    value = snapshot(tmp_path, now=100)
+    assert ("backend_backoff_overrun_warning" in alert_types(value)) is overrun
+    assert "backend_transient_retry_warning" in alert_types(value)
+    assert value["attempts"][0]["completed_unix"] is None
+    assert value["attempts"][0]["official_pass"] is None
+
+
+def test_backend_heartbeat_and_observation_metadata_are_not_material_progress(tmp_path):
+    path = attempt(tmp_path)
+    rows = [backend_row("exec_dispatch", 21, role="critic", streaming=True), backend_row("exec_spawned", 22)]
+    backend_fixture(path, *rows)
+    first = snapshot(tmp_path, now=30)
+    backend_fixture(path, *rows, backend_row("exec_heartbeat", 329, wait_category="model_wait_unknown"))
+    second = snapshot(tmp_path, now=330, previous=first)
+    assert second["attempts"][0]["unchanged_snapshots"] == 2
+    assert second["alerts"] == []
+
+
+def test_malformed_backend_metadata_is_ignored_or_unknown_without_crashing(tmp_path):
+    path = attempt(tmp_path)
+    backend_fixture(path,
+        backend_row(["exec_dispatch"], 21), backend_row("exec_dispatch", True),
+        backend_row("exec_dispatch", 21, attempt=True), backend_row("exec_dispatch", 21, call_id="/secret/path"),
+        backend_row("exec_dispatch", 22, role=["PRIVATE_ROLE"], streaming="PRIVATE_STREAM"),
+        backend_row("cli_event", 23, event_type=["PRIVATE_EVENT"], item_kind=["PRIVATE_ITEM"],
+                    wait_category=["PRIVATE_WAIT"], child_pid=True, active_tool_items="PRIVATE_COUNTER",
+                    item_duration_seconds=float("nan"), stdout="PRIVATE_OUTPUT"))
+    value = snapshot(tmp_path, now=30)
+    calls = value["attempts"][0]["backend_activity"]["calls"]
+    assert len(calls) == 1 and calls[0]["wait_category"] == "unknown"
+    assert "child_pid" not in calls[0] and "active_tool_items" not in calls[0]
+    assert "PRIVATE" not in json.dumps(value)
+    assert value["alerts"] == []
