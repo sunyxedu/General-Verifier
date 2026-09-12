@@ -792,7 +792,7 @@ class Evaluation:
             turn += 1
         raise RuntimeError("controller stopped")
 
-    def score(self, task, directory, state, receipt):
+    def score(self, task, directory, state, receipt, *, release_vulnerable_image=None):
         self.phase(directory, state, "official_score")
         candidate = directory / "workspace/final_poc"
         if digest(candidate) != receipt["sha256"] or candidate.stat().st_size != receipt["size"]:
@@ -819,6 +819,13 @@ class Evaluation:
                        and row["poc_length"] == receipt["size"]]
         if len(matched) != 1:
             raise RuntimeError("selected final has no unique exact-byte official online row")
+        if matched[0]["vul_exit_code"] is None:
+            raise RuntimeError("final scoring row has incomplete or mismatched exact identity")
+        # A local GV proof can precede the first official vulnerable run. Keep
+        # its image until that exact-byte row is complete, then release only a
+        # caller-owned image before admitting the potentially large fixed one.
+        if release_vulnerable_image is not None:
+            release_vulnerable_image()
         if matched[0]["vul_exit_code"] not in (None, 0, 300):
             with self._image_for_use(task, "fix", directory, state) as (fixed, owned):
                 try:
@@ -845,6 +852,14 @@ class Evaluation:
         state = {"task_id": task, "attempt_id": attempt, "started_unix": time.time(),
                  "profile_commit": self.frozen_commit, "official_pass": None}
         runtime, owned_image = None, None
+
+        def release_vulnerable_image():
+            nonlocal owned_image
+            if owned_image:
+                with image_lock():
+                    docker("image", "rm", owned_image, check=False)
+                owned_image = None
+
         try:
             if self.stop.is_set():
                 raise RuntimeError("controller stopped before task startup")
@@ -858,11 +873,8 @@ class Evaluation:
             workspace, private, prompt = self.prepare(task, directory)
             runtime = self.create_runtime(directory, workspace, private)
             receipt = self.run_solver(directory, workspace, runtime, prompt, state)
-            if owned_image:
-                with image_lock():
-                    docker("image", "rm", owned_image, check=False)
-                owned_image = None
-            passed = self.score(task, directory, state, receipt)
+            passed = self.score(task, directory, state, receipt,
+                                release_vulnerable_image=release_vulnerable_image)
             self.phase(directory, state, "completed", completed_unix=time.time(),
                        outcome="pass" if passed else "fail", official_pass=passed)
         except Exception as error:
@@ -873,9 +885,7 @@ class Evaluation:
             if runtime:
                 self.cleanup_runtime(runtime, directory, directory / "private")
             # Retain nativevolumes and stoppedcontainers for trace audit.
-            if owned_image:
-                with image_lock():
-                    docker("image", "rm", owned_image, check=False)
+            release_vulnerable_image()
             with self.lock:
                 self.results[task] = state
                 atomic_json(self.root / "results.json", self.results)
@@ -899,21 +909,31 @@ class Evaluation:
 
     def run(self):
         self.pin()
+        from .tracking import record_snapshot
+        monitor_lock = threading.Lock()
+
+        def record_monitor_locked():
+            try:
+                record_snapshot(self.root)
+            except Exception as error:
+                # Monitoring is diagnostic-only, including the final snapshot.
+                with contextlib.suppress(Exception):
+                    atomic_json(self.root / "monitor-error.json", {
+                        "ts": time.time(), "reason": "tracking_failed",
+                        "type": type(error).__name__})
+
+        def monitor():
+            while not self.stop.is_set():
+                with monitor_lock:
+                    # A queued periodic writer must not overwrite the exit
+                    # snapshot after the controller has stopped monitoring.
+                    if self.stop.is_set():
+                        return
+                    record_monitor_locked()
+                self.stop.wait(300)
+
         try:
             self.start_services()
-            from .tracking import record_snapshot
-            def monitor():
-                while not self.stop.is_set():
-                    try:
-                        record_snapshot(self.root)
-                    except Exception as error:
-                        # A diagnostics failure must not silently kill active
-                        # tracking or become a solver/official result failure.
-                        with contextlib.suppress(Exception):
-                            atomic_json(self.root / "monitor-error.json", {
-                                "ts": time.time(), "reason": "tracking_failed",
-                                "type": type(error).__name__})
-                    self.stop.wait(300)
             monitor_thread = threading.Thread(target=monitor, daemon=True)
             monitor_thread.start()
             pilot_passed = self.batch(FIXED30[:5], "pilot5")
@@ -937,7 +957,15 @@ class Evaluation:
             self.batch(all_tasks, "all1507")
         finally:
             self.stop.set()
-            self.cleanup_services()
+            try:
+                self.cleanup_services()
+            finally:
+                # Batches often finish before the next five-minute tick. Keep
+                # their terminal status and deduplicated alerts even then.
+                # This lock waits only for an existing metadata writer, never
+                # for a solver, evaluator, or verification job deadline.
+                with monitor_lock:
+                    record_monitor_locked()
 
     def cleanup_services(self):
         """Do not let a diagnostic I/O failure strand the owned services."""

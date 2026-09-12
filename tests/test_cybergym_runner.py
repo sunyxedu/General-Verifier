@@ -1267,7 +1267,7 @@ def test_task_waits_before_any_pull_prepare_or_agent_then_continues_same_attempt
         assert directory.name == attempts[0]
         return {"fixture_receipt": True}
 
-    def score(_task, directory, _state, receipt):
+    def score(_task, directory, _state, receipt, *, release_vulnerable_image=None):
         guard("score")
         assert directory.name == attempts[0] and receipt == {"fixture_receipt": True}
         return True
@@ -1369,6 +1369,158 @@ def test_stop_immediately_after_new_pull_preserves_exact_owned_image_cleanup(con
     assert commands == [("image", "inspect", image),
                         ("docker", "pull", "--platform", "linux/amd64", image),
                         ("image", "rm", image)]
+
+
+def task_scorer_fakes(monkeypatch, controller, selected, *, cached=False,
+                     initial_row="missing", failure=None, selected_vul=77):
+    """Exercise real run_task/score/image admission, never real external I/O."""
+    _selected_directory, candidate, receipt = selected
+    task = "arvo:23296"
+    vulnerable, fixed = run.image_name(task, "vul"), run.image_name(task, "fix")
+    images, events = {vulnerable: True, fixed: False}, []
+    chosen = {"value": None}
+    queries = {"count": 0}
+    capacity = disk_capacity(monkeypatch, run.MIN_TASK_FREE_BYTES)
+    monkeypatch.setattr(run, "image_lock", contextlib.nullcontext)
+
+    def pull(actual_task, flavor, *_args):
+        assert (actual_task, flavor) == (task, "vul")
+        events.append("vul-ready")
+        return vulnerable, not cached
+
+    def prepare(actual_task, directory):
+        assert actual_task == task
+        workspace, private = directory / "workspace", directory / "private"
+        workspace.mkdir()
+        private.mkdir(mode=0o700)
+        (workspace / "final_poc").write_bytes(candidate.read_bytes())
+        (private / "evaluator.json").write_text(json.dumps({
+            "schema": "gv-cybergym-vul-evaluator-v1", "server_url": controller.server,
+            "task_id": "masked-fixture-id", "agent_id": directory.name,
+            "checksum": "private-checksum-sentinel", "require_flag": False,
+            "observations_dir": "/state/cybergym-observations"}))
+        chosen["value"] = official_row(receipt, agent_id=directory.name,
+            vul_exit_code=None if initial_row == "incomplete" else selected_vul)
+        return workspace, private, "generic fixture task"
+
+    def solver(*_args):
+        # The owned vulnerable image can consume the space the fixed gate
+        # needs. Its timely release must resolve this without any resource wait.
+        if not cached:
+            capacity["free"] = run.MIN_TASK_FREE_BYTES - 1
+        return receipt
+
+    def query(endpoint, payload):
+        assert endpoint == "/query-poc"
+        assert payload == {"agent_id": chosen["value"]["agent_id"], "task_id": task}
+        queries["count"] += 1
+        if queries["count"] == 1 and initial_row == "missing":
+            return []
+        if queries["count"] == 2 and failure == "query_vul":
+            raise RuntimeError("synthetic vulnerable requery failure")
+        row = dict(chosen["value"])
+        if row["vul_exit_code"] is not None:
+            events.append("vul-complete")
+        return [row]
+
+    def submit(request, **_kwargs):
+        endpoint = urllib.parse.urlsplit(request.full_url).path
+        assert candidate.read_bytes() in request.data
+        if endpoint == "/submit-vul":
+            assert images[vulnerable], "First official run needs the retained vulnerable image"
+            events.append("submit-vul")
+            if failure == "submit_vul":
+                raise RuntimeError("synthetic vulnerable submission failure")
+            chosen["value"]["vul_exit_code"] = None if failure == "incomplete" else selected_vul
+            if failure == "cancel":
+                controller.stop.set()
+        else:
+            assert endpoint == "/submit-fix" and images[fixed]
+            assert cached or not images[vulnerable]
+            events.append("submit-fix")
+            chosen["value"]["fix_exit_code"] = 0
+        return io.BytesIO(b'{"exit_code": 0}')
+
+    def docker(*args, **_kwargs):
+        if args == ("image", "inspect", fixed):
+            assert cached or not images[vulnerable], "Release owned vul before fixed admission"
+            events.append("inspect-fix")
+            return SimpleNamespace(returncode=0 if images[fixed] else 1)
+        assert args[:2] == ("image", "rm") and args[2] in images
+        image = args[2]
+        assert images[image] and (image != vulnerable or not cached)
+        events.append("remove-vul" if image == vulnerable else "remove-fix")
+        images[image] = False
+        if image == vulnerable:
+            capacity["free"] = run.MIN_TASK_FREE_BYTES
+        return SimpleNamespace(returncode=0)
+
+    def execute(*args, **_kwargs):
+        assert args == ("docker", "pull", "--platform", "linux/amd64", fixed)
+        assert capacity["free"] >= run.MIN_TASK_FREE_BYTES
+        events.append("pull-fix")
+        if failure == "fix_pull":
+            raise RuntimeError("synthetic fixed pull failure")
+        images[fixed] = True
+
+    monkeypatch.setattr(controller, "pull", pull)
+    monkeypatch.setattr(controller, "prepare", prepare)
+    monkeypatch.setattr(controller, "create_runtime", lambda *_args: {"sidecar": "fixture-sidecar"})
+    monkeypatch.setattr(controller, "run_solver", solver)
+    monkeypatch.setattr(controller, "request", query)
+    monkeypatch.setattr(controller, "cleanup_runtime", lambda *_args: events.append("cleanup"))
+    monkeypatch.setattr(controller.stop, "wait", lambda *_args:
+                        pytest.fail("Owned vulnerable image must not starve the fixed-image gate"))
+    monkeypatch.setattr(run.urllib.request, "urlopen", submit)
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(run, "execute", execute)
+    return events, images, vulnerable, fixed
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("initial_row", ["missing", "incomplete", "complete"])
+def test_owned_vul_survives_first_official_run_then_releases_before_fixed_gate(
+        controller, selected, monkeypatch, cached, initial_row):
+    events, images, vulnerable, fixed = task_scorer_fakes(
+        monkeypatch, controller, selected, cached=cached, initial_row=initial_row)
+    state = controller.run_task("arvo:23296")
+    assert state["official_pass"] is True and state["outcome"] == "pass"
+    assert events.count("submit-vul") == (0 if initial_row == "complete" else 1)
+    assert events.count("vul-ready") == events.count("pull-fix") == 1
+    assert images[vulnerable] is cached and not images[fixed]
+    assert events.count("remove-vul") == (0 if cached else 1)
+    if not cached:
+        assert events.index("vul-complete") < events.index("remove-vul") < events.index("inspect-fix")
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("failure", ["submit_vul", "query_vul", "incomplete", "cancel", "fix_pull"])
+def test_vulnerable_scoring_failure_or_cancel_cleans_only_owned_images(
+        controller, selected, monkeypatch, cached, failure):
+    events, images, vulnerable, fixed = task_scorer_fakes(
+        monkeypatch, controller, selected, cached=cached, failure=failure)
+    state = controller.run_task("arvo:23296")
+    assert state["official_pass"] is None and state["outcome"] == "infrastructure_error"
+    assert images[vulnerable] is cached and not images[fixed]
+    assert events.count("remove-vul") == (0 if cached else 1)
+    assert "submit-fix" not in events
+    if not cached and failure in {"submit_vul", "query_vul", "incomplete"}:
+        assert events.index("cleanup") < events.index("remove-vul")
+    if not cached and failure in {"cancel", "fix_pull"}:
+        assert events.index("vul-complete") < events.index("remove-vul") < events.index("inspect-fix")
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("selected_vul", [0, 300])
+def test_official_negative_final_releases_owned_vul_without_admitting_fixed_image(
+        controller, selected, monkeypatch, cached, selected_vul):
+    events, images, vulnerable, fixed = task_scorer_fakes(
+        monkeypatch, controller, selected, cached=cached, selected_vul=selected_vul)
+    state = controller.run_task("arvo:23296")
+    assert state["official_pass"] is False and state["outcome"] == "fail"
+    assert images[vulnerable] is cached and not images[fixed]
+    assert events.count("remove-vul") == (0 if cached else 1)
+    assert "inspect-fix" not in events and "submit-fix" not in events
 
 
 @pytest.mark.parametrize("became_cached", [False, True])
@@ -1555,7 +1707,7 @@ def test_trace_copy_failure_does_not_change_official_task_outcome(
     patch_mirror(monkeypatch, controller, unavailable)
     scores = []
 
-    def score(task, directory, _state, final):
+    def score(task, directory, _state, final, *, release_vulnerable_image=None):
         scores.append(task)
         assert final == receipt
         assert run.digest(directory / "workspace/final_poc") == receipt["sha256"]
