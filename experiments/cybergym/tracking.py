@@ -93,6 +93,44 @@ def _json(path: Path, root: Path) -> dict:
         return {}
 
 
+def _valid_monitor_previous(value: Any) -> bool:
+    """Validate only cache identities and shapes consumed by the tracker."""
+    if (not isinstance(value, dict) or value.get("schema") != "cybergym-tracking-v1"
+            or not isinstance(value.get("attempts"), list)):
+        return False
+    seen = set()
+    for attempt in value["attempts"]:
+        if not isinstance(attempt, dict):
+            return False
+        attempt_id = attempt.get("attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id.strip() or attempt_id in seen:
+            return False
+        seen.add(attempt_id)
+        if "unchanged_snapshots" in attempt and (
+                type(attempt["unchanged_snapshots"]) is not int or attempt["unchanged_snapshots"] <= 0):
+            return False
+        if "performance_warning_keys" in attempt and (
+                not isinstance(attempt["performance_warning_keys"], list)
+                or any(not isinstance(key, str) for key in attempt["performance_warning_keys"])):
+            return False
+        if "evaluator_infrastructure_diagnostics" in attempt:
+            diagnostics = attempt["evaluator_infrastructure_diagnostics"]
+            if not isinstance(diagnostics, dict):
+                return False
+            if "warned_error_codes" in diagnostics and (
+                    not isinstance(diagnostics["warned_error_codes"], list)
+                    or any(not isinstance(code, str) for code in diagnostics["warned_error_codes"])):
+                return False
+        for field in ("verifier_timings", "evaluator_timings"):
+            if field in attempt:
+                timings = attempt[field]
+                if not isinstance(timings, dict) or ("active_calls" in timings and (
+                        not isinstance(timings["active_calls"], list)
+                        or any(not isinstance(call, dict) for call in timings["active_calls"]))):
+                    return False
+    return True
+
+
 def read_monitor_previous_snapshot(root: Path | str) -> tuple[dict, dict]:
     """Larger bounded host-only cache; task/evaluator JSON limits stay unchanged."""
     root = Path(root).absolute()
@@ -122,9 +160,7 @@ def read_monitor_previous_snapshot(root: Path | str) -> tuple[dict, dict]:
             diagnostic["reason_code"] = "oversized"
             return {}, diagnostic
         value = json.loads(raw)
-        if (not isinstance(value, dict) or value.get("schema") != "cybergym-tracking-v1"
-                or not isinstance(value.get("attempts"), list)
-                or any(not isinstance(attempt, dict) for attempt in value["attempts"])):
+        if not _valid_monitor_previous(value):
             diagnostic["reason_code"] = "malformed"
             return {}, diagnostic
         diagnostic.update(available=True, reason_code=None)
@@ -901,7 +937,15 @@ def record_snapshot(root: Path | str, *, now: float | None = None) -> dict:
         if (monitor / name).is_symlink():
             raise ValueError("monitor output must not be a symlink")
     previous, previous_diagnostic = read_monitor_previous_snapshot(root)
-    value = snapshot(root, now=now, previous=previous)
+    try:
+        value = snapshot(root, now=now, previous=previous)
+    except (TypeError, KeyError, AttributeError):
+        if not previous:
+            raise
+        # A cache is only a hint. Recompute from native metadata; errors from
+        # that fresh read must still propagate, never become official results.
+        value = snapshot(root, now=now, previous={})
+        previous_diagnostic = {**previous_diagnostic, "available": False, "reason_code": "malformed"}
     value["monitor_previous_snapshot"] = previous_diagnostic
     if not previous_diagnostic["available"] and previous_diagnostic["reason_code"] != "missing":
         value["alerts"].append({"type": "monitor_previous_snapshot_oversized_warning"

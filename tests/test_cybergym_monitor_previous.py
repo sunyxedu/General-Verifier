@@ -89,6 +89,129 @@ def test_malformed_previous_writer_reports_static_warning(tmp_path):
     assert "PRIVATE_" not in json.dumps(warning)
 
 
+@pytest.fixture
+def operator_helper():
+    helper_path = Path(tracking.__file__).resolve().parents[3] / "cybergym-observe-eval-20260912.py"
+    if not helper_path.is_file():
+        pytest.skip("repository-local operator helper is not installed")
+    return runpy.run_path(str(helper_path), run_name="offline_malformed_previous_test")
+
+
+@pytest.mark.parametrize("attempts", [
+    [{}], [{"attempt_id": []}], [{"attempt_id": None}], [{"attempt_id": ""}],
+    [{"attempt_id": " "}], [{"attempt_id": "same"}, {"attempt_id": "same"}],
+    [{"attempt_id": "id", "unchanged_snapshots": True}],
+    [{"attempt_id": "id", "unchanged_snapshots": 0}],
+    [{"attempt_id": "id", "unchanged_snapshots": -1}],
+    [{"attempt_id": "id", "unchanged_snapshots": 2.5}],
+    [{"attempt_id": "id", "unchanged_snapshots": "2"}],
+    [{"attempt_id": "id", "performance_warning_keys": "PRIVATE_RAW_CONTENT"}],
+    [{"attempt_id": "id", "performance_warning_keys": [[]]}],
+    [{"attempt_id": "id", "evaluator_infrastructure_diagnostics": []}],
+    [{"attempt_id": "id", "evaluator_infrastructure_diagnostics": {"warned_error_codes": "x"}}],
+    [{"attempt_id": "id", "evaluator_infrastructure_diagnostics": {"warned_error_codes": [{}]}}],
+    [{"attempt_id": "id", "verifier_timings": None}],
+    [{"attempt_id": "id", "verifier_timings": {"active_calls": {}}}],
+    [{"attempt_id": "id", "evaluator_timings": {"active_calls": [None]}}],
+])
+def test_bad_cache_consumed_shapes_fail_closed_in_reader_writer_and_helper(
+        tmp_path, attempts, operator_helper):
+    failed_id = fixture_attempt(tmp_path, 0)
+    pending_id = fixture_attempt(tmp_path, 1, active=True)
+    path = latest_file(tmp_path, json.dumps({"schema": "cybergym-tracking-v1",
+        "attempts": attempts}).encode())
+    before = (path.stat().st_mtime_ns, path.read_bytes())
+    previous, diagnostic = tracking.read_monitor_previous_snapshot(tmp_path)
+    helper_previous, helper_diagnostic = operator_helper["load_previous"](
+        tmp_path, with_diagnostics=True)
+    assert previous == helper_previous == {}
+    for result in (diagnostic, helper_diagnostic):
+        assert result["available"] is False and result["reason_code"] == "malformed"
+        assert "PRIVATE_" not in json.dumps(result)
+    assert before == (path.stat().st_mtime_ns, path.read_bytes())
+
+    value = tracking.record_snapshot(tmp_path, now=30)
+    assert value["monitor_previous_snapshot"]["reason_code"] == "malformed"
+    actual = {row["attempt_id"]: row for row in value["attempts"]}
+    assert actual[failed_id]["official_pass"] is False
+    assert actual[failed_id]["outcome"] == "fail"
+    assert actual[pending_id]["official_pass"] is None
+    assert actual[pending_id]["outcome"] is None
+    assert value["official_passed_attempts"] == 0
+    warning = next(row for row in value["alerts"]
+        if row["type"] == "monitor_previous_snapshot_unavailable_warning")
+    assert warning["diagnostic_only"] is True and warning["lifecycle_action"] is None
+
+
+def test_partial_cache_consumer_error_recomputes_native_writer_and_helper(tmp_path, operator_helper):
+    failed_id = fixture_attempt(tmp_path, 0)
+    pending_id = fixture_attempt(tmp_path, 1, active=True)
+    first = tracking.record_snapshot(tmp_path, now=30)
+    del first["attempts"][0]["progress_fingerprint"]
+    latest_file(tmp_path, json.dumps(first).encode())
+    previous, diagnostic = tracking.read_monitor_previous_snapshot(tmp_path)
+    assert diagnostic["available"] is True  # Not a full snapshot-schema validator.
+    def snapshot_fn(root, *, previous):
+        return tracking.snapshot(root, now=330, previous=previous)
+
+    helper_value, helper_diagnostic = operator_helper["snapshot_with_previous"](
+        tmp_path, snapshot_fn, previous, diagnostic)
+    value = tracking.record_snapshot(tmp_path, now=330)
+    for result, result_diagnostic in ((value, value["monitor_previous_snapshot"]),
+            (helper_value, helper_diagnostic)):
+        assert result_diagnostic["available"] is False
+        assert result_diagnostic["reason_code"] == "malformed"
+        actual = {row["attempt_id"]: row for row in result["attempts"]}
+        assert actual[failed_id]["official_pass"] is False
+        assert actual[pending_id]["official_pass"] is None
+        assert result["official_passed_attempts"] == 0
+
+
+def test_helper_projection_error_also_recomputes_without_cache(tmp_path, operator_helper):
+    failed_id = fixture_attempt(tmp_path, 0)
+    pending_id = fixture_attempt(tmp_path, 1, active=True)
+    first = tracking.record_snapshot(tmp_path, now=30)
+    del first["attempts"][0]["backend_activity"]
+    latest_file(tmp_path, json.dumps(first).encode())
+    previous, diagnostic = operator_helper["load_previous"](tmp_path, with_diagnostics=True)
+    assert diagnostic["available"] is True
+
+    def observe(root, *, previous):
+        value = tracking.snapshot(root, now=330, previous=previous)
+        return value, operator_helper["attempt_projection"](root, value)
+
+    (value, projection), result_diagnostic = operator_helper["snapshot_with_previous"](
+        tmp_path, observe, previous, diagnostic)
+    assert result_diagnostic["available"] is False
+    assert result_diagnostic["reason_code"] == "malformed"
+    actual = {row["attempt"]: row for row in projection}
+    assert actual[failed_id]["official_pass"] is False
+    assert actual[pending_id]["official_pass"] is None
+    assert value["official_passed_attempts"] == 0
+
+
+@pytest.mark.parametrize("error", [TypeError, KeyError, AttributeError])
+def test_cache_fallback_does_not_suppress_native_error(tmp_path, operator_helper, error):
+    fixture_attempt(tmp_path, 0)
+    tracking.record_snapshot(tmp_path, now=30)
+    previous, diagnostic = tracking.read_monitor_previous_snapshot(tmp_path)
+    before = (tmp_path / "monitor/latest.json").read_bytes()
+    with patch.object(tracking, "snapshot", side_effect=error("PRIVATE_NATIVE_ERROR")) as observed:
+        with pytest.raises(error):
+            tracking.record_snapshot(tmp_path, now=330)
+        assert observed.call_count == 2
+        assert observed.call_args.kwargs["previous"] == {}
+    assert (tmp_path / "monitor/latest.json").read_bytes() == before
+    with patch.object(tracking, "snapshot", side_effect=error("PRIVATE_NATIVE_ERROR")) as observed:
+        with pytest.raises(error):
+            operator_helper["snapshot_with_previous"](tmp_path, tracking.snapshot, previous, diagnostic)
+        assert observed.call_count == 2
+    with patch.object(tracking, "snapshot", side_effect=error("PRIVATE_NATIVE_ERROR")) as observed:
+        with pytest.raises(error):
+            operator_helper["snapshot_with_previous"](tmp_path, tracking.snapshot, {}, diagnostic)
+        assert observed.call_count == 1
+
+
 def test_previous_symlink_is_not_opened_or_promoted(tmp_path, monkeypatch):
     root = tmp_path / "root"
     (root / "monitor").mkdir(parents=True)
