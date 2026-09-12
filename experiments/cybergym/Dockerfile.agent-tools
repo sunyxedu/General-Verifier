@@ -1,4 +1,5 @@
-# Supply the inspected existing Codex agent image ID via --build-arg BASE_IMAGE=...
+# Supply an audited existing Codex agent image reference via --build-arg BASE_IMAGE=...
+# Verify that reference's local image ID before building; no model upgrade occurs here.
 # Requires a Debian/Ubuntu apt-based base with Python, GCC/Make and user node.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
