@@ -223,7 +223,7 @@ def test_solver_runtime_uses_luna_max_fast_and_isolated_homes(controller, select
     assert command[command.index("-m") + 1] == "gpt-5.6-luna"
     assert 'model_reasoning_effort="max"' in command and 'service_tier="fast"' in command
     assert "model_context_window=1050000" in command
-    assert "model_auto_compact_token_limit=880000" in command
+    assert "model_auto_compact_token_limit=780000" in command
     assert "--enable" in command and "fast_mode" in command
     assert "resume" in command if thread else "resume" not in command
     mounts = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "-v"]
@@ -933,7 +933,7 @@ def test_frozen_manifest_preserves_no_task_or_role_deadline_and_no_fresh_solver_
     assert manifest["model"] == "gpt-5.6-luna"
     assert manifest["reasoning_effort"] == "max" and manifest["service_tier"] == "fast"
     assert manifest["model_context_window"] == 1_050_000
-    assert manifest["model_auto_compact_token_limit"] == 880_000
+    assert manifest["model_auto_compact_token_limit"] == 780_000
     assert manifest["solver_egress_domains"] == list(run.EGRESS_DOMAINS)
     assert manifest["web_search"] == "disabled"
     assert manifest["verifier_shell_network_enabled"] is False
@@ -947,12 +947,13 @@ def test_context_home_configuration_and_cli_share_the_supported_luna_policy():
     assert configuration["model"] == "gpt-5.6-luna"
     assert configuration["web_search"] == "disabled"
     assert configuration["model_context_window"] == model_config.CONTEXT_WINDOW == 1_050_000
-    assert configuration["model_auto_compact_token_limit"] == model_config.AUTO_COMPACT_TOKEN_LIMIT == 880_000
+    assert configuration["model_auto_compact_token_limit"] == model_config.AUTO_COMPACT_TOKEN_LIMIT == 780_000
+    assert model_config.AUTO_COMPACT_TOKEN_LIMIT < 828_400
     assert 0 < model_config.AUTO_COMPACT_TOKEN_LIMIT < 922_000
     assert model_config.AUTO_COMPACT_TOKEN_LIMIT + 128_000 <= model_config.CONTEXT_WINDOW
     overrides = model_config.context_cli_args()
     assert overrides == ["-c", "model_context_window=1050000",
-                         "-c", "model_auto_compact_token_limit=880000"]
+                         "-c", "model_auto_compact_token_limit=780000"]
 
 
 def mirror_failure():

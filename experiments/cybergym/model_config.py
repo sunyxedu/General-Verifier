@@ -9,7 +9,9 @@ MODEL = "gpt-5.6-luna"
 EFFORT = "max"
 SERVICE_TIER = "fast"
 CONTEXT_WINDOW = 1_050_000
-AUTO_COMPACT_TOKEN_LIMIT = 880_000
+# Pinned Codex reports an 828,400-token usable budget in real Luna turns.
+# Leave 48,400 tokens below that observed budget, not only the API ceiling.
+AUTO_COMPACT_TOKEN_LIMIT = 780_000
 
 
 def context_cli_args() -> list[str]:

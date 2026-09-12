@@ -5,7 +5,9 @@ not a second verifier layered on top of standard GV.
 
 The solver and every verification role use **GPT-5.6 Luna, max effort, fast**.
 Their context policy is shared in `model_config.py`: 1,050,000 total tokens,
-automatic compaction at 880,000 input tokens. Both fresh solver turns and
+automatic compaction at 780,000 input tokens. Pinned Codex real-turn traces
+report 828,400 usable tokens; the threshold leaves 48,400 below that budget.
+Both fresh solver turns and
 same-thread continuations have explicit CLI overrides; all verifier roles
 have the same overrides. The frozen manifest records both settings. This
 does not disable compaction or claim that input alone can occupy 1M tokens.
