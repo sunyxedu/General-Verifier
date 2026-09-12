@@ -39,6 +39,7 @@ import math
 import os
 import posixpath
 import re
+import shlex
 import signal
 import stat
 import subprocess
@@ -969,6 +970,118 @@ def _stream_text(value: Any) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+_COMMAND_ITEM_LIMIT = 1024
+_COMMAND_COUNTER_LIMIT = 2 ** 31 - 1
+_COMMAND_TEXT_LIMIT = 1024 * 1024
+
+
+def _command_metadata(item: dict) -> dict:
+    """Body-free metadata; category describes direct tool invocation, not work.
+
+    For example ``gcc --version`` is a compiler invocation, not a compilation.
+    Shell wrappers/compound commands and arbitrary scripts remain ``other``.
+    """
+    result = {"command_metadata_available": True, "command_category": "other", "command_status": "unknown"}
+    status = item.get("status")
+    if isinstance(status, str) and status in {"in_progress", "completed", "failed"}:
+        result["command_status"] = status
+    code = item.get("exit_code")
+    if isinstance(code, int) and not isinstance(code, bool) and -(2 ** 31) <= code < 2 ** 31:
+        result["command_exit_code"] = code
+    for source, destination in (("command", "command_sha256"), ("aggregated_output", "command_output_utf8_bytes")):
+        value = item.get(source)
+        if not isinstance(value, str):
+            continue
+        if len(value) > _COMMAND_TEXT_LIMIT:
+            result["command_metadata_truncated"] = True
+            continue
+        try:
+            data = value.encode("utf-8", errors="strict")
+        except UnicodeError:
+            result["command_metadata_truncated"] = True
+            continue
+        if len(data) > _COMMAND_TEXT_LIMIT:
+            result["command_metadata_truncated"] = True
+            continue
+        result[destination] = hashlib.sha256(data).hexdigest() if source == "command" else len(data)
+        if source == "command" and not any(character in value for character in "\n\r;&|<>`$"):
+            try:
+                argv = shlex.split(value)
+            except ValueError:
+                argv = []
+            executable = os.path.basename(argv[0]) if argv and (
+                "/" not in argv[0] or os.path.dirname(argv[0]) in {"/usr/bin", "/bin"}) else ""
+            if executable in {"cc", "c++", "gcc", "g++", "clang", "clang++", "ld", "ld.lld", "ar", "llvm-ar"}:
+                result["command_category"] = "compiler"
+            elif executable in {"make", "cmake", "ninja", "meson", "autoconf"}:
+                result["command_category"] = "build"
+            elif executable in {"pytest", "ctest", "llvm-lit"} or (
+                    executable in {"python", "python3"} and argv[1:3] in (["-m", "pytest"], ["-m", "unittest"])):
+                result["command_category"] = "test"
+    return result
+
+
+class _CommandStats:
+    """Bounded counts of distinct completed items in one CLI-attempt prefix.
+
+    Equal fingerprints mean equal command bytes, not equal inputs or redundant
+    work. Retries/polling may be legitimate; these counts trigger no action.
+    Partial/truncated/saturated counts are not whole-history repeat counts.
+    """
+
+    def __init__(self):
+        self.seen = set()
+        self.fingerprints = {}
+        self.partial = False
+        self.saturated = False
+        self.truncated = False
+        self.counts = dict.fromkeys(("completed_items", "fingerprinted_items", "unique_fingerprints",
+            "repeated_fingerprint_items", "max_fingerprint_repetitions", "duplicate_completions",
+            "untracked_completions", "success_exits", "nonzero_exits", "unknown_exits"), 0)
+
+    def _increment(self, name):
+        if self.counts[name] >= _COMMAND_COUNTER_LIMIT:
+            self.partial = self.saturated = True
+        else:
+            self.counts[name] += 1
+
+    def completed(self, item_id, metadata):
+        if not isinstance(item_id, str) or not item_id or len(item_id) > 128:
+            self.partial = True
+            self._increment("untracked_completions")
+            return False
+        if item_id in self.seen:
+            self.partial = True  # Reused IDs/duplicate lifecycle cannot prove execution history.
+            self._increment("duplicate_completions")
+            return True
+        if len(self.seen) >= _COMMAND_ITEM_LIMIT:
+            self.partial = self.truncated = True
+            self._increment("untracked_completions")
+            return False
+        self.seen.add(item_id)
+        self._increment("completed_items")
+        code = metadata.get("command_exit_code")
+        self._increment("unknown_exits" if code is None else "success_exits" if code == 0 else "nonzero_exits")
+        digest = metadata.get("command_sha256")
+        if digest is None:
+            self.partial = True
+            self.truncated |= metadata.get("command_metadata_truncated") is True
+            return False
+        self._increment("fingerprinted_items")
+        repetitions = self.fingerprints.get(digest, 0)
+        self._increment("repeated_fingerprint_items" if repetitions else "unique_fingerprints")
+        if repetitions >= _COMMAND_COUNTER_LIMIT:
+            self.partial = self.saturated = True
+        self.fingerprints[digest] = min(repetitions + 1, _COMMAND_COUNTER_LIMIT)
+        self.counts["max_fingerprint_repetitions"] = max(self.counts["max_fingerprint_repetitions"], self.fingerprints[digest])
+        return False
+
+    def snapshot(self, complete=True):
+        return {"available": True, "scope": "cli_attempt_prefix", "item_limit": _COMMAND_ITEM_LIMIT,
+                "counter_limit": _COMMAND_COUNTER_LIMIT, "partial": self.partial or not complete,
+                "saturated": self.saturated, "truncated": self.truncated or not complete, **self.counts}
 
 
 def _execution_diagnostic_base() -> Dict[str, Any]:
@@ -2326,6 +2439,7 @@ class CodexBackend:
                       "last_cli_event": None, "item_state_complete": True}
             lock = threading.Lock()
             active = {}
+            command_stats = _CommandStats()
             failures = []
             item_kinds = {"command_execution", "mcp_tool_call", "web_search", "file_change",
                           "agent_message", "reasoning", "plan_update"}
@@ -2376,16 +2490,26 @@ class CodexBackend:
                         details["item_kind"] = item_kind if item_kind in item_kinds else "other"
                         # IDs are used locally for duration correlation, never logged.
                         item_id = item.get("id")
+                        command_metadata = _command_metadata(item) if item_kind == "command_execution" else {}
                         if isinstance(item_id, str) and len(item_id) <= 128:
                             if kind == "item.started":
-                                active.setdefault(item_id, (time.monotonic(), item_kind in tool_kinds))
+                                active.setdefault(item_id, (time.monotonic(), item_kind in tool_kinds,
+                                                            command_metadata))
                             elif kind == "item.completed":
                                 previous = active.pop(item_id, None)
                                 details["item_duration_seconds"] = (
                                     time.monotonic() - previous[0] if previous else None)
+                                if previous and item_kind == "command_execution" and "command" not in item:
+                                    command_metadata.update({key: previous[2][key] for key in
+                                        ("command_sha256", "command_category") if key in previous[2]})
+                        if item_kind == "command_execution":
+                            details.update(command_metadata)
+                            if kind == "item.completed":
+                                details["command_duplicate_completion"] = command_stats.completed(item_id, command_metadata)
                         counts["active_tool_items"] = sum(value[1] for value in active.values())
                     details["active_tool_items"] = counts["active_tool_items"]
                     details["wait_category"] = wait_category(counts)
+                    details["command_stats"] = command_stats.snapshot(counts["item_state_complete"])
                 self._phase(call_id, attempt, "cli_event", **details)
 
             def drain(pipe, name):
@@ -2435,7 +2559,7 @@ class CodexBackend:
                     break
                 except subprocess.TimeoutExpired:
                     with lock:
-                        snapshot = dict(counts)
+                        snapshot = {**counts, "command_stats": command_stats.snapshot(counts["item_state_complete"])}
                     self._phase(call_id, attempt, "exec_heartbeat", child_pid=process.pid,
                                 elapsed_seconds=time.monotonic() - began,
                                 wait_category=wait_category(snapshot), **snapshot)
@@ -2451,12 +2575,12 @@ class CodexBackend:
                     reader.join(timeout=self.phase_heartbeat_seconds)
                     if reader.is_alive():
                         with lock:
-                            snapshot = dict(counts)
+                            snapshot = {**counts, "command_stats": command_stats.snapshot(counts["item_state_complete"])}
                         self._phase(call_id, attempt, "pipe_drain_heartbeat", child_pid=process.pid,
                                     process_running=False, elapsed_seconds=time.monotonic() - began,
                                     wait_category="pipe_drain_unknown", **snapshot)
             with lock:
-                snapshot = dict(counts)
+                snapshot = {**counts, "command_stats": command_stats.snapshot(counts["item_state_complete"])}
             self._phase(call_id, attempt, "exec_returned", child_pid=process.pid,
                         returncode=process.returncode, elapsed_seconds=time.monotonic() - began,
                         reader_failed=bool(failures), **snapshot)

@@ -26,6 +26,7 @@ from verifier.llm.codex_backend import (
     service_tier_cli_args,
 )
 from verifier.llm.schema import RoleError
+from verifier.llm import codex_backend as cb
 
 
 @pytest.fixture(autouse=True)
@@ -95,6 +96,98 @@ emit({"type":"turn.completed","usage":{}})
     assert all("thread_id" not in row and "command" not in row and "message" not in row for row in records)
     assert all(row["role"] == "critic" for row in records)
     assert backend._phase_roles == {}
+
+
+@pytest.mark.parametrize("command,category", [("gcc -c source.c", "compiler"),
+    ("/usr/bin/clang++ -c source.cc", "compiler"), ("cmake -S . -B build", "build"),
+    ("ninja -C build", "build"), ("python3 -m pytest", "test"), ("ctest", "test"),
+    ("python3 script.py", "other"), ("bash -lc 'gcc source.c'", "other"),
+    ("cd work && make", "other"), ("./gcc", "other"), ("/state/work/gcc", "other"),
+    ("gcc source.c; ./test", "other"), ("echo gcc", "other")])
+def test_command_metadata_categories_are_conservative_and_body_free(command, category):
+    value = cb._command_metadata({"command": command, "status": "completed", "exit_code": 0,
+                                  "aggregated_output": "汉字"})
+    assert value["command_category"] == category
+    assert value["command_sha256"] == hashlib.sha256(command.encode()).hexdigest()
+    assert value["command_output_utf8_bytes"] == 6 and value["command_exit_code"] == 0
+    assert "command" not in value and "aggregated_output" not in value and "input_bytes" not in value
+
+
+def test_command_metadata_wrong_types_unknown_exit_and_truncation(monkeypatch):
+    value = cb._command_metadata({"command": ["private"], "exit_code": True,
+                                  "status": ["private"], "aggregated_output": b"private"})
+    assert value == {"command_metadata_available": True, "command_category": "other", "command_status": "unknown"}
+    monkeypatch.setattr(cb, "_COMMAND_TEXT_LIMIT", 3)
+    value = cb._command_metadata({"command": "汉字", "aggregated_output": "\ud800"})
+    assert "command_sha256" not in value and "command_output_utf8_bytes" not in value
+    assert value["command_metadata_truncated"] is True
+
+
+def test_command_stats_distinct_completions_repeat_unknown_exit_and_boundedness(monkeypatch):
+    stats = cb._CommandStats()
+    known = cb._command_metadata({"command": "gcc fixture.c", "exit_code": 0})
+    assert stats.completed("one", known) is False
+    assert stats.completed("one", known) is True
+    stats.completed("two", cb._command_metadata({"command": "gcc fixture.c", "status": "failed"}))
+    stats.completed("three", cb._command_metadata({"command": "make", "exit_code": 127}))
+    value = stats.snapshot()
+    assert value["completed_items"] == 3 and value["fingerprinted_items"] == 3
+    assert value["unique_fingerprints"] == 2 and value["repeated_fingerprint_items"] == 1
+    assert value["max_fingerprint_repetitions"] == 2 and value["duplicate_completions"] == 1
+    assert value["success_exits"] == value["unknown_exits"] == value["nonzero_exits"] == 1
+    monkeypatch.setattr(cb, "_COMMAND_ITEM_LIMIT", 1)
+    monkeypatch.setattr(cb, "_COMMAND_COUNTER_LIMIT", 1)
+    limited = cb._CommandStats()
+    limited.completed("one", known)
+    limited.completed("two", known)
+    limited.completed("three", known)
+    assert len(limited.seen) == len(limited.fingerprints) == 1
+    value = limited.snapshot()
+    assert value["partial"] and value["saturated"] and value["truncated"] and value["untracked_completions"] == 1
+    assert value["completed_items"] == 1 and value["repeated_fingerprint_items"] == 0
+
+
+def test_missing_command_anonymous_completion_and_failed_status_without_exit_are_unknown():
+    stats = cb._CommandStats()
+    metadata = cb._command_metadata({"status": "failed"})
+    stats.completed("known-id", metadata)
+    stats.completed(None, metadata)
+    value = stats.snapshot()
+    assert value["completed_items"] == 1 and value["untracked_completions"] == 1
+    assert value["unknown_exits"] == 1 and value["nonzero_exits"] == 0
+    assert value["fingerprinted_items"] == 0 and value["partial"]
+
+
+def test_observed_command_metadata_dedups_completed_lifecycle_and_preserves_ephemeral(tmp_path, monkeypatch):
+    records = []
+    program = r'''
+import json,os,sys
+with open(sys.argv[1],"w") as f: json.dump({"ok":True},f)
+def emit(event): os.write(1,(json.dumps(event)+"\n").encode())
+emit({"type":"thread.started","thread_id":"private-id"})
+emit({"type":"turn.started"})
+for i in range(2):
+ emit({"type":"item.started","item":{"type":"command_execution","id":str(i),"command":"gcc -c private-source.c"}})
+ event={"type":"item.completed","item":{"type":"command_execution","id":str(i),"status":"completed","exit_code":0,"aggregated_output":"private-output"}}
+ emit(event)
+ if i==0: emit(event)
+emit({"type":"turn.completed"})
+'''
+    backend, commands = _observed_synthetic_backend(tmp_path, monkeypatch, program, records.append)
+    assert backend.complete("critic", "private-prompt", {"world_mode": "captured"}) == {"ok": True}
+    assert "--ephemeral" in commands[0]
+    returned = next(row for row in records if row["phase"] == "exec_returned")
+    stats = returned["command_stats"]
+    assert stats["available"] and stats["scope"] == "cli_attempt_prefix"
+    assert stats["completed_items"] == 2 and stats["repeated_fingerprint_items"] == 1
+    assert stats["duplicate_completions"] == 1 and stats["partial"]
+    completed = [row for row in records if row.get("event_type") == "item.completed"]
+    assert all(row["command_output_utf8_bytes"] == 14 for row in completed)
+    assert all(row["command_category"] == "compiler" for row in completed
+               if not row["command_duplicate_completion"])
+    assert "command_sha256" not in next(row for row in completed if row["command_duplicate_completion"])
+    assert "private-" not in json.dumps(records)
+    assert all(not any(key in row for key in ("command", "aggregated_output", "input_bytes", "prompt_bytes", "thread_id", "item_id")) for row in records)
 
 
 def test_observed_exec_handles_chunked_utf8_and_no_output_file(tmp_path, monkeypatch):

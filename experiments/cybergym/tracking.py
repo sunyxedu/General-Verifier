@@ -46,6 +46,9 @@ CLI_EVENT_TYPES = frozenset({"thread.started", "turn.started", "turn.completed",
     "item.started", "item.updated", "item.completed", "error"})
 CLI_ITEM_KINDS = frozenset({"command_execution", "mcp_tool_call", "web_search", "file_change",
     "agent_message", "reasoning", "plan_update", "other"})
+COMMAND_STAT_COUNTERS = ("item_limit", "counter_limit", "completed_items", "fingerprinted_items",
+    "unique_fingerprints", "repeated_fingerprint_items", "max_fingerprint_repetitions",
+    "duplicate_completions", "untracked_completions", "success_exits", "nonzero_exits", "unknown_exits")
 BACKEND_WAIT_CATEGORIES = frozenset({"unknown", "cli_startup_unknown", "cli_finalization_unknown",
     "cli_activity_unknown", "cli_tool_item_active", "model_wait_unknown", "pipe_drain_unknown"})
 BACKEND_ROLES = frozenset({"obligations", "critic", "oracles", "discharge", "judger"})
@@ -251,7 +254,7 @@ def _backend_activity(rows: list[dict], outer_calls: list[dict], now: float, par
             "wait_category": "unknown", "process_running": None,
             "latest_unix": ts, "last_heartbeat_unix": None, "last_cli_event_unix": None,
             "last_cli_event": None, "last_item_kind": None, "phase_counts": {},
-            "completed_tool_items": {}})
+            "completed_tool_items": {}, "command_stats": {"available": False, "partial": True}})
         phase = row["phase"]
         if phase != call["phase"]:
             call["phase_started_unix"] = ts
@@ -271,6 +274,18 @@ def _backend_activity(rows: list[dict], outer_calls: list[dict], now: float, par
         for field in ("item_state_complete", "reader_failed", "streaming"):
             if isinstance(row.get(field), bool):
                 call[field] = row[field]
+        stats = row.get("command_stats")
+        if stats is not None:
+            valid = (isinstance(stats, dict) and stats.get("available") is True
+                and stats.get("scope") == "cli_attempt_prefix"
+                and all(isinstance(stats.get(field), int) and not isinstance(stats[field], bool)
+                        and 0 <= stats[field] < 2 ** 31 for field in COMMAND_STAT_COUNTERS)
+                and all(isinstance(stats.get(field), bool) for field in ("partial", "saturated", "truncated")))
+            call["command_stats"] = ({"available": True, "scope": "cli_attempt_prefix",
+                **{field: stats[field] for field in COMMAND_STAT_COUNTERS},
+                "partial": stats["partial"] or stats["saturated"] or stats["truncated"] or partial,
+                "saturated": stats["saturated"], "truncated": stats["truncated"] or partial}
+                if valid else {"available": False, "partial": True})
         if phase in {"exec_spawned", "exec_heartbeat"}:
             call["process_running"] = True
         elif phase in {"exec_process_exited", "pipe_drain_heartbeat", "exec_returned", "exec_spawn_failed"}:
@@ -292,8 +307,28 @@ def _backend_activity(rows: list[dict], outer_calls: list[dict], now: float, par
             if isinstance(item_kind, str) and item_kind in CLI_ITEM_KINDS:
                 call["last_item_kind"] = item_kind
             duration = _number(row.get("item_duration_seconds"))
+            if item_kind == "command_execution":
+                metadata = {"available": row.get("command_metadata_available") is True}
+                digest = row.get("command_sha256")
+                if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+                    metadata["sha256"] = digest
+                for field, values in (("category", {"compiler", "build", "test", "other"}),
+                                      ("status", {"in_progress", "completed", "failed", "unknown"})):
+                    value = row.get("command_" + field)
+                    if isinstance(value, str) and value in values:
+                        metadata[field] = value
+                for source, destination, low, high in (("command_exit_code", "exit_code", -(2 ** 31), 2 ** 31),
+                                                     ("command_output_utf8_bytes", "output_utf8_bytes", 0, 2 ** 31)):
+                    value = row.get(source)
+                    if isinstance(value, int) and not isinstance(value, bool) and low <= value < high:
+                        metadata[destination] = value
+                for field in ("metadata_truncated", "duplicate_completion"):
+                    if isinstance(row.get("command_" + field), bool):
+                        metadata[field] = row["command_" + field]
+                call["last_command"] = metadata
             if (event_type == "item.completed" and duration is not None
-                    and isinstance(item_kind, str) and item_kind in {"command_execution", "mcp_tool_call", "web_search"}):
+                    and isinstance(item_kind, str) and item_kind in {"command_execution", "mcp_tool_call", "web_search"}
+                    and row.get("command_duplicate_completion") is not True):
                 item = call["completed_tool_items"].setdefault(item_kind, {"count": 0, "work_seconds_sum": 0.0})
                 item["count"] += 1
                 item["work_seconds_sum"] = round(item["work_seconds_sum"] + duration, 6)

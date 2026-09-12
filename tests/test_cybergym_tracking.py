@@ -525,6 +525,58 @@ def test_backend_projection_keeps_distinct_ids_and_scrubs_nonmetadata(tmp_path):
     assert call["completed_tool_items"] == {"command_execution": {"count": 1, "work_seconds_sum": 5}}
     assert activity["provider_queue_vs_inference"] == "unknown"
     assert "PRIVATE" not in json.dumps(value) and value["alerts"] == []
+    assert call["command_stats"] == {"available": False, "partial": True}
+
+
+def test_command_metadata_projection_is_typed_and_never_payload_or_deadline(tmp_path):
+    from verifier.llm.codex_backend import _CommandStats, _command_metadata
+
+    path = attempt(tmp_path)
+    stats = _CommandStats()
+    item = _command_metadata({"command": "PRIVATE_COMMAND", "exit_code": 0, "status": "completed",
+                              "aggregated_output": "PRIVATE_OUTPUT"})
+    stats.completed("private-id", item)
+    duplicate = stats.completed("private-id", item)
+    counter = {**stats.snapshot(), "raw": "PRIVATE_COUNTER"}
+    backend_fixture(path,
+        backend_row("exec_spawned", 22),
+        backend_row("cli_event", 23, event_type="item.completed", item_kind="command_execution",
+                    item_duration_seconds=2, command_stats=counter, **item),
+        backend_row("cli_event", 24, event_type="item.completed", item_kind="command_execution",
+                    item_duration_seconds=2, command_stats=counter, command_duplicate_completion=duplicate, **item))
+    value = snapshot(tmp_path, now=30)
+    call = value["attempts"][0]["backend_activity"]["calls"][0]
+    assert call["command_stats"]["available"] and call["command_stats"]["partial"]
+    assert call["command_stats"]["completed_items"] == 1
+    assert call["last_command"]["exit_code"] == 0 and call["last_command"]["available"]
+    assert call["completed_tool_items"]["command_execution"]["count"] == 1
+    assert "PRIVATE" not in json.dumps(value)
+    assert value["attempts"][0]["backend_activity"]["provider_queue_vs_inference"] == "unknown"
+    assert value["alerts"] == []
+
+
+def test_malformed_command_stats_and_fields_stay_unavailable_not_zero_failure(tmp_path):
+    path = attempt(tmp_path)
+    backend_fixture(path, backend_row("cli_event", 23, event_type="item.completed", item_kind="command_execution",
+        command_stats={"available": True, "scope": "cli_attempt_prefix", "completed_items": True,
+                       "partial": False, "raw": "PRIVATE"}, command_sha256="PRIVATE",
+        command_exit_code=True, command_status=["PRIVATE"], command_category=["PRIVATE"],
+        command_output_utf8_bytes=-1, command_metadata_available="PRIVATE"))
+    value = snapshot(tmp_path, now=30)
+    call = value["attempts"][0]["backend_activity"]["calls"][0]
+    assert call["command_stats"] == {"available": False, "partial": True}
+    assert call["last_command"] == {"available": False}
+    assert "PRIVATE" not in json.dumps(value) and value["alerts"] == []
+
+
+def test_command_stats_tail_projection_is_partial_not_whole_history():
+    from verifier.llm.codex_backend import _CommandStats
+    from experiments.cybergym.tracking import _backend_activity
+
+    row = backend_row("exec_heartbeat", 23, command_stats=_CommandStats().snapshot())
+    stats = _backend_activity([row], [], 30, partial=True)["calls"][0]["command_stats"]
+    assert stats["available"] and stats["partial"] and stats["truncated"]
+    assert stats["scope"] == "cli_attempt_prefix"
 
 
 @pytest.mark.parametrize("second_role,expected_id,association", [
