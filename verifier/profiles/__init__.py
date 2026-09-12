@@ -7,18 +7,27 @@ keeps the profile boundary usable while those modules initialize.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     from verifier.llm.agents import AgentRole
 
 
+def _cyber_boundary_identity() -> dict[str, str]:
+    """Pin executable domain boundaries as well as their model instructions."""
+    root = Path(__file__).parent / "cyber"
+    return {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in ("adapters.py", "backend.py", "feedback.py")}
+
+
 def _role_configuration(role: AgentRole) -> dict[str, Any]:
     from verifier.llm.agents import to_json_schema
 
-    return {
+    configuration = {
         "name": role.name,
         "system": role.system,
         "template": role.template,
@@ -27,6 +36,21 @@ def _role_configuration(role: AgentRole) -> dict[str, Any]:
         "model": role.model,
         "max_turns": role.max_turns,
     }
+    if role.wire_schema is not None or role.wire_lower is not None:
+        configuration["wire_schema"] = to_json_schema(role.wire_schema or role.schema)
+        configuration["wire_lowering"] = None
+        if role.wire_lower is not None:
+            if getattr(role.wire_lower, "__closure__", None):
+                raise ValueError("profile wire lowering must not capture unversioned closure state")
+            configuration["wire_lowering"] = {
+                "module": role.wire_lower.__module__,
+                "name": role.wire_lower.__qualname__,
+                "implementation_sha256": hashlib.sha256(
+                    inspect.getsource(role.wire_lower).encode("utf-8")).hexdigest(),
+                "module_sha256": hashlib.sha256(inspect.getsource(
+                    inspect.getmodule(role.wire_lower)).encode("utf-8")).hexdigest(),
+            }
+    return configuration
 
 
 @dataclass(frozen=True)
@@ -69,7 +93,7 @@ class VerificationProfile:
         self, roles: Mapping[str, AgentRole]
     ) -> dict[str, Any]:
         """Include the effective registry, e.g. a harness-configured default."""
-        return {
+        identity = {
             "name": self.name,
             "version": self.version,
             "solver_instructions": self.solver_instructions,
@@ -79,6 +103,9 @@ class VerificationProfile:
                 for name, role in sorted(roles.items())
             },
         }
+        if self.name == "cyber":
+            identity["cyber_boundary"] = _cyber_boundary_identity()
+        return identity
 
     @property
     def identity(self) -> dict[str, Any]:

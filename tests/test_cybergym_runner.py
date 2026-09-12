@@ -20,6 +20,13 @@ import pytest
 from experiments.cybergym import run, tracking
 
 
+@pytest.fixture(autouse=True)
+def ample_disk(monkeypatch):
+    """Never let a fixture wait on the host machine's actual free capacity."""
+    monkeypatch.setattr(run.shutil, "disk_usage", lambda _path:
+                        SimpleNamespace(total=100 * 1024**3, used=0, free=100 * 1024**3))
+
+
 def patch_mirror(monkeypatch, controller, callback):
     monkeypatch.setattr(controller, "mirror", callback)
     monkeypatch.setattr(controller, "mirror_metadata", callback)
@@ -1159,6 +1166,368 @@ def test_existing_regular_diagnostic_log_is_restricted_to_mode600_before_append(
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
     assert [json.loads(line) for line in destination.read_text().splitlines()] == [
         {"reason": "previous fixture"}, {"reason": "new fixture"}]
+
+
+def disk_capacity(monkeypatch, free):
+    capacity = {"free": free}
+    monkeypatch.setattr(run.shutil, "disk_usage", lambda _path:
+                        SimpleNamespace(total=100 * 1024**3, used=0, free=capacity["free"]))
+    return capacity
+
+
+@pytest.mark.parametrize("initial,waits", [(run.MIN_TASK_FREE_BYTES - 1, 1),
+                                         (run.MIN_TASK_FREE_BYTES, 0),
+                                         (run.MIN_TASK_FREE_BYTES + 1, 0)])
+def test_disk_resource_gate_exact_threshold_and_recovery(controller, monkeypatch, initial, waits):
+    capacity = disk_capacity(monkeypatch, initial)
+    directory = controller.root / "attempts/resource-gate"
+    directory.mkdir(parents=True)
+    state = {"attempt_id": directory.name, "official_pass": None}
+    calls = []
+
+    def wait(seconds):
+        calls.append(seconds)
+        assert state["stage"] == "waiting_for_disk"
+        assert state["official_pass"] is None
+        capacity["free"] = run.MIN_TASK_FREE_BYTES
+        return False
+
+    monkeypatch.setattr(controller.stop, "wait", wait)
+    controller._wait_for_disk(directory, state)
+    assert calls == [30] * waits
+    assert state["attempt_id"] == directory.name and state["official_pass"] is None
+
+
+def test_cached_image_cannot_bypass_disk_resource_wait(controller, monkeypatch):
+    capacity = disk_capacity(monkeypatch, 8 * 1024**3)
+    directory = controller.root / "attempts/cached-image"
+    directory.mkdir(parents=True)
+    state, actions = {"official_pass": None}, []
+    monkeypatch.setattr(run, "image_lock", contextlib.nullcontext)
+
+    def docker(*args, **_kwargs):
+        assert capacity["free"] >= run.MIN_TASK_FREE_BYTES
+        actions.append(tuple(args))
+        return SimpleNamespace(returncode=0)
+
+    def wait(seconds):
+        assert seconds == 30 and actions == []
+        assert state["stage"] == "waiting_for_disk" and state["official_pass"] is None
+        capacity["free"] = run.MIN_TASK_FREE_BYTES
+        return False
+
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(run, "execute", lambda *_args, **_kwargs: pytest.fail("No download for cached image"))
+    monkeypatch.setattr(controller.stop, "wait", wait)
+    assert controller.pull("arvo:23296", "vul", directory, state) == (
+        run.image_name("arvo:23296", "vul"), False)
+    assert actions == [("image", "inspect", run.image_name("arvo:23296", "vul"))]
+
+
+def test_task_waits_before_any_pull_prepare_or_agent_then_continues_same_attempt(controller, monkeypatch):
+    capacity = disk_capacity(monkeypatch, 8 * 1024**3)
+    actions, attempts, waits = [], [], []
+    monkeypatch.setattr(run, "image_lock", contextlib.nullcontext)
+
+    def guard(name):
+        assert capacity["free"] >= run.MIN_TASK_FREE_BYTES
+        actions.append(name)
+
+    def wait(seconds):
+        assert seconds == 30 and actions == [] and controller.results == {}
+        directories = list((controller.root / "attempts").iterdir())
+        assert len(directories) == 1
+        status = json.loads((directories[0] / "status.json").read_text())
+        assert status["stage"] == "waiting_for_disk" and status["official_pass"] is None
+        attempts.append(status["attempt_id"])
+        waits.append(seconds)
+        if len(waits) == 4:  # No arbitrary retry/restart/deadline cap.
+            capacity["free"] = run.MIN_TASK_FREE_BYTES
+        return False
+
+    def docker(*args, **_kwargs):
+        guard("cached_image_inspect")
+        assert args[:2] == ("image", "inspect")
+        return SimpleNamespace(returncode=0)
+
+    def prepare(_task, directory):
+        guard("prepare")
+        assert directory.name == attempts[0]
+        workspace, private = directory / "workspace", directory / "private"
+        workspace.mkdir()
+        private.mkdir()
+        return workspace, private, "synthetic fixture protocol"
+
+    def runtime(*_args):
+        guard("runtime")
+        return {"sidecar": "synthetic-sidecar"}
+
+    def solver(directory, *_args):
+        guard("solver")
+        assert directory.name == attempts[0]
+        return {"fixture_receipt": True}
+
+    def score(_task, directory, _state, receipt):
+        guard("score")
+        assert directory.name == attempts[0] and receipt == {"fixture_receipt": True}
+        return True
+
+    monkeypatch.setattr(controller.stop, "wait", wait)
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(run, "execute", lambda *_args, **_kwargs: pytest.fail("No real external commands"))
+    monkeypatch.setattr(controller, "prepare", prepare)
+    monkeypatch.setattr(controller, "create_runtime", runtime)
+    monkeypatch.setattr(controller, "run_solver", solver)
+    monkeypatch.setattr(controller, "score", score)
+    monkeypatch.setattr(controller, "cleanup_runtime", lambda *_args: actions.append("cleanup"))
+    state = controller.run_task("arvo:23296")
+    assert waits == [30] * 4 and len(set(attempts)) == 1
+    assert state["attempt_id"] == attempts[0] and state["official_pass"] is True
+    assert state["outcome"] == "pass"
+    assert actions == ["cached_image_inspect", "prepare", "runtime", "solver", "score", "cleanup"]
+
+
+def test_stop_during_disk_wait_does_not_launch_or_become_official_failure(controller, monkeypatch):
+    disk_capacity(monkeypatch, 8 * 1024**3)
+    previous = {"already-passed": {"official_pass": True}, "already-failed": {"official_pass": False}}
+    controller.results.update(previous)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Stopped resource wait must never start an external task action")
+
+    for name in ("pull", "prepare", "create_runtime", "run_solver", "score"):
+        monkeypatch.setattr(controller, name, forbidden)
+    monkeypatch.setattr(run, "docker", forbidden)
+    monkeypatch.setattr(run, "execute", forbidden)
+
+    def wait(seconds):
+        assert seconds == 30
+        controller.stop.set()
+        return True
+
+    monkeypatch.setattr(controller.stop, "wait", wait)
+    state = controller.run_task("arvo:23296")
+    assert state["official_pass"] is None
+    assert state["outcome"] == "infrastructure_error"  # Existing controller stop classification.
+    assert "controller stopped" in state["reason"] and "timeout" not in state["reason"]
+    assert all(controller.results[key] == value for key, value in previous.items())
+    assert len(list((controller.root / "attempts").iterdir())) == 1
+
+
+def test_stop_wins_over_capacity_recovery_and_cached_image_inspection(controller, monkeypatch):
+    capacity = disk_capacity(monkeypatch, run.MIN_TASK_FREE_BYTES - 1)
+    directory = controller.root / "attempts/stopped-resource"
+    directory.mkdir(parents=True)
+
+    def wait(_seconds):
+        capacity["free"] = run.MIN_TASK_FREE_BYTES
+        controller.stop.set()
+        return False
+
+    monkeypatch.setattr(controller.stop, "wait", wait)
+    with pytest.raises(RuntimeError, match="controller stopped"):
+        controller._wait_for_disk(directory, {})
+    controller.stop.clear()
+    monkeypatch.setattr(run, "image_lock", contextlib.nullcontext)
+
+    def cached(*_args, **_kwargs):
+        controller.stop.set()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(run, "docker", cached)
+    with pytest.raises(RuntimeError, match="controller stopped"):
+        controller.pull("arvo:23296", "vul", directory, {})
+
+
+def test_stop_immediately_after_new_pull_preserves_exact_owned_image_cleanup(controller, monkeypatch):
+    image = run.image_name("arvo:23296", "vul")
+    commands = []
+    monkeypatch.setattr(run, "image_lock", contextlib.nullcontext)
+
+    def docker(*args, **_kwargs):
+        commands.append(tuple(args))
+        if args == ("image", "inspect", image):
+            return SimpleNamespace(returncode=1)
+        assert args == ("image", "rm", image)
+        return SimpleNamespace(returncode=0)
+
+    def execute(*args, **_kwargs):
+        assert args == ("docker", "pull", "--platform", "linux/amd64", image)
+        commands.append(tuple(args))
+        controller.stop.set()  # Successful download, immediately followed by SIGTERM.
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Post-pull stop must never start preparation, runtime, or scoring")
+
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(run, "execute", execute)
+    for name in ("prepare", "create_runtime", "run_solver", "score"):
+        monkeypatch.setattr(controller, name, forbidden)
+    state = controller.run_task("arvo:23296")
+    assert state["official_pass"] is None and state["outcome"] == "infrastructure_error"
+    assert "controller stopped before task preparation" in state["reason"]
+    assert commands == [("image", "inspect", image),
+                        ("docker", "pull", "--platform", "linux/amd64", image),
+                        ("image", "rm", image)]
+
+
+@pytest.mark.parametrize("became_cached", [False, True])
+def test_download_rechecks_space_without_holding_image_lock_and_preserves_ownership(
+        controller, monkeypatch, became_cached):
+    capacity = disk_capacity(monkeypatch, run.MIN_TASK_FREE_BYTES - 1)
+    directory = controller.root / "attempts/image-space-race"
+    directory.mkdir(parents=True)
+    locked, cached, commands = {"active": False}, {"value": False}, []
+
+    @contextlib.contextmanager
+    def image_lock():
+        assert not locked["active"]
+        locked["active"] = True
+        try:
+            yield
+        finally:
+            locked["active"] = False
+
+    def docker(*args, **_kwargs):
+        assert locked["active"] and args[:2] == ("image", "inspect")
+        return SimpleNamespace(returncode=0 if cached["value"] else 1)
+
+    def wait(seconds):
+        assert seconds == 30 and not locked["active"] and commands == []
+        capacity["free"] = run.MIN_TASK_FREE_BYTES
+        cached["value"] = became_cached  # Another owner may finish its pull while we wait.
+        return False
+
+    def execute(*args, **_kwargs):
+        assert locked["active"] and capacity["free"] >= run.MIN_TASK_FREE_BYTES
+        commands.append(tuple(args))
+
+    monkeypatch.setattr(run, "image_lock", image_lock)
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(run, "execute", execute)
+    monkeypatch.setattr(controller.stop, "wait", wait)
+    with controller._image_for_use("arvo:23296", "vul", directory, {}) as (image, owned):
+        assert locked["active"]
+        assert image == run.image_name("arvo:23296", "vul") and owned is not became_cached
+    assert not locked["active"]
+    assert commands == ([] if became_cached else [
+        ("docker", "pull", "--platform", "linux/amd64", run.image_name("arvo:23296", "vul"))])
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_fixed_image_download_uses_resource_gate_without_changing_exact_final_score(
+        controller, selected, monkeypatch, cached):
+    directory, candidate, receipt = selected
+    queries, submissions = scorer_fakes(monkeypatch, controller, selected)
+    capacity = disk_capacity(monkeypatch, 8 * 1024**3)
+    locked, commands, waits = {"active": False}, [], []
+    original_bytes = candidate.read_bytes()
+
+    @contextlib.contextmanager
+    def image_lock():
+        locked["active"] = True
+        try:
+            yield
+        finally:
+            locked["active"] = False
+
+    def docker(*args, **_kwargs):
+        assert locked["active"]
+        commands.append(tuple(args))
+        if args[:2] == ("image", "inspect"):
+            return SimpleNamespace(returncode=0 if cached else 1)
+        assert args == ("image", "rm", run.image_name("arvo:23296", "fix"))
+        return SimpleNamespace(returncode=0)
+
+    def wait(seconds):
+        assert seconds == 30 and not locked["active"] and not cached
+        assert submissions == [] and len(queries) == 1
+        assert candidate.read_bytes() == original_bytes
+        waits.append(seconds)
+        capacity["free"] = run.MIN_TASK_FREE_BYTES
+        return False
+
+    def execute(*args, **_kwargs):
+        assert locked["active"] and capacity["free"] >= run.MIN_TASK_FREE_BYTES
+        commands.append(tuple(args))
+
+    monkeypatch.setattr(run, "image_lock", image_lock)
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(run, "execute", execute)
+    monkeypatch.setattr(controller.stop, "wait", wait)
+    assert controller.score("arvo:23296", directory, {}, receipt) is True
+    assert waits == ([] if cached else [30])
+    assert [endpoint for endpoint, _ in submissions] == ["/submit-fix"]
+    assert candidate.read_bytes() == original_bytes
+    saved = json.loads((directory / "official-final.json").read_text())
+    assert saved["poc_hash"] == receipt["sha256"] and saved["poc_length"] == receipt["size"]
+    pulls = [command for command in commands if command[:2] == ("docker", "pull")]
+    removes = [command for command in commands if command[:2] == ("image", "rm")]
+    assert len(pulls) == len(removes) == (0 if cached else 1)
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_fixed_submit_exception_removes_only_exact_newly_owned_image(
+        controller, selected, monkeypatch, cached):
+    directory, candidate, receipt = selected
+    scorer_fakes(monkeypatch, controller, selected)
+    image = run.image_name("arvo:23296", "fix")
+    commands, locked = [], {"active": False}
+
+    @contextlib.contextmanager
+    def image_lock():
+        locked["active"] = True
+        try:
+            yield
+        finally:
+            locked["active"] = False
+
+    def docker(*args, **_kwargs):
+        assert locked["active"]
+        commands.append(tuple(args))
+        if args == ("image", "inspect", image):
+            return SimpleNamespace(returncode=0 if cached else 1)
+        assert not cached and args == ("image", "rm", image)
+        return SimpleNamespace(returncode=0)
+
+    def execute(*args, **_kwargs):
+        assert locked["active"]
+        assert args == ("docker", "pull", "--platform", "linux/amd64", image)
+        commands.append(tuple(args))
+
+    def unavailable(request, **_kwargs):
+        assert locked["active"]
+        assert urllib.parse.urlsplit(request.full_url).path == "/submit-fix"
+        raise RuntimeError("synthetic submission failure")
+
+    monkeypatch.setattr(run, "image_lock", image_lock)
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(run, "execute", execute)
+    monkeypatch.setattr(run.urllib.request, "urlopen", unavailable)
+    with pytest.raises(RuntimeError, match="^synthetic submission failure$"):
+        controller.score("arvo:23296", directory, {}, receipt)
+    assert not locked["active"] and run.digest(candidate) == receipt["sha256"]
+    assert [command for command in commands if command[:2] == ("image", "rm")] == (
+        [] if cached else [("image", "rm", image)])
+    assert not (directory / "official-final.json").exists()
+
+
+def test_stop_after_cached_fixed_inspect_prevents_official_submit(controller, selected, monkeypatch):
+    directory, candidate, receipt = selected
+    queries, submissions = scorer_fakes(monkeypatch, controller, selected)
+
+    def docker(*args, **_kwargs):
+        assert args == ("image", "inspect", run.image_name("arvo:23296", "fix"))
+        controller.stop.set()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(run, "execute", lambda *_args, **_kwargs: pytest.fail("Cached fixed must not download"))
+    with pytest.raises(RuntimeError, match="^controller stopped$"):
+        controller.score("arvo:23296", directory, {}, receipt)
+    assert len(queries) == 1 and submissions == []
+    assert run.digest(candidate) == receipt["sha256"]
+    assert not (directory / "official-final.json").exists()
 
 
 @pytest.mark.parametrize("official_pass", [False, True])

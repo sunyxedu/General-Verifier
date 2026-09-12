@@ -32,6 +32,7 @@ from typing import Dict, Optional
 
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
+from ..llm.model_spans import submit_with_context
 from .kernel import Kernel
 from ..core.model import (
     CLAIM_FINAL,
@@ -40,21 +41,48 @@ from ..core.model import (
 )
 from ..core.store import ClaimStore
 
+# What a certificate request settles.  ``full`` verifies every open claim in
+# the final's dependency closure; ``final`` settles only the final claim,
+# whose task contract is compiled independently of the solver's narration
+# and whose status is the verdict.  The slice is exported whole either way,
+# so support claims left open are visible as such.
+CERTIFICATE_SCOPE_FULL = "full"
+CERTIFICATE_SCOPE_FINAL = "final"
+CERTIFICATE_SCOPES = (CERTIFICATE_SCOPE_FULL, CERTIFICATE_SCOPE_FINAL)
+
 
 def request_certificate(
     store: ClaimStore, kernel: Kernel, log: EventLog,
-    artifacts: ArtifactStore, final_id: str, *,
-    profile_metadata: Optional[Dict] = None,
+    artifacts: ArtifactStore, final_id: str,
+    scope: str = CERTIFICATE_SCOPE_FULL,
+    *, profile_metadata: Optional[Dict] = None,
 ) -> Dict:
     if store.get(final_id)["kind"] != CLAIM_FINAL:
         raise ValueError("a certificate requires a final claim")
-    log.append("verify_request", {"target": final_id, "cause": "certificate"})
+    if scope not in CERTIFICATE_SCOPES:
+        raise ValueError(f"unknown certificate scope: {scope!r}")
+    log.append("verify_request", {"target": final_id, "cause": "certificate",
+                                  "scope": scope})
 
     slice_ids = store.backward_slice(final_id)
     pending = [cid for cid in reversed(slice_ids)
-               if store.status(cid) in (STATUS_UNVERIFIED, STATUS_STALE)]
+               if store.status(cid) in (STATUS_UNVERIFIED, STATUS_STALE)
+               and (scope == CERTIFICATE_SCOPE_FULL or cid == final_id)]
     parallel = getattr(kernel, "parallel_claims", 1) or 1
     if parallel > 1 and len(pending) > 1:
+        # The final contract is compiled independently of solver-derived
+        # premises and its local verdict never waits on them.  Submit it first
+        # so a bounded worker pool does not put the task verdict behind a long
+        # support-claim queue; every slice claim still runs and the certificate
+        # still waits for all of them below.
+        immutable_compact_run = (
+            not getattr(kernel, "live_world", True)
+            and getattr(kernel, "memory", None) is None
+            and getattr(kernel.backend, "compact_inspection", False) is True
+        )
+        if immutable_compact_run and final_id in pending:
+            pending.remove(final_id)
+            pending.insert(0, final_id)
         # every claim's LOCAL verdict is conditional on its premises and
         # never blocks on them (the read-time fold charges premise state
         # to consumers), so the whole slice verifies concurrently; the
@@ -62,7 +90,10 @@ def request_certificate(
         # work is still done once
         with ThreadPoolExecutor(max_workers=parallel,
                                 thread_name_prefix="gv-claim") as pool:
-            list(pool.map(kernel.verify, pending))
+            futures = [submit_with_context(pool, kernel.verify, claim_id)
+                       for claim_id in pending]
+            for future in futures:
+                future.result()
     else:
         for claim_id in pending:
             kernel.verify(claim_id)

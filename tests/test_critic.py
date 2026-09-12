@@ -17,7 +17,7 @@ from verifier.core.model import (
     canonical, Claim, CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL,
 )
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
-from verifier.engine.kernel import Kernel
+from verifier.engine.kernel import Kernel, MAX_CRITIC_ROUNDS
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm import prompts
@@ -83,7 +83,7 @@ def test_pass_on_the_first_round_admits_the_decomposition(tmp_path):
     assert set(critic_vars) == {
         "claim_text", "claim_kind", "contract_locus", "task_context",
         "ledger_path", "world_mode", "world_path", "world_map",
-        "obligations_json",
+        "obligations_json", "excluded_json",
         "verified_deps", "pending_deps", "dependency_referent_context",
         "game_history",
     }
@@ -514,6 +514,74 @@ def test_critic_rounds_is_a_per_kernel_knob(tmp_path):
         "obligations", "critic", "obligations", "critic"]
 
 
+@pytest.mark.parametrize("compact", [False, True])
+def test_compact_profile_preserves_critic_call_and_repair_budget(
+        tmp_path, compact):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    verdicts = iter([ATTACK, PASS])
+    backend = FixtureBackend({
+        "obligations": COMPILE,
+        "critic": lambda variables: next(verdicts),
+    })
+    backend.compact_inspection = compact
+    kernel = Kernel(
+        store, log, backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        critic_role=CRITIC_AGENT,
+        discharger=StubDischarger(),
+        critic_rounds=2,
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "P holds for every prime"))
+
+    assert store.status(cid) == "verified"
+    assert kernel.critic_rounds == 2
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "obligations", "critic"]
+    assert [event["payload"]["round"] for event in ledger_events(
+        log, "decomposition_attacked")] == [0, 1]
+    if compact:
+        assert "GOVERNING-SCOPE DISTRIBUTION" \
+            in kernel.obligations_role.system
+        assert "PRE-CRITIC MATERIAL NORMAL FORM" \
+            in kernel.obligations_role.system
+        assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" \
+            in kernel.obligations_role.system
+        assert "MATERIAL DEFECT GATE" in kernel.critic_role.system
+        assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" \
+            in kernel.critic_role.system
+        assert "for output formatting only" in kernel.critic_role.system
+    else:
+        assert "GOVERNING-SCOPE DISTRIBUTION" \
+            not in kernel.obligations_role.system
+        assert "MATERIAL DEFECT GATE" not in kernel.critic_role.system
+
+
+def test_compact_profile_first_pass_keeps_both_independent_seats(tmp_path):
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": COMPILE, "critic": PASS})
+    backend.compact_inspection = True
+    kernel = Kernel(
+        store, log, backend,
+        ArtifactStore(os.path.join(tmp_path, "art")),
+        critic_role=CRITIC_AGENT,
+        discharger=StubDischarger(),
+        critic_rounds=2,
+    )
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "P holds for every prime"))
+
+    assert store.status(cid) == "verified"
+    assert kernel.critic_rounds == 2
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic"]
+    reviews = ledger_events(log, "decomposition_attacked")
+    assert [(event["payload"]["round"], event["payload"]["verdict"])
+            for event in reviews] == [(0, "pass")]
+
+
 def test_game_history_binds_both_seats_across_rounds(tmp_path):
     verdicts = iter([ATTACK, PASS])
     store, log, backend, _ = build(
@@ -877,18 +945,26 @@ def test_harness_final_contract_is_isolated_from_solver_graph(
 
     assert json.loads(compiler["verified_deps"]) == []
     assert json.loads(compiler["pending_deps"]) == []
-    assert json.loads(compiler["graph"]) == [{
-        "note": "withheld: harness final contract is compiled "
-                "independently from authoritative task context"
-    }]
+    expected_boundary = (
+        "withheld: authority-only contract compilation"
+        if task_supplied else
+        "harness final contract is independent of the solver-derived "
+        "dependency graph"
+    )
+    if task_supplied:
+        assert json.loads(compiler["graph"]) == []
+    else:
+        assert json.loads(compiler["graph"]) == [{
+            "note": "withheld: harness final contract is compiled "
+                    "independently from authoritative task context"
+        }]
     assert json.loads(compiler["dependency_referent_context"]) == {
-        "withheld": "harness final contract is independent of the "
-                    "solver-derived dependency graph"
+        "withheld": expected_boundary
     }
     assert critic["dependency_referent_context"] == \
         compiler["dependency_referent_context"]
     if task_supplied:
-        assert json.loads(compiler["task_context"])["text"] == (
+        assert json.loads(compiler["task_context"])["task"]["text"] == (
             "Return the complete total.")
     else:
         assert compiler["task_context"] == "(none supplied)"
@@ -936,7 +1012,8 @@ def test_task_defined_aggregate_projection_is_repaired(tmp_path):
                 "required_basis": "world",
             }]}
         context = json.loads(variables["task_context"])
-        assert context["text"] == task_text
+        task = context.get("task", context)
+        assert task["text"] == task_text
         return {"obligations": [{
             "text": "The independently established sum of A and B equals N.",
             "required_basis": "world",
@@ -1081,3 +1158,73 @@ def test_append_repair_cannot_change_existing_judgment_conditions(
         "obligations", "critic", "obligations", "obligations", "critic"]
     assert len([e for e in ledger_events(log, "decomposition_attacked")
                 if e["payload"].get("source") == "mechanical_append_guard"]) == 1
+
+
+def test_unchanged_contract_on_append_demand_is_reviewed_not_deadlocked(tmp_path):
+    """A compiler that declines a demanded append by returning the contract
+    unchanged hands the decision back to the Critic instead of burning the
+    remaining repairs on the mechanical append guard."""
+    original = {
+        "obligations": [
+            {"text": "A", "required_basis": "world"},
+            {"text": "B", "required_basis": "record"},
+        ]
+    }
+    payloads = iter([original, json.loads(json.dumps(original))])
+    runner_attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "A and B hold but the runner protocol was skipped",
+        "missing_condition": "APPEND OBLIGATION: the candidate issued a command",
+    }
+    seen_histories = []
+
+    def critic(variables):
+        seen_histories.append(json.loads(variables["game_history"]))
+        return runner_attack if len(seen_histories) == 1 else PASS
+
+    store, log, backend, discharger = build(
+        tmp_path, {"obligations": lambda _v: next(payloads), "critic": critic})
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "A and B"))
+
+    assert store.status(cid) == "verified"
+    assert discharger.seen == ["A", "B"]
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "obligations", "critic",
+    ]
+    declined = ledger_events(log, "contract_repair_declined")
+    assert len(declined) == 1
+    assert declined[0]["payload"]["missing_condition"].startswith("APPEND OBLIGATION:")
+    assert not [
+        event for event in ledger_events(log, "decomposition_attacked")
+        if event["payload"].get("source") == "mechanical_append_guard"
+    ]
+    # the second review sees the unchanged contract and the refusal
+    assert seen_histories[1][-1]["repair"].startswith("declined:")
+    assert seen_histories[1][-1]["reviewed_obligations"] == original["obligations"]
+
+
+def test_declined_append_still_fails_closed_when_the_critic_insists(tmp_path):
+    original = {"obligations": [{"text": "A", "required_basis": "world"}]}
+    attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "A holds but the protocol was skipped",
+        "missing_condition": "APPEND OBLIGATION: the candidate issued a command",
+    }
+    store, log, backend, discharger = build(
+        tmp_path,
+        {"obligations": lambda _v: json.loads(json.dumps(original)),
+         "critic": attack},
+    )
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "A"))
+    assert store.status(cid) == "unverified"
+    assert discharger.seen == []
+    roles = [call["role"] for call in backend.calls]
+    # every review round saw the unchanged contract and insisted; the
+    # default critic budget bounds the game as before
+    assert roles.count("critic") == roles.count("obligations") == MAX_CRITIC_ROUNDS
+    assert len(ledger_events(log, "contract_repair_declined")) \
+        == MAX_CRITIC_ROUNDS - 1
+    status = [e for e in ledger_events(log, "status_change")
+              if e["payload"]["status"] == "unverified"]
+    assert "decomposition failed critic" in status[-1]["payload"]["reason"]

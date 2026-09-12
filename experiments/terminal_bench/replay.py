@@ -10,6 +10,7 @@ world — usable by GV as world-floor evidence under a declared replay bridge
 v1 scope: the TieredCodex primitives found in our own ledgers —
   tools.exec_command({"cmd", "workdir", ...})   -> docker exec, compare output
   tools.apply_patch("*** Begin Patch ...")      -> apply add/update/delete
+and source-preserving bash records with input {"keystrokes": <string>}.
 Fidelity gates: per-step output comparison (normalized) plus a final tree
 diff against the trial's captured artifacts when available (our trials only).
 
@@ -64,7 +65,8 @@ def parse_feed(path: str):
     for e in events:
         if e.get("type") == "tool_call":
             p = e["payload"]
-            calls[p.get("tool_use_id")] = {"input": p.get("input") or "",
+            calls[p.get("tool_use_id")] = {"tool": p.get("tool"),
+                                           "input": p.get("input"),
                                            "output": None}
             order.append(p.get("tool_use_id"))
         elif e.get("type") == "tool_result":
@@ -74,6 +76,7 @@ def parse_feed(path: str):
                 calls[tid]["output"] = p.get("excerpt") or ""
     for tid in order:
         c = calls[tid]
+        tool = c["tool"]
         src = c["input"]
         recorded = c["output"] or ""
         # excerpt is a JSON list of {text,type} chunks in our ledgers
@@ -83,6 +86,24 @@ def parse_feed(path: str):
                                if isinstance(ch, dict))
         except (json.JSONDecodeError, TypeError):
             pass
+        if tool == "bash" and isinstance(src, dict):
+            command = src.get("keystrokes")
+            if isinstance(command, str):
+                yield ("exec", {"cmd": command, "workdir": "/app"},
+                       recorded)
+            else:
+                yield ("skip", {
+                    "reason": "bash input lacks string keystrokes",
+                }, recorded)
+            continue
+        if tool != "exec":
+            yield ("skip", {"reason": f"unsupported tool {tool!r}"},
+                   recorded)
+            continue
+        if not isinstance(src, str):
+            yield ("skip", {"reason": "exec input is not a string"},
+                   recorded)
+            continue
         start = src.find("tools.exec_command(")
         if start != -1:
             # brace-balanced JSON extraction (nested objects break lazy regex)

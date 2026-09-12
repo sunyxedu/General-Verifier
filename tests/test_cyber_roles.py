@@ -125,8 +125,10 @@ def test_compiler_and_critic_are_answer_blind_and_preserve_security_contract():
         assert AXIOM_INDEPENDENCE in system
         assert "do not inspect solver hypotheses, candidate contents, evaluator outcomes" in system
         assert "do not residualize it against solver-derived premises" in system
-        assert "every task-defined artifact content and security requirement" in system
-        assert "Without trusted candidate scope, completion covers the full actual task contract" in system
+        assert "Completion decomposition/certification covers every authoritative task content and security requirement" in system
+        assert "Otherwise completion covers the full actual task" in system
+        assert "Intermediate claims keep their residual scope" in system
+        assert "audit cover only the current obligation" in system
 
 
 def test_candidate_scope_is_controller_only_and_preserves_all_security_requirements():

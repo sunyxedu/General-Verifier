@@ -11,8 +11,11 @@ Solver claims and recorded effects
     → ordinary GV certificate
 ```
 
-All five roles are agents. Each receives its own complete prompt and tool
-palette. The compiler derives necessary conditions from the controlling task;
+The five seats retain their complete agent prompts and tool contracts.
+The discharger can execute an exact typed operation from the ordinary adapter
+registry, with the agent executor as fallback. Independent Judger review is
+still required; adapter success is not a task verdict.
+The compiler derives necessary conditions from the controlling task;
 the critic checks whether those conditions omit a requirement or introduce an
 unrequested stronger one. The oracle binds an available verification method,
 the discharger produces evidence, and the judger independently checks the
@@ -21,6 +24,56 @@ method's sufficiency and the execution's fidelity.
 The roles apply to vulnerability reproduction, security analysis, remediation,
 and other cybersecurity tasks. Their prompts contain no benchmark task IDs,
 project-specific functions, payload recipes, or expected answers.
+
+## Security claims and methods
+
+A cyber claim remains an ordinary `assertion` or `final`. Its text identifies
+the subject and security property, relevant actor capabilities/trust boundary,
+preconditions, target/build/configuration/entry point, time, input domain,
+quantifier and controlling authority. Include only material dimensions;
+unspecified facts remain unknown. Identity, recorded observations and world
+security conclusions are separate propositions. Checkpoints hold hypotheses
+and exploration, rather than expanding the proof graph with every search.
+
+The obligation compiler defines **what must hold**, preserving the task's
+scope and modality. The oracle compiler defines **how to check it** from the
+authority, capability inventory and versioned adapter catalog, not from an
+observed answer. Compiler and pre-execution-auditor seats do not receive raw
+candidate execution capsules; discharger and judger do, scoped to the actual
+claim's dependency closure or host-bound subject. Oracle repair feedback is a
+mechanical projection of the declared method, structural rejection categories
+and retry/availability metadata, not raw outcomes, witnesses or audit prose.
+Execution diagnostics remain available to the executor and independent Judger;
+they never redefine acceptance predicates or expected values.
+
+Whole-task coverage belongs to completion decomposition/certification.
+Intermediate claims retain their residual scope; each Oracle, Discharger and
+Judger handles only its current obligation, not another complete task audit.
+
+Reusable method families cover identity/content comparisons, authenticated
+retained executions, isolated dynamic witnesses, pinned static reasoning, and
+remediation/coverage checks. These are selection guidance, not mandatory extra
+tests. One admissible witness can establish an existential reproduction;
+finite successful tests alone cannot establish unbounded safety. Controls,
+repeated trials and broader impact are required only when the inference or
+task needs them.
+
+Typed host operations have their own public-evidence boundary, independent of
+agent shell permissions. They read the claim's authenticated frozen ledger,
+declared public project subjects and permitted retained evidence, never private
+evaluator/controller state or credentials. Descriptor-bound ancestor walks
+prevent a concurrent parent symlink replacement from redirecting a file read.
+The optional sufficiency pre-audit role is also cyber-specialized, but remains
+disabled unless the operator enables the ordinary GV pre-audit flag.
+
+The cyber Codex seat policy is shared by the ordinary MCP service, offline
+scoring and the benchmark sidecar. Planner shells default-deny the state and
+project trees, with read access only to captured task/baseline authority and
+method descriptors. Execution/audit seats can read the declared public project,
+but write only owned scratch; shell network access and external search are
+disabled. Host-provided custom backends are responsible for their own boundary.
+Optional compact evidence transport preserves the exact frozen record even
+when a runtime opts out; it never falls back to a later live ledger.
 
 ## Start the MCP server
 
@@ -34,6 +87,15 @@ separate task statement, with their own wording as the available contract.
 The ordinary `commit`, `verify`, `certificate`, and `status` verbs remain the
 verification interface. Ordinary final claims are compiled against the entire
 task independently of the solver's supporting claims.
+
+In cyber MCP mode, heavy requests return a durable `job_id` and may initially
+return `pending=true`. Poll `verification_job(job_id)` or reconnect with the
+same request to recover the same adjudication; disconnecting a waiter does not
+cancel the worker. A retained result is historical, not a fresh correctness or
+official-score assertion. `verification_retry(job_id)` explicitly retries an
+unfinished terminal attempt after rechecking its scope. There is no retry-count
+deadline or automatic replacement solver thread. Operator configuration,
+wire protocols and host capabilities participate in state identity.
 
 The profile also works with those ordinary verbs alone, including multi-file
 security fixes and workflows without an evaluator. Candidate tools are an
@@ -107,9 +169,17 @@ It does not apply to public `commit(kind="final")` calls, even when their text
 imitates a candidate binding. Supporting claims cannot eliminate the final's
 independent task requirements.
 
-Only an authenticated, matching certificate with verdict `verified` permits
-materialization. `supported`, `partial`, `refuted`, and `unverified` leave
-delivery pending. The finalizer copies the certified bytes and mechanically
+Materialization requires an authenticated, current candidate authorization.
+A full `verified` GV certificate is sufficient. If every obligation holds but
+an advisory SHOULD's weaker evidence makes the full verdict `supported`, the
+candidate policy can retain a separately hash-linked MUST acceptance record:
+every MUST must have direct decisive world evidence, no assumptions or bridges,
+and every SHOULD must still hold at its declared floor. The full GV certificate
+and advisory evidence remain unchanged and retained. Missing/refuted checks,
+weaker MUST evidence and stale bindings cannot authorize delivery.
+This is a mechanical delivery policy over the same GV evidence, not another
+agent verifier or an evaluator-positive shortcut.
+The finalizer copies the certified bytes and mechanically
 checks the actual destination's identity, digest, and size before recording a
 delivery receipt. The receipt records an exact write, not an official benchmark
 score or a new security verdict.

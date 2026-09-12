@@ -182,7 +182,7 @@ def test_candidate_uses_all_normal_roles_before_exact_materialization(tmp_path):
     roles = service.kernel.backend.roles
     assert service.kernel.obligations_role is roles["obligations"]
     assert service.kernel.critic_role is roles["critic"]
-    assert service.kernel.discharger.role is roles["discharge"]
+    assert service.kernel.discharger.fallback.role is roles["discharge"]
     assert service.kernel.binder.oracles_role is roles["oracles"]
     assert service.kernel.binder.judger_role is roles["judger"]
 

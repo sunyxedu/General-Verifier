@@ -55,7 +55,7 @@ def test_ordinary_claim_receives_only_real_transitive_effect_dependency_capture(
     service, ((first, first_observation), (second, _second_observation)) = service_captures
     _claim(service, "parent", [first_observation["effect_ref"]])
     claim_id = _claim(service, "child", ["parent"])
-    manifest = _manifest(service, "oracles", claim_id)
+    manifest = _manifest(service, "discharge", claim_id)
     capsule, = manifest["executions"]
     assert capsule["subject"]["candidate_id"] == first["candidate_id"]
     assert capsule["source"]["effect_claim_id"] == first_observation["effect_claim_id"]
@@ -78,7 +78,7 @@ def test_claim_without_effect_dependencies_cannot_see_global_candidate_results(s
         assert observation["artifact_id"] not in json.dumps(manifest)
 
 
-@pytest.mark.parametrize("role", ["obligations", "critic"])
+@pytest.mark.parametrize("role", ["obligations", "critic", "oracles", "sufficiency"])
 def test_answer_blind_service_inventory_excludes_execution_result_and_subject(service_captures, role):
     service, ((candidate, observation), _second) = service_captures
     claim_id = _claim(service, "parent", [observation["effect_ref"]])

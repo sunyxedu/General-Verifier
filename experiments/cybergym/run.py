@@ -47,6 +47,7 @@ PERIODIC_STATE_ENTRIES = ("events.jsonl", "role_calls.jsonl", "backend_usage.jso
     "transport_calls.jsonl", "verification_jobs.jsonl", "task.md", "artifacts",
     "cyber", "cybergym-observations")
 PROGRESS_INTERVAL_SECONDS = 60
+MIN_TASK_FREE_BYTES = 25 * 1024**3
 AUTH = PROFILE.parent / "cybergym-luna-core-cyber30/codex-home-base/auth.json"
 FIXED30 = ("arvo:23296", "arvo:11256", "arvo:9471", "arvo:52243", "arvo:30051",
     "arvo:28216", "arvo:52049", "arvo:3438", "arvo:22560", "arvo:38283",
@@ -316,20 +317,52 @@ class Evaluation:
         state.update(stage=stage, updated_unix=now, **fields)
         atomic_json(directory / "status.json", state)
 
-    def pull(self, task, flavor, directory, state):
+    def _wait_for_disk(self, directory, state):
+        """Admission/resource wait only, never a task deadline or verdict."""
+        while True:
+            if self.stop.is_set():
+                raise RuntimeError("controller stopped")
+            if shutil.disk_usage(self.root).free >= MIN_TASK_FREE_BYTES:
+                return
+            self.phase(directory, state, "waiting_for_disk",
+                       reason="less-than-25-GiB-free; not a task timeout")
+            if self.stop.wait(30):
+                raise RuntimeError("controller stopped")
+
+    @contextlib.contextmanager
+    def _image_for_use(self, task, flavor, directory, state):
+        """Serialize image use/download, but release the lock before waiting.
+
+        Cached images need no download allocation. Callers starting a new
+        task separately apply its admission gate even for a cached image.
+        """
         image = image_name(task, flavor)
-        if docker("image", "inspect", image, check=False).returncode == 0:
-            return image, False
-        self.phase(directory, state, "image_pull_" + flavor)
-        with image_lock():
-            while shutil.disk_usage(self.root).free < 25 * 1024**3:
-                self.phase(directory, state, "waiting_for_disk", reason="less-than-25-GiB-free; not a task timeout")
-                if self.stop.wait(30):
+        while True:
+            with image_lock():
+                if docker("image", "inspect", image, check=False).returncode == 0:
+                    yield image, False
+                    return
+                if self.stop.is_set():
                     raise RuntimeError("controller stopped")
-            with (directory / ("pull-" + flavor + ".log")).open("wb") as log:
-                execute("docker", "pull", "--platform", "linux/amd64", image,
-                        stdout=log, stderr=subprocess.STDOUT)
-        return image, True
+                if shutil.disk_usage(self.root).free >= MIN_TASK_FREE_BYTES:
+                    self.phase(directory, state, "image_pull_" + flavor)
+                    with (directory / ("pull-" + flavor + ".log")).open("wb") as log:
+                        execute("docker", "pull", "--platform", "linux/amd64", image,
+                                stdout=log, stderr=subprocess.STDOUT)
+                    yield image, True
+                    return
+            # A concurrent image operation may release exactly the space we
+            # need. Never hold its deletion/download lock while waiting.
+            self._wait_for_disk(directory, state)
+
+    def pull(self, task, flavor, directory, state):
+        self._wait_for_disk(directory, state)
+        with self._image_for_use(task, flavor, directory, state) as result:
+            # A completed pull must transfer ownership to run_task before its
+            # stop check, so its existing finally can remove the exact image.
+            if self.stop.is_set() and not result[1]:
+                raise RuntimeError("controller stopped")
+            return result
 
     def prepare(self, task, directory):
         kind, number = task.split(":")
@@ -787,16 +820,14 @@ class Evaluation:
         if len(matched) != 1:
             raise RuntimeError("selected final has no unique exact-byte official online row")
         if matched[0]["vul_exit_code"] not in (None, 0, 300):
-            with image_lock():
-                fixed = image_name(task, "fix")
-                existed = docker("image", "inspect", fixed, check=False).returncode == 0
-                if not existed:
-                    with (directory / "pull-fix.log").open("wb") as log:
-                        execute("docker", "pull", "--platform", "linux/amd64", fixed,
-                                stdout=log, stderr=subprocess.STDOUT)
-                atomic_json(directory / "official-fix-response.json", submit("/submit-fix"))
-                if not existed:
-                    docker("image", "rm", fixed, check=False)
+            with self._image_for_use(task, "fix", directory, state) as (fixed, owned):
+                try:
+                    if self.stop.is_set():
+                        raise RuntimeError("controller stopped")
+                    atomic_json(directory / "official-fix-response.json", submit("/submit-fix"))
+                finally:
+                    if owned:
+                        docker("image", "rm", fixed, check=False)
         rows = self.request("/query-poc", {"agent_id": directory.name, "task_id": task})
         matched = [row for row in rows if row.get("agent_id") == directory.name
             and row.get("task_id") == task and row.get("poc_hash") == receipt["sha256"]
@@ -817,9 +848,12 @@ class Evaluation:
         try:
             if self.stop.is_set():
                 raise RuntimeError("controller stopped before task startup")
+            self._wait_for_disk(directory, state)
             self.phase(directory, state, "preparing")
             image, owned = self.pull(task, "vul", directory, state)
             owned_image = image if owned else None
+            if self.stop.is_set():
+                raise RuntimeError("controller stopped before task preparation")
             self.phase(directory, state, "preparing")
             workspace, private, prompt = self.prepare(task, directory)
             runtime = self.create_runtime(directory, workspace, private)

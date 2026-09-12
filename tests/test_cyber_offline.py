@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,25 @@ from verifier.core.model import content_hash
 from verifier.llm.agents import ALL_AGENT_ROLES
 from verifier.llm.schema import FixtureBackend
 from verifier.profiles import get_profile
+
+
+@pytest.fixture(autouse=True)
+def merged_pr_default_execution_policy(monkeypatch):
+    """Exercise documented defaults, not an operator's ambient experiment flags."""
+    for name in ("GV_TYPED_ADAPTERS", "GV_TYPED_JUDGER_PACKET", "GV_CONTRACT_CACHE",
+                 "GV_METHOD_CACHE", "GV_APPEND_ONLY_DELTAS", "GV_SUFFICIENCY_PREAUDIT",
+                 "GV_FINAL_CONTRACT_PRECOMPILE", "GV_OFFLINE_RUNTIME_READ_ROOTS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("verifier.execution.browser.configured_browser_observer", lambda: None)
+    original = subprocess.Popen
+
+    def forbid_model_cli(cmd, *args, **kwargs):
+        if not isinstance(cmd, str) and any(
+                isinstance(part, str) and os.path.basename(part) == "codex" for part in cmd):
+            raise AssertionError("real Codex invocation is forbidden in this fixture suite")
+        return original(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.Popen", forbid_model_cli)
 
 
 TASK = "Deliver an artifact demonstrating the stated in-scope security condition."
@@ -76,15 +97,24 @@ def fixture_factory(backend):
     return factory
 
 
-def test_default_config_uses_original_fields_and_hash_formula(monkeypatch):
+def test_default_config_uses_merged_pr_policy_fields_and_hash_formula(monkeypatch):
     monkeypatch.setattr(offline, "pipeline_fingerprint", lambda: "frozen-baseline")
     fields = offline.config_fields(model="fixture", seats="codex", critic_rounds=3)
     original = {
         "model": "fixture", "seats": "codex", "effort": "medium",
         "service_tier": "standard", "max_rounds": 3, "critic_rounds": 3,
+        "compact_inspection": False, "judger_prefetch": False,
+        "certificate_scope": offline.CERTIFICATE_SCOPE_FULL,
+        "judger_prefetch_protocol": None, "typed_adapters": True,
+        "sufficiency_preaudit": False, "typed_adapter_judger_packet": False,
+        "typed_adapter_judger_packet_protocol": None, "contract_cache": False,
+        "method_cache": False, "append_only_deltas": False,
+        "append_only_delta_protocol": None, "offline_runtime_read_roots": [],
+        "browser_observer": None,
     }
     original["config"] = content_hash({"pipeline": "frozen-baseline", **original})[:16]
     assert fields == original
+    assert "profile_id" not in fields
     assert fields == offline.config_fields(model="fixture", seats="codex", critic_rounds=3, profile="default")
     assert fields == offline.config_fields(model="fixture", seats="codex", critic_rounds=3, profile="plain")
 
@@ -107,7 +137,7 @@ def test_cyber_score_selects_all_six_agents_and_ordinary_full_task_scope(tmp_pat
                              parallel_claims=1, parallel_obligations=1)
     assert features["verdict"] == "verified"
     assert features["profile_id"] == get_profile("cyber").id
-    assert {role for role, _, _ in backend.prompts} == set(ALL_AGENT_ROLES)
+    assert {role for role, _, _ in backend.prompts} == set(ALL_AGENT_ROLES) - {"sufficiency"}
     expected_roles = get_profile("cyber").apply_roles(ALL_AGENT_ROLES)
     for registry in backend.registries:
         assert all(registry[name].system == expected_roles[name].system for name in registry)
@@ -197,7 +227,7 @@ def test_cli_cyber_certify_imports_trace_and_keeps_full_task_scope(tmp_path, cap
     assert cli.certify(str(source), str(state), model="fixture", profile="cyber",
                        kernel_factory=fixture_factory(backend)) == 0
     assert json.loads(capsys.readouterr().out)["verdict"] == "verified"
-    assert {role for role, _, _ in backend.prompts} == set(ALL_AGENT_ROLES) - {"extract"}
+    assert {role for role, _, _ in backend.prompts} == set(ALL_AGENT_ROLES) - {"extract", "sufficiency"}
     assert all(json.loads(variables["profile_context"])["certificate_scope"] == "task"
                for _, _, variables in backend.prompts)
 
@@ -225,13 +255,29 @@ def test_offline_codex_constructors_respect_profile_timeout_and_search_policy(tm
     class FakeCodexBackend(RecordingBackend):
         def __init__(self, **kwargs):
             super().__init__()
+            self.cwd = kwargs.get("cwd")
             self.timeout = kwargs.get("timeout", 1800)
             self.service_tier = kwargs.get("service_tier", "standard")
+            self.compact_inspection = kwargs.get("compact_inspection", False)
+            self.judger_prefetch = kwargs.get("judger_prefetch", False)
+            self.offline_toolchain_dir = kwargs.get("offline_toolchain_dir")
+            self.offline_shared_cache_dir = kwargs.get("offline_shared_cache_dir")
+            self.restricted_judger_cwd = kwargs.get("restricted_judger_cwd")
             self.search_roles = frozenset({"extract", "obligations", "critic", "oracles"})
             self.roles = dict(ALL_AGENT_ROLES)
             instances.append(self)
 
+        def _revalidate_restricted_judger_cwd(self):
+            return self.restricted_judger_cwd
+
+        def validate_offline_tool_scope(self, state_dir, toolchain_dir=None, shared_cache_dir=None):
+            assert state_dir == self.cwd
+            assert toolchain_dir == self.offline_toolchain_dir
+            assert shared_cache_dir == self.offline_shared_cache_dir
+
     monkeypatch.setattr(codex_backend, "CodexBackend", FakeCodexBackend)
+    from verifier.profiles.cyber import backend as cyber_backend
+    monkeypatch.setattr(cyber_backend, "CyberCodexBackend", FakeCodexBackend)
     state = make_state(tmp_path)
     features = offline.score(state, model="fixture", seats="codex", profile=profile,
                              parallel_claims=1, parallel_obligations=1)

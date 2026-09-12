@@ -504,19 +504,26 @@ def test_oracle_repair_is_bounded_and_runs_duplicate_new_method_once(tmp_path):
 
 
 def test_empty_oracle_repair_is_unobtainable_offline(tmp_path):
-    g, _ = game(
+    discharger = SequenceDischarger([
+        ("unobtainable", "retained calibration is absent"),
+    ])
+    g, backend = game(
         tmp_path,
         {
             "oracles": oracle_with_repair({"methods": []}),
             "judger": JUDGE_INSUFFICIENT,
         },
         live_world=False,
+        discharger=discharger,
     )
 
     result = g.run(ROW, Obligation("c1", "the complete total equals 42"))
 
     assert result.outcome == "unobtainable"
-    assert "fixed evidence boundary" in result.witness
+    assert "retained calibration is absent" in result.witness
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
+    assert len([c for c in backend.calls if c["role"] == "judger"]) == 0
+    assert len(discharger.methods) == 1
 
 
 def test_empty_oracle_repair_stays_failed_live(tmp_path):
@@ -757,52 +764,7 @@ def test_offline_initial_empty_gets_one_bounded_oracle_repair(tmp_path):
     assert [e["payload"]["repair"] for e in batches] == [False, True]
 
 
-def test_offline_final_empty_repair_gets_focused_counterexample_pass(tmp_path):
-    """A load-bearing final obligation cannot go straight from two empty
-    broad batches to unobtainable when one local witness could decide it."""
-    witness_method = oracle_method(
-        "search the frozen subject for one in-scope member required by the "
-        "acceptance contract but absent from the submitted set"
-    )
-
-    def enumerate_methods(variables):
-        feedback = variables["method_feedback"]
-        if feedback == "(none)":
-            return {"methods": []}
-        parsed = json.loads(feedback)
-        if not parsed.get("focused_counterexample_fallback"):
-            return {"methods": []}
-        assert parsed["focus_reason"].startswith("both broad enumeration")
-        assert parsed["ordinary_repair_empty"] is True
-        assert parsed["initial_empty"] is True
-        assert parsed["structural_rejections"] == []
-        return {"methods": [witness_method]}
-
-    discharger = SequenceDischarger([
-        ("refuted", "required member x is absent from the submitted set"),
-    ])
-    g, backend = game(
-        tmp_path,
-        {"oracles": enumerate_methods, "judger": JUDGE_YES},
-        live_world=False,
-        discharger=discharger,
-    )
-
-    result = g.run(
-        FINAL_ROW,
-        Obligation("f1", "every required member is in the submitted set", "world"),
-    )
-
-    assert result.outcome == "refuted"
-    assert discharger.methods == [witness_method]
-    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 3
-    events = list(g.log.replay())
-    batches = [e for e in events if e["type"] == "methods_enumerated"]
-    assert [e["payload"].get("focused_counterexample_fallback", False)
-            for e in batches] == [False, False, True]
-
-
-def test_empty_focused_final_fallback_is_explicitly_unobtainable(tmp_path):
+def test_empty_final_oracle_uses_only_the_existing_bounded_repair(tmp_path):
     g, backend = game(
         tmp_path,
         {"oracles": {"methods": []}},
@@ -815,8 +777,8 @@ def test_empty_focused_final_fallback_is_explicitly_unobtainable(tmp_path):
     )
 
     assert result.outcome == "unobtainable"
-    assert "focused counterexample fallback" in result.witness
-    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 3
+    assert "oracle repair found no materially new" in result.witness
+    assert len([c for c in backend.calls if c["role"] == "oracles"]) == 2
 
 
 def test_explicit_empty_oracle_stays_failed_live(tmp_path):

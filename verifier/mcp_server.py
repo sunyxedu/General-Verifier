@@ -187,6 +187,9 @@ class Service:
 
     # hook feed
     def _ingest_hook_event(self, raw_event: Dict[str, Any]) -> None:
+        if (not isinstance(raw_event, dict)
+                or not isinstance(raw_event.get("payload", {}), dict)):
+            return
         etype = raw_event.get("type")
         if etype not in HOOK_EVENT_TYPES:
             return  # unknown feed line: ignored, the feed is untrusted input
@@ -366,6 +369,20 @@ class Service:
                     "runtime": {"model": model, "seats": self.seats,
                                 "effort": self.effort, "service_tier": self.service_tier}}
         if self.profile.name != "default":
+            from .execution.config import (
+                typed_adapters_enabled, typed_judger_packet_enabled,
+                contract_cache_enabled, method_cache_enabled,
+                sufficiency_preaudit_enabled, append_only_deltas_enabled,
+            )
+            identity["execution_policy"] = {
+                "typed_adapters": typed_adapters_enabled(),
+                "typed_judger_packet": typed_judger_packet_enabled(),
+                "contract_cache": contract_cache_enabled(),
+                "method_cache": method_cache_enabled(),
+                "sufficiency_preaudit": sufficiency_preaudit_enabled(),
+                "append_only_deltas": append_only_deltas_enabled(),
+                "adapter_boundary": "public-evidence-frozen-record-v1",
+            }
             # Pin effective defaults too: an omitted --model must not let a
             # later provider/default-model change reuse earlier judgments.
             if self.seats == "codex":
@@ -489,7 +506,7 @@ class Service:
         observations = []
         events = {}
         calls = {}
-        if role not in ("obligations", "critic"):
+        if role not in ("obligations", "critic", "oracles", "sufficiency"):
             snapshot = list(self.log.replay())
             events = {event["seq"]: event for event in snapshot}
             if binding is not None:
@@ -524,7 +541,7 @@ class Service:
             artifact_root=self.artifacts.root,
             event_provider=events.get, tool_call_provider=calls.get,
             effect_resolver=self.builder.resolve,
-            answer_blind=role in ("obligations", "critic"))
+            answer_blind=role in ("obligations", "critic", "oracles", "sufficiency"))
 
     def profile_context(self, role, claim_id):
         context = {"profile": self.profile.name, "profile_id": self.profile.id,
@@ -532,7 +549,7 @@ class Service:
         binding = self._cyber_bindings.get(claim_id)
         if binding:
             context.update({k: v for k, v in binding.items() if k != "observations"})
-            if role not in ("obligations", "critic"):
+            if role not in ("obligations", "critic", "oracles", "sufficiency"):
                 context["observations"] = binding["observations"]
         if self.profile.name == "cyber":
             context["execution_capabilities"] = self._evidence_manifest(role, claim_id, binding)
@@ -941,6 +958,25 @@ def _parallel_default(name: str, fallback: int) -> int:
         return fallback
 
 
+def harness_roles(state_dir: str) -> Dict[str, Any]:
+    """The role registry a state's kernel seats: the mounting harness's
+    ground truth (task.md / baseline/) is the toggle; when present
+    (experiment mounts write it; the interactive mount does not), the
+    obligation compiler is told to compile against it."""
+    from dataclasses import replace
+
+    from .llm import prompts
+    from .llm.agents import ALL_AGENT_ROLES, COMPILE_OBLIGATIONS_AGENT
+
+    obligations = COMPILE_OBLIGATIONS_AGENT
+    if os.path.exists(os.path.join(state_dir, "task.md")) or \
+            os.path.isdir(os.path.join(state_dir, "baseline")):
+        obligations = replace(
+            obligations, system=obligations.system + "\n"
+            + prompts.OBLIGATIONS_HARNESS_ADDENDUM)
+    return dict(ALL_AGENT_ROLES, obligations=obligations)
+
+
 def _default_kernel(sc: Service, model, backend=None,
                     critic_rounds: Optional[int] = None,
                     parallel_obligations: Optional[int] = None,
@@ -950,6 +986,13 @@ def _default_kernel(sc: Service, model, backend=None,
     from .llm import prompts
     from .llm.agents import (
         ALL_AGENT_ROLES, AgentBackend,
+    )
+    from .execution.config import (
+        contract_cache_enabled,
+        method_cache_enabled,
+        sufficiency_preaudit_enabled,
+        typed_adapters_enabled,
+        typed_judger_packet_enabled,
     )
     from .execution.discharge import AgentDischarger
     from .engine.game import BindingGame
@@ -971,9 +1014,16 @@ def _default_kernel(sc: Service, model, backend=None,
     if backend is None:
         if getattr(sc, "seats", "sdk") == "codex":
             from .llm.codex_backend import CodexBackend
-            backend = CodexBackend(roles=roles, cwd=sc.state_dir, model=model,
+            backend_type = CodexBackend
+            backend_options = {}
+            if profile.name == "cyber":
+                from .profiles.cyber.backend import CyberCodexBackend
+                backend_type = CyberCodexBackend
+                backend_options = {"timeout": None,
+                    "project_root": getattr(sc, "project_root", None)}
+            backend = backend_type(roles=roles, cwd=sc.state_dir, model=model,
                 effort=sc.effort or "medium", service_tier=sc.service_tier or "standard",
-                **({"timeout": None} if profile.name == "cyber" else {}))
+                **backend_options)
         else:
             backend = AgentBackend(roles=roles, cwd=sc.state_dir, model=model)
     else:
@@ -983,7 +1033,13 @@ def _default_kernel(sc: Service, model, backend=None,
     if profile.disable_external_search and hasattr(backend, "search_roles"):
         backend.search_roles = frozenset()
     context_provider = getattr(sc, "profile_context", None)
-    discharger = AgentDischarger(
+    validate_tool_scope = getattr(
+        backend, "validate_offline_tool_scope", None)
+    if not sc.live_world and validate_tool_scope is not None:
+        validate_tool_scope(
+            sc.state_dir, sc.toolchain_dir,
+            getattr(sc, "shared_cache_dir", None))
+    agent_discharger = AgentDischarger(
         backend, sc.artifacts,
         role=roles["discharge"],
         workdir_base=os.path.join(sc.state_dir, "work"),
@@ -992,17 +1048,61 @@ def _default_kernel(sc: Service, model, backend=None,
         shared_cache_dir=getattr(sc, "shared_cache_dir", None),
         state_dir=sc.state_dir,
         live_world=sc.live_world,
-        store=sc.store, context_provider=context_provider)
+        store=sc.store,   # evidence-workspace index over the claim graph
+        log=sc.log, context_provider=context_provider)
+    # Process-local, explicit opt-in reuse across the candidates of one task
+    # scored in this process.  Off by default: every candidate then follows
+    # the fresh Compiler/Critic/Oracle/executor/Judger sequence.
+    method_cache = None
+    if method_cache_enabled():
+        from .engine.method_cache import default_accepted_method_cache
+        method_cache = default_accepted_method_cache()
+    contract_cache = None
+    if contract_cache_enabled():
+        from .engine.contract_cache import (
+            default_compiled_final_contract_cache,
+        )
+        contract_cache = default_compiled_final_contract_cache()
+    typed_adapters = typed_adapters_enabled()
+    typed_judger_packet = typed_judger_packet_enabled()
+    if typed_judger_packet and not typed_adapters:
+        raise ValueError("typed-adapter Judger packet requires typed adapters")
+    if typed_adapters:
+        from .execution.adapters import (
+            AdapterRoutingDischarger, default_adapter_registry,
+        )
+        from .profiles.cyber.adapters import CyberAdapterContext
+
+        discharger = AdapterRoutingDischarger(
+            agent_discharger, default_adapter_registry(), sc.artifacts, sc.log,
+            sc.state_dir, live_world=sc.live_world,
+            context_factory=(
+                (lambda row: CyberAdapterContext(sc.state_dir, sc.live_world,
+                    sc.log, row["id"], getattr(sc, "project_root", None)))
+                if profile.name == "cyber" else None))
+    else:
+        discharger = agent_discharger
+    oracle_feedback_filter = None
+    if profile.name == "cyber":
+        from .profiles.cyber.feedback import filter_oracle_feedback
+        oracle_feedback_filter = filter_oracle_feedback
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
                          oracles_role=roles["oracles"], judger_role=roles["judger"],
                          memory=sc.memory, live_world=sc.live_world,
-                         context_provider=context_provider)
+                         context_provider=context_provider,
+                         oracle_feedback_filter=oracle_feedback_filter,
+                         method_cache=method_cache,
+                         typed_adapter_judger_packet=typed_judger_packet,
+                         sufficiency_role=(
+                             roles["sufficiency"]
+                             if sufficiency_preaudit_enabled() else None),
+                         packet_method_reuse=method_cache is not None)
     if parallel_obligations is None:
         parallel_obligations = getattr(sc, "parallel_obligations", None)
     if parallel_claims is None:
         parallel_claims = getattr(sc, "parallel_claims", None)
     if parallel_obligations is None:
-        parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 4)
+        parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 8)
     if parallel_claims is None:
         # online (live world): one claim at a time as commits arrive
         parallel_claims = (1 if sc.live_world
@@ -1012,7 +1112,9 @@ def _default_kernel(sc: Service, model, backend=None,
                   critic_role=roles["critic"],
                   discharger=discharger, binder=binder,
                   memory=sc.memory, live_world=sc.live_world,
+                  record_boundary=sc.builder.commit_seq.get,
                   critic_rounds=critic_rounds,
+                  contract_cache=contract_cache,
                   parallel_obligations=parallel_obligations,
                   parallel_claims=parallel_claims,
                   context_provider=context_provider,

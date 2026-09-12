@@ -25,6 +25,7 @@ from .criteria import (
 )
 from .obligations import (
     OBLIGATIONS_SYSTEM,
+    COMPACT_COMPLETENESS_COMPILER_ADDENDUM,
     OBLIGATIONS_HARNESS_ADDENDUM,
     CONTRACT_LOCUS_NONFINAL,
     CONTRACT_LOCUS_FINAL,
@@ -32,8 +33,12 @@ from .obligations import (
 )
 from .critic import (
     CRITIC_SYSTEM,
+    COMPACT_COMPLETENESS_CRITIC_ADDENDUM,
     CRITIC_TEMPLATE,
     CRITIC_FEEDBACK_TEMPLATE,
+    APPEND_DELTA_FEEDBACK_TEMPLATE,
+    APPEND_DELTA_OUTPUT_CONTRACT,
+    APPEND_DELTA_GUARD_FEEDBACK,
     APPEND_REPAIR_GUARD_FEEDBACK,
 )
 from .oracles import (
@@ -47,6 +52,10 @@ from .discharge import (
 from .judger import (
     JUDGER_SYSTEM,
     JUDGER_TEMPLATE,
+)
+from .sufficiency import (
+    SUFFICIENCY_SYSTEM,
+    SUFFICIENCY_TEMPLATE,
 )
 from .extract import (
     EXTRACT_SYSTEM,

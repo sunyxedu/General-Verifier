@@ -19,15 +19,12 @@ import sys
 import tempfile
 import threading
 import time
-import tomllib
 import uuid
 
-from verifier.llm.codex_backend import (
-    CodexBackend, _ensure_verifier_owned_chain, _toml_string, codex_usage_ledger,
-)
-from verifier.llm.schema import RoleError
+from verifier.llm.codex_backend import codex_usage_ledger
 from verifier.mcp_server import Service, _default_kernel, build_server
 from verifier.profiles.cyber.evaluator import EvaluatorSpec
+from verifier.profiles.cyber.backend import CyberCodexBackend
 
 from experiments.cybergym.model_config import (
     AUTO_COMPACT_TOKEN_LIMIT, CONTEXT_WINDOW, EFFORT, MODEL, SERVICE_TIER,
@@ -60,87 +57,19 @@ def strict_object(raw: bytes) -> dict | None:
     return value if isinstance(value, dict) and not duplicate else None
 
 
-class SandboxedVerifierBackend(CodexBackend):
+class SandboxedVerifierBackend(CyberCodexBackend):
     """Keep live prompts, but narrow every seat's shell to owned scratch."""
 
-    DENIED_ROOTS = ("/evaluator", "/codex-home", "/gv", "/controller",
-                    "/root/.codex", "/home/node/.codex")
     _diagnostic_lock = threading.Lock()
 
     def __init__(self, *, cwd: str, project_root: str = "/task"):
         super().__init__(cwd=cwd, model=MODEL, effort=EFFORT,
                          service_tier=SERVICE_TIER, timeout=None,
-                         phase_observer=self._diagnostic)
-        self.project_root = project_root
+                         phase_observer=self._diagnostic, project_root=project_root)
         self._diagnostic_failures = 0
-        self.search_roles = frozenset()
-
-    def _is_offline_execution(self, role_name, variables):
-        # This selects permissions only; do not falsify the live-world prompt.
-        return True
 
     def _execution_policy_args(self, role_name, variables):
-        state = Path(self._offline_state_dir(variables))
-        allowed = (state / "work", state / "workspace")
-        for key in ("workdir", "workspace_dir", "toolchain_dir", "shared_cache_dir"):
-            value = variables.get(key)
-            if value:
-                path = Path(os.path.abspath(os.fspath(value)))
-                if not any(path == root or path.is_relative_to(root) for root in allowed):
-                    raise RoleError("verifier writable paths must remain in owned scratch")
-        args = super()._execution_policy_args(role_name, variables)
-        filesystem = [i for i, value in enumerate(args)
-                      if value.startswith("permissions.") and ".filesystem=" in value]
-        network = [i for i, value in enumerate(args)
-                   if value.startswith("permissions.") and ".network.enabled=" in value]
-        if (len(filesystem) != 1 or len(network) != 1
-                or "--dangerously-bypass-approvals-and-sandbox" in args
-                or 'approval_policy="never"' not in args
-                or not args[filesystem[0]].endswith("}")):
-            raise RoleError("inherited verifier permissions did not fail closed")
-        index = filesystem[0]
-        prefix, table = args[index].split("=", 1)
-        grants = tomllib.loads("grants=" + table)["grants"]
-        grants.update({path: "deny" for path in self.DENIED_ROOTS})
-        grants[str(state / "verifier-home")] = "deny"
-        index = network[0]
-        args[index] = args[index].rsplit("=", 1)[0] + "=false"
-        if role_name in ("obligations", "critic"):
-            # Codex exposes a shell independently of AgentRole.tools. Keep
-            # answer blindness enforceable without relying on prompt wording.
-            hidden = ("events.jsonl", "claims.sqlite", "claims.sqlite-wal",
-                      "claims.sqlite-shm", "artifacts", "cyber", "work", "workspace",
-                      "cybergym-observations", "hook_feed.jsonl", "_blind",
-                      "verification_jobs.jsonl", "transport_calls.jsonl", "role_calls.jsonl",
-                      "role_phases.jsonl")
-            grants.update({str(state / path): "deny" for path in hidden})
-            grants[self.project_root] = "deny"
-            for path, grant in tuple(grants.items()):
-                if grant == "write" and any(Path(path).is_relative_to(root)
-                        for root in (state / "work", state / "workspace", Path(self.project_root))):
-                    grants[path] = "deny"
-            blind = state / "_blind" / role_name
-            _ensure_verifier_owned_chain(str(state), str(blind))
-            grants[str(blind)] = "write"
-            # Shell HOME/cache/TMP must not remain under the denied historical
-            # work tree. Give each answer-blind seat an isolated empty home.
-            environment = [i for i, value in enumerate(args)
-                           if value.startswith("shell_environment_policy.set=")]
-            if len(environment) != 1:
-                raise RoleError("inherited shell environment did not fail closed")
-            env_index = environment[0]
-            env = tomllib.loads(args[env_index])["shell_environment_policy"]["set"]
-            old_home = str(state / "work" / "_offline_home")
-            for key, value in env.items():
-                if isinstance(value, str) and value.startswith(old_home):
-                    env[key] = str(blind / "home") + value[len(old_home):]
-                    _ensure_verifier_owned_chain(str(state), env[key])
-            args[env_index] = "shell_environment_policy.set={" + ",".join(
-                f"{key}={_toml_string(value)}" for key, value in env.items()) + "}"
-        args[filesystem[0]] = prefix + "={" + ",".join(
-            f"{_toml_string(path)}={_toml_string(grant)}"
-            for path, grant in grants.items()) + "}"
-        return args + context_cli_args()
+        return super()._execution_policy_args(role_name, variables) + context_cli_args()
 
     def _diagnostic(self, record):
         # The log is outside writable verifier scratch; it contains no prompt,

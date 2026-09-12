@@ -3,6 +3,17 @@ Binding game: per obligation, bind one sufficient method to real evidence.
 
 Per obligation:
 
+0. An explicitly injected experimental process-local cache may supply
+   decisive typed methods whose sufficiency a Judger already accepted. Only
+   methods are reused: an adapter runs against the current candidate and its
+   new evidence envelope is mechanically authenticated. Holds and refuted
+   audits occupy separate slots and each must have been independently
+   accepted; no adapter property implies the missing direction. When a fresh
+   adapter observation lands in a missing direction, that exact MethodIR and
+   evidence face a new independent Judger audit. Only a complete yes/yes/n/a
+   audit may seed the direction; otherwise the complete game below runs.
+   The shipped online/offline kernels do not inject this cache: their normal
+   architecture always enters the Oracle/executor/fresh-Judger game below.
 1. The oracle enumerates SUFFICIENT methods only (sufficiency is the
    oracle's own guarantee, researched first when the domain is
    unfamiliar), each with a signed strength declaration — decisive
@@ -44,23 +55,49 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
+from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ..llm.agents import ENUMERATE_ORACLES_AGENT, JUDGER_AGENT
+from ..llm.model_spans import model_scope
 from ..execution.discharge import DischargeResult
+from ..execution.adapters import (
+    AdapterInvocation, AdapterNotApplicable, adapter_method_view,
+)
 from ..core.events import EventLog
 from ..execution.instruments import (
     ArtifactStore, authoritative_task_context, world_evidence_context,
     world_map,
 )
 from ..core.model import (
-    BASIS_RECORD, BASIS_WORLD, Obligation, basis_satisfies,
-    OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
+    BASIS_RECORD, BASIS_WORLD, Obligation, basis_satisfies, content_hash,
+    OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
+    PROVENANCE_DELIVERED, ROLE_SUBJECT,
     STRENGTH_ANALYTIC, STRENGTH_DECISIVE, STRENGTHS, strength_rank,
     WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm.schema import RoleError
+from ..llm.typed_judger_backend import restricted_typed_judger_backend
+from .method_cache import AcceptedMethod, build_method_cache_key
+from .judger_prefetch import build_judger_evidence_packet
+from ..execution.record_shape import record_shape_json
+
+
+class _RecordLedger:
+    """The ledger a fresh Judger reads: the claim's frozen record."""
+
+    __slots__ = ("path",)
+
+    def __init__(self, path: str):
+        self.path = path
+from .typed_judger_packet import build_typed_adapter_judger_packet
+from .source_evidence import bind_source_evidence_variables
+from ..execution.config import (
+    APPEND_ONLY_DELTA_PROTOCOL,
+    append_only_deltas_enabled,
+)
 
 
 def _method_strength(method: Dict[str, str]) -> str:
@@ -87,10 +124,51 @@ class Attempt:
     audit: Optional[Dict[str, str]] = None  # judger's first verdict
     redos: List[Dict] = None                # one {reason, outcome, artifact,
                                             # audit} per redo round
+    briefing: str = ""                      # prior attempts' judged gaps,
+                                            # as handed to this executor
 
     def __post_init__(self):
         if self.redos is None:
             self.redos = []
+
+
+BRIEFING_MAX_ATTEMPTS = 3
+BRIEFING_PROCEDURE_CHARS = 240
+BRIEFING_REASON_CHARS = 600
+
+
+def prior_attempt_briefing(attempts: List["Attempt"]) -> str:
+    """Untrusted diagnostics from this obligation's earlier attempts.
+
+    A fresh method's executor otherwise starts blind: the Oracle saw why
+    the previous method was rejected, but the seat that has to implement
+    the replacement did not, and re-made the rejected artifact (a checker
+    hard-coding one database page was executed twice, 300 s each, and
+    rejected twice for the same gap).  The redo loop already hands the
+    Judger's reason to the same method's re-execution; this extends that
+    to the obligation's earlier methods.  It is diagnostic only: it cannot
+    amend the bound procedure and the fresh Judger audits as before.
+    """
+    lines = []
+    for index, attempt in enumerate(attempts[-BRIEFING_MAX_ATTEMPTS:], 1):
+        reason = attempt.rejected or ""
+        if attempt.redos and attempt.redos[-1].get("reason"):
+            reason = reason or ""
+            reason = (reason + " | last redo: "
+                      + str(attempt.redos[-1]["reason"])).strip(" |")
+        if not reason:
+            continue
+        procedure = str(attempt.method.get("procedure", ""))
+        procedure = procedure[:BRIEFING_PROCEDURE_CHARS]
+        if attempt.discharge_outcome is None:
+            state = "was rejected before execution"
+        else:
+            state = f"was executed (outcome {attempt.discharge_outcome}) and rejected"
+        lines.append(
+            f"Prior attempt {index} on this obligation used a different method "
+            f"(procedure: {procedure}) and {state}: "
+            f"{reason[:BRIEFING_REASON_CHARS]}")
+    return "\n\n".join(lines)
 
 
 class BindingGame:
@@ -108,8 +186,26 @@ class BindingGame:
         live_world: bool = True,
         judger_error_retries: int = 1,
         context_provider=None,
+        method_cache=None,
+        typed_adapter_judger_packet: bool = False,
+        sufficiency_role=None,
+        packet_method_reuse: bool = False,
+        oracle_feedback_filter: Optional[Callable[[str], str]] = None,
     ):
+        if type(typed_adapter_judger_packet) is not bool:
+            raise ValueError("typed_adapter_judger_packet must be a bool")
+        if type(packet_method_reuse) is not bool:
+            raise ValueError("packet_method_reuse must be a bool")
+        if oracle_feedback_filter is not None and not callable(oracle_feedback_filter):
+            raise ValueError("oracle_feedback_filter must be callable or None")
         self.backend = backend
+        # An operator's explicit reuse request also covers the packet
+        # transports (prefetch, typed packet).  Default off: the packet
+        # experiments alone never acquire authority to skip a signer.
+        self.packet_method_reuse = packet_method_reuse
+        # Optional pre-execution sufficiency audit of agent-executed methods.
+        # None keeps the established Oracle/executor/Judger sequence.
+        self.sufficiency_role = sufficiency_role
         self.artifacts = artifacts
         self.log = log
         self.discharger = discharger
@@ -127,12 +223,523 @@ class BindingGame:
         self.memory = memory  # advisory; feeds the oracle's registry slot
         self.live_world = live_world
         self.context_provider = context_provider or (lambda role, claim: "")
+        # Match the Kernel's run-scoped compiler identity. Environment
+        # mutation cannot move accepted methods between experiment modes.
+        self.append_only_deltas = append_only_deltas_enabled()
+        self.append_only_delta_protocol = (
+            APPEND_ONLY_DELTA_PROTOCOL if self.append_only_deltas else None)
+        # Optional experimental dependency.  The shipped online/offline
+        # kernels deliberately pass ``None`` so every obligation follows the
+        # Oracle/executor/fresh-Judger architecture below.
+        self.method_cache = method_cache
+        # Default-off transport experiment. It keeps the same fresh Judger
+        # seat and schema, but cannot share accepted methods while enabled.
+        self.typed_adapter_judger_packet = typed_adapter_judger_packet
+        # Profile-owned compiler transport only.  The default keeps the
+        # established variables and truthful executor/Judger/event record.
+        self.oracle_feedback_filter = oracle_feedback_filter
 
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
-        attempts: List[Attempt] = []
+        with model_scope(
+                claim_id=row.get("id", ""),
+                claim_kind=row.get("kind", ""),
+                locus=("final_task" if row.get("kind") == "final"
+                       else "support"),
+                obligation_id=obligation.id):
+            return self._run(row, obligation)
+
+    def _run(self, row: Dict, obligation: Obligation) -> DischargeResult:
+        if self.method_cache is None:
+            return self._run_uncached(row, obligation)
+        key = self._method_cache_key(row, obligation)
+        if key is None:
+            self.log.append("method_cache_bypass", {
+                "claim": row["id"], "obligation": obligation.id,
+                "key": None, "reason": "no exact reuse key for this "
+                "claim, obligation, authority, world, or backend"})
+            return self._run_uncached(row, obligation)
+
+        lease = self.method_cache.acquire(key)
+        if lease.entries:
+            result, missing, reason = self._run_cached_entries(
+                row, obligation, lease.entries,
+                key=key, waited=lease.waited)
+            if result is not None:
+                return result
+            self.log.append("method_cache_bypass", {
+                "claim": row["id"], "obligation": obligation.id,
+                "key": key[:16], "reason": reason[:500],
+            })
+            if missing is not None:
+                source_accepted, fresh = missing
+                method = source_accepted.method
+                direction_lease = self.method_cache.acquire(
+                    key, direction=fresh.outcome)
+                if direction_lease.entry is not None:
+                    accepted = direction_lease.entry
+                    if accepted.method == method:
+                        reused, reuse_reason = self._settle_cached_result(
+                            row, obligation, accepted, fresh, key=key,
+                            waited=(lease.waited or direction_lease.waited))
+                    else:
+                        reused, reuse_reason = self._run_cached(
+                            row, obligation, accepted, key=key,
+                            waited=(lease.waited or direction_lease.waited))
+                    if reused is not None:
+                        return reused
+                    self.log.append("method_cache_bypass", {
+                        "claim": row["id"], "obligation": obligation.id,
+                        "key": key[:16], "reason": reuse_reason[:500],
+                    })
+                elif direction_lease.leader:
+                    try:
+                        attempt, audit_passed, audit_reason = \
+                            self._audit_missing_direction(
+                            obligation, method, fresh)
+                        audit = attempt.audit or {}
+                        judger_accepted = audit_passed
+                        authority_stable = (
+                            self._method_cache_key(row, obligation) == key)
+                        if audit_passed and not authority_stable:
+                            audit_passed = False
+                            audit_reason = (
+                                "task authority changed during direction "
+                                "audit")
+                        self.log.append("method_cache_direction_audit", {
+                            "schema": "gv-method-direction-audit-v1",
+                            "claim": row["id"],
+                            "obligation": obligation.id,
+                            "key": key[:16],
+                            "method_digest": content_hash(method),
+                            "procedure": method["procedure"][:80],
+                            "fresh_discharge_artifact": fresh.artifact,
+                            "fresh_outcome": fresh.outcome,
+                            "source_binding_artifact":
+                                source_accepted.source_binding_artifact,
+                            "source_discharge_artifact":
+                                source_accepted.source_discharge_artifact,
+                            "source_outcome":
+                                source_accepted.source_outcome,
+                            "judger_accepted": judger_accepted,
+                            "authority_stable_after_judger": authority_stable,
+                            "direction_eligible": audit_passed,
+                            "sufficient": audit.get("sufficient"),
+                            "faithful": audit.get("faithful"),
+                            "degradation": audit.get("degradation"),
+                            "reason": str(audit.get(
+                                "reason", audit_reason))[:500],
+                        })
+                        if audit_passed:
+                            audited = self._settle(
+                                row, obligation, [attempt], method, fresh,
+                                audit=attempt.audit)
+                            accepted = self._accepted_method(
+                                row, obligation, audited)
+                            if self._method_cache_key(row, obligation) != key:
+                                audit_reason = (
+                                    "task authority changed while publishing "
+                                    "direction audit")
+                            elif (accepted is None
+                                  or accepted.source_outcome != fresh.outcome):
+                                audit_reason = (
+                                    "independent direction audit could not be "
+                                    "authenticated for cache publication")
+                            else:
+                                direction_lease.finish(accepted)
+                                return audited
+                        self.log.append("method_cache_bypass", {
+                            "claim": row["id"],
+                            "obligation": obligation.id,
+                            "key": key[:16],
+                            "reason": audit_reason[:500],
+                            # Keep the rejected optimization attempt
+                            # auditable without importing it into the
+                            # complete Oracle-led game's evidence set.
+                            "direction_audit": {
+                                "schema": "gv-method-direction-audit-v1",
+                                "method_digest": content_hash(method),
+                                "procedure": method["procedure"][:80],
+                                "fresh_discharge_artifact": fresh.artifact,
+                                "fresh_outcome": fresh.outcome,
+                                "sufficient": audit.get("sufficient"),
+                                "faithful": audit.get("faithful"),
+                                "degradation": audit.get("degradation"),
+                                "reason": str(audit.get(
+                                    "reason", audit_reason))[:500],
+                            },
+                        })
+                        return self._run_uncached_and_cache(
+                            row, obligation, key, lease=direction_lease,
+                            direction=fresh.outcome)
+                    finally:
+                        # This owns the direction flight until either a
+                        # certified entry is published or the complete-game
+                        # fallback takes it over. Every exceptional exit,
+                        # including logging/artifact failures, wakes waiters.
+                        direction_lease.finish()
+                return self._run_uncached_and_cache(
+                    row, obligation, key, lease=direction_lease,
+                    direction=fresh.outcome)
+            return self._run_uncached_and_cache(row, obligation, key)
+        if not lease.leader:
+            # The concurrent leader found no eligible accepted method.  Do
+            # not serialize another cold fill; proceed independently.  A
+            # successful follower may still seed later candidates.
+            return self._run_uncached_and_cache(row, obligation, key)
+
+        return self._run_uncached_and_cache(
+            row, obligation, key, lease=lease)
+
+    def _run_uncached_and_cache(
+        self, row, obligation, key, *, lease=None, direction=None,
+    ):
+        """Run the complete game and publish only its authenticated direction.
+
+        ``direction`` scopes an opposite-outcome single flight. A full game
+        that unexpectedly settles the other direction may still seed that
+        actual direction, but it never fills or wakes the requested slot as
+        if the missing certificate had been obtained.
+        """
+        accepted = fill = None
         try:
-            methods = self._enumerate(row, obligation)
+            result = self._run_uncached(row, obligation)
+            # The authority files are normally immutable.  Re-key anyway so
+            # a live edit during the cold fill can never publish under the
+            # earlier task identity.
+            if self._method_cache_key(row, obligation) == key:
+                accepted, why = self._accepted_method_or_reason(
+                    row, obligation, result)
+                if accepted is not None:
+                    if lease is not None and lease.leader and (
+                            direction is None
+                            or accepted.source_outcome == direction):
+                        fill = accepted
+                    else:
+                        self.method_cache.publish_if_absent(key, accepted)
+                    self.log.append("method_cache_published", {
+                        "claim": row["id"], "obligation": obligation.id,
+                        "key": key[:16], "direction": accepted.source_outcome,
+                        "adapter": str(accepted.method.get("adapter", ""))[:80]})
+                else:
+                    self.log.append("method_cache_bypass", {
+                        "claim": row["id"], "obligation": obligation.id,
+                        "key": key[:16],
+                        "reason": "settled result not cacheable: " + why})
+            else:
+                self.log.append("method_cache_bypass", {
+                    "claim": row["id"], "obligation": obligation.id,
+                    "key": key[:16],
+                    "reason": "task authority changed during the game; "
+                              "the result is not published under the "
+                              "earlier reuse key"})
+            return result
+        finally:
+            if lease is not None:
+                lease.finish(fill)
+
+    def _method_cache_key(self, row, obligation):
+        # This transport protocol is deliberately fresh-review-only until its
+        # semantic/result gates have passed.  It may reduce inspection turns;
+        # it must not also acquire authority to skip either signer.
+        if (not self.packet_method_reuse
+                and (getattr(self.backend, "judger_prefetch", False) is True
+                     or self.typed_adapter_judger_packet)):
+            return None
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
+        key = build_method_cache_key(
+            state_dir=state,
+            row=row,
+            obligation=obligation,
+            backend=self.backend,
+            oracles_role=self.oracles_role,
+            judger_role=self.judger_role,
+            live_world=self.live_world,
+            adapter_catalog=catalog,
+            append_only_deltas=self.append_only_deltas,
+            append_only_delta_protocol=self.append_only_delta_protocol,
+        )
+        if key is not None and obligation.verification_context:
+            # The profile's authenticated subject/permissions are outside
+            # the legacy task-only reuse key. Preserve their identity until
+            # a profile explicitly defines a reusable method contract.
+            return content_hash({"schema": "gv-profile-method-cache-key-v1",
+                                 "method_key": key,
+                                 "verification_context": obligation.verification_context})
+        return key
+
+    def _run_cached_entries(
+        self, row, obligation, entries, *, key, waited=False,
+    ):
+        """Try each distinct cached MethodIR without crossing signatures.
+
+        Returns ``(settled, missing_observation, reason)``. The observation is
+        ``(source_accepted_method, fresh_result)`` only when its substantive
+        direction has no independently accepted slot. If two direction slots
+        contain the same exact MethodIR, one fresh adapter execution can
+        select the matching certificate without running that adapter twice.
+        """
+        directions = {entry.source_outcome for entry in entries}
+        attempted_methods = []
+        reasons = []
+        missing = None
+        for accepted in entries:
+            if any(accepted.method == method for method in attempted_methods):
+                continue
+            attempted_methods.append(accepted.method)
+            fresh, reason = self._execute_cached_method(
+                row, obligation, accepted, key=key)
+            if fresh is None:
+                reasons.append(reason)
+                continue
+            matching = next((entry for entry in entries
+                             if entry.source_outcome == fresh.outcome
+                             and entry.method == accepted.method), None)
+            if matching is not None:
+                result, reason = self._settle_cached_result(
+                    row, obligation, matching, fresh,
+                    key=key, waited=waited)
+                if result is not None:
+                    return result, None, ""
+                reasons.append(reason)
+                continue
+            reasons.append(
+                "fresh adapter outcome has no independently accepted "
+                f"signature for this MethodIR: fresh={fresh.outcome}")
+            if fresh.outcome not in directions and missing is None:
+                missing = (accepted, fresh)
+        return None, missing, "; ".join(reasons) or "no reusable MethodIR"
+
+    def _run_cached(self, row, obligation, accepted, *, key, waited=False):
+        fresh, reason = self._execute_cached_method(
+            row, obligation, accepted, key=key)
+        if fresh is None:
+            return None, reason
+        return self._settle_cached_result(
+            row, obligation, accepted, fresh, key=key, waited=waited)
+
+    def _execute_cached_method(self, row, obligation, accepted, *, key):
+        adapter_only = getattr(
+            self.discharger, "discharge_adapter_only", None)
+        if adapter_only is None:
+            return None, "discharger has no authenticated adapter-only path"
+        method = accepted.method
+        if not getattr(self.discharger, "supports_method_reuse",
+                       lambda _method: False)(method):
+            return None, "adapter requires a fresh independent Judger audit"
+        if not self._cacheable_signature(method, {
+                "sufficient": "yes", "faithful": "yes",
+                "degradation": "n/a"}):
+            return None, "cached MethodIR no longer meets reuse policy"
+        result, reason = adapter_only(row, obligation, method)
+        if result is None:
+            return None, reason
+        if result.outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
+            return None, "fresh adapter execution was not substantive"
+        if accepted.source_outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
+            return None, "cached method has no valid source outcome"
+        if not basis_satisfies(method.get("basis", BASIS_RECORD),
+                               obligation.required_basis):
+            return None, "cached method is below the current evidence floor"
+        structural = self._structural_defect(result, obligation)
+        if structural:
+            return None, structural
+        if self._method_cache_key(row, obligation) != key:
+            return None, "task authority changed during adapter execution"
+
+        return result, ""
+
+    def _settle_cached_result(
+        self, row, obligation, accepted, result, *, key, waited=False,
+    ):
+        """Bind fresh evidence only to its exact method/direction signature."""
+        method = accepted.method
+        if accepted.source_outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
+            return None, "cached method has no valid source outcome"
+        if result.outcome != accepted.source_outcome:
+            return None, (
+                "fresh adapter outcome changed direction: "
+                f"source={accepted.source_outcome}, fresh={result.outcome}"
+            )
+        if not getattr(self.discharger, "supports_method_reuse",
+                       lambda _method: False)(method):
+            return None, "adapter requires a fresh independent Judger audit"
+        if not self._cacheable_signature(method, {
+                "sufficient": "yes", "faithful": "yes",
+                "degradation": "n/a"}):
+            return None, "cached MethodIR no longer meets reuse policy"
+        if not basis_satisfies(method.get("basis", BASIS_RECORD),
+                               obligation.required_basis):
+            return None, "cached method is below the current evidence floor"
+        structural = self._structural_defect(result, obligation)
+        if structural:
+            return None, structural
+        if self._method_cache_key(row, obligation) != key:
+            return None, "task authority changed while awaiting direction"
+
+        audit = {
+            "sufficient": "yes",
+            "faithful": "yes",
+            "degradation": "n/a",
+            "reason": (
+                "reused an independent Judger sufficiency signature; the "
+                "typed adapter was re-executed and its new evidence envelope "
+                "was mechanically authenticated"
+            ),
+            "cache": {
+                "schema": "gv-accepted-method-reuse-v1",
+                "source_binding_artifact": accepted.source_binding_artifact,
+                "source_discharge_artifact": accepted.source_discharge_artifact,
+                "source_outcome": accepted.source_outcome,
+                "source_audit": accepted.audit,
+                "cache_key": key,
+            },
+        }
+        attempt = Attempt(
+            method=method,
+            discharge_artifact=result.artifact,
+            discharge_outcome=result.outcome,
+            audit=audit,
+        )
+        self.log.append("method_cache_hit", {
+            "claim": row["id"], "obligation": obligation.id,
+            "procedure": method["procedure"][:80],
+            "source_binding_artifact": accepted.source_binding_artifact,
+            "fresh_discharge_artifact": result.artifact,
+            "source_outcome": accepted.source_outcome,
+            "outcome": result.outcome,
+            "waited_for_single_flight": waited,
+        })
+        return self._settle(
+            row, obligation, [attempt], method, result, audit=audit), ""
+
+    def _audit_missing_direction(
+        self, obligation, method, result,
+    ):
+        """Independently audit one fresh adapter result in a new direction.
+
+        The opposite direction's signature supplies only the already accepted
+        exact MethodIR. It never supplies a verdict. The current candidate's
+        fresh evidence is structurally checked by ``_execute_cached_method``
+        before this function, then receives the same full Judger prompt as an
+        ordinary decisive attempt. Any non-complete audit falls through to
+        the unchanged Oracle-led game.
+        """
+        attempt = Attempt(
+            method=method,
+            discharge_artifact=result.artifact,
+            discharge_outcome=result.outcome,
+        )
+        degradation = self._degradation_record(
+            _method_strength(method), [attempt], {_method_strength(method)})
+        verdict = self._judge(
+            obligation, method, result, attempt, degradation=degradation,
+            method_attempt=1, independent_judger=True)
+        if (verdict.get("sufficient") != "yes"
+                or verdict.get("faithful") != "yes"
+                or verdict.get("degradation") != "n/a"):
+            return attempt, False, (
+                "fresh opposite direction did not pass an independent "
+                "complete Judger audit"
+            )
+        return attempt, True, ""
+
+    @staticmethod
+    def _cacheable_signature(method, audit) -> bool:
+        required = {"procedure", "artifact", "level", "basis", "strength",
+                    "bridges", "adapter", "adapter_version",
+                    "adapter_arguments", "adapter_inputs"}
+        if set(method) != required:
+            return False
+        if (method.get("basis") != BASIS_WORLD
+                or _method_strength(method) != STRENGTH_DECISIVE
+                or method.get("bridges") != []
+                or audit.get("sufficient") != "yes"
+                or audit.get("faithful") != "yes"
+                or audit.get("degradation") != "n/a"):
+            return False
+        try:
+            invocation = AdapterInvocation.from_method(method)
+        except AdapterNotApplicable:
+            return False
+        return bool(invocation and invocation.inputs) and all(
+            item.get("provenance") == PROVENANCE_DELIVERED
+            and item.get("role") == ROLE_SUBJECT
+            for item in invocation.inputs
+        )
+
+    def _accepted_method(self, row, obligation, settled):
+        """Extract one authenticated, cache-eligible binding artifact."""
+        return self._accepted_method_or_reason(row, obligation, settled)[0]
+
+    def _accepted_method_or_reason(self, row, obligation, settled):
+        """As :meth:`_accepted_method`, plus the reason when ineligible."""
+        if settled.outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
+            return None, f"outcome {settled.outcome!r} is not a direction"
+        if settled.assumed_premises:
+            return None, "result assumed premises"
+        try:
+            binding = self.artifacts.get(settled.artifact)
+            if content_hash(binding) != settled.artifact \
+                    or binding.get("instrument") != "binding-game" \
+                    or binding.get("obligation") != obligation.text:
+                return None, "binding artifact is not this obligation's game"
+            bound = binding.get("bound")
+            if not isinstance(bound, dict):
+                return None, "no bound method"
+            method, audit = bound.get("method"), bound.get("audit")
+            if not isinstance(method, dict) or not isinstance(audit, dict):
+                return None, "bound method or audit missing"
+            if not self._cacheable_signature(method, audit):
+                return None, "method signature is not reusable (needs a typed " \
+                    "world-basis decisive adapter with delivered subjects and " \
+                    "a yes/yes/n/a audit)"
+            if not getattr(self.discharger, "supports_method_reuse",
+                           lambda _method: False)(method):
+                return None, "adapter does not accept method reuse"
+            discharge_digest = bound.get("discharge_artifact")
+            evidence = self.artifacts.get(discharge_digest)
+            execution = evidence.get("execution")
+            if not isinstance(execution, dict):
+                return None, "discharge evidence has no execution record"
+            inner = DischargeResult(
+                outcome=execution.get("outcome"),
+                witness=execution.get("witness"),
+                artifact=discharge_digest,
+                instrument=evidence.get("instrument", ""),
+                witness_kind=execution.get("witness_kind"),
+                inputs=tuple(execution.get("declared_inputs") or ()),
+            )
+            validator = getattr(
+                getattr(self.discharger, "registry", None),
+                "validate_evidence", None)
+            if validator is None:
+                return None, "discharger has no evidence validator"
+            valid, reason = validator(
+                method, row, obligation, inner, self.artifacts)
+            if not valid:
+                return None, f"evidence not authenticated: {reason}"
+            if inner.outcome != settled.outcome:
+                return None, "discharge outcome differs from settled outcome"
+        except (OSError, TypeError, ValueError, KeyError,
+                json.JSONDecodeError) as error:
+            return None, f"eligibility check failed: {type(error).__name__}"
+        return AcceptedMethod(
+            method=method,
+            source_binding_artifact=settled.artifact,
+            source_discharge_artifact=discharge_digest,
+            source_outcome=inner.outcome,
+            audit=audit,
+        ), ""
+
+    def _run_uncached(self, row: Dict, obligation: Obligation) -> DischargeResult:
+        attempts: List[Attempt] = []
+        # Local to this obligation, and absent from the persisted Attempt
+        # format. Default/plain evidence bytes retain their exact schema.
+        oracle_contracts: Dict[int, Dict] = {}
+        try:
+            methods = self._enumerate(row, obligation, oracle_round=0)
         except RoleError as err:
             # A crashed role or schema-invalid generation is not evidence that
             # no sufficient method exists.  Keep generation failure distinct
@@ -236,8 +843,15 @@ class BindingGame:
                             unavailable_reasons
                         )),
                         "exhausted_attempts": [
-                            _attempt_diagnostic(a) for a in attempts
+                            _attempt_diagnostic(
+                                a, include_declared_contract=(
+                                    self.oracle_feedback_filter is not None),
+                                declared_contract=oracle_contracts.get(id(a)))
+                            for a in attempts
                         ],
+                        **({"repair_context": {
+                            "fixed_evidence_boundary": not self.live_world}}
+                           if self.oracle_feedback_filter is not None else {}),
                         # parked, not rejected: these wait on a stronger
                         # tier's structural unavailability, so the repair
                         # must not re-list them
@@ -253,7 +867,8 @@ class BindingGame:
                 )
                 try:
                     repaired = self._enumerate(
-                        row, obligation, method_feedback=feedback
+                        row, obligation, method_feedback=feedback,
+                        oracle_round=1,
                     )
                 except RoleError as err:
                     failed_seen = True
@@ -266,65 +881,9 @@ class BindingGame:
                     )
                     break
 
-                focused_fallback_attempted = False
-                if not repaired:
-                    # A final-world acceptance obligation is load-bearing for
-                    # candidate selection.  If both the broad first pass and
-                    # the ordinary exhausted-batch repair return no method,
-                    # give the Oracle one last *narrow* chance to enumerate a
-                    # directionally decisive local counterexample.  This is
-                    # semantic rather than task-specific: optimality,
-                    # conditional coverage, universals, and exact equalities
-                    # can often be refuted by one witness even when proving the
-                    # positive direction would require exhaustive recovery.
-                    #
-                    # The pass still only ENUMERATES.  Its method must execute
-                    # and survive the normal Judger, so the diagnostic flag can
-                    # neither become evidence nor manufacture a refutation.
-                    if (not self.live_world
-                            and row.get("kind") == "final"
-                            and obligation.required_basis == BASIS_WORLD):
-                        focused_fallback_attempted = True
-                        focused_feedback_payload = json.loads(feedback)
-                        focused_feedback_payload.update({
-                            "focused_counterexample_fallback": True,
-                            "ordinary_repair_empty": True,
-                            "focus_reason": (
-                                "both broad enumeration and the bounded "
-                                "ordinary repair returned methods=[]"
-                            ),
-                        })
-                        focused_feedback = json.dumps(
-                            focused_feedback_payload, ensure_ascii=False)
-                        try:
-                            repaired = self._enumerate(
-                                row,
-                                obligation,
-                                method_feedback=focused_feedback,
-                            )
-                        except RoleError as err:
-                            # An infrastructure/schema failure is not an
-                            # evidence-availability finding.
-                            failed_seen = True
-                            self.log.append(
-                                "methods_enumerated",
-                                {"claim": row["id"],
-                                 "obligation": obligation.id,
-                                 "repair": True,
-                                 "focused_counterexample_fallback": True,
-                                 "error": str(err)},
-                            )
-                            break
-
                 if not repaired:
                     if self.live_world:
                         failed_seen = True
-                    elif focused_fallback_attempted:
-                        unavailable_reasons.append(
-                            "focused counterexample fallback and ordinary "
-                            "oracle repair found no materially new sufficient "
-                            "method at the fixed evidence boundary"
-                        )
                     else:
                         unavailable_reasons.append(
                             "oracle repair found no materially new sufficient "
@@ -388,11 +947,45 @@ class BindingGame:
                 continue
             seen_procedures.add(procedure)
             attempt = Attempt(method=method)
+            if self.oracle_feedback_filter is not None:
+                oracle_contracts[id(attempt)] = deepcopy(method)
             attempts.append(attempt)
 
-            result = self.discharger.discharge(
-                row, obligation, method=method, tag="bound"
-            )
+            method_attempt = len(attempts)
+            preaudit = self._preaudit(row, obligation, method, method_attempt)
+            if preaudit is not None and preaudit.get("sufficient") == "no":
+                # The Judger's first question, asked before the executor
+                # spends its budget.  Same repair semantics as a post-hoc
+                # sufficient=no: the Oracle may replace the method once.
+                if repair_used:
+                    failed_seen = True
+                structural_feedback.append({
+                    "procedure": procedure,
+                    "reason": preaudit["reason"],
+                })
+                reason = f"sufficiency pre-audit: {preaudit['reason']}"
+                self._reject(row, obligation, method, reason)
+                attempt.rejected = reason
+                continue
+            # Typed adapters execute a declared signature, not a prompt: an
+            # extra key would only make the router treat the method as an
+            # agent method.  Only an agent executor is briefed.
+            briefing = ("" if "adapter" in method
+                        else prior_attempt_briefing(attempts[:-1]))
+            bound_method = method
+            if briefing:
+                attempt.briefing = briefing
+                bound_method = {**method, "redo_feedback": briefing}
+                self.log.append("executor_briefed", {
+                    "claim": row["id"], "obligation": obligation.id,
+                    "procedure": procedure[:80],
+                    "method_attempt": method_attempt,
+                    "prior_attempts": len(attempts) - 1})
+            with model_scope(
+                    stage="discharge", method_attempt=method_attempt, redo=0):
+                result = self.discharger.discharge(
+                    row, obligation, method=bound_method, tag="bound"
+                )
             attempt.discharge_artifact = result.artifact
             attempt.discharge_outcome = result.outcome
 
@@ -460,8 +1053,9 @@ class BindingGame:
             # accept.
             degradation = self._degradation_record(
                 strength, attempts, tier_listed)
-            verdict = self._judge(obligation, method, result, attempt,
-                                  degradation=degradation)
+            verdict = self._judge(
+                obligation, method, result, attempt,
+                degradation=degradation, method_attempt=method_attempt)
             if strength != STRENGTH_DECISIVE \
                     and verdict.get("degradation") == "unjustified":
                 # the third signature failed: the judger disputes that the
@@ -512,8 +1106,9 @@ class BindingGame:
                    and not verdict.get("_infra")
                    and rounds < self.redo_rounds):
                 rounds += 1
-                result = self._redo(row, obligation, method, verdict,
-                                    attempt, rounds)
+                result = self._redo(
+                    row, obligation, method, verdict, attempt, rounds,
+                    method_attempt=method_attempt)
                 if result.outcome == OUTCOME_UNOBTAINABLE:
                     detail = str(result.witness or
                                  "required instrument or evidence unavailable")
@@ -548,8 +1143,10 @@ class BindingGame:
                     structural_feedback.append({
                         "procedure": procedure, "reason": reason})
                     break
-                verdict = self._judge(obligation, method, result, attempt,
-                                      redo=rounds, degradation=degradation)
+                verdict = self._judge(
+                    obligation, method, result, attempt,
+                    redo=rounds, degradation=degradation,
+                    method_attempt=method_attempt)
                 if strength != STRENGTH_DECISIVE \
                         and verdict.get("degradation") == "unjustified":
                     degradation_disputed = True
@@ -675,20 +1272,85 @@ class BindingGame:
         )
 
     # enumeration and advisory review
+    def _oracle_record_shape(self, claim_id: str) -> str:
+        """A filtered compiler's dialect inventory is claim-frozen only.
+
+        No live-ledger fallback or free-text projection exception enters a
+        compiler. Tool/key/profile names and counts remain useful for exact
+        adapter binding; source values are never part of this inventory.
+        """
+        unavailable = {"schema": "gv-record-shape-v1", "available": False,
+                       "reason": "frozen_record_inventory_unavailable"}
+        locator = self.log.record_path_for(claim_id)
+        if not self.log.is_record_path(locator):
+            return json.dumps(unavailable, sort_keys=True, separators=(",", ":"))
+        try:
+            shape = json.loads(record_shape_json(EventLog(locator)))
+            if not isinstance(shape, dict) or shape.get("available") is not True:
+                shape = unavailable
+            else:
+                shape.pop("reason", None)
+        except Exception:
+            shape = unavailable
+        return json.dumps(shape, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"))
+
+    def _compiler_world_map(self, state: str) -> str:
+        """Retain addressing metadata, not arbitrary captured-world notes."""
+        value = world_map(state, live_world=self.live_world)
+        if self.oracle_feedback_filter is None:
+            return value
+        try:
+            mapping = json.loads(value)
+            if not isinstance(mapping, dict):
+                raise ValueError("invalid addressing metadata")
+            mapping.pop("note", None)
+            return json.dumps(mapping, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            # Never recover a failed safe view by handing over its raw text.
+            return json.dumps({"mode": "unknown", "available": False},
+                              sort_keys=True)
+
     def _enumerate(
         self,
         row: Dict,
         obligation: Obligation,
         method_feedback: str = "(none)",
+        oracle_round: int = 0,
     ) -> List[Dict[str, str]]:
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
+        catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
+        oracle_catalog = catalog
+        catalog_view = getattr(
+            self.discharger, "oracle_adapter_catalog", None)
+        if callable(catalog_view):
+            try:
+                candidate = catalog_view(catalog, obligation.required_basis)
+                if isinstance(candidate, str):
+                    oracle_catalog = candidate
+            except Exception:
+                oracle_catalog = catalog
         state = os.path.dirname(os.path.abspath(self.log.path))
         world_mode, world, manifest = world_evidence_context(
             state, live_world=self.live_world)
-        payload = self.oracles_role.call(
-            self.backend,
-            {
+        filtered_feedback = method_feedback
+        if self.oracle_feedback_filter is not None:
+            try:
+                filtered_feedback = self.oracle_feedback_filter(method_feedback)
+                if not isinstance(filtered_feedback, str):
+                    raise ValueError("feedback filter must return text")
+            except Exception:
+                # A broken filter fails the compiler call closed.  Exception
+                # messages can themselves contain an observation or secret.
+                raise RoleError("oracle feedback filtering failed") from None
+        with model_scope(
+                stage=("oracle_repair" if oracle_round else
+                       "oracle_enumerate"),
+                round=oracle_round):
+            variables = bind_source_evidence_variables(
+                self.log,
+                {
                 "claim_text": row["text"],
                 "obligation_text": obligation.text,
                 "required_basis": obligation.required_basis,
@@ -698,18 +1360,27 @@ class BindingGame:
                 "task_context": authoritative_task_context(state),
                 "features": _features(row),
                 "registry": registry,
-                "method_feedback": method_feedback,
-                "ledger_path": os.path.abspath(self.log.path),
+                "adapter_catalog": oracle_catalog,
+                "method_feedback": filtered_feedback,
+                "ledger_path": self.log.record_path_for(row["id"]),
+                "record_shape": (self._oracle_record_shape(row["id"])
+                                 if self.oracle_feedback_filter is not None
+                                 else record_shape_json(self.log)),
                 "artifact_root": os.path.abspath(self.artifacts.root),
                 "world_mode": world_mode,
                 "world_path": world,
                 "world_manifest": manifest,
-                "world_map": world_map(state, live_world=self.live_world),
+                "world_map": self._compiler_world_map(state),
                 **({"profile_context": self.context_provider("oracles", row["id"])}
                    if "{profile_context}" in self.oracles_role.template else {}),
-            },
-        )
-        methods = payload["methods"]
+                },
+                enabled=(self.oracle_feedback_filter is None
+                         and getattr(self.backend, "compact_inspection", False)
+                         is True),
+            )
+            payload = self.oracles_role.call(self.backend, variables)
+        prepare = getattr(self.discharger, "prepare_method", lambda method: method)
+        methods = [prepare(method) for method in payload["methods"]]
         event = {
             "claim": row["id"],
             "obligation": obligation.id,
@@ -717,18 +1388,14 @@ class BindingGame:
             "methods": [{"procedure": m["procedure"][:80],
                          "level": m.get("level", ""),
                          "basis": m.get("basis", ""),
-                         "strength": _method_strength(m)}
+                         "strength": _method_strength(m),
+                         **({"adapter": m["adapter"],
+                             "adapter_version": m.get("adapter_version")}
+                            if "adapter" in m else {}),
+                         **({"adapter_input_binding": m["adapter_input_binding"]}
+                            if "adapter_input_binding" in m else {})}
                         for m in methods],
         }
-        if method_feedback != "(none)":
-            try:
-                parsed_feedback = json.loads(method_feedback)
-            except (json.JSONDecodeError, TypeError):
-                parsed_feedback = {}
-            if (isinstance(parsed_feedback, dict)
-                    and parsed_feedback.get(
-                        "focused_counterexample_fallback") is True):
-                event["focused_counterexample_fallback"] = True
         self.log.append("methods_enumerated", event)
         return methods
 
@@ -736,7 +1403,9 @@ class BindingGame:
     def _judge(self, obligation, method, result, attempt,
                redo: int = 0,
                degradation: str = "(none — decisive method, no degradation "
-                                  "to audit)") -> Dict[str, str]:
+                                  "to audit)",
+               method_attempt: int = 0,
+               independent_judger: bool = False) -> Dict[str, str]:
         evidence = {
             "outcome": result.outcome,
             "witness": result.witness,
@@ -768,6 +1437,7 @@ class BindingGame:
             "clause": obligation.clause,
             "refutable_by_absence": obligation.refutable_by_absence,
             "procedure": method["procedure"],
+            "adapter_method": adapter_method_view(method),
             "promised_artifact": method.get("artifact", ""),
             # the oracle's declared evidence basis — the judger audits it as
             # part of fidelity, and it is what the settled verdict will carry
@@ -781,7 +1451,7 @@ class BindingGame:
                                   ensure_ascii=False),
             "degradation_record": degradation,
             "task_context": authoritative_task_context(state),
-            "ledger_path": os.path.abspath(self.log.path),
+            "ledger_path": self.log.record_path_for(obligation.claim_id),
             "artifact_root": os.path.abspath(self.artifacts.root),
             "world_mode": world_mode,
             "world_path": world,
@@ -791,10 +1461,89 @@ class BindingGame:
             **({"profile_context": self.context_provider("judger", obligation.claim_id)}
                if "{profile_context}" in self.judger_role.template else {}),
         }
+        variables = bind_source_evidence_variables(
+            self.log,
+            variables,
+            enabled=(getattr(self.backend, "compact_inspection", False)
+                     is True),
+        )
+        typed_packet = None
+        if self.typed_adapter_judger_packet:
+            # Codex attaches captured images independently of prompt text.
+            # A text packet may not stand in for those raw inputs, so probe
+            # the same deterministic selector the backend will use and stay
+            # on the original path whenever an image is present or the probe
+            # itself cannot be established.
+            captured_images_present = False
+            image_probe = getattr(self.backend, "_captured_images", None)
+            if callable(image_probe):
+                try:
+                    captured_images_present = bool(
+                        image_probe("judger", variables))
+                except Exception:
+                    captured_images_present = True
+            typed_packet = build_typed_adapter_judger_packet(
+                self.discharger,
+                self.artifacts,
+                obligation,
+                method,
+                result,
+                degradation,
+                captured_images_present=captured_images_present,
+            )
         total_calls = self.judger_error_retries + 1
         for call_no in range(1, total_calls + 1):
             try:
-                verdict = self.judger_role.call(self.backend, variables)
+                # Bind a fresh immutable view for every ordinary Judger call.
+                # A failed call may have overlapped a source change, and a
+                # large-artifact transport failure must not force later calls
+                # back into an avoidable full-artifact dump.
+                packet = None
+                if getattr(self.backend, "judger_prefetch", False) is True:
+                    packet = build_judger_evidence_packet(
+                        self.artifacts,
+                        _RecordLedger(
+                            self.log.record_path_for(obligation.claim_id)),
+                        method.get("basis", ""),
+                        result.artifact,
+                    )
+                call_variables = variables
+                if packet is not None:
+                    call_variables = dict(variables)
+                    call_variables["_judger_evidence_packet"] = packet
+                if typed_packet is not None and call_no == 1:
+                    if call_variables is variables:
+                        call_variables = dict(variables)
+                    call_variables["_typed_adapter_judger_packet"] = typed_packet
+                with model_scope(
+                        stage="judger", method_attempt=method_attempt,
+                        redo=redo, judger_retry_index=call_no,
+                        independent_judger=independent_judger):
+                    # For an eligible typed packet, only the exact shipped
+                    # Codex backend changes transport: the same independent
+                    # Judger runs in a fresh no-tools session. Unsupported
+                    # backends keep their established call path. A transport
+                    # failure enters this existing retry loop; a semantic
+                    # ``no`` verdict returns normally and never falls back.
+                    transport = (
+                        restricted_typed_judger_backend(self.backend)
+                        if typed_packet is not None and call_no == 1
+                        else nullcontext(self.backend)
+                    )
+                    with transport as judger_backend:
+                        try:
+                            verdict = self.judger_role.call(
+                                judger_backend, call_variables)
+                        finally:
+                            packet_valid = (
+                                packet is None or packet.revalidate())
+                    if not packet_valid:
+                        raise RoleError(
+                            "judger evidence prefetch changed during audit")
+                    if (typed_packet is not None and call_no == 1
+                            and not typed_packet.revalidate()):
+                        raise RoleError(
+                            "typed-adapter Judger packet changed during audit")
                 break
             except RoleError as err:
                 will_retry = call_no < total_calls
@@ -842,7 +1591,8 @@ class BindingGame:
         )
         return verdict
 
-    def _redo(self, row, obligation, method, verdict, attempt, round_no: int):
+    def _redo(self, row, obligation, method, verdict, attempt, round_no: int,
+              *, method_attempt: int = 0):
         """
         Re-execute the unchanged bound method with every judger reason supplied
         separately as untrusted diagnostic feedback (latest last); the result
@@ -855,6 +1605,10 @@ class BindingGame:
              "procedure": method["procedure"][:80], "round": round_no,
              "reason": verdict["reason"][:200]},
         )
+        # Select before appending: each redo sees its immediate predecessor,
+        # never another obligation/method or an arbitrary model-chosen path.
+        previous_artifact = (attempt.redos[-1].get("artifact")
+                             if attempt.redos else attempt.discharge_artifact)
         attempt.redos.append({"reason": verdict["reason"],
                               "outcome": None, "artifact": None,
                               "audit": None})
@@ -863,14 +1617,75 @@ class BindingGame:
             f"previous attempt: {r['reason']}"
             for i, r in enumerate(attempt.redos)
         )
+        if attempt.briefing:
+            notes = attempt.briefing + "\n\n" + notes
         method_fb = {**method, "redo_feedback": notes}
-        result = self.discharger.discharge(
-            row, obligation, method=method_fb, tag="bound-redo")
+        with model_scope(
+                stage="discharge", method_attempt=method_attempt,
+                redo=round_no):
+            repair = getattr(self.discharger, "discharge_with_repair", None)
+            if callable(repair):
+                result = repair(
+                    row, obligation, method=method_fb, tag="bound-redo",
+                    previous_artifact=previous_artifact)
+            else:
+                result = self.discharger.discharge(
+                    row, obligation, method=method_fb, tag="bound-redo")
         attempt.redos[-1]["outcome"] = result.outcome
         attempt.redos[-1]["artifact"] = result.artifact
         return result
 
     # settlement
+    def _preaudit(self, row, obligation, method, method_attempt: int):
+        """Audit a proposed agent method's sufficiency before execution.
+
+        Typed adapter methods execute in milliseconds and are audited by
+        the fresh Judger afterwards, so only agent-executed methods are
+        asked.  A seat failure never blocks execution: the established
+        post-execution audit still runs.
+        """
+        if self.sufficiency_role is None or "adapter" in method:
+            return None
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        world_mode, _world, _manifest = world_evidence_context(
+            state, live_world=self.live_world)
+        variables = {
+            "obligation_text": obligation.text,
+            "required_basis": obligation.required_basis,
+            "severity": obligation.severity,
+            "clause": obligation.clause,
+            "refutable_by_absence": obligation.refutable_by_absence,
+            "task_context": authoritative_task_context(state),
+            "world_mode": world_mode,
+            "world_map": self._compiler_world_map(state),
+            "procedure": method.get("procedure", ""),
+            "promised_artifact": method.get("artifact", ""),
+            "basis": method.get("basis", ""),
+            "declared_strength": _method_strength(method),
+            "bridges": json.dumps(method.get("bridges", []),
+                                  ensure_ascii=False),
+            **({"profile_context": self.context_provider("sufficiency", row["id"])}
+               if "{profile_context}" in self.sufficiency_role.template else {}),
+        }
+        try:
+            with model_scope(stage="sufficiency_preaudit",
+                             method_attempt=method_attempt):
+                verdict = self.sufficiency_role.call(self.backend, variables)
+        except RoleError as error:
+            self.log.append("sufficiency_audited", {
+                "claim": row["id"], "obligation": obligation.id,
+                "procedure": method.get("procedure", "")[:80],
+                "method_attempt": method_attempt,
+                "error": str(error)[:300]})
+            return None
+        self.log.append("sufficiency_audited", {
+            "claim": row["id"], "obligation": obligation.id,
+            "procedure": method.get("procedure", "")[:80],
+            "method_attempt": method_attempt,
+            "sufficient": verdict["sufficient"],
+            "reason": verdict["reason"][:500]})
+        return verdict
+
     def _reject(self, row, obligation, method, reason: str) -> None:
         self.log.append(
             "method_rejected",
@@ -951,7 +1766,8 @@ def _features(row: Dict) -> str:
     )
 
 
-def _attempt_diagnostic(attempt: Attempt) -> Dict:
+def _attempt_diagnostic(attempt: Attempt, *, include_declared_contract=False,
+                        declared_contract=None) -> Dict:
     """Bounded method diagnostics for the Oracle's single repair pass.
 
     Artifact contents and digests are deliberately absent: this feedback says
@@ -984,4 +1800,10 @@ def _attempt_diagnostic(attempt: Attempt) -> Dict:
             for redo in attempt.redos
         ],
         "terminal_reason": attempt.rejected,
+        **({"declared_method": deepcopy(declared_contract),
+            "verifier_unavailable": bool(
+                (attempt.audit or {}).get("_infra")
+                or any((redo.get("audit") or {}).get("_infra")
+                       for redo in attempt.redos))}
+           if include_declared_contract else {}),
     }

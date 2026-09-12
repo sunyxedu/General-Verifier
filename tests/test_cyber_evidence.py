@@ -187,6 +187,14 @@ def _replace_capture(kwargs, observation, result, artifacts, log, **changes):
 ])
 def test_invalid_host_time_is_not_presented_as_historical_world_binding(capture, times):
     kwargs, observation, result, artifacts, log, _candidates = capture
+    if times.get("started_unix") == float("inf"):
+        # The merged ledger contract now rejects non-finite numbers before
+        # publication. No malformed observation can reach capsule promotion.
+        before = log.last_seq()
+        with pytest.raises(ValueError, match="non-finite"):
+            _replace_capture(kwargs, observation, result, artifacts, log, **times)
+        assert log.last_seq() == before
+        return
     altered, _artifact = _replace_capture(kwargs, observation, result, artifacts, log, **times)
     with pytest.raises(EvidenceBindingError, match="time interval"):
         build_evidence_manifest(**altered)

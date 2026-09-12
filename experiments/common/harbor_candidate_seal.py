@@ -295,7 +295,7 @@ def _unique_raw_rollout(trial_dir: Path) -> Path:
 def _raw_rollout_events(path: Path) -> tuple[list[dict[str, Any]], str]:
     raw, digest = _stable_file_bytes(path, "raw Codex rollout")
     events: list[dict[str, Any]] = []
-    for line_number, line in enumerate(raw.splitlines(), 1):
+    for line_number, line in enumerate(raw.split(b"\n"), 1):
         if not line.strip():
             continue
         try:

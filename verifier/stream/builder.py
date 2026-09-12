@@ -37,6 +37,10 @@ class Builder:
         self.store = store
         self.labels: Dict[str, str] = {}   # label -> claim id
         self.finals: list = []
+        # claim id -> seq of the event that first introduced it.  A claim
+        # speaks about the record as it stood when the claim was made; the
+        # kernel freezes exactly that ledger prefix for its verification.
+        self.commit_seq: Dict[str, int] = {}
         self._pending_by_id: Dict[str, Optional[str]] = {}
         self._pending_tool: Optional[str] = None
 
@@ -72,9 +76,11 @@ class Builder:
                 tool, self._pending_tool = self._pending_tool, None
             claim = Claim(CLAIM_EFFECT, effect_text(event, tool))
             self.require_available_label(f"effect:{event['seq']}", claim.id)
+            # before add_claim: an on-commit trigger verifies inside it
+            self.commit_seq.setdefault(claim.id, event["seq"])
             self.store.add_claim(claim)
             self.labels[f"effect:{event['seq']}"] = claim.id
-        elif etype == "commit":
+        elif etype in ("commit", "extracted_commit"):
             payload = event["payload"]
             claim = self.claim_from_commit(payload)
             if "label" in payload:
@@ -82,6 +88,7 @@ class Builder:
                 self.labels[payload["label"]] = claim.id
             if payload["kind"] == "final":
                 self.finals.append(claim.id)
+            self.commit_seq.setdefault(claim.id, event["seq"])
             self.store.add_claim(claim)
 
     def replay(self) -> "Builder":
