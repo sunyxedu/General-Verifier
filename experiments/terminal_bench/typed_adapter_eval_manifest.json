@@ -1,0 +1,307 @@
+{
+  "schema": "gv-terminal-bench-typed-adapter-eval/v1",
+  "suite": "ordinary-offline-typed-adapters",
+  "gold_policy": {
+    "manifest_contains_gold": false,
+    "join_after_scoring_only": true,
+    "forbidden_compiler_inputs": [
+      "reward",
+      "historical verdict",
+      "historical certificate",
+      "official verifier output",
+      "raw candidate final answer",
+      "delivered world bytes",
+      "solver argument or tool transcript"
+    ]
+  },
+  "verifier": {
+    "model": "gpt-5.6-luna",
+    "seats": "codex",
+    "effort": "medium",
+    "service_tier": "standard",
+    "mode": "offline",
+    "browser_observer": null,
+    "parallel_obligations": 4,
+    "parallel_claims": 4,
+    "max_concurrent_seats": 12,
+    "runtime_path": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "offline_runtime_read_roots": [
+      "/opt/homebrew/bin",
+      "/opt/homebrew/Cellar",
+      "/opt/homebrew/opt"
+    ]
+  },
+  "comparisons": {
+    "full-e2e": {
+      "acceptance_eligible": true,
+      "control": {
+        "GV_TYPED_ADAPTERS": "0",
+        "GV_CONTRACT_CACHE": "0"
+      },
+      "treatment": {
+        "GV_TYPED_ADAPTERS": "1",
+        "GV_CONTRACT_CACHE": "1"
+      },
+      "require_same_contract_bundle": false,
+      "retain_exact_ordered_contracts_and_outcomes": true,
+      "contract_drift_policy": "inconclusive_for_zero_loss"
+    },
+    "adapter-isolation": {
+      "acceptance_eligible": false,
+      "control": {
+        "GV_TYPED_ADAPTERS": "0",
+        "GV_CONTRACT_CACHE": "1"
+      },
+      "treatment": {
+        "GV_TYPED_ADAPTERS": "1",
+        "GV_CONTRACT_CACHE": "1"
+      },
+      "require_same_contract_bundle": true,
+      "common_contract_build_charged_to_both_arms": true,
+      "method_cache_shared_between_arms": false
+    }
+  },
+  "contract_freeze": {
+    "schema": "gv-obligation-contract-bundle/v1",
+    "required_for": "adapter-isolation",
+    "task_contract_input_allowlist": [
+      "task.md",
+      "task-addressing metadata",
+      "compiler and critic identities"
+    ],
+    "claim_contract_input_allowlist": [
+      "sealed claim statements",
+      "task contract",
+      "premise ids and statuses",
+      "world mode and logical address map without world bytes",
+      "compiler and critic identities"
+    ],
+    "same_bundle_both_arms_for": "adapter-isolation",
+    "oracle_methods_frozen": false,
+    "cold_compile_is_charged_to_both_arms": true,
+    "required_raw_audit_fields": [
+      "contract_audit_status",
+      "final_obligation_contract",
+      "final_obligation_outcomes_ordered"
+    ],
+    "future_adapter_isolation_seal_fields": [
+      "obligation_contract_bundle_sha256",
+      "task_contract_sha256",
+      "compiler_fingerprint",
+      "final_obligation_outcomes_sha256"
+    ]
+  },
+  "phases": {
+    "cold": {
+      "process_scope": "one fresh verifier process per candidate and arm",
+      "workers": 1,
+      "shared_toolchain": false,
+      "fresh_scoring_root": true,
+      "fresh_process_cache": true,
+      "latency_scope": "contract build plus complete score invocation",
+      "all_real_attempts_charged": true
+    },
+    "warm": {
+      "process_scope": "one fresh verifier process per task and arm",
+      "workers": 1,
+      "shared_toolchain": true,
+      "fresh_scoring_root": true,
+      "fresh_process_cache": true,
+      "lexical_first_trial_is_seed": true,
+      "latency_scope": "seed plus every distinct held-out candidate",
+      "all_real_attempts_charged": true,
+      "forbid_exact_candidate_result_reuse": true
+    },
+    "batch": {
+      "process_scope": "one fresh verifier process per archive job and arm",
+      "workers": 4,
+      "shared_toolchain": true,
+      "fresh_scoring_root": true,
+      "fresh_process_cache": true,
+      "latency_scope": "first process start through last candidate result",
+      "all_real_attempts_charged": true,
+      "fixed_global_process_concurrency": 1
+    }
+  },
+  "tiers": {
+    "canary": {
+      "acceptance_eligible": false,
+      "trials": [
+        "gcode-to-text__ELuvDeE",
+        "gcode-to-text__HFh2qJM",
+        "write-compressor__FXxu2Ef",
+        "write-compressor__gypTwZc",
+        "extract-moves-from-video__KFN5iFo",
+        "extract-moves-from-video__nFHKtnx"
+      ]
+    },
+    "core": {
+      "acceptance_eligible": false,
+      "tasks": [
+        "gcode-to-text",
+        "write-compressor",
+        "extract-moves-from-video"
+      ]
+    },
+    "acceptance": {
+      "acceptance_eligible": true,
+      "tasks": [
+        "gcode-to-text",
+        "write-compressor",
+        "extract-moves-from-video",
+        "sqlite-db-truncate"
+      ]
+    }
+  },
+  "tasks": [
+    {
+      "task": "gcode-to-text",
+      "archive_job": "lav-official-g2-k5",
+      "task_sha256": "0ab8f161af511379d0f6d3467d36cddd426bfb4b838899eb8e436b75f36eacf0",
+      "warm_seed_trial": "gcode-to-text__ELuvDeE",
+      "candidates": [
+        {
+          "trial": "gcode-to-text__ELuvDeE",
+          "immutable_input_seal": "5f87d8a4510a41a36734d71551b92d82948af356bf9c814414e027a2c8c346c0"
+        },
+        {
+          "trial": "gcode-to-text__HFh2qJM",
+          "immutable_input_seal": "01ad60a6f9354db915c99b514364c321e0e8038d92ed9a33420d6a93fdd63a39"
+        },
+        {
+          "trial": "gcode-to-text__VnZss9j",
+          "immutable_input_seal": "d33f1978e950fd4a7b93501ef195d8f5beeeb6fda02a579beeb7aad7e2d73ce4"
+        },
+        {
+          "trial": "gcode-to-text__cUNiXSW",
+          "immutable_input_seal": "5569d5a85d64d4c496ab2d4d449feb7ea08fea7b3ef41c817c57fead431db018"
+        },
+        {
+          "trial": "gcode-to-text__uXCbo9H",
+          "immutable_input_seal": "a728fb573f415239dcdcbeba6954c32fc34ddb052f97d12f27010bc9a1b0c821"
+        }
+      ]
+    },
+    {
+      "task": "write-compressor",
+      "archive_job": "lav-official-g6-k5",
+      "task_sha256": "fa1688d0922ce535d1448b78f8c1717df06f4f16a3e0513a06fae14f2d2433b1",
+      "warm_seed_trial": "write-compressor__FXxu2Ef",
+      "candidates": [
+        {
+          "trial": "write-compressor__FXxu2Ef",
+          "immutable_input_seal": "032b19397dca8a9950cdd89f0b8da1e9bc3fde2629566b447bfad95627bdf1b8"
+        },
+        {
+          "trial": "write-compressor__dqV4QWQ",
+          "immutable_input_seal": "b005ae3fa54f823b69102e51c8262b6981ea31166d9f394dab34004dd00f426f"
+        },
+        {
+          "trial": "write-compressor__gypTwZc",
+          "immutable_input_seal": "869128c7c392ccc2077d35948ff36c5a3d4f6bd6a24571576023889aae170ccc"
+        },
+        {
+          "trial": "write-compressor__hhyEyWZ",
+          "immutable_input_seal": "1dcc08f90be879474e7517f1984f5aba7be1ec083a5fa69d6d08229ed87c7ae5"
+        },
+        {
+          "trial": "write-compressor__pVzF4HY",
+          "immutable_input_seal": "4fd95093a2baaae34278bec48ae534a72a7d8a5461ad59aa4562782edae010a9"
+        }
+      ]
+    },
+    {
+      "task": "extract-moves-from-video",
+      "archive_job": "lav-official-g2-k5",
+      "task_sha256": "7495663dcbb7d839f4ad2872633b24152c0790e0c0bb1b3a7a7e8bc095cbfd9f",
+      "warm_seed_trial": "extract-moves-from-video__KFN5iFo",
+      "candidates": [
+        {
+          "trial": "extract-moves-from-video__KFN5iFo",
+          "immutable_input_seal": "c226281a9cd8184b8e615c6dbb00ec4f2ad7b69a4078d69b907ffa8106d59ee3"
+        },
+        {
+          "trial": "extract-moves-from-video__RECFzRK",
+          "immutable_input_seal": "34cce876f1cf22b4319848bce7e7a30aee4a747a8dadbbf6f989cdcbe85c5d77"
+        },
+        {
+          "trial": "extract-moves-from-video__nFHKtnx",
+          "immutable_input_seal": "dc2d502bcb420af10ad6219571c203bb1748e79b9a151f83cf67cf2cbe126ba6"
+        },
+        {
+          "trial": "extract-moves-from-video__qBnFkAa",
+          "immutable_input_seal": "d5812a30d9f7094f2dd09924924e57469ec672f1fb7d132eb1c77050407488da"
+        },
+        {
+          "trial": "extract-moves-from-video__tJdCJ8R",
+          "immutable_input_seal": "89204559b29bfdb84240d3b81a83ac7fea972aaae5e294d4da98ada15072320f"
+        }
+      ]
+    },
+    {
+      "task": "sqlite-db-truncate",
+      "archive_job": "rec-codex-terra-medium-tb21-strat20-k5-r1",
+      "task_sha256": "96bf042e5aa417260961744ffe28f720e071884b2684b88ae95e42b25f0e5317",
+      "warm_seed_trial": "sqlite-db-truncate__4JQh54h",
+      "candidates": [
+        {
+          "trial": "sqlite-db-truncate__4JQh54h",
+          "immutable_input_seal": "d438148ea2f23b3eb1a72a44074c4b41dcab3bea607720f2fb726b028f365e88"
+        },
+        {
+          "trial": "sqlite-db-truncate__QyunooX",
+          "immutable_input_seal": "ba430056fb8bec808276514cf1f30c8b7ef378631f885657040a175dd7341d98"
+        },
+        {
+          "trial": "sqlite-db-truncate__a3tcWmA",
+          "immutable_input_seal": "b786d2f40210e07dd680f12f450b5ac6909ff023c80ccbf030dee54e70eda8e4"
+        },
+        {
+          "trial": "sqlite-db-truncate__hUXYSvy",
+          "immutable_input_seal": "5efd273bd97c3303ae3c4ed2e1b9354c4c88e7ccdfd31443c30ccc434f03181a"
+        },
+        {
+          "trial": "sqlite-db-truncate__j82uAN5",
+          "immutable_input_seal": "7a9ef2565a9b3131c748d60dc1af5474f657818b36169f1af1591194f1a67595"
+        }
+      ]
+    }
+  ],
+  "acceptance": {
+    "quality": {
+      "paired_verdict_mismatches": 0,
+      "paired_unscoreable": 0,
+      "require_equal_final_obligation_statuses": true,
+      "adapter_isolation_require_equal_contract_bundle": true,
+      "full_e2e_retain_exact_ordered_contracts_and_outcomes": true,
+      "full_e2e_contract_drift_policy": "inconclusive_for_zero_loss",
+      "require_no_tb_rank_or_reward_direction_regression": true
+    },
+    "cost": {
+      "required_reduction_factor": 10.0,
+      "require_complete_attempt_ledger": true,
+      "unknown_token_policy": "incomplete",
+      "dimensions": [
+        "started_attempts",
+        "uncached_input_tokens",
+        "cached_input_tokens",
+        "output_tokens"
+      ],
+      "aggregation": "all candidates and all contract-build, failed, retry, timeout, and warm-seed attempts"
+    },
+    "latency": {
+      "required_reduction_factor": 10.0,
+      "dimensions": [
+        "cold_end_to_end_wall_seconds",
+        "warm_end_to_end_wall_seconds",
+        "batch_makespan_seconds"
+      ],
+      "require_no_per_candidate_cold_regression": true
+    },
+    "sampling": {
+      "pool_repeated_trial_ids_across_phases": false,
+      "canary_or_core_may_claim_acceptance": false,
+      "acceptance_requires_all_unique_candidates": true
+    }
+  }
+}

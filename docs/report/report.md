@@ -147,14 +147,15 @@ Four principles recur in every module.
 
 ### Verifier roles
 
-Six model roles do the semantic work. Each is an [`AgentRole`](../../verifier/llm/agents.py#L157): a system prompt, a per-call template, an output schema, and a tool palette. The palette is a hard capability boundary, not a suggestion: a role without `Bash` cannot execute anything.
+Six model roles do the semantic work, plus one optional pre-execution auditor. Each is an [`AgentRole`](../../verifier/llm/agents.py#L157): a system prompt, a per-call template, an output schema, and a tool palette. The palette is a hard capability boundary, not a suggestion: a role without `Bash` cannot execute anything.
 
 | Role | Sees | Tools | Produces |
 |---|---|---|---|
 | Extractor | Task, final response, ledger index | Read, Grep, Glob | Commits: labeled claims with dependencies |
 | Compiler | Claim, task, graph snapshot, premises | Read, Grep, Glob | Obligations with basis, severity, clause, absence flag |
 | Critic | Claim, proposed obligations, premises, game history | Read, Grep, Glob | `pass` or `insufficient` with a counterexample world and a repair instruction |
-| Oracle | Obligation, task, world description, prior feedback | Read, Grep, Glob, WebSearch, WebFetch | Candidate methods with basis, strength, and bridges |
+| Oracle | Obligation, task, world description, record shape, prior feedback | Read, Grep, Glob, WebSearch, WebFetch | Candidate methods with basis, strength, and bridges |
+| Sufficiency auditor (optional, `GV_SUFFICIENCY_PREAUDIT=1`) | Obligation, task, evidence boundary, one proposed agent method; no evidence | none, one turn | `sufficient` yes or no with the structural gap, before the executor runs |
 | Executor | Obligation, one bound method, workspace, world mapping | Bash, Read, Write, Grep | Outcome, witness, artifact paths, declared inputs |
 | Judger | Obligation, method, the executor's artifact | Read, Bash, Grep | `sufficient`, `faithful`, `degradation`, reason |
 

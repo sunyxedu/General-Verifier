@@ -1,0 +1,356 @@
+# Typed adapter evaluation
+
+## Current conclusion
+
+The implementation is experimental. Neither 10x end-to-end improvement nor
+zero result loss has been established. Do not treat adapter unit-test speedups
+as whole-pipeline performance, or matching final verdicts as identical internal
+verification results.
+
+The latest [cold shared-contract diagnostic](cold-14a4fa1-diagnostic.md)
+measures **1.54x total charged latency improvement**, with uncached/cached/
+output token ratios **0.594/0.605/0.692**. Its final labels match but a final
+obligation and supporting-claim status differ, so it fails the no-loss gate.
+The separately gated [append-only Compiler repair](append-only-delta.md)
+addresses an observed regeneration waste; paid validation of that option is
+still pending and it remains off by default.
+
+The subsequent [source tool identity correction](tool-identity-conversion.md)
+changes only the replay converter and trace readers, not the core architecture.
+Local checks cover 15 source traces (10 accepted, five explicitly refused for
+unlabelled multi-call steps); no new paid A/B or no-loss result is claimed.
+
+## Paired offline pilot
+
+Source revision: `eccefb9`; pipeline fingerprint: `35e435a6ae5535bf`.
+Both arms use the same source, existing Terminal-Bench offline scorer, sealed
+trajectories and captured worlds, GPT-5.6-Luna, medium effort, standard service,
+one candidate worker, four parallel obligations and four parallel claims.
+Only `GV_TYPED_ADAPTERS=0/1` differs. Browser observer configuration is unset.
+The repetition is `general-ab-r1`, with separate control/treatment scoring roots.
+
+These are ordinary negative-result pilot traces, one candidate per task. They
+do not exercise cross-candidate reuse or positive-result preservation. No
+benchmark gold is supplied to verification seats. Compiler sampling is not
+frozen, so the measurements include upstream sampling variance, not just the
+causal effect of adapter execution.
+
+| Trace | Final verdict, off / on | Recorded calls, off / on | Wall seconds, off / on |
+| --- | --- | --- | --- |
+| `gcode-to-text__HFh2qJM` | refuted / refuted | 27 / 17 | 1049.24 / 1146.76 |
+| `write-compressor__pVzF4HY` | refuted / refuted | 63 / 35 + unrecorded timeout | 1785.91 / 2257.36 |
+
+For the completed gcode pair:
+
+| Measure | Adapters off | Adapters on |
+| --- | ---: | ---: |
+| Uncached input tokens | 827,626 | 479,707 |
+| Cached input tokens | 5,932,800 | 5,214,336 |
+| Output tokens | 93,227 | 62,940 |
+| Cumulative model-call seconds | 2284.54 | 1602.92 |
+
+Calls fell 37.0%, uncached input 42.0%, and output 32.5%, but wall time rose
+9.3%. Cumulative call duration is not wall latency: concurrent calls overlap,
+and one slow call can dominate the critical path. Tokens are cost proxies;
+these runs do not provide a monetary bill.
+
+The compressor control recorded 1,771,431 uncached input tokens, 11,143,680
+cached input tokens and 212,082 output tokens. Treatment recorded 757,316,
+4,150,272 and 89,406 respectively, but excludes the timed-out call described
+below. Its wall time rose 26.4%; no complete token-based saving is claimed.
+
+Both gcode runs compiled four obligations, but not the same four obligations.
+The control combined output presence and semantic correctness; treatment split
+them. The record requirements also differed in scope (each response versus at
+least one command). Final verdict and ranking score matched, but obligation
+histograms and semantic granularity did not. This is not evidence of full
+result equivalence.
+
+The compressor control had eight total obligations, five attached to the final
+claim; treatment had seven, all attached to the final claim. Their internal
+outcomes also differed. Both tasks retained the same final ranking score
+(`0.3332`), but one candidate per task cannot validate Best-of-N ordering.
+
+| Role calls | Gcode off | Gcode on | Compressor off | Compressor on |
+| --- | ---: | ---: | ---: | ---: |
+| Extract | 1 | 1 | 1 | 1 |
+| Obligation Compiler | 3 | 1 | 5 | 2 |
+| Critic | 3 | 1 | 5 | 2 |
+| Oracle | 6 | 6 | 16 | 12 |
+| Discharge | 8 | 6 | 21 | 13 + unrecorded timeout |
+| Judger | 6 | 2 | 15 | 5 |
+
+Only two typed executions succeeded, both `filesystem.exists`; five fast-path
+attempts fell back, and there were zero method-cache hits. The observed call
+reduction includes changed Compiler/Critic and Judger paths and cannot be
+attributed entirely to two adapter executions.
+
+Raw artifacts are under `experiments/terminal_bench/results/` with stems
+`ab_eccefb9_{control,treatment}_{g2,g6}`. Each stem has a score `.jsonl`, usage
+`.jsonl.usage.jsonl`, `.log`, and `.tsv`. The scorer records successful CLI
+usage; failed, timed-out, or retried calls may be absent from the usage ledger.
+Any such failures must be reported separately, not silently assigned zero cost.
+
+The compressor treatment had a 1800-second CLI timeout followed by an automatic
+retry. The timed-out wrapper left a live Codex child and code-mode child; both
+were identified inside this run's state and manually terminated, without
+interrupting the retry. The failed attempt is absent from the usage ledger,
+so that arm's recorded calls/tokens are a lower bound, not a complete cost.
+The wall measurement still includes the wait. This infrastructure incident
+also prevents interpreting its latency difference as a clean adapter effect.
+All recorded usage rows have return code zero, and event JSON was valid with
+no explicit role/schema failure event. The hidden timeout nevertheless happened;
+absence of failure events is not proof of complete telemetry.
+
+## Findings from broader historical comparison
+
+Five earlier trajectories had no exact cross-candidate method-cache hits.
+Same-task Compiler/Critic calls changed wording, controlling clauses and even
+obligation decomposition. Loosening semantic matching would be unsafe.
+
+In the historical baseline, discharge accounted for 31.9% of cumulative
+model-call time. Even eliminating that entire role leaves a 1.47x upper bound
+on improvement in that particular sum, not 10x. This is not a bound on wall
+latency, which needs a dependency-aware critical-path measurement.
+
+The earlier implementation comparison also included verdict regressions and
+substantially higher usage, across different source fingerprints. It is useful
+as a regression warning, not a clean estimate of the adapter treatment effect.
+
+## Correctness fixes identified during the pilot
+
+- File presence observations must expose the same kind and world-mode fields
+  for present and absent targets. Missing kind evidence caused a real Judger
+  redo, followed by additional agent evidence-delivery repair.
+- Accepted-method reuse must retain the independently audited outcome
+  direction. The existing protocol permits one-direction certificates;
+  `decisive` does not imply sufficiency in both directions. A changed direction
+  must go back through the full game, not inherit the previous audit.
+- CLI timeouts must clean up the invocation's subprocess group before retrying;
+  killing only the wrapper leaves overlapping work behind. Validate cleanup
+  using harmless wrapper/child fixtures, not paid model calls.
+
+All four pilot processes completed before source changes resumed. Subsequent
+fixes and their regression tests are not retroactively included in these
+measurements; the corrected revision needs its own future performance run.
+
+## Post-fix verification
+
+Corrected package fingerprint: `91143828ee29f394`.
+
+Local regression command:
+
+```sh
+TMPDIR=/private/tmp PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  .venv/bin/python -m pytest -q --ignore=tests/test_score_llm_verifier.py
+```
+
+Result: **597 passed, 3 skipped, 4 subtests passed**. The skipped cases are
+opt-in real-browser tests; running them separately with `GV_TEST_CHROMIUM`
+pointing to the installed Chrome executable produced **3 passed**. Tests use
+synthetic benign documents and records, not task-specific adapter logic.
+
+Coverage includes live/captured wiring, actual browser observations, bounded
+ledger scopes, absence gating, same-direction reuse, opposite-direction fresh
+Judger rejection, concurrent candidate execution, complete file-kind evidence,
+and POSIX same-group process cleanup on normal exit, timeout and interruption.
+Process-group cleanup is not an OS sandbox and does not contain descendants
+that deliberately create another process group/session.
+
+The excluded legacy scoring test module cannot collect because its separate
+`llm_verifier` dependency is unavailable; it was not changed or silently skipped
+in source. Full-suite success is not claimed. Failed-attempt usage telemetry
+also remains incomplete and must be addressed before making complete cost claims.
+
+## Subsequent work (2026-09-08)
+
+The historical figures above are unchanged. The branch now additionally has:
+
+- terminal usage rows for successful, failed, timed-out and retried CLI attempts;
+  unknown usage remains unknown, and does not count as zero cost;
+- an experimental, default-off [authority-only contract cache](contract-cache-proposal.md),
+  retaining separate Compiler and Critic stages;
+- separate, independently audited positive and negative method-cache slots,
+  with fresh adapter execution on every candidate; and
+- a [paired evaluation driver](../experiments/terminal_bench/TYPED_ADAPTER_EVAL.md)
+  that charges cold fills and compares complete wall time, with exact contract
+  text retained to expose changed requirements.
+
+These changes still need new real pipeline measurements. The successful
+single-role Luna protocol smoke is not a performance benchmark. A six-candidate
+warm canary is a regression screen, not an acceptance result; the larger gate
+contains 20 distinct candidates across four ordinary tasks.
+
+### Follow-up to the frozen canary
+
+The live canary uses frozen source `fad9290`; later branch changes do not alter
+its control or treatment. The [first-control diagnostic](canary-fad9290-diagnostics.md)
+records real method-identity and provenance repairs, not missing artifacts.
+
+Subsequent implementation addresses three general seams:
+
+- The executor receives the method's declared strength and bridging assumptions,
+  which the Judger already audited. Neither becomes additional task authority.
+- Offline toolchain/cache roots are bound by operator construction, not role
+  variables. The executor may write its shared tools; the Judger receives
+  read-only toolchain access, without the external shared package cache. This
+  uses Codex's [specific-path permission overrides](https://learn.chatgpt.com/docs/permissions),
+  including a read-only override inside the otherwise writable cold workdir.
+- A fresh pure-adapter result in a previously unaudited direction can go
+  directly to a new independent Judger. A complete audit may seed that
+  direction; otherwise the full game runs and all attempts count toward cost.
+
+These are not measured 10x improvements. In particular, a substantive fidelity
+failure still needs repair; normalizing metadata cannot make an incorrect
+instrument faithful. Skipping other obligations after a cached refutation was
+not added: it could change exported outcomes and advisory tie-breaking.
+
+At implementation revision `46fbe76`, the local regression command above
+produced **774 passed, 4 skipped, 4 subtests passed** (with the same unavailable
+optional `llm_verifier` test module excluded). A separate, no-model native
+sandbox fixture passed 12 checks covering shared and cold toolchain execution,
+Judger read-only enforcement, and external cache/sibling-state read denial.
+These fixtures do not establish performance or complete native-tool isolation.
+
+Two later, general follow-ups retain the same verification stages:
+
+- `068872d` adds operator-only model spans, joining claim/obligation/repair
+  metadata to existing usage `call_id`s. Schema, provider, and outer Judger
+  retries remain distinct, and seat queueing is timed. Metadata never enters
+  the prompt, authority view, or existing cost rows. Missing telemetry remains
+  an attribution gap rather than a successful zero-cost operation.
+- `178f9ee` gives a redo a bounded locator for its immediately preceding
+  artifact. This is rejected, untrusted building material, not an accepted
+  verdict. Every redo still executes and faces a fresh independent Judger.
+  Invalid/missing snapshots fall back to the old context; custom dischargers
+  remain compatible, and ordinary executions gain no prompt tokens.
+
+At `178f9ee`, regression verification produced **809 passed, 4 skipped, 4
+subtests passed**, with the same missing optional module excluded. The frozen
+video control has now completed in 54.6 minutes with complete usage, but its
+treatment is still running. Neither these tests nor that control-only result
+establishes a 10x improvement. Full intermediate/support auditing remains enabled.
+
+`07a2c83` adds a standalone, read-only
+[span/usage analyzer](../experiments/terminal_bench/analyze_model_spans.py).
+It keeps observed-token completeness separate from attribution completeness,
+counts each provider attempt, and rejects duplicate or mismatched lifecycle
+joins. Missing spans do not invalidate otherwise complete old usage rows;
+the external run audit must still establish that no attempts are missing.
+The real, completed 55-call video-control ledger produces exactly the same
+token totals with `cost_complete=true`, `attribution_complete=false`, as
+expected for frozen source without spans. Local regression at this revision:
+**825 passed, 4 skipped, 4 subtests passed**, with the same optional module
+excluded. The [first paired candidate diagnostic](canary-fad9290-diagnostics.md)
+records a final-contract difference, so no zero-loss result is claimed.
+
+The completed frozen two-candidate video pair now measures **54.6 → 31.0
+minutes (1.76x)**. Treatment/control token ratios are **1.206 uncached input,
+0.846 cached input, and 1.284 output**; attempts increased from 55 to 78.
+Both ledgers are complete, including a treatment schema-error attempt. Exact
+contract drift remains, so neither zero loss nor 10x cost reduction is proven.
+See the [completed pair diagnostic](canary-fad9290-diagnostics.md) for scope
+and raw totals. Gcode/compressor measurements are not inferred from this pair.
+
+An explicit offline-isolation foundation now provides sealed-input cloning,
+complete fresh-graph identity, operator-pinned contracts, kernel-bound replay,
+and separate shared-setup accounting. Only known infrastructure path slots
+are normalized; claim wording, dependencies and effect referent context stay
+intact. Runtime effects, Oracle, execution and Judger remain fresh. Marked
+diagnostic directories are refused by ordinary scoring before model calls,
+with their evidence preserved. This is **not a production scheduling change**
+or a working paid-run orchestrator; `adapter-isolation --execute` still fails
+closed pending compile-only preparation and runner integration.
+
+Regression verification of this foundation: **898 passed, 4 skipped, 4
+subtests passed**, with the same missing optional module excluded. These are
+correctness/boundary tests, not evidence of additional performance gains.
+
+The next revision adds exact shared-setup Compiler/Critic claim coverage and
+[counter-only response recovery](usage-response-recovery.md). A structurally
+complete, schema-valid response with matching output-file bytes can avoid a
+second generation caused solely by invalid counters, across online/offline
+roles. Its entire usage remains unknown and the cost gate still fails. Model
+stage responsibilities, authority capabilities and schema retry limits are
+unchanged. Local regression: **971 passed, 4 skipped, 4 subtests passed**,
+with the same optional module excluded.
+
+The frozen gcode control has also finished: 61.4 minutes, 70 attempts, one
+unrecoverable usage gap. Its driver stopped at the accounting gate; gcode
+treatment and compressor arms were not executed. No new measured performance
+ratio or zero-loss claim follows from this partial suite.
+
+The next diagnostic-only increment adds a real single-claim Compiler/Critic
+producer on a separate fresh input clone. It checks the successful call and
+all failed/provider/schema attempts, exact event rounds and authority cache
+publication, stable accounting bytes, and final source/graph/config identity.
+It returns only an untrusted contract candidate, never an evidence result;
+ordinary online/offline scoring does not import this experiment module.
+Independent receipt consumption and the complete setup/replay coordinator
+are still prerequisites to enabling paid isolation. Regression verification:
+**1006 passed, 4 skipped, 4 subtests passed**, with the same optional module
+excluded. The 35 new cases use synthetic protocol counters, not real model
+measurements. No additional cost or latency improvement is claimed.
+
+Independent artifact consumption and all-claims assembly are now implemented
+and tested. The read-only consumer recomputes observed billing/lifecycle data,
+checks the externally pinned receipt and full source graph, and freezes the
+candidate before validation. Assembly rejects incomplete/duplicate/failed
+claim sets and parses the complete bundle against the external input map.
+Two fresh diagnostic kernels can load it and materialize the same obligations
+without new compilation. This test does not run completed evidence pipelines.
+Regression: **1036 passed, 4 skipped, 4 subtests passed**, with the same
+optional module excluded. The remaining paid-run gate is parent-owned
+extraction/all-attempts accounting, warm lineage and fresh evidence/replay
+coordination. No new real-model A/B or performance improvement is claimed.
+
+The cold diagnostic now has callable setup, billing aggregation, and fresh
+evidence replay components. Setup runs actual extraction and every planned
+Compiler/Critic pair; each arm then runs fresh Oracle, executor and Judger.
+The final bundle pin is published only after source/plan revalidation and
+terminal records. Consumers must require the complete state, result and pin
+together; injected test factories are explicitly marked `test_only`.
+Production stage responsibilities, scheduling and verification standards are
+unchanged. Shared contracts remain a diagnostic control, not a production
+shortcut or full-E2E acceptance result.
+
+Local integration verifies 5 setup calls plus 4 calls per arm: 13 physically
+executed, or 9 charged to each analytical arm including the full shared setup.
+These are protocol-stub tests, not paid measurements. Regression: **1085
+passed, 4 skipped, 4 subtests passed**, with the same optional module excluded.
+Parent setup wall excludes initial preflight and final terminal-record/pin
+writes; full process timing is still required from the eventual coordinator.
+The separate `run_cold_adapter_diagnostic` entry point now coordinates one
+cold candidate in three fresh processes. Planning is read-only; execution
+requires both `--execute` and `--confirm-paid GPT-5.6-Luna`. Source and input
+pins, complete setup admission, per-arm billing hashes, and terminal flags
+are rechecked by the parent. Each charged arm includes the entire setup
+process wall; physical cost includes setup only once. `comparison_complete`
+means the measurement finished, not that the results matched: inspect the
+separate `result_equivalent` and detailed contract/outcome comparison.
+Judger explanation wording is retained but not treated as a changed decision.
+Matching this single diagnostic still does not establish zero loss.
+
+Cold means fresh local verifier state/cache, not an erased provider prefix
+cache. Cached tokens remain explicitly charged. Abrupt cancellation records
+`cleanup_complete=false`: model CLIs use separate process sessions, so the
+outer worker kill alone cannot prove every remote attempt stopped; inspect
+remaining processes before any new run. Failed or unknown bills are retained
+and never estimated as zero. There is no automatic process retry.
+
+Broad manifest integration and warm lineage remain unfinished;
+the old `adapter-isolation --execute` remains disabled. No new performance claim.
+The single-candidate coordinator revision passes **1110 tests, 4 skipped,
+4 subtests passed**, with the same optional module excluded. Its 25 added
+tests exercise local protocol stubs and damaged records, not paid performance.
+
+### Optimization direction
+
+OpenAI's [latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
+emphasizes fewer generated tokens, fewer requests, independent parallel work,
+and using conventional computation where it suffices. It cautions that cutting
+input length alone usually gives a much smaller latency gain. Applied here,
+this supports measuring eliminated repeated role calls and the critical path,
+not presenting prompt shortening or accumulated parallel model seconds as a
+10x end-to-end improvement. The guide's suggestion to combine dependent model
+steps is deliberately not applied across this project's independent auditors.

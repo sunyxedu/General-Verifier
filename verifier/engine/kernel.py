@@ -12,14 +12,20 @@ came from. The verifier is auditable through its own ledger.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import replace
 from typing import Dict, List, Optional
 
 from ..execution.discharge import AgentDischarger, DischargeResult
+from ..execution.config import (
+    APPEND_ONLY_DELTA_PROTOCOL,
+    append_only_deltas_enabled,
+)
 from ..core.events import EventLog
 from ..execution.instruments import (
     ArtifactStore, LedgerInstrument, authoritative_task_context,
@@ -36,8 +42,16 @@ from ..core.model import (
     WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm import prompts
-from ..llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
+from ..llm.agents import AgentRole, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
+from ..llm.model_spans import model_scope, submit_with_context
 from ..core.store import ClaimStore
+from .authority_view import (
+    AuthorityViewUnavailable, build_authority_compilation_view,
+)
+from .contract_cache import (
+    CompiledFinalContract, contract_cache_key,
+)
+from .source_evidence import bind_source_evidence_variables
 
 # attack rounds on a decomposition before the claim fails closed: each round
 # is one critic attempt; an `insufficient` verdict sends the decomposition
@@ -77,6 +91,34 @@ def _repair_oscillation(history: List[Dict]) -> bool:
     return False
 
 
+def compile_roles_for_backend(backend, obligations_role, critic_role):
+    """Treatment-only prompt specialization of the contract seats.
+
+    Clone (never mutate) the compiler and Critic seats, retaining their
+    schemas, tools, names, call/retry behavior, and the kernel's critic-round
+    budget.  Unknown injected role implementations are left untouched rather
+    than being wrapped with assumptions about their prompt protocol.  The
+    concurrent final-contract precompile applies the identical rule so its
+    contract key can match the kernel's.
+    """
+    if getattr(backend, "compact_inspection", False) is True:
+        if (type(obligations_role) is AgentRole
+                and obligations_role.name == "obligations"):
+            obligations_role = replace(
+                obligations_role,
+                system=(obligations_role.system
+                        + prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM),
+            )
+        if (type(critic_role) is AgentRole
+                and critic_role.name == "critic"):
+            critic_role = replace(
+                critic_role,
+                system=(critic_role.system
+                        + prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM),
+            )
+    return obligations_role, critic_role
+
+
 class Kernel:
     """
     Role seats (obligations compiler, discharger, binder) are injectable:
@@ -101,6 +143,9 @@ class Kernel:
         critic_rounds: Optional[int] = None,
         parallel_obligations: int = 1,
         parallel_claims: int = 1,
+        contract_cache=None,
+        contract_replay=None,
+        record_boundary=None,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -120,18 +165,59 @@ class Kernel:
         self.backend = backend
         self.artifacts = artifacts
         self.ledger = LedgerInstrument(log)
+        # claim id -> ledger seq at which the claim was made (the Builder
+        # knows; a bare kernel does not).  Without it the record boundary is
+        # the ledger's end when verification of the claim begins.
+        self._record_boundary = (record_boundary
+                                 if callable(record_boundary) else None)
         self.memory_hits = memory_hits
         self.live_world = live_world
         self.critic_rounds = (MAX_CRITIC_ROUNDS if critic_rounds is None
                               else critic_rounds)
-        self.obligations_role = obligations_role or COMPILE_OBLIGATIONS_AGENT
-        self.critic_role = critic_role   # None -> no adversarial review
+        # Resolve the experimental repair representation once per Kernel.
+        # Runtime environment mutation cannot change compiler semantics
+        # halfway through a verification game.
+        self.append_only_deltas = append_only_deltas_enabled()
+        self.append_only_delta_protocol = (
+            APPEND_ONLY_DELTA_PROTOCOL if self.append_only_deltas else None)
+        self.obligations_role, self.critic_role = compile_roles_for_backend(
+            backend, obligations_role or COMPILE_OBLIGATIONS_AGENT,
+            critic_role)   # critic None -> no adversarial review
+        # A final contract compiled concurrently with extraction; adopted
+        # only under an identical contract key (see engine.precompile).
+        self._precompiled_final = None
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),
-            live_world=live_world, store=store)
+            live_world=live_world, store=store, log=log)
         self.binder = binder      # binding game; None -> direct discharge (tests)
+        if binder is not None:
+            binder_delta = getattr(
+                binder, "append_only_deltas", self.append_only_deltas)
+            binder_protocol = getattr(
+                binder, "append_only_delta_protocol",
+                self.append_only_delta_protocol)
+            if (binder_delta != self.append_only_deltas
+                    or binder_protocol != self.append_only_delta_protocol):
+                raise ValueError(
+                    "binding game and kernel use different append-repair "
+                    "protocols")
         self.memory = memory      # advisory stores; None -> static hints
+        self.contract_cache = contract_cache
+        # Experimental adapter-isolation diagnostic only.  Ordinary online
+        # and offline verification never inject this provider; it freezes a
+        # Critic-approved contract, not any method, evidence, or verdict.
+        if contract_replay is not None:
+            if live_world:
+                raise ValueError(
+                    "sealed contract replay is an offline diagnostic only")
+            contract_replay.require_replayable()
+            validate_kernel = getattr(contract_replay, "validate_kernel", None)
+            if not callable(validate_kernel):
+                raise ValueError(
+                    "sealed contract replay must be bound to this kernel")
+            validate_kernel(self)
+        self.contract_replay = contract_replay
         store.on_trigger(self.verify)  # the single rule wires straight in
 
     # locks and pools
@@ -162,11 +248,45 @@ class Kernel:
             row = self.store.get(claim_id)
             if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
                 return row["status"]
-            if row["kind"] == CLAIM_EFFECT:
-                self._verify_effect(row)
-            else:
-                self._verify_assertion(row)
+            with model_scope(
+                    claim_id=row["id"], claim_kind=row["kind"],
+                    locus=("final_task" if row["kind"] == CLAIM_FINAL
+                           else "support")):
+                if row["kind"] == CLAIM_EFFECT:
+                    self._verify_effect(row)
+                else:
+                    self._freeze_record(row)
+                    self._verify_assertion(row)
             return self.store.status(claim_id)
+
+    def _freeze_record(self, row: Dict) -> None:
+        """Bind an immutable ledger prefix to this claim's verification.
+
+        The retained record a claim is judged against must not grow while
+        the seats read it: the executor's complete scan and the Judger's
+        independent recount have to see the same bounded file.  The
+        boundary is the claim's own commit seq when known, otherwise the
+        ledger's end now.  A publication failure keeps the live ledger and
+        is recorded; it never changes what is verified.
+        """
+        boundary = None
+        if self._record_boundary is not None:
+            try:
+                boundary = self._record_boundary(row["id"])
+            except Exception:
+                boundary = None
+        if (isinstance(boundary, bool) or not isinstance(boundary, int)
+                or boundary < 0):
+            boundary = self.log.last_seq()
+        payload = {"claim": row["id"], "through_seq": boundary}
+        try:
+            path = self.log.freeze_record(boundary)
+        except (OSError, ValueError) as error:
+            payload["error"] = str(error)[:300]
+        else:
+            self.log.bind_record(row["id"], path)
+            payload["record"] = os.path.basename(path)
+        self.log.append("record_frozen", payload)
 
     # effect: ledger check
     def _verify_effect(self, row: Dict) -> None:
@@ -296,7 +416,7 @@ class Kernel:
                         and obligation.severity == SEVERITY_MUST:
                     break
             return out
-        futures = {pool.submit(self._settle_one, row, o): o
+        futures = {submit_with_context(pool, self._settle_one, row, o): o
                    for o in obligations}
         pending = set(futures)
         decided = False
@@ -439,6 +559,62 @@ class Kernel:
         return set(self.store.backward_slice(row["id"])[1:])
 
     def _compile_obligations(self, row: Dict):
+        if self.contract_replay is not None:
+            if self.live_world:
+                raise ValueError(
+                    "sealed contract replay is an offline diagnostic only")
+            self.contract_replay.require_replayable()
+            validate_kernel = getattr(
+                self.contract_replay, "validate_kernel", None)
+            if not callable(validate_kernel):
+                raise ValueError(
+                    "sealed contract replay must be bound to this kernel")
+            validate_kernel(self)
+            # Lookup is deliberately the first operation.  The bundle's
+            # compile-input identities were checked once against a complete,
+            # fresh pre-execution graph; recomputing them after dependencies
+            # begin to settle would make a valid replay schedule-dependent.
+            entry = self.contract_replay.lookup(row["id"])
+            obligations = self._materialize_obligations(
+                row, entry.payload, record=False)
+            self.contract_replay.validate_materialized(entry, obligations)
+            self._record_compiled_obligations(row, obligations)
+            return obligations
+
+        payload = self._compile_obligation_payload(row)
+        return self._materialize_obligations(row, payload)
+
+    def _compile_obligation_payload(self, row: Dict):
+        """Run the unchanged Compiler/Critic path and return its raw payload.
+
+        This extraction is a seam for the explicit offline isolation setup;
+        default verification still calls it only through
+        :meth:`_compile_obligations` and materializes exactly once afterwards.
+        """
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        handled, payload = self._authority_final_contract(row, state)
+        if handled:
+            return payload
+        variables = bind_source_evidence_variables(
+            self.log,
+            self._obligation_compile_variables(row),
+            enabled=(getattr(self.backend, "compact_inspection", False)
+                     is True),
+        )
+        with model_scope(stage="contract_compile", round=0):
+            payload = self.obligations_role.call(self.backend, variables)
+        return self._critique(row, payload, variables)
+
+    def _obligation_compile_variables(self, row: Dict) -> Dict:
+        """Build the legacy Compiler inputs without invoking any role.
+
+        The returned values are byte-for-byte the values used by the normal
+        Compiler/Critic path.  Isolation setup may hash this one fresh,
+        complete pre-execution snapshot with the diagnostic coordinator's
+        exact host-slot normalizer; production scheduling and role inputs are
+        otherwise unchanged.
+        """
+        state = os.path.dirname(os.path.abspath(self.log.path))
         memory_hits = (
             self.memory.hits_for_obligations(row["text"])
             if self.memory is not None else self.memory_hits
@@ -451,7 +627,6 @@ class Kernel:
         # compiler residualize an authoritative task requirement out of the
         # contract.  Exact obligation dedup/inheritance still happens after
         # compilation, so sound reuse remains available.
-        state = os.path.dirname(os.path.abspath(self.log.path))
         task_context = authoritative_task_context(state)
         independent_final = row["kind"] == CLAIM_FINAL
         # graph context: EVERY premise (dep) is assumable — the claim's
@@ -501,7 +676,7 @@ class Kernel:
             if independent_final
             else self._dependency_referent_context(row["id"])
         )
-        variables = {
+        return {
             "claim_text": row["text"],
             "claim_kind": row["kind"],
             # division-of-labor fact, shared verbatim with the critic: for a
@@ -511,7 +686,7 @@ class Kernel:
                 prompts.CONTRACT_LOCUS_FINAL if row["kind"] == CLAIM_FINAL
                 else prompts.CONTRACT_LOCUS_NONFINAL),
             "task_context": task_context,
-            "ledger_path": os.path.abspath(self.log.path),
+            "ledger_path": self.log.record_path_for(row["id"]),
             "world_mode": world_mode,
             "world_path": world,
             "world_map": world_map(state, live_world=self.live_world),
@@ -523,10 +698,216 @@ class Kernel:
             "memory_hits": memory_hits,
             "critic_feedback": "",
         }
-        payload = self.obligations_role.call(self.backend, variables)
-        payload = self._critique(row, payload, variables)
+
+    def _authority_final_contract(self, row: Dict, state: str):
+        """Compile a final through the candidate-independent authority boundary.
+
+        Cache availability controls reuse only.  A fresh miss and a cache-off
+        run have the same answer-blind Compiler/Critic inputs and tool boundary;
+        otherwise disabling the cache would leak the final response back into
+        contract semantics.  Unsupported inputs use the legacy path.  The
+        Oracle and all candidate verification run afterwards.
+        """
+        if row["kind"] != CLAIM_FINAL:
+            return False, None
+        if self.critic_role is None or self.critic_rounds < 1:
+            self.log.append("contract_cache_bypass", {
+                "claim": row["id"], "reason": "independent Critic required"})
+            return False, None
+        from ..llm.authority_backend import (
+            AuthorityBackendUnavailable, authority_compilation_backend,
+        )
+        from ..llm.schema import validate
+
+        if self._precompiled_final is not None and self.contract_cache is None:
+            adopted, payload = self._adopt_precompiled_final(row, state)
+            if adopted:
+                return True, payload
+
+        try:
+            view = build_authority_compilation_view(state)
+            with authority_compilation_backend(
+                    self.backend, self.obligations_role,
+                    self.critic_role) as session:
+                variables = self._authority_contract_variables(view)
+                key = contract_cache_key(
+                    view=view, variables=variables,
+                    backend_identity=session.identity,
+                    obligations_role=session.obligations_role,
+                    critic_role=session.critic_role,
+                    critic_rounds=self.critic_rounds,
+                    append_only_deltas=self.append_only_deltas,
+                    append_only_delta_protocol=
+                        self.append_only_delta_protocol)
+                if self.contract_cache is None:
+                    with model_scope(stage="contract_compile", round=0):
+                        payload = session.obligations_role.call(
+                            session.backend, variables)
+                    payload = self._critique(
+                        row, payload, variables, backend=session.backend,
+                        obligations_role=session.obligations_role,
+                        critic_role=session.critic_role)
+                    view.revalidate(state)
+                    session.revalidate()
+                    if payload is not None:
+                        validate(session.obligations_role.schema, payload)
+                    return True, payload
+                lease = self.contract_cache.acquire(key)
+                try:
+                    # The lookup/single-flight wait may outlive an online task
+                    # revision. Never attach a previous contract to that task.
+                    view.revalidate(state)
+                    session.revalidate()
+                    if lease.entry is not None:
+                        validate(session.obligations_role.schema,
+                                 lease.entry.payload)
+                        self.log.append("contract_cache_hit", {
+                            "claim": row["id"], "key": key,
+                            "authority": view.identity,
+                            "source_digest": lease.entry.source_digest,
+                            "waited": lease.waited})
+                        return True, lease.entry.payload
+                    self.log.append("contract_cache_miss", {
+                        "claim": row["id"], "key": key,
+                        "authority": view.identity,
+                        "leader": lease.leader, "waited": lease.waited})
+                    # A miss is where the concurrent authority-only
+                    # compilation pays off: adopt it under the identical
+                    # key and publish it for the task's other candidates.
+                    adopted = False
+                    if self._precompiled_final is not None:
+                        adopted, payload = self._adopt_precompiled_final(
+                            row, state)
+                    if not adopted:
+                        with model_scope(stage="contract_compile", round=0):
+                            payload = session.obligations_role.call(
+                                session.backend, variables)
+                        payload = self._critique(
+                            row, payload, variables,
+                            backend=session.backend,
+                            obligations_role=session.obligations_role,
+                            critic_role=session.critic_role)
+                    view.revalidate(state)
+                    session.revalidate()
+                    if payload is None:
+                        return True, None
+                    validate(session.obligations_role.schema, payload)
+                    # Empty decompositions never certify a contract.
+                    if not payload["obligations"]:
+                        return True, payload
+                    entry = CompiledFinalContract.from_payload(payload)
+                    published = True
+                    if lease.leader:
+                        lease.finish(entry)
+                    else:
+                        entry, published = self.contract_cache.publish_if_absent(key, entry)
+                        payload = entry.payload
+                    self.log.append("contract_cache_published" if published
+                                    else "contract_cache_hit", {
+                        "claim": row["id"], "key": key,
+                        "authority": view.identity,
+                        "waited": lease.waited,
+                        "after_duplicate_fill": not published,
+                        "source_digest": entry.source_digest})
+                    return True, payload
+                finally:
+                    lease.finish()
+        except (AuthorityViewUnavailable, AuthorityBackendUnavailable) as error:
+            self.log.append("contract_cache_bypass", {
+                "claim": row["id"], "reason": str(error)[:300]})
+            return False, None
+
+    def adopt_precompiled_final_contract(self, handle) -> None:
+        """Register a concurrent authority-only compilation for the final."""
+        self._precompiled_final = handle
+
+    def _adopt_precompiled_final(self, row: Dict, state: str):
+        """Use the concurrent compilation only under an identical key.
+
+        The key covers the authority view, the withheld compile variables,
+        the backend and role identities and the critic budget.  A mismatch,
+        an authority bypass, or a failed thread all fall back to the
+        unchanged inline compile; a failed thread's work is not reused.
+        """
+        from ..llm.authority_backend import (
+            AuthorityBackendUnavailable, authority_compilation_backend,
+        )
+
+        handle = self._precompiled_final
+        self._precompiled_final = None
+        outcome = handle.wait()
+        event = {"claim": row["id"],
+                 "precompiled_claim": handle.pseudo_claim_id,
+                 "elapsed_seconds": round(outcome.elapsed_seconds, 3),
+                 "adopted": False}
+        if outcome.bypass_reason is not None:
+            event["reason"] = outcome.bypass_reason
+            self.log.append("contract_precompiled", event)
+            return False, None
+        if outcome.error is not None:
+            event["reason"] = (
+                f"precompile failed: {type(outcome.error).__name__}")
+            self.log.append("contract_precompiled", event)
+            return False, None
+        try:
+            view = build_authority_compilation_view(state)
+            with authority_compilation_backend(
+                    self.backend, self.obligations_role,
+                    self.critic_role) as session:
+                expected = contract_cache_key(
+                    view=view,
+                    variables=self._authority_contract_variables(view),
+                    backend_identity=session.identity,
+                    obligations_role=session.obligations_role,
+                    critic_role=session.critic_role,
+                    critic_rounds=self.critic_rounds,
+                    append_only_deltas=self.append_only_deltas,
+                    append_only_delta_protocol=self.append_only_delta_protocol)
+        except (AuthorityViewUnavailable, AuthorityBackendUnavailable) as error:
+            event["reason"] = str(error)[:300]
+            self.log.append("contract_precompiled", event)
+            return False, None
+        if expected != outcome.key:
+            event["reason"] = "contract key differs from this kernel's"
+            self.log.append("contract_precompiled", event)
+            return False, None
+        for kind, payload in outcome.events:
+            self.log.append(kind, {**payload, "claim": row["id"]})
+        for evidence in outcome.evidence:
+            self.store.record_evidence(row["id"], evidence)
+        event["adopted"] = True
+        event["critic_rounds_used"] = sum(
+            1 for kind, _payload in outcome.events
+            if kind == "decomposition_attacked")
+        self.log.append("contract_precompiled", event)
+        return True, outcome.payload
+
+    @staticmethod
+    def _authority_contract_variables(view):
+        withheld = "withheld: authority-only contract compilation"
+        return {
+            "claim_text": (
+                "The fixed current candidate satisfies the complete "
+                "authoritative task contract. Its response, delivered "
+                "artifacts, and execution history are opaque subjects, not "
+                "available facts. Compile requirements about that candidate "
+                "without substituting another candidate or inventing values."),
+            "claim_kind": CLAIM_FINAL,
+            "contract_locus": prompts.CONTRACT_LOCUS_FINAL,
+            "task_context": view.context_json,
+            "ledger_path": withheld,
+            "world_mode": "authority-only",
+            "world_path": withheld,
+            "world_map": withheld,
+            "verified_deps": "[]", "pending_deps": "[]",
+            "dependency_referent_context": json.dumps({"withheld": withheld}),
+            "graph": "[]", "memory_hits": "[]", "critic_feedback": "",
+        }
+
+    def _materialize_obligations(self, row: Dict, payload, *, record=True):
         if payload is None:
             return None
+        independent_final = row["kind"] == CLAIM_FINAL
         obligations = [
             Obligation(row["id"], o["text"],
                        o.get("required_basis", BASIS_RECORD),
@@ -561,26 +942,40 @@ class Kernel:
             dropped = [o.text for o in obligations
                        if o.text in premise_texts]
             if dropped and residual:
-                self.log.append(
-                    "obligations_residualized",
-                    {"claim": row["id"], "dropped": dropped},
-                )
+                if record:
+                    self.log.append(
+                        "obligations_residualized",
+                        {"claim": row["id"], "dropped": dropped},
+                    )
                 obligations = residual
-        self.log.append(
-            "obligations_compiled",
-            {"claim": row["id"],
-             "obligations": [{"id": o.id, "text": o.text,
-                              "premise_scope": list(o.premise_scope),
-                              "required_basis": o.required_basis,
-                              "severity": o.severity,
-                              "clause": o.clause,
-                              "refutable_by_absence":
-                                  o.refutable_by_absence}
-                             for o in obligations]},
-        )
+        if record:
+            self._record_compiled_obligations(
+                row, obligations, excluded=payload.get("excluded"))
         return obligations
 
-    def _critique(self, row: Dict, payload: Dict, variables: Dict):
+    def _record_compiled_obligations(self, row: Dict,
+                                     obligations: List[Obligation],
+                                     excluded=None) -> None:
+        event = {"claim": row["id"],
+                 "obligations": [{"id": o.id, "text": o.text,
+                                  "premise_scope": list(o.premise_scope),
+                                  "required_basis": o.required_basis,
+                                  "severity": o.severity,
+                                  "clause": o.clause,
+                                  "refutable_by_absence":
+                                      o.refutable_by_absence}
+                                 for o in obligations]}
+        if excluded:
+            # The compiler's exclusion ledger, as the Critic reviewed it:
+            # which candidate-facing clauses generated no obligation and why.
+            event["excluded"] = [
+                {"clause": str(item.get("clause", ""))[:300],
+                 "reason": str(item.get("reason", ""))[:300]}
+                for item in excluded if isinstance(item, dict)]
+        self.log.append("obligations_compiled", event)
+
+    def _critique(self, row: Dict, payload: Dict, variables: Dict, *,
+                  backend=None, obligations_role=None, critic_role=None):
         """
         Adversarial second signature on the decomposition: the critic
         tries to construct a world where every obligation and every verified
@@ -591,7 +986,10 @@ class Kernel:
         one still standing after critic_rounds fails closed (returns
         None, claim stays unverified).
         """
-        if self.critic_role is None:
+        backend = self.backend if backend is None else backend
+        obligations_role = obligations_role or self.obligations_role
+        critic_role = critic_role or self.critic_role
+        if critic_role is None:
             return payload
         # The compiler and critic receive the same inlined harness truth.
         # A path-only pointer let a model skip the Read and then infer task
@@ -605,14 +1003,16 @@ class Kernel:
         repair_calls = 0          # (memoryless rounds oscillated: a demand
         while critic_calls < self.critic_rounds:  # overruled in round n was
             round_no = critic_calls               # re-issued verbatim in n+2)
-            verdict = self.critic_role.call(
-                self.backend,
-                {
-                    "claim_text": row["text"],
-                    "claim_kind": row["kind"],
+            with model_scope(stage="contract_critic", round=round_no):
+                critic_variables = bind_source_evidence_variables(
+                    self.log,
+                    {
+                    "claim_text": variables["claim_text"],
+                    "claim_kind": variables["claim_kind"],
                     "contract_locus": variables["contract_locus"],
                     "task_context": task_context,
-                    "ledger_path": variables["ledger_path"],
+                    "ledger_path": variables.get(
+                        "_mixed_ledger_path", variables["ledger_path"]),
                     "world_mode": variables["world_mode"],
                     "world_path": variables["world_path"],
                     "world_map": variables["world_map"],
@@ -622,13 +1022,21 @@ class Kernel:
                         payload["obligations"],
                         ensure_ascii=False
                     ),
+                    "excluded_json": json.dumps(
+                        payload.get("excluded", []), ensure_ascii=False),
                     "verified_deps": variables["verified_deps"],
                     "pending_deps": variables["pending_deps"],
                     "dependency_referent_context":
                         variables["dependency_referent_context"],
                     "game_history": json.dumps(history, ensure_ascii=False),
-                },
-            )
+                    },
+                    enabled=(getattr(backend, "compact_inspection", False)
+                             is True),
+                )
+                verdict = critic_role.call(
+                    backend,
+                    critic_variables,
+                )
             self.log.append(
                 "decomposition_attacked",
                 {"claim": row["id"], "round": round_no,
@@ -650,7 +1058,14 @@ class Kernel:
             failure_missing_condition = verdict["missing_condition"]
             if critic_calls == self.critic_rounds:
                 break  # last attack stands; a repair would go unreviewed
-            semantic_feedback = prompts.CRITIC_FEEDBACK_TEMPLATE.format(
+            append_delta = (
+                self.append_only_deltas
+                and verdict["missing_condition"].lstrip().startswith(
+                    "APPEND OBLIGATION:"))
+            feedback_template = (
+                prompts.APPEND_DELTA_FEEDBACK_TEMPLATE
+                if append_delta else prompts.CRITIC_FEEDBACK_TEMPLATE)
+            semantic_feedback = feedback_template.format(
                 previous_obligations=json.dumps(
                     payload["obligations"], ensure_ascii=False),
                 game_history=json.dumps(history, ensure_ascii=False),
@@ -658,23 +1073,57 @@ class Kernel:
                 missing_condition=verdict["missing_condition"],
             )
             repair_accepted = False
+            declined = False
             guard_feedback = ""
             while repair_calls < self.critic_rounds - 1:
                 repair_variables = dict(
                     variables,
                     critic_feedback=semantic_feedback + guard_feedback,
                 )
-                candidate = self.obligations_role.call(
-                    self.backend, repair_variables)
+                with model_scope(
+                        stage="contract_compile", round=repair_calls + 1):
+                    repair_role = obligations_role
+                    if append_delta:
+                        repair_role = replace(
+                            obligations_role,
+                            template=(obligations_role.template
+                                      + prompts.APPEND_DELTA_OUTPUT_CONTRACT))
+                    candidate = repair_role.call(
+                        backend, repair_variables)
                 repair_calls += 1
-                violation = None
-                if verdict["missing_condition"].lstrip().startswith(
-                        "APPEND OBLIGATION:"):
+                if append_delta:
+                    violation = self._append_delta_violation(
+                        payload, candidate)
+                    if violation is None:
+                        candidate = self._merge_append_delta(
+                            payload, candidate)
+                else:
+                    violation = None
+                if (not append_delta
+                        and verdict["missing_condition"].lstrip().startswith(
+                            "APPEND OBLIGATION:")):
                     violation = self._append_repair_violation(payload, candidate)
                 if violation is None:
                     payload = candidate
                     variables = repair_variables
                     repair_accepted = True
+                    break
+                if (not append_delta
+                        and self._same_contract(payload, candidate)):
+                    # The compiler returned the contract unchanged: a
+                    # principled refusal of the demanded append (for example
+                    # a clause its own gates classify as runner interface),
+                    # not a malformed repair.  Burning the remaining repairs
+                    # on the mechanical guard could only deadlock; hand the
+                    # unchanged contract and the refusal back to the Critic,
+                    # which still fails the claim closed if it stands.
+                    declined = True
+                    self.log.append(
+                        "contract_repair_declined",
+                        {"claim": row["id"], "round": round_no,
+                         "repair_attempt": repair_calls,
+                         "missing_condition": verdict["missing_condition"]},
+                    )
                     break
 
                 failure_counterexample = (
@@ -692,11 +1141,21 @@ class Kernel:
                         "repair_attempt": repair_calls,
                     },
                 )
-                guard_feedback = prompts.APPEND_REPAIR_GUARD_FEEDBACK.format(
+                guard_template = (
+                    prompts.APPEND_DELTA_GUARD_FEEDBACK
+                    if append_delta else prompts.APPEND_REPAIR_GUARD_FEEDBACK)
+                guard_feedback = guard_template.format(
                     violation=violation,
                     rejected_obligations=json.dumps(
                         candidate["obligations"], ensure_ascii=False),
                 )
+            if declined:
+                history[-1]["repair"] = (
+                    "declined: the compiler returned the contract unchanged, "
+                    "judging the demanded append outside task acceptance; "
+                    "re-review the unchanged contract or name a different "
+                    "deficiency")
+                continue
             if not repair_accepted:
                 break
         # triage metadata only — an oscillating critic still fails closed
@@ -726,6 +1185,18 @@ class Kernel:
         return None
 
     @staticmethod
+    def _same_contract(previous: Dict, candidate: Dict) -> bool:
+        """Whether a repair returned exactly the previous obligation set."""
+        def contract(item):
+            return (item["text"], item.get("required_basis", BASIS_RECORD),
+                    item.get("severity", SEVERITY_MUST),
+                    item.get("clause", ""),
+                    item.get("refutable_by_absence", False))
+
+        return ([contract(item) for item in previous["obligations"]]
+                == [contract(item) for item in candidate["obligations"]])
+
+    @staticmethod
     def _append_repair_violation(previous: Dict, candidate: Dict):
         """Return why an ``APPEND OBLIGATION:`` repair is not a tail append.
 
@@ -753,6 +1224,42 @@ class Kernel:
                     f"obligation {index} changed: expected {expected!r}, "
                     f"got {actual!r}")
         return None
+
+    @staticmethod
+    def _append_delta_violation(previous: Dict, candidate: Dict):
+        """Return why an additions-only response is not an admissible delta.
+
+        Arbitrary new obligation text cannot reveal whether a model intended
+        to edit an old item.  The sound mechanical guarantee is instead that
+        no response can replace old bytes: they are deep-copied below.  This
+        guard additionally rejects an empty delta and the unambiguous legacy
+        mistake of echoing the complete old contract as its prefix.  It does
+        not use fuzzy text or clause matching.
+        """
+        additions = candidate["obligations"]
+        if not additions:
+            return "the additions-only obligation array is empty"
+        old = previous["obligations"]
+        if old and len(additions) >= len(old) \
+                and additions[:len(old)] == old:
+            return (
+                "the additions-only obligation array repeats the complete "
+                "existing contract as a prefix")
+        return None
+
+    @staticmethod
+    def _merge_append_delta(previous: Dict, delta: Dict) -> Dict:
+        """Construct a full contract without exposing old items to rewrite."""
+        merged = {
+            "obligations": (
+                copy.deepcopy(previous["obligations"])
+                + copy.deepcopy(delta["obligations"]))
+        }
+        excluded = (list(previous.get("excluded") or [])
+                    + list(delta.get("excluded") or []))
+        if excluded:
+            merged["excluded"] = copy.deepcopy(excluded)
+        return merged
 
     @staticmethod
     def _bounded_context_value(value, limit: int) -> Dict:
@@ -1087,10 +1594,12 @@ class Kernel:
         """
 
         oid = obligation.id
-        if self.binder is not None:
-            result = self.binder.run(row, obligation)
-        else:
-            result = self.discharger.discharge(row, obligation)
+        with model_scope(obligation_id=oid):
+            if self.binder is not None:
+                result = self.binder.run(row, obligation)
+            else:
+                with model_scope(stage="discharge", method_attempt=1, redo=0):
+                    result = self.discharger.discharge(row, obligation)
         if result.outcome == OUTCOME_REFUTED \
                 and strength_rank(result.strength) \
                 < strength_rank(STRENGTH_DECISIVE):

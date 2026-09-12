@@ -65,7 +65,9 @@ def parse_exec_events(output):
         "output_tokens",
         "reasoning_output_tokens",
     )
-    for line in (output or "").splitlines():
+    # Native Codex JSONL uses LF records. NEL/LS/PS may occur literally in a
+    # JSON string and are not record separators.
+    for line in (output or "").split("\n"):
         try:
             event = json.loads(line)
         except (TypeError, json.JSONDecodeError):

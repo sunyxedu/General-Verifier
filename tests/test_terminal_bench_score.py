@@ -109,3 +109,20 @@ def test_sanitized_state_publishes_anchor_before_completion_marker(tmp_path):
     with pytest.raises(offline.ImmutableInputError, match="seal mismatch"):
         score.sanitized_state(
             trial, str(tmp_path / "scoring"), "job", "config/rep")
+
+
+def test_usage_contexts_accepts_per_trial_kwargs(tmp_path):
+    record = {
+        "job": "job",
+        "task": "task",
+        "trial": "task__trial",
+        "config": "config",
+        "rep": "r1",
+    }
+    state = tmp_path / "gv"
+
+    contexts = score._usage_contexts([
+        (record, str(state), {"parallel_claims": 4}),
+    ])
+
+    assert contexts == {str(state.resolve()): record}

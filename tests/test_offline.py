@@ -6,6 +6,7 @@ extractor is a FixtureBackend role, the kernel seats are fixtures/stubs.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -17,6 +18,7 @@ from verifier.core.store import ClaimStore
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.llm.schema import FixtureBackend
+from verifier.llm.agents import CRITIC_AGENT
 from verifier.stream.builder import Builder
 
 COMPILE = lambda v: {"obligations": [{"text": f"O of: {v['claim_text']}", "required_basis": "record"}]}  # noqa: E731
@@ -104,7 +106,12 @@ def test_extract_writes_a_replayable_graph(tmp_path):
     variables = backend.calls[0]["variables"]
     assert variables["task"] == "print the answer"
     assert "echo 42" in variables["events_index"]
+    assert "FINAL ANSWER: 42" in variables["events_index"]
     assert variables["feedback"] == ""
+    responses = [event for event in log.replay()
+                 if offline.is_offline_final_response(event)]
+    assert [event["payload"]["text"] for event in responses] == [
+        "FINAL ANSWER: 42"]
 
 
 def test_structural_error_feeds_back_and_retries(tmp_path):
@@ -167,6 +174,27 @@ def test_score_certifies_the_extracted_graph(tmp_path):
     assert features["feature_schema_version"] == offline.FEATURE_SCHEMA_VERSION
     assert features["final_obligations"] == {"verified": 1}
     assert features["final_obligations_total"] == 1
+    assert features["contract_audit_status"] == "available"
+    assert features["final_obligation_contract"] == [{
+        "ordinal": 0,
+        "id": features["final_obligation_outcomes_ordered"][0][
+            "obligation_id"],
+        "text": "O of: the answer is 42",
+        "premise_scope": [],
+        "required_basis": "record",
+        "severity": "must",
+        "clause": "",
+        "refutable_by_absence": False,
+    }]
+    assert features["final_obligation_outcomes_ordered"] == [{
+        "ordinal": 0,
+        "obligation_id": features["final_obligation_contract"][0]["id"],
+        "evaluated": True,
+        "status": "verified",
+        "reason": None,
+        "basis": "world",
+        "strength": None,
+    }]
     assert features["extract_rounds"] == 1
     # persisted for the experiment drivers
     on_disk = json.load(open(os.path.join(state, "score.json")))
@@ -285,6 +313,73 @@ def test_feature_fold_keeps_final_contract_separate_from_slice_diagnostics():
     assert offline.rank_key(features) == (2, 0)
 
 
+def test_ordered_final_outcomes_retain_unevaluated_contract_items():
+    cert = {
+        "final": "F",
+        "slice": [{
+            "id": "F",
+            "obligations": [{
+                "id": "O1", "status": "refuted", "reason": "witness",
+                "basis": "world", "strength": "decisive",
+            }],
+        }],
+    }
+    contract = [
+        {"ordinal": 0, "id": "O1"},
+        {"ordinal": 1, "id": "O2"},
+    ]
+
+    outcomes = offline._ordered_final_outcomes(cert, contract)
+
+    assert outcomes[0] == {
+        "ordinal": 0, "obligation_id": "O1", "evaluated": True,
+        "status": "refuted", "reason": "witness", "basis": "world",
+        "strength": "decisive",
+    }
+    assert outcomes[1] == {
+        "ordinal": 1, "obligation_id": "O2", "evaluated": False,
+        "status": None, "reason": None, "basis": None, "strength": None,
+    }
+
+
+@pytest.mark.parametrize("audit_case", ["critic_failed", "empty"])
+def test_contract_audit_unavailable_does_not_change_unverified_score(
+        tmp_path, audit_case):
+    state = state_dir(tmp_path)
+    final_only = {"commits": [{
+        "label": "F", "kind": "final", "text": "the answer is 42",
+        "deps": [], "revises": "",
+    }]}
+    attack = {
+        "verdict": "insufficient",
+        "counterexample_world": "the condition can fail",
+        "missing_condition": "add a complete condition",
+    }
+
+    def factory(sc):
+        roles = ({"obligations": COMPILE, "critic": attack}
+                 if audit_case == "critic_failed"
+                 else {"obligations": {"obligations": []}})
+        return Kernel(
+            sc.store, sc.log, FixtureBackend(roles), sc.artifacts,
+            critic_role=(CRITIC_AGENT if audit_case == "critic_failed" else None),
+            critic_rounds=1, discharger=StubDischarger(),
+        )
+
+    features = offline.score(
+        state, backend=FixtureBackend({"extract": final_only}),
+        kernel_factory=factory,
+    )
+
+    assert features["unscoreable"] is False
+    assert features["verdict"] == "unverified"
+    assert features["final_obligations_total"] == 0
+    assert features["contract_audit_status"] == (
+        "missing" if audit_case == "critic_failed" else "empty")
+    assert features["final_obligation_contract"] == []
+    assert features["final_obligation_outcomes_ordered"] == []
+
+
 def test_score_resumes_from_an_extracted_graph(tmp_path):
     state = state_dir(tmp_path)
     backend = FixtureBackend({"extract": lambda v: GOOD_COMMITS})
@@ -299,6 +394,58 @@ def test_score_resumes_from_an_extracted_graph(tmp_path):
 
 def test_pipeline_fingerprint_is_deterministic():
     assert offline.pipeline_fingerprint() == offline.pipeline_fingerprint()
+
+
+def test_config_identity_tracks_pinned_browser_observer_without_host_path(
+        tmp_path, monkeypatch):
+    monkeypatch.delenv("GV_BROWSER_OBSERVER", raising=False)
+    monkeypatch.delenv("GV_BROWSER_OBSERVER_SHA256", raising=False)
+    monkeypatch.delenv("GV_BROWSER_EXECUTABLE", raising=False)
+    monkeypatch.delenv("GV_BROWSER_EXECUTABLE_SHA256", raising=False)
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
+    baseline = offline.config_fields(model="same", seats="codex")
+    runner = tmp_path / "observer"
+    runner.write_text("#!/bin/sh\nprintf '{\"ok\":true}'\n")
+    runner.chmod(0o700)
+    digest = hashlib.sha256(runner.read_bytes()).hexdigest()
+    monkeypatch.setenv("GV_BROWSER_OBSERVER", os.fspath(runner))
+    monkeypatch.setenv("GV_BROWSER_OBSERVER_SHA256", digest)
+    monkeypatch.setenv("GV_BROWSER_EXECUTABLE", os.fspath(runner))
+    monkeypatch.setenv("GV_BROWSER_EXECUTABLE_SHA256", digest)
+
+    configured = offline.config_fields(model="same", seats="codex")
+
+    assert configured["config"] != baseline["config"]
+    assert configured["browser_observer"]["observer_sha256"] == digest
+    assert configured["browser_observer"]["browser_sha256"] == digest
+    assert os.fspath(runner) not in json.dumps(configured)
+
+
+def test_config_separates_adapter_control_and_treatment(monkeypatch):
+    for variable in ("GV_BROWSER_OBSERVER", "GV_BROWSER_OBSERVER_SHA256",
+                     "GV_BROWSER_EXECUTABLE", "GV_BROWSER_EXECUTABLE_SHA256"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "0")
+    control = offline.config_fields(model="same", seats="codex")
+    monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
+    treatment = offline.config_fields(model="same", seats="codex")
+
+    assert control["typed_adapters"] is False
+    assert treatment["typed_adapters"] is True
+    assert control["config"] != treatment["config"]
+
+
+def test_codex_config_identity_stamps_canonical_runtime_roots(
+        tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv(
+        "GV_OFFLINE_RUNTIME_READ_ROOTS", json.dumps([os.fspath(runtime)]))
+
+    configured = offline.config_fields(model="same", seats="codex")
+
+    assert configured["offline_runtime_read_roots"] == [os.fspath(runtime)]
+    assert offline.config_fields()["offline_runtime_read_roots"] == []
 
 
 def test_config_identity_separates_models_and_seats():
@@ -581,7 +728,7 @@ def test_claim_store_is_rebuilt_without_replacing_live_commits(tmp_path, change)
             "payload"]["excerpt"] = "43"
         (tmp_path / "gv" / "events.jsonl").write_text(
             "".join(json.dumps(e) + "\n" for e in events))
-    commits = [e for e in log.replay() if e["type"] == "commit"]
+    commits = [e for e in log.replay() if e["type"] == "extracted_commit"]
     checks = StubDischarger("failed")
 
     def factory(sc):
@@ -593,4 +740,5 @@ def test_claim_store_is_rebuilt_without_replacing_live_commits(tmp_path, change)
 
     assert features["verdict"] == "unverified"
     assert checks.seen
-    assert [e for e in log.replay() if e["type"] == "commit"] == commits
+    assert [e for e in log.replay()
+            if e["type"] == "extracted_commit"] == commits

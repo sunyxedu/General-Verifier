@@ -9,7 +9,8 @@ claim graph in three steps, each reusing the online machinery unchanged:
 
   1. ingest   — feed lines become seq-numbered ledger events (the same
                 conversion the MCP server's drain_hooks performs);
-  2. extract  — an LLM role reconstructs the commit events the solver
+  2. extract  — an LLM role reconstructs declarative `extracted_commit`
+                events that the solver
                 never made; validated LLM-free by replaying through
                 Builder, with structural errors (and ONLY structural
                 errors) fed back for a bounded retry. The extractor is
@@ -32,18 +33,23 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 import tempfile
 from typing import Any, Dict, List, Optional
 
-from .core.events import EventLog
+from .core.events import EventLog, RECORD_DIRECTORY, SOURCE_EVENT_TYPES
 from .core.model import canonical, content_hash
 from .core.store import ClaimStore, TRIGGER_ON_FIRST_DEPENDENT, UnknownDependency
-from .engine.certificate import request_certificate
+from .engine.certificate import (
+    CERTIFICATE_SCOPE_FULL, CERTIFICATE_SCOPES, request_certificate,
+)
+from .llm.model_spans import model_scope
 from .llm.schema import RoleError
 from .stream.builder import Builder, TraceError
 
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
+OFFLINE_FINAL_MESSAGE_SOURCE = "offline_final"
 SNIPPET_CHARS = 160
 INDEX_MAX_EVENTS = 500
 
@@ -51,6 +57,9 @@ INDEX_MAX_EVENTS = 500
 # been published.  It is deliberately not part of the seal it authenticates.
 IMMUTABLE_INPUT_SEAL_FILE = "immutable_input_seal.json"
 IMMUTABLE_INPUT_TAINT_FILE = "immutable_input_tainted.json"
+# Explicit offline experiments retain their artifacts for inspection, but
+# those artifacts must never leak into an ordinary scoring invocation.
+DIAGNOSTIC_ONLY_FILE = ".contract_replay_diagnostic.json"
 IMMUTABLE_INPUT_SEAL_SCHEMA = "gv-immutable-input-seal-v1"
 IMMUTABLE_INPUT_PATHS = (
     "world",
@@ -305,7 +314,11 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
                   effort: Optional[str] = None,
                   max_rounds: int = 3,
                   critic_rounds: Optional[int] = None,
-                  service_tier: Optional[str] = None) -> Dict[str, Any]:
+                  service_tier: Optional[str] = None,
+                  compact_inspection: bool = False,
+                  judger_prefetch: bool = False,
+                  certificate_scope: str = CERTIFICATE_SCOPE_FULL,
+                  ) -> Dict[str, Any]:
     """The full identity of a scoring run's judgment: the pipeline
     fingerprint plus the resolved run configuration, as plaintext fields
     with a content hash (`config`). Two configs must never share derived
@@ -314,6 +327,17 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
     and store the plaintext fields alongside for analysis.
     max_rounds bounds extraction retries; critic_rounds bounds the
     decomposition game (default: the kernel's MAX_CRITIC_ROUNDS)."""
+    if type(compact_inspection) is not bool:
+        raise ValueError("compact_inspection must be a bool")
+    if compact_inspection and seats != "codex":
+        raise ValueError("compact_inspection is only valid for Codex seats")
+    if type(judger_prefetch) is not bool:
+        raise ValueError("judger_prefetch must be a bool")
+    if judger_prefetch and seats != "codex":
+        raise ValueError("judger_prefetch is only valid for Codex seats")
+    if certificate_scope not in CERTIFICATE_SCOPES:
+        raise ValueError(
+            f"certificate_scope must be one of {CERTIFICATE_SCOPES}")
     if not model and seats == "codex":
         from .llm.codex_backend import DEFAULT_MODEL
         model = DEFAULT_MODEL
@@ -334,7 +358,58 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         "service_tier": resolved_service_tier,
         "max_rounds": max_rounds,
         "critic_rounds": critic_rounds,
+        "compact_inspection": compact_inspection,
+        "judger_prefetch": judger_prefetch,
+        # which claims a certificate request settles; the verdict semantics
+        # are identical, but the exported slice and derived state differ
+        "certificate_scope": certificate_scope,
     }
+    if judger_prefetch:
+        from .engine.judger_prefetch import PREFETCH_PROTOCOL
+        fields["judger_prefetch_protocol"] = PREFETCH_PROTOCOL
+    else:
+        fields["judger_prefetch_protocol"] = None
+    # Optional verifier instruments are part of the experiment, not ambient
+    # machine state.  Stamp the pinned public identity (never its host path)
+    # so score resumption cannot mix runs with different browser observers.
+    from .execution.browser import configured_browser_observer
+    from .execution.config import (
+        APPEND_ONLY_DELTA_PROTOCOL,
+        append_only_deltas_enabled,
+        offline_runtime_read_roots,
+        sufficiency_preaudit_enabled,
+        typed_adapters_enabled,
+        typed_judger_packet_enabled,
+    )
+    fields["typed_adapters"] = typed_adapters_enabled()
+    fields["sufficiency_preaudit"] = sufficiency_preaudit_enabled()
+    fields["typed_adapter_judger_packet"] = typed_judger_packet_enabled()
+    if fields["typed_adapter_judger_packet"] and not fields["typed_adapters"]:
+        raise ValueError(
+            "typed-adapter Judger packet requires typed adapters")
+    if fields["typed_adapter_judger_packet"]:
+        from .engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
+        fields["typed_adapter_judger_packet_protocol"] = (
+            TYPED_JUDGER_PACKET_PROTOCOL)
+    else:
+        fields["typed_adapter_judger_packet_protocol"] = None
+    # Process-local reuse across candidates of one task, explicit opt-in.
+    from .execution.config import contract_cache_enabled, method_cache_enabled
+    fields["contract_cache"] = contract_cache_enabled()
+    fields["method_cache"] = method_cache_enabled()
+    fields["append_only_deltas"] = append_only_deltas_enabled()
+    fields["append_only_delta_protocol"] = (
+        APPEND_ONLY_DELTA_PROTOCOL
+        if fields["append_only_deltas"] else None
+    )
+    fields["offline_runtime_read_roots"] = (
+        list(offline_runtime_read_roots()) if fields["seats"] == "codex" else [])
+    browser_observer = (configured_browser_observer()
+                        if fields["typed_adapters"] else None)
+    fields["browser_observer"] = (
+        dict(browser_observer.identity) if browser_observer is not None
+        else None
+    )
     if fields["seats"] == "sdk":
         from .llm import provider
 
@@ -354,10 +429,14 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
 def config_id(model: Optional[str] = None, seats: Optional[str] = None,
               effort: Optional[str] = None, max_rounds: int = 3,
               critic_rounds: Optional[int] = None,
-              service_tier: Optional[str] = None) -> str:
+              service_tier: Optional[str] = None,
+              compact_inspection: bool = False,
+              judger_prefetch: bool = False) -> str:
     return config_fields(
         model, seats, effort, max_rounds, critic_rounds,
         service_tier=service_tier,
+        compact_inspection=compact_inspection,
+        judger_prefetch=judger_prefetch,
     )["config"]
 
 
@@ -394,6 +473,32 @@ def ingest_feed(feed_path: str, log: EventLog) -> int:
     return count
 
 
+def append_final_response(log: EventLog, final_answer: str) -> Dict[str, Any]:
+    """Retain the sealed vanilla solver response as ordinary source evidence."""
+    if not isinstance(final_answer, str):
+        raise ValueError("offline final response must be text")
+    return log.append("message", {
+        "role": "assistant",
+        "text": final_answer,
+        "source": OFFLINE_FINAL_MESSAGE_SOURCE,
+    })
+
+
+def is_offline_final_response(event: Dict[str, Any]) -> bool:
+    if type(event) is not dict or event.get("type") != "message" \
+            or type(event.get("payload")) is not dict:
+        return False
+    payload = event["payload"]
+    return (
+        isinstance(payload.get("text"), str)
+        and payload == {
+            "role": "assistant",
+            "text": payload["text"],
+            "source": OFFLINE_FINAL_MESSAGE_SOURCE,
+        }
+    )
+
+
 def events_index(log: EventLog) -> str:
     """
     Compact one-line-per-event rendering for the extractor's prompt;
@@ -406,6 +511,7 @@ def events_index(log: EventLog) -> str:
             break
         payload = event["payload"]
         body = payload.get("input") if event["type"] == "tool_call" \
+            else payload.get("text") if event["type"] == "message" \
             else payload.get("excerpt")
         snippet = canonical(body)[:SNIPPET_CHARS] if body is not None else ""
         lines.append(
@@ -413,12 +519,18 @@ def events_index(log: EventLog) -> str:
     return "\n".join(lines) if lines else "(empty ledger)"
 
 
-def _apply_commits(log: EventLog, commits: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_commits(log: EventLog, commits: List[Dict[str, Any]], *,
+                   event_type: str = "extracted_commit") -> Optional[str]:
     """
     Append the extractor's commits to the candidate log, validating
     LLM-free through a trigger-less Builder replay. Returns the first
     structural error as text, or None on success.
+
+    ``event_type`` exists only so diagnostic replay can retain the identity of
+    legacy snapshots whose extractor output was recorded as ``commit``.
     """
+    if event_type not in ("commit", "extracted_commit"):
+        raise ValueError("invalid extracted commit event type")
     builder = Builder(log, ClaimStore())
     for event in log.replay():
         builder.feed(event)
@@ -433,7 +545,7 @@ def _apply_commits(log: EventLog, commits: List[Dict[str, Any]]) -> Optional[str
         if commit.get("revises"):
             payload["revises"] = commit["revises"]
         try:
-            builder.feed(log.append("commit", payload))
+            builder.feed(log.append(event_type, payload))
         except (TraceError, UnknownDependency, ValueError) as err:
             return f"commit {commit['label']!r}: {err}"
         if commit["kind"] == "final":
@@ -449,7 +561,7 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             max_rounds: int = 3,
             stamp: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Reconstruct commit events for the trace in `state_dir` and write
+    Reconstruct extracted-commit events for the trace in `state_dir` and write
     the full events.jsonl. Retries feed back structural errors only.
     Never verification results. Raises ExtractionError when every round
     fails. On success returns (and persists to extract.json) the meta;
@@ -475,6 +587,7 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             os.remove(candidate)
         log = EventLog(candidate)
         ingest_feed(feed, log)
+        append_final_response(log, final_answer)
         variables = {
             "task": task,
             "final_answer": final_answer,
@@ -483,7 +596,10 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             "feedback": feedback,
         }
         try:
-            payload = EXTRACT_CLAIMS_AGENT.call(backend, variables)
+            with model_scope(
+                    locus="candidate_extract", stage="extract",
+                    round=round_no):
+                payload = EXTRACT_CLAIMS_AGENT.call(backend, variables)
         except RoleError as err:
             last_error = feedback = str(err)
             continue
@@ -507,7 +623,8 @@ def _has_commits(events_path: str) -> bool:
     with open(events_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line and json.loads(line)["type"] == "commit":
+            if line and json.loads(line)["type"] in (
+                    "commit", "extracted_commit"):
                 return True
     return False
 
@@ -529,8 +646,120 @@ def _unscoreable(error: str, extract_rounds: int,
         "final_obligations": {},
         "final_obligations_total": 0,
         "final_contrary_signals": 0,
+        "contract_audit_status": "unavailable_unscoreable",
+        "final_obligation_contract": [],
+        "final_obligation_outcomes_ordered": [],
         "extract_rounds": extract_rounds,
         "fingerprint": fingerprint,
+    }
+
+
+def _compiled_final_contract(
+    log: EventLog, final_id: str,
+) -> tuple[str, List[Dict[str, Any]]]:
+    """Return the exact, ordered compiler output attached to the final claim.
+
+    The certificate intentionally summarizes settled graph nodes and SQLite
+    does not preserve compiler order or the required evidence floor.  The
+    append-only event is therefore the audit source.  Keep wording and source
+    clauses verbatim: hashing or normalizing them would hide quantifier drift.
+    """
+    absent = object()
+    compiled: Any = absent
+    for event in log.replay():
+        if event.get("type") != "obligations_compiled":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("claim") == final_id:
+            compiled = payload.get("obligations")
+    if compiled is absent:
+        return "missing", []
+    if compiled == []:
+        return "empty", []
+    if not isinstance(compiled, list):
+        return "malformed", []
+    fields = (
+        "id", "text", "premise_scope", "required_basis", "severity",
+        "clause", "refutable_by_absence",
+    )
+    out: List[Dict[str, Any]] = []
+    ids: set[str] = set()
+    for ordinal, obligation in enumerate(compiled):
+        if (not isinstance(obligation, dict)
+                or any(field not in obligation for field in fields)
+                or not isinstance(obligation.get("id"), str)
+                or not obligation["id"] or obligation["id"] in ids
+                or not isinstance(obligation.get("text"), str)
+                or not obligation["text"]
+                or not isinstance(obligation.get("premise_scope"), list)
+                or any(not isinstance(value, str)
+                       for value in obligation["premise_scope"])
+                or obligation.get("required_basis") not in {"record", "world"}
+                or obligation.get("severity") not in {"must", "should"}
+                or not isinstance(obligation.get("clause"), str)
+                or not isinstance(obligation.get("refutable_by_absence"), bool)):
+            return "malformed", []
+        ids.add(obligation["id"])
+        out.append({
+            "ordinal": ordinal,
+            **{field: obligation[field] for field in fields},
+        })
+    return "available", out
+
+
+def _ordered_final_outcomes(
+    cert: Dict[str, Any], contract: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Align certificate outcomes to compiler order without dropping text."""
+    final_entry = next(
+        (entry for entry in cert["slice"] if entry["id"] == cert["final"]),
+        None,
+    )
+    if final_entry is None:
+        raise ValueError("certificate slice is missing its final claim")
+    outcomes = {}
+    for item in final_entry.get("obligations", []):
+        oid = item.get("id")
+        if not isinstance(oid, str) or not oid or oid in outcomes:
+            raise ValueError("certificate final obligation outcomes are malformed")
+        outcomes[oid] = item
+    contract_ids = {item["id"] for item in contract}
+    unexpected = sorted(set(outcomes) - contract_ids)
+    if unexpected:
+        raise ValueError(
+            f"certificate contains obligations outside compiled contract: {unexpected}")
+    ordered = []
+    for item in contract:
+        outcome = outcomes.get(item["id"])
+        ordered.append({
+            "ordinal": item["ordinal"],
+            "obligation_id": item["id"],
+            "evaluated": outcome is not None,
+            "status": outcome.get("status") if outcome is not None else None,
+            "reason": outcome.get("reason") if outcome is not None else None,
+            "basis": outcome.get("basis") if outcome is not None else None,
+            "strength": outcome.get("strength") if outcome is not None else None,
+        })
+    return ordered
+
+
+def _final_contract_audit(
+    log: EventLog, cert: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Best-effort audit enrichment which never changes score semantics."""
+    status, contract = _compiled_final_contract(log, cert["final"])
+    outcomes: List[Dict[str, Any]] = []
+    if status == "available":
+        try:
+            outcomes = _ordered_final_outcomes(cert, contract)
+        except (KeyError, TypeError, ValueError):
+            status = "outcomes_malformed"
+    return {
+        "contract_audit_status": status,
+        "final_obligation_contract": contract,
+        "final_obligation_outcomes_ordered": outcomes,
     }
 
 
@@ -564,15 +793,6 @@ def _features(cert: Dict[str, Any], extract_rounds: int,
     final_obligations = {
         o["id"]: o["status"] for o in final_entry.get("obligations", [])
     }
-    if not final_obligations:
-        # The compiler always owes the final claim a non-empty contract; an
-        # empty set means compilation died mid-run (capacity flap), not that
-        # the task demands nothing. Folding it as 0/0-unverified silently
-        # discards a possibly fully-verified graph — surface it as
-        # unscoreable so the retry sweep re-runs the trace instead.
-        raise ValueError(
-            "final claim carries no compiled obligations; "
-            "treat as incomplete verification, not a verdict")
     final_ob_counts: Dict[str, int] = {}
     for status in final_obligations.values():
         final_ob_counts[status] = final_ob_counts.get(status, 0) + 1
@@ -620,7 +840,11 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           service_tier: Optional[str] = None,
           parallel_obligations: Optional[int] = None,
           parallel_claims: Optional[int] = None,
-          shared_dir: Optional[str] = None) -> Dict[str, Any]:
+          shared_dir: Optional[str] = None,
+          compact_inspection: bool = False,
+          judger_prefetch: bool = False,
+          restricted_judger_cwd: Optional[str] = None,
+          certificate_scope: Optional[str] = None) -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -631,6 +855,10 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     `model` then names the codex model (default gpt-5.6-luna) and
     `effort` its reasoning effort (default medium). ``service_tier`` is
     ``standard`` by default; ``fast`` explicitly enables Codex Fast mode.
+    ``compact_inspection`` is an opt-in evidence presentation preference,
+    not a change to stage order, evidence scope, or independent review.
+    ``judger_prefetch`` is an opt-in verifier-owned evidence packet passed
+    to the same independent Judger; it does not change its verdict schema.
 
     Execution strategy (NOT part of the config identity — it changes the
     schedule, never the judgment): ``parallel_obligations`` discharges
@@ -639,7 +867,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     trigger so replay does not verify claims one by one first), and
     ``shared_dir`` names a verifier-owned directory outside the state
     whose ``toolchain/`` and ``cache/`` are shared across trials. Defaults
-    come from GV_PARALLEL_OBLIGATIONS (4), GV_PARALLEL_CLAIMS (4), and
+    come from GV_PARALLEL_OBLIGATIONS (8), GV_PARALLEL_CLAIMS (4), and
     GV_SHARED_DIR (none).
     """
     def _env_int(name: str, fallback: int) -> int:
@@ -648,11 +876,17 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         except ValueError:
             return fallback
     if parallel_obligations is None:
-        parallel_obligations = _env_int("GV_PARALLEL_OBLIGATIONS", 4)
+        # A final contract commonly has five to eight obligations; with
+        # typed adapters most finish in seconds, so eight slots keep the
+        # agent-executed ones from queueing behind them.
+        parallel_obligations = _env_int("GV_PARALLEL_OBLIGATIONS", 8)
     if parallel_claims is None:
         parallel_claims = _env_int("GV_PARALLEL_CLAIMS", 4)
     if shared_dir is None:
         shared_dir = os.environ.get("GV_SHARED_DIR") or None
+    if certificate_scope is None:
+        certificate_scope = (os.environ.get("GV_CERTIFICATE_SCOPE")
+                             or CERTIFICATE_SCOPE_FULL)
     toolchain_dir = cache_dir = None
     if shared_dir:
         shared_dir = os.path.abspath(os.path.expanduser(shared_dir))
@@ -662,21 +896,78 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             os.makedirs(path, exist_ok=True)
     cfg = config_fields(model=model, seats=seats, effort=effort,
                         max_rounds=max_rounds, critic_rounds=critic_rounds,
-                        service_tier=service_tier)
+                        service_tier=service_tier,
+                        compact_inspection=compact_inspection,
+                        judger_prefetch=judger_prefetch,
+                        certificate_scope=certificate_scope)
+    if restricted_judger_cwd is not None and (
+            seats != "codex"
+            or cfg["typed_adapter_judger_packet"] is not True
+            or kernel_factory is not None):
+        raise ValueError(
+            "restricted_judger_cwd requires the built-in typed Codex "
+            "Judger pipeline")
     critic_rounds = cfg["critic_rounds"]
     fingerprint = pipeline_fingerprint()
     extract_rounds = 0
+    if os.path.lexists(os.path.join(state_dir, DIAGNOSTIC_ONLY_FILE)):
+        # Do not parse, clear, or overwrite experimental state. Even a broken
+        # marker means this is not an ordinary input boundary. The caller can
+        # create a new state from immutable inputs only; old proof artifacts
+        # cannot be made safe merely by re-running extraction.
+        raise ImmutableInputError(
+            "diagnostic-only offline state cannot be scored normally; "
+            "create a fresh state from sealed immutable inputs")
+    if (backend is not None
+            and getattr(backend, "compact_inspection", False) is not compact_inspection):
+        raise ValueError(
+            "provided backend compact_inspection does not match the "
+            "offline scoring config")
+    if (backend is not None
+            and getattr(backend, "judger_prefetch", False) is not judger_prefetch):
+        raise ValueError(
+            "provided backend judger_prefetch does not match the "
+            "offline scoring config")
+    backend_was_injected = backend is not None
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
         if backend is None:
+            # The extraction backend never runs a Judger.  Do not give that
+            # earlier stage a handle to the operator-bound Judger-only
+            # scratch directory; the Kernel backend below binds it when the
+            # fresh independent Judger can actually be selected.
             backend = CodexBackend(cwd=state_dir, model=model,
                                    effort=cfg["effort"],
-                                   service_tier=cfg["service_tier"])
+                                   service_tier=cfg["service_tier"],
+                                   compact_inspection=cfg["compact_inspection"],
+                                   judger_prefetch=cfg["judger_prefetch"],
+                                   offline_toolchain_dir=toolchain_dir,
+                                   offline_shared_cache_dir=cache_dir,
+                                   restricted_judger_cwd=None)
         elif (isinstance(backend, CodexBackend)
               and backend.service_tier != cfg["service_tier"]):
             raise ValueError(
                 "provided CodexBackend service_tier does not match the "
                 "offline scoring config")
+        expected_restricted_cwd = (
+            os.path.abspath(os.fspath(restricted_judger_cwd))
+            if restricted_judger_cwd is not None else None)
+        actual_restricted_cwd = (
+            backend._revalidate_restricted_judger_cwd()
+            if type(backend) is CodexBackend else None)
+        # An injected backend is an operator authority and must still carry
+        # the exact declared binding.  An internally-created extraction
+        # backend is deliberately unbound; the built-in Kernel factory is
+        # the only consumer of the requested Judger scratch.
+        expected_backend_cwd = (
+            expected_restricted_cwd if backend_was_injected else None)
+        if actual_restricted_cwd != expected_backend_cwd:
+            raise ValueError(
+                "provided backend does not carry the exact restricted "
+                "Judger cwd binding")
+        if isinstance(backend, CodexBackend):
+            backend.validate_offline_tool_scope(
+                state_dir, toolchain_dir, cache_dir)
 
     # A formal adapter publishes a durable anchor before exposing its
     # ``.sanitized`` marker.  Legacy/direct callers do not have such an
@@ -712,18 +1003,62 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         invalid["immutable_input_seal_error"] = str(err)
         return _write_score(state_dir, invalid)
 
+    precompile = None
     if seats == "codex":
         if kernel_factory is None:
+            # One kernel backend for the whole run: the concurrent final
+            # contract precompile and the kernel must share its identity.
+            kernel_backend = CodexBackend(
+                cwd=state_dir, model=model,
+                effort=cfg["effort"],
+                service_tier=cfg["service_tier"],
+                compact_inspection=cfg["compact_inspection"],
+                judger_prefetch=cfg["judger_prefetch"],
+                offline_toolchain_dir=toolchain_dir,
+                offline_shared_cache_dir=cache_dir,
+                restricted_judger_cwd=restricted_judger_cwd)
+
             def kernel_factory(sc):
                 from .mcp_server import _default_kernel
                 return _default_kernel(
-                    sc, model,
-                    backend=CodexBackend(cwd=sc.state_dir, model=model,
-                                         effort=cfg["effort"],
-                                         service_tier=cfg["service_tier"]),
+                    sc, model, backend=kernel_backend,
                     critic_rounds=critic_rounds,
                     parallel_obligations=parallel_obligations,
                     parallel_claims=parallel_claims)
+
+            from .execution.config import (
+                contract_cache_enabled, final_contract_precompile_enabled,
+            )
+            # With the process-local contract cache the thread compiles only
+            # for the task's first candidate (a key nobody has published or
+            # started); later candidates' kernels hit the published entry.
+            if (final_contract_precompile_enabled()
+                    and not _has_commits(
+                        os.path.join(state_dir, "events.jsonl"))):
+                from .engine.precompile import PrecompiledFinalContract
+                from .engine.kernel import compile_roles_for_backend
+                from .execution.config import (
+                    APPEND_ONLY_DELTA_PROTOCOL, append_only_deltas_enabled,
+                )
+                from .mcp_server import harness_roles
+                roles = harness_roles(state_dir)
+                compile_role, critic_role = compile_roles_for_backend(
+                    kernel_backend, roles["obligations"], roles["critic"])
+                deltas = append_only_deltas_enabled()
+                contract_cache = None
+                if contract_cache_enabled():
+                    from .engine.contract_cache import (
+                        default_compiled_final_contract_cache,
+                    )
+                    contract_cache = default_compiled_final_contract_cache()
+                # Started before extraction so the candidate-blind contract
+                # and the Extractor run side by side; adopted by the kernel
+                # only under an identical contract key.
+                precompile = PrecompiledFinalContract.start(
+                    state_dir, kernel_backend, compile_role, critic_role,
+                    critic_rounds, deltas,
+                    APPEND_ONLY_DELTA_PROTOCOL if deltas else None,
+                    contract_cache=contract_cache)
 
     def run_verification() -> Dict[str, Any]:
         nonlocal extract_rounds
@@ -748,6 +1083,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                 path = os.path.join(state_dir, name)
                 if os.path.exists(path):
                     os.remove(path)
+            shutil.rmtree(os.path.join(state_dir, RECORD_DIRECTORY),
+                          ignore_errors=True)
             meta = {}
         if not _has_commits(events_path):
             try:
@@ -761,12 +1098,14 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         else:
             extract_rounds = meta.get("rounds", 0)
 
-        # Live protocol commits are source data and survive config changes.
-        # Their materialized judgments still need the same input/config
-        # identity as extracted traces, including interrupted verification.
+        # Bind verification state to the exact declarative graph as well as
+        # candidate hooks.  Offline reconstructed claims are deliberately not
+        # source evidence, but tampering with them must still invalidate any
+        # materialized judgment.
         trace_hash = hashlib.sha256()
         for event in EventLog(events_path).replay():
-            if event["type"] in (*HOOK_EVENT_TYPES, "commit"):
+            if (event["type"] in SOURCE_EVENT_TYPES
+                    or event["type"] == "extracted_commit"):
                 trace_hash.update(canonical(event).encode("utf-8"))
                 trace_hash.update(b"\n")
         verification_stamp = {**stamp, "source_trace": trace_hash.hexdigest()}
@@ -789,18 +1128,23 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                      shared_cache_dir=cache_dir,
                      parallel_obligations=parallel_obligations,
                      parallel_claims=parallel_claims)
+        if precompile is not None:
+            sc.kernel.adopt_precompiled_final_contract(precompile)
         if not sc.builder.finals:
             return dict(_unscoreable(
                 "no final claim in trace", extract_rounds, fingerprint),
                 **cfg)
         cert = request_certificate(
             sc.store, sc.kernel, sc.log, sc.artifacts,
-            sc.builder.finals[-1])
+            sc.builder.finals[-1], scope=cfg["certificate_scope"])
         features = dict(_features(cert, extract_rounds, fingerprint), **cfg)
+        features.update(_final_contract_audit(sc.log, cert))
         features["execution"] = {
             "parallel_obligations": parallel_obligations,
             "parallel_claims": parallel_claims,
             "shared_dir": shared_dir or None,
+            "certificate_scope": cfg["certificate_scope"],
+            "final_contract_precompile": precompile is not None,
         }
         return features
 

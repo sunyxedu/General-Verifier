@@ -4,6 +4,7 @@ Wording pins beyond these are deliberately absent: the prompts are
 principles, not a rule catalogue, and tests should not freeze prose."""
 from __future__ import annotations
 
+import json
 import re
 
 from verifier.llm import prompts, agents
@@ -45,22 +46,24 @@ def test_templates_render_exactly_the_variables_the_engine_supplies():
     assert _vars(prompts.CRITIC_TEMPLATE) == {
         "claim_text", "claim_kind", "contract_locus", "task_context",
         "ledger_path", "world_mode", "world_path", "world_map",
-        "obligations_json", "verified_deps", "pending_deps",
+        "obligations_json", "excluded_json", "verified_deps", "pending_deps",
         "dependency_referent_context", "game_history"}
     assert _vars(prompts.ORACLES_TEMPLATE) >= {
         "obligation_text", "required_basis", "severity", "clause",
         "refutable_by_absence", "task_context", "method_feedback",
-        "world_map"}
+        "world_map", "adapter_catalog"}
     assert _vars(prompts.DISCHARGE_TEMPLATE) >= {
         "obligation_text", "procedure", "promised_artifact",
-        "declared_basis", "required_basis", "severity", "clause",
+        "declared_basis", "declared_strength", "bridges", "required_basis",
+        "severity", "clause",
         "refutable_by_absence", "workdir", "toolchain_dir",
         "workspace_dir", "workspace_index", "world_map",
-        "snapshot_per_file_cap", "redo_feedback"}
+        "snapshot_per_file_cap", "snapshot_max_files",
+        "snapshot_max_total_chars", "redo_feedback", "adapter_method"}
     assert _vars(prompts.JUDGER_TEMPLATE) >= {
         "obligation_text", "severity", "clause", "refutable_by_absence",
         "procedure", "basis", "declared_strength", "bridges",
-        "degradation_record", "evidence", "world_map"}
+        "degradation_record", "evidence", "world_map", "adapter_method"}
     assert "{claim_text}" not in prompts.JUDGER_TEMPLATE   # blind judger
     assert _vars(prompts.EXTRACT_TEMPLATE) == {
         "task", "final_answer", "events_index", "ledger_path", "feedback"}
@@ -91,6 +94,39 @@ def test_mechanism_fields_are_asked_for_by_name():
     # oracle: refutation methods promise a positive witness
     assert "REFUTATION METHODS PROMISE A WITNESS" in prompts.ORACLES_SYSTEM
     assert "INPUT PROVENANCE IS PART OF THE METHOD" in prompts.ORACLES_SYSTEM
+    method_schema = agents.ENUMERATE_ORACLES_AGENT.schema["methods"][0]
+    assert {"adapter?", "adapter_version?", "adapter_arguments?",
+            "adapter_inputs?"} <= set(method_schema)
+    wire_method = agents.ENUMERATE_ORACLES_AGENT.wire_schema["methods"][0]
+    assert "execution" in wire_method
+    assert set(wire_method["execution"]) == {
+        "kind", "custom_gap_reason", "adapter", "adapter_version",
+        "adapter_input_binding", "adapter_arguments", "adapter_inputs",
+    }
+    assert "adapter_catalog" in _vars(prompts.ORACLES_TEMPLATE)
+
+
+def test_adapter_preference_is_conditional_and_preserves_verification_scope():
+    # Prompt contract guard only; model behavior still needs paired evals.
+    text = prompts.ORACLES_TEMPLATE
+    assert "equally sufficient method" in text
+    assert "otherwise use the custom method" in text
+    assert "preserve the obligation's full scope, provenance, absence rules" in text
+    assert "retain every enumeration or observation the obligation actually requires" in text
+    assert "Every method must include one complete execution object" in text
+    assert "specific non-empty custom_gap_reason" in text
+    assert "never method sufficiency" in text
+    assert "emit only the adapter-bound method" in text
+    assert "binding that adapter is mandatory" in text
+    assert "do not put an equivalent unbound executor first" in text
+    assert "decision procedure or evidence coverage materially differs" in text
+    assert "lists only retained guarantees" in text
+    assert "never infer further guarantees" in text
+    assert "must not claim original bytes, complete text, listings" in text
+    assert "sufficiency still depends on the same" in text
+    assert "different available evidence" in text
+    assert "independently validated replacement" in text
+    assert "otherwise return methods=[]" in text
 
 
 def test_game_and_locus_contract_survive():
@@ -108,8 +144,9 @@ def test_game_and_locus_contract_survive():
     assert "false sufficiency attack" in prompts.CONTRACT_LOCUS_NONFINAL
     assert "genuine necessity violation" in prompts.CONTRACT_LOCUS_NONFINAL
     assert "neither narrows nor expands" in prompts.CONTRACT_LOCUS_FINAL
-    assert "A record floor is not a deficiency there" in prompts.CRITIC_SYSTEM
-    assert "covers the action's occurrence only" in prompts.CRITIC_SYSTEM
+    assert "E→O stays record-floor" in prompts.CRITIC_SYSTEM
+    assert "record decides occurrence, not reported content's truth" \
+        in prompts.CRITIC_SYSTEM
     assert "APPEND OBLIGATION:" in prompts.CRITIC_SYSTEM
     assert "{violation}" in prompts.APPEND_REPAIR_GUARD_FEEDBACK
 
@@ -124,6 +161,103 @@ def test_strength_ladder_contract_survives():
     assert "STRENGTH AUDIT" in prompts.JUDGER_TEMPLATE
     assert "OPTIMALITY-REFUTATION PREFLIGHT" in prompts.ORACLES_SYSTEM
     assert "VERDICT-DIRECTION AT EXECUTION" in prompts.DISCHARGE_SYSTEM
+    assert "IRREPLACEABLE-PREREQUISITE SHORT-CIRCUIT" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "at most one bounded direct obtain attempt" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "Install only a local instrument explicitly named or permitted" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "missing physical device, external endpoint, credential" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "terminal result ends this exact method" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "authoritative fixed-boundary capability facts" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "attempt failure alone never proves a permanent gap" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "do not parse, render, install, or inspect downstream material" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "FAST CAPABILITY-ABSENCE RESPONSE" in prompts.DISCHARGE_SYSTEM
+    assert "immediately return unobtainable" in prompts.DISCHARGE_SYSTEM
+    assert "no tools/files and an empty artifact locator" \
+        in prompts.DISCHARGE_SYSTEM
+    assert "Never settling evidence" in prompts.DISCHARGE_SYSTEM
+    assert "inapplicable to live or ambiguous cases" in prompts.DISCHARGE_SYSTEM
+    assert "LARGE-INPUT DISCIPLINE" in prompts.DISCHARGE_TEMPLATE
+    assert "Never print or read an entire large source" \
+        in prompts.DISCHARGE_TEMPLATE
+    assert "rerun it from fixed inputs" in prompts.DISCHARGE_TEMPLATE
+
+
+def test_semantic_methods_are_operational_and_target_is_comparison_only():
+    assert "OPERATIONAL-PRIMITIVE AUDIT" in prompts.ORACLES_SYSTEM
+    assert "DERIVED-PERCEPTION BOTTLENECK" in prompts.ORACLES_SYSTEM
+    assert "SEMANTIC-SIGNATURE REPAIR" in prompts.ORACLES_TEMPLATE
+    assert "otherwise return methods=[]" in prompts.ORACLES_TEMPLATE
+
+    assert "TARGET-TAINT BOUNDARY" in prompts.DISCHARGE_SYSTEM
+    assert "report failed" in prompts.DISCHARGE_SYSTEM
+
+    assert "CONCRETE-STRONGER-ROUTE TEST" in prompts.JUDGER_SYSTEM
+    assert "TARGET-TAINT AUDIT" in prompts.JUDGER_SYSTEM
+    assert "faithful=no" in prompts.JUDGER_SYSTEM
+
+
+def test_oracle_compiles_methods_without_executing_their_evidence_checks():
+    system = prompts.ORACLES_SYSTEM
+    template = prompts.ORACLES_TEMPLATE
+    assert "ORACLE COMPILES; THE ADAPTER/EXECUTOR OBSERVES" in system
+    assert "compile that audit without performing it" in system
+    assert "inspect the whole record before listing methods" not in system
+    assert "must not determine the method's predicates or expected values" \
+        in system
+    assert "omit the adapter binding" in system
+    assert "a repair must never guess a new version" in template
+    assert "holds-only adapter replaces only" in template
+    assert "never refuted" in template
+
+
+def test_oracle_adapter_dispatch_is_basis_and_primitive_driven():
+    template = prompts.ORACLES_TEMPLATE
+    assert "TYPED-ADAPTER DISPATCH ORDER" in template
+    assert "record.query first" in template
+    assert "Catalog order is discovery only" in template
+    assert "independently choose any exact-fit adapter or custom method" \
+        in template
+    assert "event-at, exists, paired-exchange" in template
+    assert "record.program only for bounded pure computation" in template
+    assert "filesystem, document, and evidence-program families" in template
+    assert "never by task name, domain, expected outcome" in template
+    assert "does not cover the whole obligation" in template
+    assert "DIRECT EFFECT-OUTPUT RECIPE" in template
+    assert "for unqualified `effect N returned X`" in template
+    assert "record.query@1 event-at" in template
+    assert '\"source\":\"payload\"' in template
+    assert '\"/excerpt_truncated\"' in template
+    assert '\"expected\":false' in template
+    assert "operation, input, transformation, instrument, or source relation" \
+        in template
+    assert "paired-exchange with exact result seq=N" in template
+    assert "full correlated call, never event-at" in template
+    assert "adapter=record.query" in template
+    assert "adapter_input_binding=fixed-v1, adapter_inputs=[]" in template
+    assert '\"kind\":\"paired-exchange\"' in template
+    assert '\"source\":\"payload\"' in template
+    assert "This binding is the complete pair observation" in template
+    assert "Fresh Judger, not custom execution" in template
+    assert "Use custom only for independent computation or evidence" \
+        in template
+    assert "kind=custom, a specific non-empty custom_gap_reason" in template
+    assert "adapter_version=0, adapter_input_binding=none" in template
+
+    rendered = template.format(**{name: "x" for name in _vars(template)})
+    match = re.search(r"adapter_arguments=`([^`]+)`", rendered)
+    assert match is not None
+    recipe = json.loads(match.group(1).replace(":N", ":128")
+                        .replace('"X"', '"target"'))
+    assert recipe["through_seq"] == 128
+    assert recipe["query"]["kind"] == "paired-exchange"
+    assert recipe["query"]["result"]["seq"] == 128
 
 
 def test_plain_reading_gate_is_refutation_only():
@@ -146,3 +280,143 @@ def test_harness_addendum_is_generic():
     assert "declarative pointers to named documentation" in add
     assert "MINIMAL-CHANGE" in add
     assert "emit NO minimal-change" in add
+    assert "CANDIDATE-CARRIER NORMAL FORM" in add
+    assert "Never compare with a value copied from the final claim" in add
+    assert "the response is independently selected as a carrier" \
+        in prompts.CRITIC_SYSTEM
+
+
+def test_carrier_form_is_not_inferred_from_locator_conventions():
+    compiler = prompts.OBLIGATIONS_SYSTEM
+    critic = prompts.CRITIC_SYSTEM
+    assert "CARRIER-FORM INFERENCE GATE" in compiler
+    assert "locator syntax alone entails no media" in compiler
+    assert "address/existence separate from content" in compiler
+    assert "CARRIER-FORM INFERENCE ATTACK" in critic
+    assert "locator syntax is no authority" in critic
+    assert "require removal unless the source states or entails" in critic
+
+
+def test_compact_profile_requires_one_pass_completion_coverage_and_repairs():
+    compiler = prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM
+    critic = prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM
+
+    assert "INITIAL COMPLETION COVERAGE LEDGER" in compiler
+    assert "critic feedback is empty" in compiler
+    assert "independently falsifiable semantic and process conditions" in compiler
+    assert "apply the ACCEPTANCE COUNTERFACTUAL separately" in compiler
+    assert "no acceptance condition is unmapped" in compiler
+    assert "as an `excluded` entry {clause, reason}" in compiler
+    assert "GOVERNING-SCOPE DISTRIBUTION" in compiler
+    assert "subject, quantifier, modality" in compiler
+    assert "Reading a child span in isolation never cancels inherited" in compiler
+    assert "only after the acceptance counterfactual" in compiler
+    assert "cannot turn runner protocol into a candidate requirement" in compiler
+    assert "RUNNER-INTERFACE QUOTIENT" in compiler
+    assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" in compiler
+    assert "successfully captures and hands off that candidate" in compiler
+    assert "despite the challenged protocol violation" in compiler
+    assert "task-owned content, form, provenance, or non-runner-history" \
+        in compiler
+    assert "task-owned acceptance consequence" in compiler
+    assert "source says it is mandatory" in compiler
+    assert "not task-owned merely because the runner records it" in compiler
+    assert "delivered or independently evaluated object" in compiler
+    assert "do not convert it to a SHOULD or a narrower" in compiler
+    assert "PRE-CRITIC MATERIAL NORMAL FORM" in compiler
+    assert compiler.index("ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
+        < compiler.index("INITIAL COMPLETION COVERAGE LEDGER")
+    assert "term, floor, severity, absence" in compiler
+    assert "Remove only exact semantic duplicates" in compiler
+    assert "never merge, weaken, or omit independent conditions" in compiler
+
+    assert "COMPLETE DEFECT CENSUS" in critic
+    assert critic.index("ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
+        < critic.index("COMPLETE DEFECT CENSUS")
+    assert "two source-order sweeps" in critic
+    assert "Do not stop at the first witness" in critic
+    assert "every independently visible missing and overstrong condition" in critic
+    assert "do not defer a visible defect to a later round" in critic
+    assert "one `APPEND OBLIGATION:` prefix" in critic
+    assert "use `REWRITE BOTH:`" in critic
+    assert "MATERIAL DEFECT GATE" in critic
+    assert "RUNNER-INTERFACE QUOTIENT" in critic
+    assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" in critic
+    assert "before searching for missing conditions" in critic
+    assert "apply this as a NECESSITY attack" in critic
+    assert "successfully captures and hands off that candidate" in critic
+    assert "despite the challenged protocol violation" in critic
+    assert "task-owned content, form, provenance, or non-runner-history" \
+        in critic
+    assert "task-owned acceptance consequence" in critic
+    assert "source says it is mandatory" in critic
+    assert "not task-owned merely because the runner records it" in critic
+    assert "require removal in this same round" in critic
+    assert "never append, refine, downgrade to SHOULD, or narrow" in critic
+    assert "different wording, ordering, or granularity" in critic
+    assert "do not demand a duplicate obligation" in critic
+    assert "never excuses a surviving necessity or sufficiency" in critic
+    assert "COMPACT AUDIT REPORT" in critic
+    assert "for output formatting only" in critic
+    assert "supersedes the CRITIC_TEMPLATE" in critic
+    assert "does not supersede performing those audits" in critic
+    assert "passed gates need no prose" in critic
+    assert "Brevity never licenses" in critic
+
+
+def test_compiler_separates_runner_protocol_from_task_acceptance():
+    prompt = prompts.OBLIGATIONS_SYSTEM
+
+    assert "RUNNER-INTERFACE QUOTIENT" in prompt
+    assert "CAPTURE-PRESERVING NON-CIRCULARITY GATE" in prompt
+    assert "successful runner capture and handoff" in prompt
+    assert "source says it is mandatory" in prompt
+    assert "Remove failures before every later audit" in prompt
+    assert "not even a SHOULD or narrower" in prompt
+    assert "semantic function, never by tool name" in prompt
+    assert "never infer `the task is incomplete, invalid, or rejected`" \
+        in prompt
+    assert "Response cadence, invocation/result handshakes" in prompt
+    assert "bans on work after submission are runner interface" in prompt
+    assert prompts.OBLIGATIONS_TEMPLATE.index(
+        "ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
+        < prompts.OBLIGATIONS_TEMPLATE.index("MANDATORY DEFINITION CHECK")
+
+
+def test_critic_attacks_both_sides_of_runner_boundary():
+    prompt = prompts.CRITIC_SYSTEM
+
+    assert "RUNNER-INTERFACE QUOTIENT" in prompt
+    assert "CAPTURE-PRESERVING NON-CIRCULARITY ATTACK" in prompt
+    assert "apply a NECESSITY attack" in prompt
+    assert "successful runner capture and handoff" in prompt
+    assert "It survives only if both a non-circular task-owned property" \
+        in prompt
+    assert "require removal in this same round" in prompt
+    assert "never append, refine, downgrade to SHOULD, or narrow" in prompt
+    assert "Imperatives, `must`, headings, tool names" in prompt
+    assert "never infer `the task is incomplete, invalid, or rejected`" \
+        in prompt
+    assert "Response cadence, invocation/result handshakes" in prompt
+    assert prompts.CRITIC_TEMPLATE.index(
+        "ZERO-ORDER RUNNER-INTERFACE QUOTIENT") \
+        < prompts.CRITIC_TEMPLATE.index("GAME CONSISTENCY RULE")
+    assert "bind you only where they survive that quotient" \
+        in prompts.CRITIC_TEMPLATE
+
+
+def test_compiler_and_critic_freeze_past_report_intension():
+    compiler = prompts.OBLIGATIONS_SYSTEM + prompts.OBLIGATIONS_TEMPLATE
+    critic = prompts.CRITIC_SYSTEM
+
+    for prompt in (compiler, critic):
+        assert "E→O" in prompt
+        assert "P@time" in prompt
+    assert "HISTORICAL EVENT-CONTENT GATE" in compiler
+    assert "trusted ledger's direct event predicate" in compiler
+    assert "Missing record availability is a downstream evidence gap" \
+        in compiler
+    assert "HISTORICAL EVENT-CONTENT INVARIANT" in critic
+    assert "not another reporter" in critic
+    assert "downstream evidence availability" in critic
+    assert "adding accuracy or an external property" in critic

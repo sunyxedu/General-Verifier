@@ -30,10 +30,22 @@ import contextlib
 import os
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import prompts
+from .model_spans import (
+    role_attempt, role_span, seat_acquired, seat_released,
+    seat_wait_started, submit_with_context,
+)
 from .schema import RoleError, validate, field_name, optional_key
+from .oracle_execution import (
+    ORACLE_EXECUTION_WIRE_SCHEMA,
+    lower_oracle_execution_payload,
+)
+from ..engine.source_evidence import (
+    SourceEvidenceView,
+    refresh_source_evidence_variables,
+)
 # The Claude Agent SDK backs the DEFAULT backend only; alternate backends
 # (CodexBackend) never touch it. Imported lazily so that a seats=codex run
 # does not depend on the SDK's import chain (mcp -> pydantic -> native
@@ -164,24 +176,186 @@ class AgentRole:
     model: Optional[str] = None
     max_turns: int = 20
     system: str = ""
+    # schema remains the established downstream/replay contract. A role may
+    # expose a stricter model-facing shape and lower it atomically before
+    # anything downstream observes the payload.
+    wire_schema: Optional[Dict[str, Any]] = None
+    wire_lower: Optional[
+        Callable[[Dict[str, Any]], Dict[str, Any]]
+    ] = None
 
     def render(self, variables: Dict[str, Any]) -> str:
         return self.template.format(**variables)
 
     def call(self, backend, variables: Dict[str, Any]) -> Dict[str, Any]:
         """Two attempts (schema error fed back once), then RoleError."""
-        prompt = self.render(variables)
         last_error: Optional[RoleError] = None
-        for _attempt in range(2):
-            try:
-                with SEAT_GATE.slot():
-                    payload = backend.complete(self.name, prompt, variables)
-                validate(self.schema, payload)
-                return payload
-            except RoleError as err:
-                last_error = err
-                prompt = prompt + f"\n\n[previous attempt failed; fix it and retry] {err}"
-        raise RoleError(f"{self.name}: failed twice: {last_error}")
+        retry_feedback = ""
+        oracle_catalog_force_baseline = False
+        # Start before acquiring SEAT_GATE: queueing is part of end-to-end
+        # role latency, while each schema retry remains separately visible.
+        with role_span(self.name):
+            for attempt_index in range(1, 3):
+                try:
+                    with role_attempt(attempt_index):
+                        wait_started = seat_wait_started()
+                        with SEAT_GATE.slot():
+                            acquired = seat_acquired(wait_started)
+                            try:
+                                # Bind after queueing: a view captured before
+                                # the seat gate could go stale while waiting
+                                # and waste a complete paid backend call.
+                                attempt_variables = dict(variables)
+                                source_view = attempt_variables.get(
+                                    "_source_evidence_view")
+                                mixed_ledger_path = attempt_variables.get(
+                                    "_mixed_ledger_path")
+                                try:
+                                    allows_compact_source = getattr(
+                                        backend,
+                                        "allows_compact_source_evidence",
+                                        None,
+                                    )
+                                except Exception:
+                                    allows_compact_source = None
+                                compact_source_allowed = None
+                                if (type(source_view) is SourceEvidenceView
+                                        and callable(allows_compact_source)):
+                                    try:
+                                        compact_source_allowed = \
+                                            allows_compact_source(
+                                                self.name,
+                                                attempt_variables,
+                                            )
+                                    except Exception:
+                                        # An absent or faulty optional
+                                        # capability cannot change the
+                                        # established evidence transport.
+                                        compact_source_allowed = None
+                                valid_mixed_path = False
+                                if (type(source_view) is SourceEvidenceView
+                                        and isinstance(
+                                            mixed_ledger_path, str)
+                                        and os.path.isabs(mixed_ledger_path)):
+                                    try:
+                                        valid_mixed_path = (
+                                            mixed_ledger_path
+                                            == os.path.abspath(
+                                                source_view._log.path))
+                                    except (AttributeError, OSError,
+                                            TypeError, ValueError):
+                                        valid_mixed_path = False
+                                if (compact_source_allowed is False
+                                        and valid_mixed_path):
+                                    # Some runtimes mutate filesystem metadata
+                                    # merely by reading a directory. Respect
+                                    # an explicit opt-out before paying for a
+                                    # call whose immutable-view postcheck could
+                                    # therefore never succeed.
+                                    attempt_variables["ledger_path"] = \
+                                        mixed_ledger_path
+                                    attempt_variables.pop(
+                                        "_source_evidence_view", None)
+                                else:
+                                    attempt_variables = \
+                                        refresh_source_evidence_variables(
+                                            variables)
+                                catalog_snapshot = None
+                                if self.name == "oracles":
+                                    from ..execution.adapters import \
+                                        OracleCatalogView
+                                    catalog_view = attempt_variables.get(
+                                        "adapter_catalog")
+                                    if type(catalog_view) is OracleCatalogView:
+                                        permits_lazy_catalog = False
+                                        capability = getattr(
+                                            backend,
+                                            "allows_lazy_oracle_catalog",
+                                            None,
+                                        )
+                                        if callable(capability):
+                                            try:
+                                                permits_lazy_catalog = \
+                                                    capability(
+                                                        self.name,
+                                                        attempt_variables,
+                                                    ) is True
+                                            except Exception:
+                                                permits_lazy_catalog = False
+                                        if (oracle_catalog_force_baseline
+                                                or not permits_lazy_catalog):
+                                            attempt_variables = dict(
+                                                attempt_variables)
+                                            attempt_variables["adapter_catalog"] = \
+                                                catalog_view.fallback_catalog()
+                                        else:
+                                            catalog_snapshot = \
+                                                catalog_view.snapshot()
+                                            if catalog_snapshot is None:
+                                                oracle_catalog_force_baseline = \
+                                                    True
+                                                attempt_variables = dict(
+                                                    attempt_variables)
+                                                attempt_variables[
+                                                    "adapter_catalog"] = \
+                                                    catalog_view.fallback_catalog()
+                                source_view = attempt_variables.get(
+                                    "_source_evidence_view")
+                                if (type(source_view) is SourceEvidenceView
+                                        and not source_view.revalidate()):
+                                    # The optimization is optional. A race in
+                                    # publication must expose the original
+                                    # full ledger, not consume a model retry.
+                                    attempt_variables = dict(attempt_variables)
+                                    attempt_variables["ledger_path"] = \
+                                        attempt_variables["_mixed_ledger_path"]
+                                    attempt_variables.pop(
+                                        "_source_evidence_view", None)
+                                    source_view = None
+                                catalog_changed = False
+                                try:
+                                    prompt = (self.render(attempt_variables)
+                                              + retry_feedback)
+                                    payload = backend.complete(
+                                        self.name, prompt, attempt_variables)
+                                finally:
+                                    if catalog_snapshot is not None:
+                                        catalog_changed = not \
+                                            catalog_snapshot.revalidate()
+                                        catalog_snapshot.close()
+                                        if catalog_changed:
+                                            oracle_catalog_force_baseline = True
+                                if catalog_changed:
+                                    raise RoleError(
+                                        "oracles: adapter catalog changed "
+                                        "during audit")
+                            finally:
+                                seat_released(acquired)
+                        if (type(source_view) is SourceEvidenceView
+                                and not source_view.revalidate()):
+                            raise RoleError(
+                                f"{self.name}: source evidence changed during audit")
+                        use_wire = (
+                            self.wire_schema is not None
+                            and getattr(
+                                backend, "uses_role_wire_schema", False,
+                            ) is True
+                        )
+                        if use_wire:
+                            validate(self.wire_schema, payload)
+                            if self.wire_lower is None:
+                                raise RoleError(
+                                    f"{self.name}: wire schema has no lowerer",
+                                )
+                            payload = self.wire_lower(payload)
+                        validate(self.schema, payload)
+                    return payload
+                except RoleError as err:
+                    last_error = err
+                    retry_feedback = (
+                        f"\n\n[previous attempt failed; fix it and retry] {err}"
+                    )
+            raise RoleError(f"{self.name}: failed twice: {last_error}")
 
 
 class AgentBackend:
@@ -207,7 +381,22 @@ class AgentBackend:
         self.cwd = cwd
         self.model = model
         self.permission_mode = permission_mode
+        self.uses_role_wire_schema = True
         self.transcripts: List[Dict[str, Any]] = []
+
+    def allows_lazy_oracle_catalog(
+        self, role_name: str, variables: Dict[str, Any],
+    ) -> bool:
+        """Allow locators only for an actually read-only Oracle palette."""
+        if role_name != "oracles":
+            return False
+        role = self.roles.get(role_name)
+        read_only_tools = frozenset({
+            "Read", "Grep", "Glob", "WebSearch", "WebFetch",
+        })
+        return (role is not None
+                and all(isinstance(tool, str) for tool in role.tools)
+                and set(role.tools) <= read_only_tools)
 
     def complete(self, role_name: str, prompt: str, variables: Dict[str, Any]) -> Any:
         """
@@ -226,7 +415,8 @@ class AgentBackend:
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, self.run(role, prompt)).result()
+            return submit_with_context(
+                pool, asyncio.run, self.run(role, prompt)).result()
 
     # statuses worth waiting out (rate limit / overload / gateway); the CLI
     # sometimes reports these only as the opaque "error result: success"
@@ -282,7 +472,8 @@ class AgentBackend:
 
         if result is not None and result.structured_output is not None and result.subtype == "success":
             payload = result.structured_output
-            validate(role.schema, payload)  # our gate, independent of the SDK's
+            validate(role.wire_schema or role.schema, payload)
+            # Our gate is independent of the SDK's structured-output gate.
             return payload
 
         status = getattr(result, "api_error_status", None)
@@ -322,7 +513,7 @@ class AgentBackend:
                                                # merges over os.environ)
             output_format={
                 "type": "json_schema",
-                "schema": to_json_schema(role.schema),
+                "schema": to_json_schema(role.wire_schema or role.schema),
             },
             max_buffer_size=64 * 1024 * 1024,  # default 1MB truncates long tool output
             stderr=stderr_cb,
@@ -353,11 +544,17 @@ COMPILE_OBLIGATIONS_AGENT = AgentRole(
     # a presence requirement (the only shape an absence witness may
     # refute). Optional at the gate; the kernel defaults each to the
     # fail-closed reading (must, "", False).
+    # excluded is the compiler's exclusion ledger: source clauses that read
+    # as instructions to the candidate but generate no obligation under the
+    # runner-interface quotient or governing modality, each with its
+    # reason.  The Critic reviews these rulings with the contract; the
+    # kernel never verifies them.  Optional: absent reads as an empty ledger.
     schema={"obligations": [{"text": str,
                              "required_basis": ("world", "record"),
                              "severity?": ("must", "should"),
                              "clause?": str,
-                             "refutable_by_absence?": bool}]},
+                             "refutable_by_absence?": bool}],
+            "excluded?": [{"clause": str, "reason": str}]},
     tools=["Read", "Grep", "Glob"],
 )
 
@@ -395,11 +592,28 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
                 # method's positive verdict to the obligation; [] for
                 # decisive (the mini-DSL has no optional keys)
                 "bridges": [str],
+                # Optional typed executor binding.  The oracle still owns
+                # method choice; these fields merely let a registered,
+                # versioned adapter execute that exact method without an
+                # executor seat.  Partial/unknown bindings fall back to the
+                # agent executor rather than affecting the verdict.
+                "adapter?": str,
+                "adapter_version?": int,
+                "adapter_input_binding?": ("fixed-v1",),
+                "adapter_arguments?": str,
+                "adapter_inputs?": [{
+                    "ref": str,
+                    "provenance": ("task_given", "delivered", "ledger",
+                                   "verifier", "public"),
+                    "role": ("subject", "input", "authority"),
+                }],
             }
         ]
     },
     tools=["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
     max_turns=15,      # research takes room; still no Bash — no probing
+    wire_schema=ORACLE_EXECUTION_WIRE_SCHEMA,
+    wire_lower=lower_oracle_execution_payload,
 )
 
 DISCHARGE_AGENT = AgentRole(
@@ -467,12 +681,28 @@ EXTRACT_CLAIMS_AGENT = AgentRole(
     max_turns=30,                     # long ledgers take reading room
 )
 
+# Pre-execution sufficiency audit of one proposed method: the Judger's
+# first question asked before the executor spends minutes on it.  Tool-less
+# and single-turn by design; it never sees or settles evidence.
+SUFFICIENCY_AGENT = AgentRole(
+    name="sufficiency",
+    system=prompts.SUFFICIENCY_SYSTEM,
+    template=prompts.SUFFICIENCY_TEMPLATE,
+    schema={
+        "sufficient": ("yes", "no"),
+        "reason": str,
+    },
+    tools=[],
+    max_turns=1,
+)
+
 ALL_AGENT_ROLES = {
     role.name: role
     for role in (
         COMPILE_OBLIGATIONS_AGENT,
         CRITIC_AGENT,
         ENUMERATE_ORACLES_AGENT,
+        SUFFICIENCY_AGENT,
         DISCHARGE_AGENT,
         JUDGER_AGENT,
         EXTRACT_CLAIMS_AGENT,

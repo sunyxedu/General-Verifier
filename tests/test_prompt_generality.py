@@ -46,8 +46,17 @@ SURFACES = {
     "DISCHARGE_TEMPLATE": prompts.DISCHARGE_TEMPLATE,
     "JUDGER_SYSTEM": prompts.JUDGER_SYSTEM,
     "JUDGER_TEMPLATE": prompts.JUDGER_TEMPLATE,
+    "SUFFICIENCY_SYSTEM": prompts.SUFFICIENCY_SYSTEM,
+    "SUFFICIENCY_TEMPLATE": prompts.SUFFICIENCY_TEMPLATE,
     "EXTRACT_SYSTEM": prompts.EXTRACT_SYSTEM,
     "EXTRACT_TEMPLATE": prompts.EXTRACT_TEMPLATE,
+}
+
+COMPACT_SURFACES = {
+    "COMPACT_COMPLETENESS_COMPILER_ADDENDUM":
+        prompts.COMPACT_COMPLETENESS_COMPILER_ADDENDUM,
+    "COMPACT_COMPLETENESS_CRITIC_ADDENDUM":
+        prompts.COMPACT_COMPLETENESS_CRITIC_ADDENDUM,
 }
 
 
@@ -65,7 +74,10 @@ def _hits(text: str):
 
 
 def test_prompts_name_no_tool_format_benchmark_or_case():
-    offenders = {name: _hits(text) for name, text in SURFACES.items()}
+    offenders = {
+        name: _hits(text)
+        for name, text in {**SURFACES, **COMPACT_SURFACES}.items()
+    }
     offenders = {k: v for k, v in offenders.items() if v}
     assert not offenders, offenders
 
@@ -96,4 +108,7 @@ def test_prompt_corpus_stays_bounded():
     """Prose rules have diminishing returns; growth is the smell of case
     patches. Raise this bound deliberately, never incidentally."""
     total = sum(len(t.split()) for t in SURFACES.values())
-    assert total <= 17_000, total
+    # Raised from 17,000 for the frozen-record boundary sentences in the
+    # executor and Judger templates, then to 17,800 for the pre-execution
+    # sufficiency seat: mechanism descriptions and a new seat, not cases.
+    assert total <= 17_900, total

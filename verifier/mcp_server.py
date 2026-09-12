@@ -259,38 +259,57 @@ def _parallel_default(name: str, fallback: int) -> int:
         return fallback
 
 
+def harness_roles(state_dir: str) -> Dict[str, Any]:
+    """The role registry a state's kernel seats: the mounting harness's
+    ground truth (task.md / baseline/) is the toggle; when present
+    (experiment mounts write it; the interactive mount does not), the
+    obligation compiler is told to compile against it."""
+    from dataclasses import replace
+
+    from .llm import prompts
+    from .llm.agents import ALL_AGENT_ROLES, COMPILE_OBLIGATIONS_AGENT
+
+    obligations = COMPILE_OBLIGATIONS_AGENT
+    if os.path.exists(os.path.join(state_dir, "task.md")) or \
+            os.path.isdir(os.path.join(state_dir, "baseline")):
+        obligations = replace(
+            obligations, system=obligations.system + "\n"
+            + prompts.OBLIGATIONS_HARNESS_ADDENDUM)
+    return dict(ALL_AGENT_ROLES, obligations=obligations)
+
+
 def _default_kernel(sc: Service, model, backend=None,
                     critic_rounds: Optional[int] = None,
                     parallel_obligations: Optional[int] = None,
                     parallel_claims: Optional[int] = None) -> Kernel:
-    from dataclasses import replace
-
-    from .llm import prompts
-    from .llm.agents import (
-        ALL_AGENT_ROLES, AgentBackend, COMPILE_OBLIGATIONS_AGENT,
+    from .llm.agents import AgentBackend
+    from .execution.config import (
+        contract_cache_enabled,
+        method_cache_enabled,
+        sufficiency_preaudit_enabled,
+        typed_adapters_enabled,
+        typed_judger_packet_enabled,
     )
     from .execution.discharge import AgentDischarger
     from .engine.game import BindingGame
 
-    # The mounting harness's ground truth (task.md / baseline/) is the
-    # toggle: when present (experiment mounts write it; the interactive
-    # mount does not), the obligation compiler is told to compile
-    # against it. The backend resolves roles by name, so the swapped
-    # role must go into its registry too, not just into the Kernel.
-    obligations = COMPILE_OBLIGATIONS_AGENT
-    if os.path.exists(os.path.join(sc.state_dir, "task.md")) or \
-            os.path.isdir(os.path.join(sc.state_dir, "baseline")):
-        obligations = replace(
-            obligations, system=obligations.system + "\n"
-            + prompts.OBLIGATIONS_HARNESS_ADDENDUM)
-    roles = dict(ALL_AGENT_ROLES, obligations=obligations)
+    # The backend resolves roles by name, so the harness-swapped role must
+    # go into its registry too, not just into the Kernel.
+    roles = harness_roles(sc.state_dir)
+    obligations = roles["obligations"]
     if backend is None:
         backend = AgentBackend(roles=roles, cwd=sc.state_dir, model=model)
     else:
         # an injected backend (e.g. CodexBackend) still needs the
         # harness-swapped role registry — same double-registration rule
         backend.roles = roles
-    discharger = AgentDischarger(
+    validate_tool_scope = getattr(
+        backend, "validate_offline_tool_scope", None)
+    if not sc.live_world and validate_tool_scope is not None:
+        validate_tool_scope(
+            sc.state_dir, sc.toolchain_dir,
+            getattr(sc, "shared_cache_dir", None))
+    agent_discharger = AgentDischarger(
         backend, sc.artifacts,
         workdir_base=os.path.join(sc.state_dir, "work"),
         cleanup=True,   # snapshots are the evidence; workdirs are scratch
@@ -298,15 +317,49 @@ def _default_kernel(sc: Service, model, backend=None,
         shared_cache_dir=getattr(sc, "shared_cache_dir", None),
         state_dir=sc.state_dir,
         live_world=sc.live_world,
-        store=sc.store)   # evidence-workspace index over the claim graph
+        store=sc.store,   # evidence-workspace index over the claim graph
+        log=sc.log)
+    # Process-local, explicit opt-in reuse across the candidates of one task
+    # scored in this process.  Off by default: every candidate then follows
+    # the fresh Compiler/Critic/Oracle/executor/Judger sequence.
+    method_cache = None
+    if method_cache_enabled():
+        from .engine.method_cache import default_accepted_method_cache
+        method_cache = default_accepted_method_cache()
+    contract_cache = None
+    if contract_cache_enabled():
+        from .engine.contract_cache import (
+            default_compiled_final_contract_cache,
+        )
+        contract_cache = default_compiled_final_contract_cache()
+    typed_adapters = typed_adapters_enabled()
+    typed_judger_packet = typed_judger_packet_enabled()
+    if typed_judger_packet and not typed_adapters:
+        raise ValueError("typed-adapter Judger packet requires typed adapters")
+    if typed_adapters:
+        from .execution.adapters import (
+            AdapterRoutingDischarger, default_adapter_registry,
+        )
+
+        discharger = AdapterRoutingDischarger(
+            agent_discharger, default_adapter_registry(), sc.artifacts, sc.log,
+            sc.state_dir, live_world=sc.live_world)
+    else:
+        discharger = agent_discharger
     binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
-                         memory=sc.memory, live_world=sc.live_world)
+                         memory=sc.memory, live_world=sc.live_world,
+                         method_cache=method_cache,
+                         typed_adapter_judger_packet=typed_judger_packet,
+                         sufficiency_role=(
+                             roles["sufficiency"]
+                             if sufficiency_preaudit_enabled() else None),
+                         packet_method_reuse=method_cache is not None)
     if parallel_obligations is None:
         parallel_obligations = getattr(sc, "parallel_obligations", None)
     if parallel_claims is None:
         parallel_claims = getattr(sc, "parallel_claims", None)
     if parallel_obligations is None:
-        parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 4)
+        parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 8)
     if parallel_claims is None:
         # online (live world): one claim at a time as commits arrive
         parallel_claims = (1 if sc.live_world
@@ -315,7 +368,9 @@ def _default_kernel(sc: Service, model, backend=None,
                   obligations_role=obligations,
                   discharger=discharger, binder=binder,
                   memory=sc.memory, live_world=sc.live_world,
+                  record_boundary=sc.builder.commit_seq.get,
                   critic_rounds=critic_rounds,
+                  contract_cache=contract_cache,
                   parallel_obligations=parallel_obligations,
                   parallel_claims=parallel_claims)
 
