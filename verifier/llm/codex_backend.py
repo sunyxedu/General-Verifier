@@ -2357,6 +2357,10 @@ class CodexBackend:
             "-c", f"permissions.{_OFFLINE_PROFILE}.network.enabled=true",
             "-c", ("tools.web_search=true" if self._search_enabled(role_name)
                    else "tools.web_search=false"),
+            # --ignore-user-config also drops the operator's top-level
+            # setting; the legacy tools flag alone does not remove search.
+            *(() if self._search_enabled(role_name)
+              else ("-c", 'web_search="disabled"')),
             "-c", "features.skip_host_skill_discovery=true",
             "-c", "suppress_unstable_features_warning=true",
             "-c", "project_doc_max_bytes=0",
