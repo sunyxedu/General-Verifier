@@ -5,7 +5,10 @@ import tomllib
 import pytest
 
 from verifier.mcp_server import Service
-from verifier.profiles.cyber.backend import CyberCodexBackend, PLANNER_ROLES
+from verifier.profiles.cyber.backend import (
+    CyberCodexBackend, PLANNER_ROLES, _prune_redundant_state_denies,
+    _planner_state_allowlist, _PLANNER_RUNTIME_BOUNDARIES,
+)
 
 
 def grants_for(backend, role):
@@ -21,14 +24,123 @@ def test_general_planners_only_receive_authority_and_own_scratch(tmp_path, role)
     public.mkdir()
     backend = CyberCodexBackend(cwd=str(state), project_root=str(public), model="fixture")
     grants, args = grants_for(backend, role)
-    assert grants[str(state)] == grants[str(public)] == "deny"
-    assert grants[str(state / "record")] == grants[str(state / "source_evidence")] == "deny"
+    assert grants[":root"] == grants[str(public)] == "deny"
+    assert str(state) not in grants
+    for name in ("record", "source_evidence", "artifacts", "verifier-home",
+                 "events.jsonl", "future-private-transport", "_blind/another-role"):
+        assert effective_state_grant(grants, state / name) == "deny"
+        assert str(state / name) not in grants
     for name in ("task.md", "baseline", "oracle_catalog"):
         assert grants[str(state / name)] == "read"
     assert grants[str(state / "_blind" / role)] == "write"
     assert backend._execution_cwd(role, {"world_mode": "live"}) == str(state / "_blind" / role)
     assert any(value.endswith(".network.enabled=false") for value in args)
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
+
+
+def effective_state_grant(grants, path):
+    """Independent explicit-rule lookup; fixture paths never use macros."""
+    return next((grants[str(parent)] for parent in (path, *path.parents)
+                 if str(parent) in grants), grants[":root"])
+
+
+def test_planner_allowlist_keeps_private_exceptions_and_removes_parent_masks(tmp_path):
+    state = tmp_path / "state"
+    rules = {":root": "deny", ":minimal": "read", str(state): "read",
+             str(state / "work"): "write", str(state / "artifacts"): "deny",
+             str(state / "baseline"): "read", str(state / "baseline/private"): "deny",
+             str(state / "_blind/oracles/private"): "deny",
+             "/usr/local/lib/gv-sanitizer": "deny"}
+    _planner_state_allowlist(rules, state, "oracles")
+    assert str(state) not in rules and str(state / "work") not in rules
+    assert effective_state_grant(rules, state / "artifacts/new-file") == "deny"
+    assert effective_state_grant(rules, state / "future-private") == "deny"
+    assert effective_state_grant(rules, state / "baseline/public") == "read"
+    assert effective_state_grant(rules, state / "baseline/private/file") == "deny"
+    assert effective_state_grant(rules, state / "_blind/oracles/private/file") == "deny"
+    assert effective_state_grant(rules, state / "_blind/oracles/file") == "write"
+    assert effective_state_grant(rules, state / "_blind/critic/file") == "deny"
+    assert rules["/usr/local/lib/gv-sanitizer"] == "deny"
+
+
+@pytest.mark.parametrize("name", ["task.md", "baseline", "oracle_catalog", "_blind/oracles"])
+def test_planner_allowlist_never_overrides_an_exact_private_boundary(tmp_path, name):
+    state = tmp_path / "state"
+    rules = {":root": "deny", str(state): "deny", str(state / name): "deny"}
+    original = rules.copy()
+    from verifier.llm.schema import RoleError
+    with pytest.raises(RoleError, match="explicit private boundary"):
+        _planner_state_allowlist(rules, state, "oracles")
+    assert rules == original
+
+
+@pytest.mark.parametrize("relative", [".", "baseline", ".."])
+@pytest.mark.parametrize("role", sorted(PLANNER_ROLES))
+def test_planner_project_and_state_must_remain_disjoint(tmp_path, role, relative):
+    state = tmp_path / "state"
+    state.mkdir()
+    project = os.path.abspath(str(state / relative))
+    backend = CyberCodexBackend(cwd=str(state), project_root=project, model="fixture")
+    from verifier.llm.schema import RoleError
+    with pytest.raises(RoleError, match="separate from the public project"):
+        backend._execution_policy_args(role, {})
+
+
+@pytest.mark.parametrize("role", sorted(PLANNER_ROLES))
+def test_planner_project_alias_cannot_reopen_private_state(tmp_path, role):
+    state = tmp_path / "state"
+    (state / "baseline").mkdir(parents=True)
+    alias = tmp_path / "project-alias"
+    alias.symlink_to(state / "baseline", target_is_directory=True)
+    backend = CyberCodexBackend(cwd=str(state), project_root=str(alias), model="fixture")
+    from verifier.llm.schema import RoleError
+    with pytest.raises(RoleError, match="separate from the public project"):
+        backend._execution_policy_args(role, {})
+
+
+@pytest.mark.parametrize("root", _PLANNER_RUNTIME_BOUNDARIES)
+@pytest.mark.parametrize("role", sorted(PLANNER_ROLES))
+def test_planner_state_cannot_overlap_platform_read_mounts(tmp_path, monkeypatch, root, role):
+    backend = CyberCodexBackend(cwd=str(tmp_path), model="fixture")
+    monkeypatch.setattr(backend, "_offline_state_dir", lambda _: root + "/private-state")
+    monkeypatch.setattr(backend, "_offline_tool_roots",
+                        lambda _: pytest.fail("must reject before scratch creation"))
+    from verifier.llm.schema import RoleError
+    with pytest.raises(RoleError, match="platform runtime mount"):
+        backend._execution_policy_args(role, {})
+
+
+def test_deny_normalization_preserves_reopened_subtree_exceptions(tmp_path):
+    state = tmp_path / "state"
+    rules = {
+        ":root": "deny", ":minimal": "read", str(state): "deny",
+        str(state / "hidden"): "deny", str(state / "hidden/nested"): "deny",
+        str(state / "baseline"): "read", str(state / "baseline/private"): "deny",
+        str(state / "baseline/private/nested"): "deny",
+        str(state / "baseline/private/public"): "read",
+        str(state / "baseline/private/public/secret"): "deny",
+        str(state / "_blind/oracles"): "write",
+        str(state / "_blind/oracles/secret"): "deny",
+        "/usr/local/lib/gv-sanitizer": "deny",
+        "/usr/local/lib/gv-sanitizer/runner": "deny",
+        "~/.codex": "deny",
+    }
+    original = rules.copy()
+    _prune_redundant_state_denies(rules, state)
+    assert set(original) - set(rules) == {
+        str(state / "hidden"), str(state / "hidden/nested"),
+        str(state / "baseline/private/nested"),
+    }
+    for path in (state, state / "hidden/nested/file", state / "new-transport/file",
+                 state / "baseline/file", state / "baseline/private/nested/file",
+                 state / "baseline/private/public/file",
+                 state / "baseline/private/public/secret/file",
+                 state / "_blind/oracles/file", state / "_blind/oracles/secret/file",
+                 state / "_blind/critic/file"):
+        assert effective_state_grant(rules, path) == effective_state_grant(original, path)
+    normalized = rules.copy()
+    _prune_redundant_state_denies(rules, state)
+    assert rules == normalized
 
 
 @pytest.mark.parametrize("role", ["discharge", "judger"])

@@ -214,15 +214,19 @@ def test_answer_blind_projection_rejects_new_evidence_directory_leak(tmp_path, r
     args = [value.replace(str(tmp_path), "/state") for value in
             backend._execution_policy_args(role, {"world_mode": "live"})]
     index = next(i for i, value in enumerate(args) if ".filesystem=" in value)
-    assert f'"{path}"="deny"' in args[index]
-    args[index] = args[index].replace(f'"{path}"="deny"', f'"{path}"="read"')
+    prefix, table = args[index].split("=", 1)
+    grants = preflight.tomllib.loads("grants=" + table)["grants"]
+    assert preflight._explicit_path_grant(grants, path, root_default=True) == "deny"
+    grants[path] = "read"
+    args[index] = prefix + "={" + ",".join(json.dumps(key) + "=" + json.dumps(value)
+                                          for key, value in grants.items()) + "}"
     with pytest.raises(preflight.PreflightError, match="answer_blind_state_grant_outside_whitelist"):
         preflight._permission_projection(args, role)
 
 
 @pytest.mark.parametrize("role", sorted(preflight.ANSWER_BLIND_ROLES))
 @pytest.mark.parametrize("path,grant,error", [
-    ("/state", None, "answer_blind_state_not_default_denied"),
+    ("/state", "deny", "answer_blind_state_not_default_denied"),
     ("/state", "read", "answer_blind_state_not_default_denied"),
     ("/state/task.md", None, "answer_blind_authority_not_read_only"),
     ("/state/baseline", "write", "answer_blind_authority_not_read_only"),
@@ -230,6 +234,8 @@ def test_answer_blind_projection_rejects_new_evidence_directory_leak(tmp_path, r
     ("/state/future_metadata", "read", "answer_blind_state_grant_outside_whitelist"),
     ("/state/future_metadata", "write", "answer_blind_state_grant_outside_whitelist"),
     ("/state/_blind/foreign", "write", "answer_blind_state_grant_outside_whitelist"),
+    ("/state/baseline/private", "read", "answer_blind_state_grant_outside_whitelist"),
+    ("/state/_blind/oracles/extra", "write", "answer_blind_state_grant_outside_whitelist"),
 ])
 def test_blind_whitelist_rejects_missing_authority_and_new_metadata_access(tmp_path, role, path, grant, error):
     backend = sidecar.SandboxedVerifierBackend(cwd=str(tmp_path))

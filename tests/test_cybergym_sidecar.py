@@ -134,15 +134,21 @@ def test_every_role_has_readonly_shell_denied_credentials_and_no_network(tmp_pat
     assert "model_auto_compact_token_limit=780000" in args
     filesystem = next(value for value in args if '.filesystem=' in value)
     grants = tomllib.loads("grants=" + filesystem.split("=", 1)[1])["grants"]
-    assert grants[str(tmp_path / "work")] == ("deny" if role in ("obligations", "critic", "oracles", "sufficiency") else "write")
-    assert grants[str(tmp_path / "verifier-home")] == "deny"
+    def effective(path):
+        return next((grants[str(parent)] for parent in (path, *path.parents)
+                     if str(parent) in grants), grants[":root"])
+    assert effective(tmp_path / "work") == ("deny" if role in ("obligations", "critic", "oracles", "sufficiency") else "write")
+    assert effective(tmp_path / "verifier-home") == "deny"
     if role in ("obligations", "critic", "oracles", "sufficiency"):
-        assert grants[str(tmp_path)] == "deny"
+        assert str(tmp_path) not in grants and grants[":root"] == "deny"
         for authority in ("task.md", "baseline", "oracle_catalog"):
             assert grants[str(tmp_path / authority)] == "read"
         for hidden in ("cybergym-observations", "hook_feed.jsonl", "artifacts", "cyber",
                        "workspace", "record", "source_evidence"):
-            assert grants[str(tmp_path / hidden)] == "deny"
+            assert effective(tmp_path / hidden) == "deny"
+            assert str(tmp_path / hidden) not in grants
+        assert effective(tmp_path / "future-private-transport") == "deny"
+        assert effective(tmp_path / "_blind" / "another-role") == "deny"
         assert grants[str(tmp_path / "_blind" / role)] == "write"
         assert grants["/task"] == "deny"
         env_arg = next(value for value in args if value.startswith("shell_environment_policy.set="))

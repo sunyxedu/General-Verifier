@@ -155,6 +155,13 @@ class _Conversation:
                 pass
 
 
+def _explicit_path_grant(grants, path, *, root_default=False):
+    """Explicit rule; optional default only for the known non-runtime /state."""
+    selected = Path(path)
+    return next((grants[str(parent)] for parent in (selected, *selected.parents)
+                 if str(parent) in grants), grants.get(":root") if root_default else None)
+
+
 def _permission_projection(args, role):
     """Inspect generated arguments, not a handwritten substitute for the seat."""
     assignments = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-c"]
@@ -170,19 +177,21 @@ def _permission_projection(args, role):
             or 'approval_policy="never"' not in assignments
             or "--dangerously-bypass-approvals-and-sandbox" in args):
         raise PreflightError("role_permission_boundary_mismatch")
+    blind = role in ANSWER_BLIND_ROLES
+    if blind and (grants.get(":root") != "deny" or "/state" in grants):
+        raise PreflightError("answer_blind_state_not_default_denied")
     for path in ("/evaluator", "/codex-home", "/gv", "/controller", "/state/verifier-home"):
-        if grants.get(path) != "deny":
+        grant = (_explicit_path_grant(grants, path, root_default=True) if path.startswith("/state/")
+                 else grants.get(path))
+        if grant != "deny":
             raise PreflightError("role_private_root_not_denied")
     envs = [value for value in assignments if value.startswith("shell_environment_policy.set=")]
     if len(envs) != 1:
         raise PreflightError("role_shell_environment_missing")
     env = tomllib.loads(envs[0])["shell_environment_policy"]["set"]
-    blind = role in ANSWER_BLIND_ROLES
     if blind:
         authority = {"/state/task.md", "/state/baseline", "/state/oracle_catalog"}
         scratch = f"/state/_blind/{role}"
-        if grants.get("/state") != "deny":
-            raise PreflightError("answer_blind_state_not_default_denied")
         if any(grants.get(path) != "read" for path in authority):
             raise PreflightError("answer_blind_authority_not_read_only")
         for path, grant in grants.items():
@@ -193,7 +202,7 @@ def _permission_projection(args, role):
         for path in ("/task", "/state/artifacts", "/state/cyber", "/state/work",
                      "/state/workspace", "/state/cybergym-observations", "/state/hook_feed.jsonl",
                      "/state/record", "/state/source_evidence"):
-            if grants.get(path) != "deny":
+            if _explicit_path_grant(grants, path, root_default=path.startswith("/state/")) != "deny":
                 raise PreflightError("answer_blind_root_not_denied")
         if env.get("HOME") != f"/state/_blind/{role}/home" or grants.get(f"/state/_blind/{role}") != "write":
             raise PreflightError("answer_blind_home_not_isolated")

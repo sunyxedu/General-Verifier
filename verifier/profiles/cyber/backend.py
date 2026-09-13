@@ -16,6 +16,59 @@ from verifier.llm.schema import RoleError
 
 
 PLANNER_ROLES = frozenset({"obligations", "critic", "oracles", "sufficiency"})
+# Pinned Codex 0.153.4 Linux :minimal roots, plus separately mounted devices
+# and proc. An answer-blind state must not inherit any of these read mounts.
+_PLANNER_RUNTIME_BOUNDARIES = (
+    "/bin", "/sbin", "/usr", "/etc", "/lib", "/lib64",
+    "/nix/store", "/run/current-system/sw", "/dev", "/proc",
+)
+
+
+def _prune_redundant_state_denies(grants, state):
+    """Remove only denies already covered by an explicit denied ancestor.
+
+    Codex's Linux filesystem sandbox masks denied directories read-only.
+    A second mask nested below one can fail while constructing its mountpoint.
+    Preserve exceptions below reopened read/write subtrees, all positive
+    grants, and rules outside state (including :minimal runtime carve-outs).
+    Never infer the paths opened by macros such as :minimal or ~.
+    """
+    explicit = {Path(name): grant for name, grant in grants.items()
+                if Path(name).is_absolute() and Path(name).is_relative_to(state)}
+    redundant = []
+    for path, grant in explicit.items():
+        if grant != "deny" or path == state:
+            continue
+        ancestor = next((parent for parent in path.parents if parent in explicit), None)
+        if ancestor is not None and explicit[ancestor] == "deny":
+            redundant.append(str(path))
+    for name in redundant:
+        del grants[name]
+
+
+def _planner_state_allowlist(grants, state, role):
+    """Mount exact public inputs, not an explicit denied state parent.
+
+    In the pinned Linux sandbox, a denied ancestor of writable scratch masks
+    previously mounted read-only children. Global :root=deny supplies the
+    default instead; retain finer private exceptions within reopened inputs.
+    """
+    positive = {str(state / name): "read" for name in
+                ("task.md", "baseline", "oracle_catalog")}
+    positive[str(state / "_blind" / role)] = "write"
+    if any(grants.get(root) == "deny" for root in positive):
+        raise RoleError("answer-blind public input overlaps an explicit private boundary")
+    _prune_redundant_state_denies(grants, state)
+    exceptions = {}
+    for name, grant in tuple(grants.items()):
+        path = Path(name)
+        if path.is_absolute() and path.is_relative_to(state):
+            if grant == "deny" and any(path != Path(root) and path.is_relative_to(Path(root))
+                                       for root in positive):
+                exceptions[name] = grant
+            del grants[name]
+    grants.update(positive)
+    grants.update(exceptions)
 
 
 class CyberCodexBackend(CodexBackend):
@@ -48,6 +101,17 @@ class CyberCodexBackend(CodexBackend):
 
     def _execution_policy_args(self, role_name, variables):
         state = Path(self._offline_state_dir(variables))
+        if role_name in PLANNER_ROLES:
+            if self.project_root is not None:
+                projects = {Path(self.project_root), Path(os.path.realpath(self.project_root))}
+                if any(state == project or state.is_relative_to(project) or project.is_relative_to(state)
+                       for project in projects):
+                    raise RoleError("answer-blind state must be separate from the public project")
+            boundaries = {Path(root) for root in _PLANNER_RUNTIME_BOUNDARIES}
+            boundaries.update(Path(os.path.realpath(root)) for root in boundaries.copy())
+            if any(state == root or state.is_relative_to(root) or root.is_relative_to(state)
+                   for root in boundaries):
+                raise RoleError("answer-blind state overlaps a platform runtime mount")
         allowed = (state / "work", state / "workspace")
         for key in ("workdir", "workspace_dir"):
             value = variables.get(key)
@@ -110,8 +174,8 @@ class CyberCodexBackend(CodexBackend):
                 grants[str(root)] = "deny"
                 grants[str(launcher)] = "deny"
         if role_name in PLANNER_ROLES:
-            # An allowlist survives new proof/telemetry transports. Retain
-            # explicit denies as a machine-checkable statement of the boundary.
+            # An allowlist survives new proof/telemetry transports. Only
+            # authority inputs and this seat's scratch are explicitly mounted.
             hidden = ("events.jsonl", "claims.sqlite", "claims.sqlite-wal",
                       "claims.sqlite-shm", "record", "source_evidence",
                       "artifacts", "cyber", "work", "workspace",
@@ -147,6 +211,7 @@ class CyberCodexBackend(CodexBackend):
                     _ensure_verifier_owned_chain(str(state), env[key])
             args[env_index] = "shell_environment_policy.set={" + ",".join(
                 f"{key}={_toml_string(value)}" for key, value in env.items()) + "}"
+            _planner_state_allowlist(grants, state, role_name)
         elif self.project_root is not None and role_name in {"discharge", "judger"}:
             # The project is public evidence, not a write grant. More-specific
             # private roots retain precedence even if the project contains them.

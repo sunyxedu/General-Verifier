@@ -127,8 +127,10 @@ def test_planners_do_not_receive_runtime_execution_or_result_access(tmp_path, se
     grants, _ = policy(backend, role)
     assert grants[":root"] == "deny" and grants[str(tools)] == "deny"
     assert grants[str(tools / "launcher")] == "deny"
-    assert grants[str(state)] == "deny"
-    assert grants[str(state / "artifacts")] == "deny"
+    assert str(state) not in grants
+    # No nested mask is needed: the state deny covers raw evidence, while
+    # runtime denies remain explicit because :minimal can reopen /usr.
+    assert str(state / "artifacts") not in grants
 
 
 def test_method_variables_cannot_select_a_runtime_root(tmp_path, selected_runtime):
