@@ -1,0 +1,15 @@
+# Extend the exact audited tools image; no package or model upgrade.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+COPY --chown=0:0 experiments/cybergym/sanitizer_runner.py experiments/cybergym/sanitizer_manifest.py experiments/cybergym/lsan_policy.c /usr/local/lib/gv-sanitizer/
+COPY --chown=0:0 experiments/cybergym/sanitizer-run.sh /usr/local/bin/gv-sanitizer-run
+RUN /usr/bin/gcc -shared -fPIC -O2 -Wl,-z,relro,-z,now -Wl,-z,noexecstack \
+        /usr/local/lib/gv-sanitizer/lsan_policy.c -o /usr/local/lib/gv-sanitizer/lsan_policy.so \
+    && chmod 444 /usr/local/lib/gv-sanitizer/*.py /usr/local/lib/gv-sanitizer/*.c /usr/local/lib/gv-sanitizer/*.so \
+    && chmod 555 /usr/local/bin/gv-sanitizer-run \
+    && /usr/bin/python3.11 -I /usr/local/lib/gv-sanitizer/sanitizer_manifest.py \
+    && chmod 444 /usr/local/lib/gv-sanitizer/manifest.json \
+    && chmod 555 /usr/local/lib/gv-sanitizer
+USER node

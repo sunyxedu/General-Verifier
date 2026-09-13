@@ -131,7 +131,8 @@ class Service:
                  seats: str = "sdk",
                  effort: Optional[str] = None,
                  service_tier: Optional[str] = None,
-                 seat_capabilities=None):
+                 seat_capabilities=None,
+                 seat_runtime=None):
         self.toolchain_dir = toolchain_dir
         # a verifier-owned cache root shared across trials (install caches
         # for the executor's instruments); None keeps every cache
@@ -141,6 +142,12 @@ class Service:
         self.parallel_claims = parallel_claims
         self.live_world = live_world
         self.profile = get_profile(profile)
+        self.seat_runtime = seat_runtime
+        if seat_runtime is not None:
+            from .profiles.cyber.runtime import CyberRuntimeInventory
+            if self.profile.name != "cyber" or not isinstance(seat_runtime, CyberRuntimeInventory):
+                raise ValueError("runtime inventory requires host-configured cyber seats")
+            seat_runtime.as_inventory()  # Verify the actual pinned files before a model runs.
         self.project_root = os.path.realpath(project_root or os.getcwd())
         self.final_destination = (os.path.abspath(os.path.join(self.project_root, final_destination))
                                   if final_destination is not None else None)
@@ -595,6 +602,7 @@ class Service:
             artifact_root=self.artifacts.root,
             event_provider=events.get, tool_call_provider=calls.get,
             effect_resolver=self.builder.resolve,
+            seat_runtime=getattr(self, "seat_runtime", None),
             answer_blind=role in ("obligations", "critic", "oracles", "sufficiency"))
 
     def profile_context(self, role, claim_id):
@@ -1328,7 +1336,8 @@ def _default_kernel(sc: Service, model, backend=None,
                 from .profiles.cyber.backend import CyberCodexBackend
                 backend_type = CyberCodexBackend
                 backend_options = {"timeout": None,
-                    "project_root": getattr(sc, "project_root", None)}
+                    "project_root": getattr(sc, "project_root", None),
+                    "runtime_inventory": getattr(sc, "seat_runtime", None)}
             backend = backend_type(roles=roles, cwd=sc.state_dir, model=model,
                 effort=sc.effort or "medium", service_tier=sc.service_tier or "standard",
                 **backend_options)

@@ -79,6 +79,9 @@ class PolicyOnlyFallback:
         self.backend.offline_toolchain_dir = None
         self.backend.offline_shared_cache_dir = None
         self.backend.search_roles = frozenset()
+        # This policy-only double bypasses __init__; mirror its optional
+        # operator runtime default without loosening the production boundary.
+        self.backend.runtime_inventory = None
 
     def discharge(self, row, obligation, method=None, tag=""):
         variables = {"world_mode": "live", "ledger_path": str(self.fixture.log.path)}

@@ -29,11 +29,18 @@ class CyberCodexBackend(CodexBackend):
     DENIED_ROOTS = ("/evaluator", "/codex-home", "/gv", "/controller",
                     "/root/.codex", "/home/node/.codex")
 
-    def __init__(self, *, project_root: str | None = None, **kwargs):
+    def __init__(self, *, project_root: str | None = None,
+                 runtime_inventory=None, **kwargs):
         super().__init__(**kwargs)
         self.project_root = (os.path.abspath(os.fspath(project_root))
                              if project_root is not None else None)
         self.search_roles = frozenset()
+        self.runtime_inventory = runtime_inventory
+        if runtime_inventory is not None:
+            from .runtime import CyberRuntimeInventory
+            if not isinstance(runtime_inventory, CyberRuntimeInventory):
+                raise RoleError("runtime inventory must be host-selected")
+            runtime_inventory.as_inventory()
 
     def _is_offline_execution(self, role_name, variables):
         # Select a bounded shell, without misrepresenting live-world prompts.
@@ -78,6 +85,30 @@ class CyberCodexBackend(CodexBackend):
         grants.update({path: "deny" for path in self.DENIED_ROOTS})
         grants[str(state / "verifier-home")] = "deny"
         args[network[0]] = args[network[0]].rsplit("=", 1)[0] + "=false"
+        if self.runtime_inventory is not None:
+            runtime = self.runtime_inventory.as_inventory()  # Revalidate dependency pins.
+            root = Path(self.runtime_inventory.tool_root)
+            launcher = Path(runtime["files"]["launcher"]["path"])
+            boundaries = (*protected, state)
+            if any(path == private or path.is_relative_to(private)
+                   or private.is_relative_to(path)
+                   for path in (root, launcher) for private in boundaries):
+                raise RoleError("runtime tools overlap a private evidence boundary")
+            if self.project_root is not None:
+                project = Path(self.project_root)
+                if any(path == project or path.is_relative_to(project)
+                       or project.is_relative_to(path) for path in (root, launcher)):
+                    raise RoleError("runtime tools overlap mutable task material")
+            if role_name in {"discharge", "judger"}:
+                # A fixed public execution tool is not a shell environment
+                # override, a proc grant, or permission to alter tool files.
+                grants[str(root)] = "read"
+                grants[str(launcher)] = "read"
+            else:
+                # The fixed tools live under the minimal /usr read mount.
+                # Omission would not hide them from answer-blind planners.
+                grants[str(root)] = "deny"
+                grants[str(launcher)] = "deny"
         if role_name in PLANNER_ROLES:
             # An allowlist survives new proof/telemetry transports. Retain
             # explicit denies as a machine-checkable statement of the boundary.

@@ -62,10 +62,11 @@ class SandboxedVerifierBackend(CyberCodexBackend):
 
     _diagnostic_lock = threading.Lock()
 
-    def __init__(self, *, cwd: str, project_root: str = "/task"):
+    def __init__(self, *, cwd: str, project_root: str = "/task", runtime_inventory=None):
         super().__init__(cwd=cwd, model=MODEL, effort=EFFORT,
                          service_tier=SERVICE_TIER, timeout=None,
-                         phase_observer=self._diagnostic, project_root=project_root)
+                         phase_observer=self._diagnostic, project_root=project_root,
+                         runtime_inventory=runtime_inventory)
         self._diagnostic_failures = 0
 
     def _execution_policy_args(self, role_name, variables):
@@ -117,7 +118,8 @@ class SandboxedVerifierBackend(CyberCodexBackend):
 
 
 def kernel_factory(service):
-    backend = SandboxedVerifierBackend(cwd=service.state_dir, project_root=service.project_root)
+    backend = SandboxedVerifierBackend(cwd=service.state_dir, project_root=service.project_root,
+                                       runtime_inventory=service.seat_runtime)
     return _default_kernel(service, model=MODEL, backend=backend)
 
 
@@ -141,10 +143,13 @@ def create_service(args) -> Service:
                          authority_scope="candidate_signal", timeout=None,
                          pinned_files=tuple(args.cyber_evaluator_pin))
     from verifier.profiles.cyber.evidence import SeatCapabilities
+    from verifier.profiles.cyber.runtime import load_runtime_inventory
+    runtime = load_runtime_inventory(getattr(args, "cyber_runtime_manifest", None))
     return Service(str(state), kernel_factory=kernel_factory, profile="cyber",
                    project_root=str(project), evaluator_spec=spec,
                    final_destination="final_poc", seats="codex", model=MODEL,
                    effort=EFFORT, service_tier=SERVICE_TIER,
+                   seat_runtime=runtime,
                    seat_capabilities=SeatCapabilities(read_retained_artifacts=True,
                        read_candidate_blobs=True, execute_local_checks=True,
                        invoke_controller_evaluator=False))
@@ -328,6 +333,8 @@ def parse_args(argv=None):
     parser.add_argument("--cyber-evaluator-command-json", required=True)
     parser.add_argument("--cyber-evaluator-pin", action="append", default=[])
     parser.add_argument("--cyber-evaluator-environment", default="vulnerable")
+    parser.add_argument("--cyber-runtime-manifest", type=str,
+                        help="Host-selected immutable public execution-tool manifest")
     return parser.parse_args(argv)
 
 

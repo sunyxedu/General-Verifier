@@ -72,7 +72,7 @@ def test_cyber_profile_pins_executable_boundaries_but_plain_does_not(monkeypatch
     cyber = profiles.get_profile("cyber")
     plain = profiles.get_profile("plain")
     before_cyber, before_plain = cyber.id, plain.id
-    assert set(cyber.identity["cyber_boundary"]) == {"adapters.py", "backend.py", "feedback.py", "phases.py"}
+    assert set(cyber.identity["cyber_boundary"]) == {"adapters.py", "backend.py", "feedback.py", "phases.py", "runtime.py"}
     assert "cyber_boundary" not in plain.identity
     monkeypatch.setattr(profiles, "_cyber_boundary_identity", lambda: {"policy": "changed-fixture"})
     assert cyber.id != before_cyber

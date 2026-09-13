@@ -21,7 +21,7 @@ def _cyber_boundary_identity() -> dict[str, str]:
     """Pin executable domain boundaries as well as their model instructions."""
     root = Path(__file__).parent / "cyber"
     return {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-            for name in ("adapters.py", "backend.py", "feedback.py", "phases.py")}
+            for name in ("adapters.py", "backend.py", "feedback.py", "phases.py", "runtime.py")}
 
 
 def _role_configuration(role: AgentRole) -> dict[str, Any]:

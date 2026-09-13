@@ -23,6 +23,28 @@ and later hidden patched-build score remain distinct. The original GV
 Compiler, Critic, Oracle, Discharger, and Judger still decide the claims and
 certificates; neither the script nor the evaluator marks a task verified.
 
+## Public execution tools
+
+The host can register a pinned, data-only runtime inventory with
+`--cyber-runtime-manifest /usr/local/lib/gv-sanitizer/manifest.json`.
+Omitting it preserves the existing behavior. The inventory describes tools
+and limitations; it is not an observation, verdict, or certificate.
+
+Execution and audit seats can explicitly run
+`gv-sanitizer-run --runtime-profile clang-static|gcc-shared -- COMMAND ...`.
+These profiles apply a narrowly scoped leak-policy compatibility hook without
+rewriting the target or compilation command, disabling ASan memory checks, or
+granting `/proc` or network access. They are declared runtime conventions,
+not automatic executable detection: a mismatched profile or a target's strong
+LSan callback can still fail. Leak checking remains **unchecked**, and zero
+exit must not be interpreted as proof of leak freedom.
+
+The host validates root-owned files and their hashes. Inside the sandbox,
+the tool validates an immutable, read-only `/usr` anchor instead of treating
+remapped UIDs as host identities. Planning seats cannot read the tool files.
+Tool diagnostics remain ordinary execution output, including when a child
+prints similar text; they never authorize a candidate by themselves.
+
 ## Model configuration
 
 The solver and every verification role use **GPT-5.6 Luna, max effort, fast**.

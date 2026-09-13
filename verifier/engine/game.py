@@ -100,6 +100,9 @@ from ..execution.config import (
 )
 
 
+ORACLE_METHOD_PLAN_SCHEMA = "gv-oracle-method-plan-v1"
+
+
 def _method_strength(method: Dict[str, str]) -> str:
     """The method's declared strength, failing closed to analytic when the
     declaration is absent or unrecognized (mirrors basis -> record: an
@@ -1381,10 +1384,27 @@ class BindingGame:
             payload = self.oracles_role.call(self.backend, variables)
         prepare = getattr(self.discharger, "prepare_method", lambda method: method)
         methods = [prepare(method) for method in payload["methods"]]
+        # Retain the complete prepared menu before execution can block or
+        # fail. This is an unexecuted plan, not discharge evidence, an
+        # accepted binding, or a Judger-approved result. The content-addressed
+        # store serializes it now, independently of later method mutation.
+        repair = method_feedback != "(none)"
+        plan_artifact_id = self.artifacts.put({
+            "schema": ORACLE_METHOD_PLAN_SCHEMA,
+            "instrument": "oracle-method-plan",
+            "execution_state": "unexecuted",
+            "claim": row["id"],
+            "obligation": obligation.id,
+            "required_basis": obligation.required_basis,
+            "repair": repair,
+            "methods": methods,
+        })
         event = {
             "claim": row["id"],
             "obligation": obligation.id,
-            "repair": method_feedback != "(none)",
+            "repair": repair,
+            "method_plan_artifact_id": plan_artifact_id,
+            "method_plan_schema": ORACLE_METHOD_PLAN_SCHEMA,
             "methods": [{"procedure": m["procedure"][:80],
                          "level": m.get("level", ""),
                          "basis": m.get("basis", ""),

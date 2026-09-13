@@ -252,7 +252,8 @@ def build_evidence_manifest(*, evaluator_spec: EvaluatorSpec | None,
                             artifact_root: str | None = None,
                             candidate_provider=None, artifact_provider=None,
                             event_provider=None, tool_call_provider=None, effect_resolver=None,
-                            answer_blind: bool = False) -> dict[str, Any]:
+                            answer_blind: bool = False,
+                            seat_runtime=None) -> dict[str, Any]:
     """Build a data-only capability map and authenticated execution capsules.
 
     The Service must select observations from its own ledger and the claim's
@@ -266,6 +267,14 @@ def build_evidence_manifest(*, evaluator_spec: EvaluatorSpec | None,
     if not isinstance(capabilities, SeatCapabilities) or type(answer_blind) is not bool:
         raise EvidenceBindingError("invalid host capability configuration")
     inventory = _inventory(evaluator_spec, capabilities)
+    if seat_runtime is not None:
+        from .runtime import CyberRuntimeInventory
+        if not isinstance(seat_runtime, CyberRuntimeInventory):
+            raise EvidenceBindingError("runtime inventory must be host-selected")
+        # This is an execution interface and its limitations, not observed
+        # evidence. In particular it cannot establish absence of memory leaks.
+        # Omit the key entirely for legacy seats so their revision is unchanged.
+        inventory["seat_runtime"] = seat_runtime.as_inventory()
     manifest = {"schema": MANIFEST_SCHEMA, "inventory": inventory,
                 "capability_revision": content_hash({"schema": MANIFEST_SCHEMA,
                                                      "inventory": inventory})}
