@@ -149,7 +149,10 @@ class CandidateLease:
 
 class CandidateStore:
     def __init__(self, state_dir: str, project_root: str,
-                 artifacts: ArtifactStore, log: EventLog):
+                 artifacts: ArtifactStore, log: EventLog, *, prepare_delivery=None):
+        if prepare_delivery is not None and not callable(prepare_delivery):
+            raise CandidateError("delivery preparation hook must be callable")
+        self._prepare_delivery = prepare_delivery
         self.state_dir = os.path.realpath(state_dir)
         self.project_root = os.path.realpath(project_root)
         self.artifacts, self.log = artifacts, log
@@ -438,6 +441,7 @@ class CandidateStore:
         fd = None
         linked = False
         delivered_identity = None
+        preparing = False
 
         def check_parent() -> None:
             check = _parent_fd(self.project_root, parts)
@@ -463,6 +467,40 @@ class CandidateStore:
             os.fsync(fd)
             self.validate(lease)
             check_parent()
+            info = os.fstat(fd)
+            delivered_identity = (info.st_dev, info.st_ino)
+            receipt = {"schema": "cyber-materialization-v1", "candidate_id": candidate["candidate_id"],
+                       "destination": absolute, "sha256": candidate["sha256"],
+                       "size": candidate["size"], "device": delivered_identity[0],
+                       "inode": delivered_identity[1], "parent_device": parent_identity[0],
+                       "parent_inode": parent_identity[1]}
+            if self._prepare_delivery is not None:
+                # Capture an immutable expectation before any canonical name
+                # exists. The hook persists intent; it cannot select bytes,
+                # inodes, destination, or a replacement receipt.
+                if (_read_fd(fd) != data
+                        or hashlib.sha256(data).hexdigest() != candidate["sha256"]):
+                    raise CandidateError("prepared output digest mismatch")
+                prepared = dict(receipt)
+                preparing = True
+                result = self._prepare_delivery(prepared)
+                preparing = False
+                if result is not None:
+                    raise CandidateError("delivery preparation hook must return None")
+                if (set(prepared) != set(receipt)
+                        or any(type(prepared[key]) is not type(value)
+                               or prepared[key] != value for key, value in receipt.items())):
+                    raise CandidateError("delivery preparation hook changed the receipt")
+                self.validate(lease)
+                check_parent()
+                current = os.fstat(fd)
+                temporary_info = os.stat(temporary, dir_fd=parent, follow_symlinks=False)
+                if (_identity(current) != _identity(info)
+                        or (temporary_info.st_dev, temporary_info.st_ino) != delivered_identity
+                        or not stat.S_ISREG(temporary_info.st_mode)
+                        or temporary_info.st_nlink != 1
+                        or _read_fd(fd) != data):
+                    raise CandidateError("prepared output changed before publication")
             os.link(temporary, parts[-1], src_dir_fd=parent, dst_dir_fd=parent,
                     follow_symlinks=False)
             linked = True
@@ -483,15 +521,13 @@ class CandidateStore:
                 os.close(delivered)
             check_parent()
             os.fsync(parent)
-            return {"schema": "cyber-materialization-v1", "candidate_id": candidate["candidate_id"],
-                    "destination": absolute, "sha256": candidate["sha256"],
-                    "size": candidate["size"], "device": delivered_identity[0],
-                    "inode": delivered_identity[1], "parent_device": parent_identity[0],
-                    "parent_inode": parent_identity[1]}
+            return receipt
         except (OSError, CandidateError) as exc:
             if linked and delivered_identity is not None:
                 _remove_exact_entry(parent, parts[-1], delivered_identity,
                                     candidate["sha256"], candidate["size"])
+            if preparing:
+                raise
             if isinstance(exc, CandidateError):
                 raise
             raise CandidateError("exact materialization failed") from exc

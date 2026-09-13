@@ -180,14 +180,16 @@ def _delivery_receipt_locked(service: Service) -> dict:
             payload = event["payload"]
             final_id = payload["final_claim_id"]
             candidate_id = payload["candidate_id"]
-            certificate, full = service._authenticate_candidate_certificate(
-                payload["certificate_id"], final_id, payload.get("full_certificate_id"))
+            certificate = service._authenticate_completion_certificate(payload)
+            full = certificate
             binding = service._cyber_bindings.get(final_id)
             if (binding is None or certificate.get("verdict") != "verified"
                     or certificate.get("final") != final_id
                     or service.store.status(final_id) != "verified"
                     or full.get("profile_metadata") != service._certificate_metadata(final_id)
                     or binding["subject"]["candidate_id"] != candidate_id
+                    or binding.get("phase") != "task_completion"
+                    or binding.get("delivery_pending") is not False
                     or payload["receipt"].get("candidate_id") != candidate_id
                     or payload["receipt"].get("destination") != service.final_destination):
                 raise ValueError("delivery has no matching current verified certificate")
@@ -204,8 +206,10 @@ def _delivery_receipt_locked(service: Service) -> dict:
                     "candidate_id": candidate_id, "sha256": candidate["sha256"],
                     "size": candidate["size"], "destination": receipt["destination"],
                     "certificate_id": payload["certificate_id"], "final_claim_id": final_id,
-                    **({"full_certificate_id": payload["full_certificate_id"]}
-                       if "full_certificate_id" in payload else {}),
+                    "authorization_root_id": payload["authorization_root_id"],
+                    "authorization_certificate_id": payload["authorization_certificate_id"],
+                    **({"authorization_full_certificate_id": payload["authorization_full_certificate_id"]}
+                       if "authorization_full_certificate_id" in payload else {}),
                     "receipt_event_seq": event["seq"], "receipt": receipt,
                     "profile_id": service.profile.id,
                     "task_sha256": binding["task_sha256"]}

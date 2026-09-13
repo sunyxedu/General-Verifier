@@ -34,7 +34,7 @@ from ..execution.instruments import (
 from ..core.model import (
     Claim, Evidence, Obligation, basis_satisfies,
     BASIS_RECORD, BASIS_WORLD,
-    CLAIM_EFFECT, CLAIM_FINAL,
+    CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL, content_hash,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
     STRENGTH_DECISIVE, strength_rank, weakest_strength,
@@ -148,6 +148,7 @@ class Kernel:
         contract_cache=None,
         contract_replay=None,
         record_boundary=None,
+        independent_root_provider=None,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -207,6 +208,10 @@ class Kernel:
         self.memory = memory      # advisory stores; None -> static hints
         self.context_provider = context_provider or (lambda role, claim: "")
         self.context_id_provider = context_id_provider or (lambda claim: "")
+        if independent_root_provider is not None and not callable(independent_root_provider):
+            raise ValueError("independent root provider must be callable")
+        self._independent_root_provider = independent_root_provider
+        store.set_independent_root_provider(self.is_independent_root)
         self.contract_cache = contract_cache
         # Experimental adapter-isolation diagnostic only.  Ordinary online
         # and offline verification never inject this provider; it freezes a
@@ -223,6 +228,47 @@ class Kernel:
             validate_kernel(self)
         self.contract_replay = contract_replay
         store.on_trigger(self.verify)  # the single rule wires straight in
+
+    def independent_root_context(self, claim_id: str):
+        """Read and freeze host-only authority, never authority from claim text.
+
+        A registered assertion is an independent authorization endpoint, not
+        task completion. Revocation or descriptor mutation fails closed even
+        for settled claims and across store restarts.
+        """
+        if self.store.get(claim_id)["kind"] != CLAIM_ASSERTION:
+            return None
+        if self._independent_root_provider is None:
+            return None
+        try:
+            descriptor = self._independent_root_provider(claim_id)
+        except Exception:
+            raise ValueError("trusted independent root provider failed") from None
+        if descriptor is not None:
+            if (type(descriptor) is not dict
+                    or set(descriptor) != {"scope", "contract_locus"}
+                    or descriptor.get("scope") != "candidate_authorization"
+                    or not isinstance(descriptor.get("contract_locus"), str)
+                    or not descriptor["contract_locus"].strip()):
+                raise ValueError("invalid independent root descriptor")
+            descriptor = dict(descriptor)
+        self.store.pin_independent_root(claim_id, descriptor)
+        return descriptor
+
+    def is_independent_root(self, claim_id: str) -> bool:
+        return self.independent_root_context(claim_id) is not None
+
+    def _is_independent_claim(self, row: Dict) -> bool:
+        return row["kind"] == CLAIM_FINAL or self.is_independent_root(row["id"])
+
+    def verification_context_for(self, claim_id: str) -> str:
+        context_id = self.context_id_provider(claim_id)
+        descriptor = self.independent_root_context(claim_id)
+        if descriptor is not None and not isinstance(context_id, str):
+            raise ValueError("independent root verification context must be a string")
+        return (content_hash({"context_id": context_id,
+                              "independent_root": descriptor})
+                if descriptor is not None else context_id)
 
     # locks and pools
     def _lock_for(self, table: Dict[str, threading.Lock],
@@ -250,6 +296,8 @@ class Kernel:
         concurrently (parallel certificate slices) do the work once."""
         with self._lock_for(self._claim_locks, claim_id):
             row = self.store.get(claim_id)
+            # Check registration before the settled-status fast path.
+            self.is_independent_root(claim_id)
             if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
                 return row["status"]
             with model_scope(
@@ -328,7 +376,7 @@ class Kernel:
         # obligations are the task contract, compiled and established
         # independently of the argument's health — a refuted intermediate
         # eliminates that line of support, not the deliverable's verdict.
-        refuted_deps = [] if row["kind"] == CLAIM_FINAL else [
+        refuted_deps = [] if self._is_independent_claim(row) else [
             p for p in self.store.parents(row["id"])
             if self.store.effective(p)["effective_status"] == STATUS_REFUTED
         ]
@@ -523,6 +571,12 @@ class Kernel:
                         and src_eff["premise_refuted"] is None
                         and not src_eff["open_premises"])
                 )
+                if self.is_independent_root(row["id"]) and (
+                        self.verification_context_for(src["id"])
+                        != self.verification_context_for(row["id"])):
+                    # Equal prose cannot transfer authority between task
+                    # completion, ordinary premises and candidate qualification.
+                    transferable = False
                 if transferable and not basis_satisfies(
                         src_eff["effective_basis"],
                         obligation.required_basis):
@@ -558,7 +612,7 @@ class Kernel:
         for a final — its contract is compiled independently and it is
         exempt from the premise fold, so an assumption there would
         never be charged to anyone."""
-        if row["kind"] == CLAIM_FINAL:
+        if self._is_independent_claim(row):
             return set()
         return set(self.store.backward_slice(row["id"])[1:])
 
@@ -603,7 +657,8 @@ class Kernel:
             self.log,
             self._obligation_compile_variables(row),
             enabled=(getattr(self.backend, "compact_inspection", False)
-                     is True and not self._planner_inventory_only(row["id"])),
+                     is True and not self._planner_inventory_only(row["id"])
+                     and not self.is_independent_root(row["id"])),
         )
         with model_scope(stage="contract_compile", round=0):
             payload = self.obligations_role.call(self.backend, variables)
@@ -632,7 +687,10 @@ class Kernel:
         # contract.  Exact obligation dedup/inheritance still happens after
         # compilation, so sound reuse remains available.
         task_context = authoritative_task_context(state)
-        independent_final = row["kind"] == CLAIM_FINAL
+        root_context = self.independent_root_context(row["id"])
+        independent_final = row["kind"] == CLAIM_FINAL or root_context is not None
+        if root_context is not None:
+            memory_hits = "[]"
         # graph context: EVERY premise (dep) is assumable — the claim's
         # verdict is conditional on its premises by definition, and the
         # read-time effective fold charges each premise's actual state
@@ -669,14 +727,18 @@ class Kernel:
         world_mode, world, _ = world_evidence_context(
             state, live_world=self.live_world)
         graph = (
-            [{"note": "withheld: harness final contract is compiled "
-                      "independently from authoritative task context"}]
+            [{"note": ("withheld: host authorization root is compiled independently"
+                       if root_context is not None
+                       else "withheld: harness final contract is compiled "
+                            "independently from authoritative task context")}]
             if independent_final
             else self.store.graph_snapshot(exclude=row["id"])
         )
         referent_context = (
-            {"withheld": "harness final contract is independent of the "
-                         "solver-derived dependency graph"}
+            {"withheld": ("host authorization root is independent of solver premises"
+                          if root_context is not None
+                          else "harness final contract is independent of the "
+                               "solver-derived dependency graph")}
             if independent_final
             else self._dependency_referent_context(row["id"])
         )
@@ -695,8 +757,9 @@ class Kernel:
             # non-final claim the task contract is owned by the final node,
             # so neither seat treats this claim as the last line of defense
             "contract_locus": (
-                prompts.CONTRACT_LOCUS_FINAL if row["kind"] == CLAIM_FINAL
-                else prompts.CONTRACT_LOCUS_NONFINAL),
+                root_context["contract_locus"] if root_context is not None
+                else (prompts.CONTRACT_LOCUS_FINAL if row["kind"] == CLAIM_FINAL
+                      else prompts.CONTRACT_LOCUS_NONFINAL)),
             "task_context": task_context,
             "ledger_path": self.log.record_path_for(row["id"]),
             "world_mode": world_mode,
@@ -930,7 +993,7 @@ class Kernel:
     def _materialize_obligations(self, row: Dict, payload, *, record=True):
         if payload is None:
             return None
-        independent_final = row["kind"] == CLAIM_FINAL
+        independent_final = self._is_independent_claim(row)
         obligations = [
             Obligation(row["id"], o["text"],
                        o.get("required_basis", BASIS_RECORD),
@@ -943,7 +1006,7 @@ class Kernel:
                        refutable_by_absence=bool(
                            o.get("refutable_by_absence", False)),
                        premise_scope=tuple(self._premises_in_force(row)),
-                       verification_context=self.context_id_provider(row["id"]))
+                       verification_context=self.verification_context_for(row["id"]))
             for o in payload["obligations"]
         ]
         if not independent_final:
@@ -1059,7 +1122,8 @@ class Kernel:
                        if "{profile_context}" in critic_role.template else {}),
                     },
                     enabled=(getattr(backend, "compact_inspection", False)
-                             is True and not self._planner_inventory_only(row["id"])),
+                             is True and not self._planner_inventory_only(row["id"])
+                             and not self.is_independent_root(row["id"])),
                 )
                 verdict = critic_role.call(
                     backend,
@@ -1780,10 +1844,11 @@ class Kernel:
             in_force = self._premises_in_force(row)
             illegal = sorted(set(result.assumed_premises) - in_force)
             if illegal:
-                why = ("a completion claim's contract admits no assumed "
-                       "premises" if row["kind"] == CLAIM_FINAL
-                       else "assumed premises outside the claim's "
-                            "dependency closure")
+                why = ("a completion claim's contract admits no assumed premises"
+                       if row["kind"] == CLAIM_FINAL
+                       else ("an independent claim's contract admits no assumed premises"
+                             if self.is_independent_root(row["id"])
+                             else "assumed premises outside the claim's dependency closure"))
                 result = DischargeResult(
                     outcome=OUTCOME_FAILED,
                     witness=(f"{why}: {illegal} "

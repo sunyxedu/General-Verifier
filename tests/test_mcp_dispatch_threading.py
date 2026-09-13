@@ -72,9 +72,9 @@ DESCRIPTIONS = {
     "cyber_candidates": "List immutable candidate identities; this tool makes no ranking or verdict.",
     "cyber_evaluate_candidate": "Run the configured task-authorized evaluator on the exact candidate.\n"
                                 "                Returns retained observations and an ordinary Effect reference, not a certificate.",
-    "cyber_finalize_candidate": "Verify the candidate through the normal GV roles, then copy certified bytes.\n"
-                                "            A verified candidate certificate is scoped to content; materialization has its own\n"
-                                "            receipt. Neither the receipt nor a candidate signal asserts an official task score.",
+    "cyber_finalize_candidate": "Authorize the candidate through GV, copy exact bytes, then verify the full task.\n"
+                                "            Only a verified whole-task final and current exact delivery complete this operation.\n"
+                                "            Candidate authorization alone is not completion; neither certificate asserts a score.",
     "verification_job": "Query an existing verification job without restarting it.\n"
                         "            A completed result is retained history; current delivery is authenticated separately.",
     "verification_jobs": "List recoverable verification jobs and their progress; starts no verification.",

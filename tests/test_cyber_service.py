@@ -10,13 +10,15 @@ import hashlib
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
 
-from verifier.core.model import CLAIM_EFFECT, CLAIM_FINAL, canonical, content_hash
+from verifier.core.model import CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL, canonical, content_hash
 from verifier.llm.schema import FixtureBackend
 from verifier.mcp_server import Service, _default_kernel
+from verifier.profiles.cyber.phases import authorization_verification_context, make_authorization_binding, authorization_statement
 
 
 CANDIDATE_BYTES = b"a proposed security reproducer\x00\xff\n"
@@ -33,8 +35,9 @@ class RecordingBackend(FixtureBackend):
         self.service = None
 
         def obligations(variables):
-            # Always compile the whole final contract, including a content
-            # requirement beyond identity. Dependency verdicts cannot erase it.
+            # Both independent authorization and whole-task completion retain
+            # the substantive security condition. Dependency verdicts cannot
+            # erase it, and identical text cannot share cross-phase verdicts.
             return {"obligations": [{
                 "text": "the fixed subject establishes the task-defined security condition",
                 "required_basis": "world", "severity": "must",
@@ -148,8 +151,16 @@ def test_candidate_uses_all_normal_roles_before_exact_materialization(tmp_path):
     def materialize_after_certificate(lease, destination):
         assert not Path(destination).exists()
         certificates = [event for event in service.log.replay()
-                        if event["type"] == "certificate"]
+                        if event["type"] == "independent_certificate"]
         assert certificates and certificates[-1]["payload"]["verdict"] == "verified"
+        assert not any(event["type"] in ("certificate", "cyber_candidate_delivered", "cyber_materialized")
+                       for event in service.log.replay())
+        root_id = certificates[-1]["payload"]["root"]
+        root = service.store.get(root_id)
+        assert root["kind"] == CLAIM_ASSERTION and service.kernel.is_independent_root(root_id)
+        root_binding = service._cyber_bindings[root_id]
+        assert root_binding["subject"]["address"] == candidate["blob_path"]
+        assert service.kernel.verification_context_for(root_id) == authorization_verification_context(root_binding)
         assert [call["role"] for call in backend.calls] == [
             "obligations", "critic", "oracles", "discharge", "judger"]
         return materialize(lease, destination)
@@ -158,27 +169,47 @@ def test_candidate_uses_all_normal_roles_before_exact_materialization(tmp_path):
     result = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin")
     assert result.get("materialized") is True, result
     assert result["delivery_pending"] is False
+    assert result["verified"] is True and result["task_completed"] is True
+    assert result["phase"] == "task_completion"
     assert result.get("official_score") is None
     assert (project / "answer.bin").read_bytes() == CANDIDATE_BYTES
     certificate = full_certificate(service, result)
     metadata = certificate["profile_metadata"]
-    assert metadata["certificate_scope"] == "candidate"
-    assert metadata["delivery_pending"] is True
+    assert metadata["certificate_scope"] == "task"
+    assert metadata["phase"] == "task_completion"
+    assert metadata["delivery_pending"] is False
     assert metadata["binding"]["subject"]["sha256"] == hashlib.sha256(CANDIDATE_BYTES).hexdigest()
     assert metadata["binding"]["subject"]["address"] == str(project / "answer.bin")
     assert certificate["final"] == result["final_claim_id"]
+    assert "root" not in certificate
     assert service.store.get(result["final_claim_id"])["kind"] == CLAIM_FINAL
+    authorization = service.artifacts.get(result["authorization_certificate_id"])
+    assert content_hash(authorization) == result["authorization_certificate_id"]
+    assert authorization["root"] == result["authorization_root_id"] and "final" not in authorization
+    authorization_metadata = authorization["profile_metadata"]
+    assert authorization_metadata["certificate_scope"] == "candidate"
+    assert authorization_metadata["phase"] == "candidate_authorization"
+    assert authorization_metadata["delivery_pending"] is True
+    assert authorization_metadata["binding"]["subject"]["address"] == candidate["blob_path"]
+    assert result["authorization_root_id"] != result["final_claim_id"]
+    assert service.store.get(result["authorization_root_id"])["kind"] == CLAIM_ASSERTION
     events = list(service.log.replay())
+    authorized = next(event["seq"] for event in events if event["type"] == "independent_certificate")
+    delivered = next(event["seq"] for event in events if event["type"] == "cyber_candidate_delivered")
     certified = next(event["seq"] for event in events
                      if event["type"] == "certificate")
     materialized = next(event for event in events if event["type"] == "cyber_materialized")
-    assert certified < materialized["seq"]
+    assert authorized < delivered < certified < materialized["seq"]
     assert materialized["payload"]["certificate_id"] == result["certificate_id"]
     for role in ("obligations", "critic", "oracles", "discharge", "judger"):
-        variables = next(call["variables"] for call in backend.calls if call["role"] == role)
-        context = json.loads(variables["profile_context"])
-        assert context["certificate_scope"] == "candidate"
-        assert context["subject"]["candidate_id"] == candidate["candidate_id"]
+        calls = [call for call in backend.calls if call["role"] == role]
+        assert len(calls) == 2
+        for call, phase, scope in zip(calls, ("candidate_authorization", "task_completion"), ("candidate", "task")):
+            context = json.loads(call["variables"]["profile_context"])
+            assert context["phase"] == phase and context["certificate_scope"] == scope
+            assert context["subject"]["candidate_id"] == candidate["candidate_id"]
+    assert [call["role"] for call in backend.calls] == [
+        "obligations", "critic", "oracles", "discharge", "judger"] * 2
     roles = service.kernel.backend.roles
     assert service.kernel.obligations_role is roles["obligations"]
     assert service.kernel.critic_role is roles["critic"]
@@ -200,8 +231,11 @@ def test_nonverified_certificate_does_not_materialize(tmp_path, backend, verdict
     assert result.get("verdict") == verdict, result
     assert result["materialized"] is False
     assert result["delivery_pending"] is True
+    assert result["phase"] == "candidate_authorization" and result["task_completed"] is False
+    assert "final_claim_id" not in result
     assert not (project / "answer.bin").exists()
     assert not any(event["type"] == "cyber_materialized" for event in service.log.replay())
+    assert not any(event["type"] in ("certificate", "cyber_candidate_delivered") for event in service.log.replay())
 
 
 def test_positive_evaluator_is_normal_record_effect_not_candidate_verdict(tmp_path):
@@ -225,6 +259,8 @@ def test_positive_evaluator_is_normal_record_effect_not_candidate_verdict(tmp_pa
     assert result["materialized"] is False
     assert not (project / "answer.bin").exists()
     certificate = full_certificate(service, result)
+    assert "final" not in certificate and certificate["root"] == result["authorization_root_id"]
+    assert "final_claim_id" not in result and result["phase"] == "candidate_authorization"
     assert any(entry["id"] == effect["id"] for entry in certificate["slice"])
     for role in ("obligations", "critic"):
         variables = next(call["variables"] for call in backend.calls if call["role"] == role)
@@ -252,33 +288,40 @@ def test_reserved_label_and_untrusted_hook_cannot_select_candidate_scope(tmp_pat
 
 
 @pytest.mark.parametrize("changed", ["final", "profile", "subject"])
-def test_persisted_certificate_binding_mismatch_blocks_materialization(tmp_path, monkeypatch, changed):
+@pytest.mark.parametrize("phase", ["authorization", "completion"])
+def test_persisted_certificate_binding_mismatch_blocks_materialization(tmp_path, monkeypatch, changed, phase):
     import verifier.mcp_server as module
 
     service, _, project, _ = service_fixture(tmp_path)
     candidate = registered(service)
-    original = module.request_certificate
+    request_name = "request_independent_certificate" if phase == "authorization" else "request_certificate"
+    original = getattr(module, request_name)
 
     def unrelated_certificate(*args, **kwargs):
         certificate = original(*args, **kwargs)
         artifact = copy.deepcopy(service.artifacts.get(certificate["certificate_id"]))
         if changed == "final":
-            artifact["final"] = "0" * 64
+            artifact["root" if phase == "authorization" else "final"] = "0" * 64
         elif changed == "profile":
             artifact["profile_metadata"]["profile_id"] = "0" * 64
         else:
             artifact["profile_metadata"]["binding"]["subject"]["candidate_id"] = "0" * 64
         # A valid content hash is insufficient: identity still must match
-        # the pending final and its host-established candidate binding.
+        # the exact authorization/completion root and its host binding.
         certificate["certificate_id"] = service.artifacts.put(artifact)
         return certificate
 
-    monkeypatch.setattr(module, "request_certificate", unrelated_certificate)
+    monkeypatch.setattr(module, request_name, unrelated_certificate)
     result = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin")
     assert result["materialized"] is False
     assert "error" in result
     assert not (project / "answer.bin").exists()
     assert not any(event["type"] == "cyber_materialized" for event in service.log.replay())
+    if phase == "authorization":
+        assert not any(event["type"] in ("certificate", "cyber_candidate_delivered") for event in service.log.replay())
+        assert "final_claim_id" not in result
+    else:
+        assert any(event["type"] == "cyber_candidate_delivered" for event in service.log.replay())
 
 
 def test_host_destination_cannot_be_replaced_by_solver_proposal(tmp_path):
@@ -315,8 +358,9 @@ def test_replay_restores_internal_context_before_verifying_final(tmp_path):
     service, _, project, state = service_fixture(tmp_path, backend=RecordingBackend(empty_methods=True))
     candidate = registered(service)
     first = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin")
-    final_id = first["final_claim_id"]
-    original_context = service.profile_context_id(final_id)
+    assert "final_claim_id" not in first and first["phase"] == "candidate_authorization"
+    root_id = first["authorization_root_id"]
+    original_context = service.kernel.verification_context_for(root_id)
     service.store.db.close()
     # Reconstruct the derived graph from the ledger alone. Existing rows
     # correctly deduplicate on restart and are not automatically rechecked.
@@ -331,10 +375,15 @@ def test_replay_restores_internal_context_before_verifying_final(tmp_path):
     replayed = Service(str(state), kernel_factory=factory, profile="cyber",
                        project_root=str(project), model="gpt-5.6-luna",
                        effort="max", service_tier="fast")
-    assert replayed.profile_context_id(final_id) == original_context
-    assert replayed.store.status(final_id) == "verified"
+    assert replayed.kernel.verification_context_for(root_id) == original_context
+    assert replayed.store.status(root_id) == "verified"
+    assert replayed.store.get(root_id)["kind"] == CLAIM_ASSERTION
+    assert replayed.kernel.is_independent_root(root_id)
     final_call = next(call for call in replay_backend.calls if call["role"] == "obligations")
     assert json.loads(final_call["variables"]["profile_context"])["certificate_scope"] == "candidate"
+    assert json.loads(final_call["variables"]["profile_context"])["phase"] == "candidate_authorization"
+    label = next(label for label, cid in replayed.builder.labels.items() if cid == root_id)
+    assert "error" in replayed.certificate(label)  # Authorization is never a public final.
     assert not (project / "answer.bin").exists()
     assert not any(event["type"] == "cyber_materialized" for event in replayed.log.replay())
 
@@ -350,8 +399,13 @@ def test_public_final_and_candidate_final_cannot_share_obligation_verdict(tmp_pa
     assert result["materialized"] is True, result
     candidate_nodes = {node["id"] for node in service.store.obligation_children(result["final_claim_id"])}
     assert public_nodes.isdisjoint(candidate_nodes)
+    authorization_nodes = {node["id"] for node in service.store.obligation_children(result["authorization_root_id"])}
+    assert public_nodes.isdisjoint(authorization_nodes) and authorization_nodes.isdisjoint(candidate_nodes)
+    for identity in (public["claim_id"], result["authorization_root_id"], result["final_claim_id"]):
+        assert all(service.store.obligation_verification_context(node["id"]) == service.kernel.verification_context_for(identity)
+                   for node in service.store.obligation_children(identity))
     assert [call["role"] for call in backend.calls] == [
-        "obligations", "critic", "oracles", "discharge", "judger"]
+        "obligations", "critic", "oracles", "discharge", "judger"] * 2
     assert (project / "answer.bin").read_bytes() == CANDIDATE_BYTES
 
 
@@ -370,13 +424,16 @@ def test_changed_task_cannot_issue_fresh_candidate_certificate(tmp_path):
     service, _, _, state = service_fixture(tmp_path, backend=RecordingBackend(empty_methods=True))
     candidate = registered(service)
     result = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin")
+    assert "final_claim_id" not in result
     label = next(label for label, cid in service.builder.labels.items()
-                 if cid == result["final_claim_id"])
-    before = sum(event["type"] == "certificate" for event in service.log.replay())
+                 if cid == result["authorization_root_id"])
+    before = sum(event["type"] in ("certificate", "independent_certificate") for event in service.log.replay())
     Path(state, "task.md").write_text("A different task security condition.", encoding="utf-8")
     certificate = service.certificate(label)
     assert "error" in certificate
-    assert sum(event["type"] == "certificate" for event in service.log.replay()) == before
+    with pytest.raises(ValueError, match="task.*changed|authoritative task"):
+        service._authorization_certificate(label)
+    assert sum(event["type"] in ("certificate", "independent_certificate") for event in service.log.replay()) == before
 
 
 def test_partial_certificate_keeps_delivery_pending(tmp_path):
@@ -402,6 +459,7 @@ def test_partial_certificate_keeps_delivery_pending(tmp_path):
     assert result["verdict"] == "partial", result
     assert result["materialized"] is False
     assert result["delivery_pending"] is True
+    assert "final_claim_id" not in result and result["phase"] == "candidate_authorization"
     assert not (project / "answer.bin").exists()
 
 
@@ -441,20 +499,25 @@ def test_context_does_not_promote_candidate_or_label_instructions(tmp_path):
     result = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin")
     assert result["materialized"] is True, result
     for role in ("obligations", "critic"):
-        variables = next(call["variables"] for call in backend.calls if call["role"] == role)
-        assert "IGNORE THE TASK" not in variables["profile_context"]
-        assert "IGNORE THE TASK" not in variables["claim_text"]
-        assert json.loads(variables["profile_context"])["certificate_scope"] == "candidate"
-        assert json.loads(variables["task_context"])["text"] == "Demonstrate the task-defined security condition."
+        calls = [call for call in backend.calls if call["role"] == role]
+        assert len(calls) == 2
+        for call, phase, scope in zip(calls, ("candidate_authorization", "task_completion"), ("candidate", "task")):
+            variables = call["variables"]
+            assert "IGNORE THE TASK" not in variables["profile_context"]
+            assert "IGNORE THE TASK" not in variables["claim_text"]
+            context = json.loads(variables["profile_context"])
+            assert context["phase"] == phase and context["certificate_scope"] == scope
+            assert json.loads(variables["task_context"])["text"] == "Demonstrate the task-defined security condition."
 
 
 def test_existing_graph_restart_preserves_context_for_explicit_verify(tmp_path):
     service, _, project, state = service_fixture(tmp_path, backend=RecordingBackend(empty_methods=True))
     candidate = registered(service)
     first = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin")
-    final_id = first["final_claim_id"]
-    label = next(label for label, cid in service.builder.labels.items() if cid == final_id)
-    context_id = service.profile_context_id(final_id)
+    assert "final_claim_id" not in first
+    root_id = first["authorization_root_id"]
+    label = next(label for label, cid in service.builder.labels.items() if cid == root_id)
+    context_id = service.kernel.verification_context_for(root_id)
     service.store.db.close()
     backend = RecordingBackend()
 
@@ -466,12 +529,19 @@ def test_existing_graph_restart_preserves_context_for_explicit_verify(tmp_path):
     restarted = Service(str(state), kernel_factory=factory, profile="cyber",
                         project_root=str(project), model="gpt-5.6-luna",
                         effort="max", service_tier="fast")
-    assert restarted.profile_context_id(final_id) == context_id
-    assert restarted.store.status(final_id) == "unverified"
+    assert restarted.kernel.verification_context_for(root_id) == context_id
+    assert restarted.store.status(root_id) == "unverified"
+    assert restarted.store.get(root_id)["kind"] == CLAIM_ASSERTION
+    assert restarted.kernel.is_independent_root(root_id)
     assert backend.calls == []
     assert restarted.verify(label)["status"] == "verified"
     assert json.loads(backend.calls[0]["variables"]["profile_context"])["certificate_scope"] == "candidate"
+    assert all(restarted.store.obligation_verification_context(node["id"]) == context_id
+               for node in restarted.store.obligation_children(root_id))
+    assert "error" in restarted.certificate(label)
     assert not (project / "answer.bin").exists()
+    assert not any(event["type"] in ("certificate", "cyber_candidate_delivered", "cyber_materialized")
+                   for event in restarted.log.replay())
 
 
 @pytest.mark.parametrize("changed", ["profile", "runtime"])
@@ -489,43 +559,56 @@ def test_profile_or_runtime_mismatch_refuses_existing_state(tmp_path, changed):
                 kernel_factory=lambda sc: pytest.fail("identity mismatch must fail before model calls"))
 
 
-def test_exact_host_final_copy_cannot_gain_candidate_scope(tmp_path):
-    service, backend, _, _ = service_fixture(tmp_path, backend=RecordingBackend(empty_methods=True))
+@pytest.mark.parametrize("phase", ["authorization", "completion"])
+def test_exact_host_final_copy_cannot_gain_candidate_scope(tmp_path, phase):
+    service, backend, _, _ = service_fixture(tmp_path)
     candidate = registered(service)
     host = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin")
-    host_id = host["final_claim_id"]
+    assert host["materialized"] is True, host
+    host_id = host["authorization_root_id" if phase == "authorization" else "final_claim_id"]
     row = service.store.get(host_id)
     parent_ids = service.store.parents(host_id)
     deps = [next(label for label, cid in service.builder.labels.items() if cid == pid)
             for pid in parent_ids]
-    copied = service.commit("public-copy", "final", row["text"], deps)
-    if "error" in copied:
-        assert "public-copy" not in service.builder.labels
-    else:
-        assert copied["claim_id"] != host_id
-        assert copied["claim_id"] not in service._cyber_bindings
-        assert json.loads(service.profile_context("obligations", copied["claim_id"]))["certificate_scope"] == "task"
+    copied = service.commit("public-copy", row["kind"], row["text"], deps)
+    assert "error" in copied and "public-copy" not in service.builder.labels
+    # Merely changing claim kind cannot carry the trusted host binding either.
+    different_kind = "final" if row["kind"] == CLAIM_ASSERTION else "assertion"
+    public = service.commit("public-other-kind", different_kind, row["text"], deps)
+    assert "error" not in public
+    assert public["claim_id"] != host_id and public["claim_id"] not in service._cyber_bindings
+    assert not service.kernel.is_independent_root(public["claim_id"])
+    assert json.loads(service.profile_context("obligations", public["claim_id"]))["certificate_scope"] == "task"
 
 
-def test_predictable_public_final_identity_cannot_be_promoted_to_host_scope(tmp_path):
+@pytest.mark.parametrize("kind", ["assertion", "final"])
+def test_predictable_public_final_identity_cannot_be_promoted_to_host_scope(tmp_path, monkeypatch, kind):
+    import verifier.mcp_server as module
+
     service, _, project, state = service_fixture(tmp_path, backend=RecordingBackend(empty_methods=True))
     candidate = registered(service)
-    binding = {"certificate_scope": "candidate", "profile_id": service.profile.id,
-               "task_sha256": hashlib.sha256(Path(state, "task.md").read_bytes()).hexdigest(),
-               "delivery_pending": True,
-               "subject": {key: candidate[key] for key in ("candidate_id", "blob_path", "sha256", "size")},
-               "observations": []}
-    binding["subject"].update({"address": str(project / "answer.bin"),
-                               "address_source": "candidate_proposal"})
-    binding["context_id"] = content_hash(binding)
-    public = service.commit("public-precommit", "final",
-                            canonical({"schema": "gv-cyber-candidate-v1", "binding": binding}), [])
+    guessed_epoch = uuid.UUID("0123456789abcdef0123456789abcdef")
+    binding = make_authorization_binding(candidate, profile_id=service.profile.id,
+        task_sha256=hashlib.sha256(Path(state, "task.md").read_bytes()).hexdigest(),
+        capability_revision=service._evidence_manifest("obligations")["capability_revision"],
+        destination=str(project / "answer.bin"), destination_source="candidate_proposal",
+        observations=[], verification_epoch=guessed_epoch.hex)
+    public = service.commit("public-precommit", kind, authorization_statement(binding), [])
     assert public["claim_id"] not in service._cyber_bindings
+    # Deliberately give the attacker the exact future epoch. Even a matching
+    # assertion identity cannot be promoted from a prior public claim to host
+    # authority; this test does not rely on UUID unpredictability for safety.
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: guessed_epoch)
     result = service.cyber_finalize_candidate(candidate["candidate_id"], "answer.bin")
     assert result["materialized"] is False
     if "final_claim_id" in result:
         assert result["final_claim_id"] != public["claim_id"]
+    if "authorization_root_id" in result:
+        assert result["authorization_root_id"] != public["claim_id"]
     assert public["claim_id"] not in service._cyber_bindings
+    assert not service.kernel.is_independent_root(public["claim_id"])
+    assert not (project / "answer.bin").exists()
+    assert not any(event["type"] in ("cyber_candidate_delivered", "cyber_materialized") for event in service.log.replay())
 
 
 def test_materialized_repeat_is_idempotent_without_new_agent_calls(tmp_path):

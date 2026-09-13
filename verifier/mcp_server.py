@@ -45,7 +45,7 @@ from typing import Any, Dict, List, Optional
 from verifier.core.model import CLAIM_KINDS, content_hash, canonical
 from .profiles import get_profile
 from .stream.builder import Builder, TraceError
-from .engine.certificate import request_certificate
+from .engine.certificate import request_certificate, request_independent_certificate
 from .core.events import EventLog
 from .execution.instruments import ArtifactStore
 from .engine.kernel import Kernel
@@ -56,6 +56,14 @@ from .core.store import (
 from .stream.tail import Tail
 
 VERB_ERRORS = (TraceError, UnknownDependency, RoleError, ValueError)
+
+
+def _same_data(left, right):
+    """Typed canonical identity: True, 1 and 1.0 are different data."""
+    try:
+        return content_hash(left) == content_hash(right)
+    except (TypeError, ValueError, UnicodeError, RecursionError):
+        return False
 
 
 def _witness(obligation: dict) -> str:
@@ -141,6 +149,8 @@ class Service:
         self._cyber_lock = threading.RLock()
         self._cyber_bindings = {}
         self._cyber_adjudications = {}
+        self._active_delivery_authorization = None
+        self._prepared_delivery = None
         self._seat_capabilities = seat_capabilities
         self.candidates = None
         self.evaluator = None
@@ -159,7 +169,8 @@ class Service:
             from .profiles.cyber.candidates import CandidateStore
             from .profiles.cyber.evaluator import Evaluator
             self.candidates = CandidateStore(state_dir, self.project_root,
-                                             self.artifacts, self.log)
+                                             self.artifacts, self.log,
+                                             prepare_delivery=self._prepare_candidate_delivery)
             if evaluator_spec is not None:
                 self.evaluator = Evaluator(evaluator_spec, self.artifacts)
         elif evaluator_spec is not None:
@@ -213,7 +224,7 @@ class Service:
             self._check_task()
         except (OSError, ValueError) as err:
             return {"error": str(err)}
-        if label.startswith(("cyber-final:", "effect:")):
+        if label.startswith(("cyber-final:", "cyber-authorization:", "effect:")):
             return {"error": "label is reserved for host-owned records"}
         return self._commit(label, kind, text, deps, revises)
 
@@ -436,7 +447,9 @@ class Service:
                 and e["payload"].get("candidate_id") == candidate_id]
 
     def _validate_binding(self, binding):
-        if self.candidates is None or binding.get("certificate_scope") != "candidate":
+        from .profiles.cyber.phases import validate_phase_binding
+        validate_phase_binding(binding)
+        if self.candidates is None:
             raise ValueError("candidate binding requires host cyber scope")
         if binding.get("profile_id") != self.profile.id:
             raise ValueError("candidate binding belongs to a different profile")
@@ -455,18 +468,20 @@ class Service:
         if any(binding["subject"].get(key) != candidate.get(key)
                for key in ("candidate_id", "blob_path", "sha256", "size")):
             raise ValueError("candidate binding identity changed")
-        if self.final_destination and binding["subject"].get("address") != self.final_destination:
+        if self.final_destination and binding["delivery_contract"]["destination"] != self.final_destination:
             raise ValueError("candidate binding has a different canonical destination")
         expected_id = content_hash({k: v for k, v in binding.items() if k != "context_id"})
         if binding.get("context_id") != expected_id:
             raise ValueError("candidate verification context changed")
         for observation in binding.get("observations", []):
-            if observation not in self._observations(candidate["candidate_id"]):
+            if not any(_same_data(observation, retained)
+                       for retained in self._observations(candidate["candidate_id"])):
                 raise ValueError("candidate observation is not host-retained evidence")
             artifact = self._auth_artifact(observation["artifact_id"])
             if (artifact.get("candidate_id") != candidate["candidate_id"]
                     or artifact.get("candidate_sha256") != candidate["sha256"]
-                    or artifact.get("candidate_size") != candidate["size"]
+                    or type(artifact.get("candidate_size")) is not int
+                    or artifact["candidate_size"] != candidate["size"]
                     or any(artifact.get(key) != observation.get(key)
                            for key in ("evaluator_id", "environment", "authority_scope"))
                     or self.evaluator is None or observation["evaluator_id"] != self.evaluator.spec.id):
@@ -478,22 +493,61 @@ class Service:
                     or observation["effect_ref"] != f"effect:{event['seq']}"
                     or self.builder.resolve(observation["effect_ref"]) != observation["effect_claim_id"]):
                 raise ValueError("candidate observation effect changed")
+        if binding["phase"] == "task_completion":
+            authorization = self._cyber_bindings.get(binding["authorization_root_id"])
+            if authorization is None or authorization.get("phase") != "candidate_authorization":
+                raise ValueError("completion has no host authorization root")
+            self._validate_binding(authorization)
+            if any(not _same_data(binding[key], authorization[key]) for key in (
+                    "profile_id", "task_sha256", "capability_revision", "observations", "delivery_contract")):
+                raise ValueError("completion and authorization scopes differ")
+            if binding["verification_epoch"] == authorization["verification_epoch"]:
+                raise ValueError("completion requires an independent verification epoch")
+            receipt = self._auth_artifact(binding["receipt_artifact_id"])
+            if (receipt.get("schema") != "cyber-materialization-v1"
+                    or receipt.get("candidate_id") != candidate["candidate_id"]
+                    or receipt.get("sha256") != candidate["sha256"]
+                    or type(receipt.get("size")) is not int or receipt["size"] != candidate["size"]
+                    or receipt.get("destination") != binding["subject"]["address"]):
+                raise ValueError("completion receipt has a different subject")
+            if not any(event["type"] in ("cyber_candidate_delivery_prepared", "cyber_candidate_delivered")
+                       and event["payload"].get("delivery_id") == binding["delivery_id"]
+                       and event["payload"].get("authorization_root_id") == binding["authorization_root_id"]
+                       and event["payload"].get("authorization_certificate_id") == binding["authorization_certificate_id"]
+                       and event["payload"].get("receipt_artifact_id") == binding["receipt_artifact_id"]
+                       and _same_data(event["payload"].get("receipt"), receipt)
+                       for event in self.log.replay()):
+                raise ValueError("completion has no matching host delivery transaction")
+            # Replay authenticates retained history, not an old output inode.
+            # Current byte delivery is checked only when selecting a completion.
         return candidate
 
     def _restore_binding(self, payload):
+        from .profiles.cyber.phases import authorization_statement, completion_statement
         binding = payload["cybergv_binding"]
         self._validate_binding(binding)
-        if payload["kind"] != "final" or not payload.get("label", "").startswith("cyber-final:"):
-            raise ValueError("candidate scope is not a host final commit")
-        text = json.loads(payload["text"])
-        if text != {"schema": "gv-cyber-candidate-v1", "binding": binding}:
-            raise ValueError("candidate scope does not match its final statement")
+        authorization = binding["phase"] == "candidate_authorization"
+        kind, prefix = ("assertion", "cyber-authorization:") if authorization else ("final", "cyber-final:")
+        if payload["kind"] != kind or not payload.get("label", "").startswith(prefix):
+            raise ValueError("phase scope is not a matching host commit")
+        statement = authorization_statement(binding) if authorization else completion_statement(binding)
+        if payload["text"] != statement:
+            raise ValueError("phase scope does not match its host statement")
         claim = self.builder.claim_from_commit(payload)
         if claim.id in self.builder.labels.values() and claim.id not in self._cyber_bindings:
             raise ValueError("host scope cannot promote an earlier ordinary claim during replay")
         self._cyber_bindings[claim.id] = binding
         self._cyber_adjudications[self._adjudication_key(binding)] = {
             "claim_id": claim.id, "label": payload["label"], "binding": binding}
+
+    def independent_root_contract(self, claim_id):
+        """Trusted host registration; no public claim text can select this phase."""
+        binding = self._cyber_bindings.get(claim_id)
+        if binding is None or binding.get("phase") != "candidate_authorization":
+            return None
+        from .profiles.cyber.phases import AUTHORIZATION_CONTRACT_LOCUS, validate_phase_binding
+        validate_phase_binding(binding)
+        return {"scope": "candidate_authorization", "contract_locus": AUTHORIZATION_CONTRACT_LOCUS}
 
     @staticmethod
     def _adjudication_key(binding):
@@ -551,6 +605,10 @@ class Service:
             context.update({k: v for k, v in binding.items() if k != "observations"})
             if role not in ("obligations", "critic", "oracles", "sufficiency"):
                 context["observations"] = binding["observations"]
+        elif self.profile.name == "cyber":
+            kind = self.store.get(claim_id)["kind"]
+            context.update(claim_kind=kind,
+                           phase="ordinary_final" if kind == "final" else "ordinary_claim")
         if self.profile.name == "cyber":
             context["execution_capabilities"] = self._evidence_manifest(role, claim_id, binding)
         return canonical(context)
@@ -594,11 +652,15 @@ class Service:
                     and event["payload"].get("candidate_id") == args[0]
                     and event["payload"].get("receipt", {}).get("destination") == address), None)
                 if prior is None:
-                    self.candidates.preflight_destination(address)
+                    pending = self._retained_delivery(args[0], address)
+                    if pending is None:
+                        self.candidates.preflight_destination(address)
+                    else:
+                        self._authenticate_candidate_certificate(pending["authorization_certificate_id"],
+                            pending["authorization_root_id"], pending.get("authorization_full_certificate_id"))
+                        self.candidates.verify_delivery(pending["receipt"])
                 else:
-                    self._authenticate_candidate_certificate(prior["certificate_id"],
-                        prior["final_claim_id"], prior.get("full_certificate_id"))
-                    self.candidates.verify_delivery(prior["receipt"])
+                    self._authenticate_completion_certificate(prior)
                 # Aliases of the same canonical address are one request.
                 args = [args[0], address]
         return {"tool": tool, "args": args, "scope": scope}
@@ -662,10 +724,11 @@ class Service:
             return None
         binding = self._cyber_bindings.get(claim_id)
         return {"profile": self.profile.name, "profile_id": self.profile.id,
-                "certificate_scope": "candidate" if binding else "task",
+                "certificate_scope": binding["certificate_scope"] if binding else "task",
                 "task_sha256": self._profile_pin["task_sha256"],
                 "context_id": self.profile_context_id(claim_id),
-                **({"binding": binding, "delivery_pending": True} if binding else {})}
+                **({"binding": binding, "phase": binding["phase"],
+                    "delivery_pending": binding["delivery_pending"]} if binding else {})}
 
     def cyber_checkpoint(self, working_theory: str, next_actions: Optional[List[str]] = None):
         if self.candidates is None:
@@ -732,11 +795,38 @@ class Service:
 
     def _certificate_matches_store(self, certificate):
         """Check a retained snapshot without scheduling any verification work."""
-        final_id = certificate.get("final")
+        independent = certificate.get("schema") == "gv-independent-claim-root-v1"
+        final_id = certificate.get("root") if independent else certificate.get("final")
+        if independent:
+            if ("final" in certificate or not self.kernel.is_independent_root(final_id)
+                    or certificate.get("root_scope") != "candidate_authorization"):
+                raise ValueError("certificate has no current independent host root")
+            effective = self.store.effective(final_id)
+            if any(not _same_data(certificate.get(key), effective[key]) for key in (
+                    "effective_status", "effective_basis", "effective_strength", "open_premises", "premise_refuted")):
+                raise ValueError("independent certificate effective verdict changed")
         entries = certificate.get("slice")
         if not isinstance(entries, list) or [entry.get("id") for entry in entries] \
                 != self.store.backward_slice(final_id):
             raise ValueError("certificate dependency slice changed")
+        row = self.store.get(final_id)
+        if not independent and row["kind"] != "final":
+            raise ValueError("task certificate requires an actual final claim")
+        effective = self.store.effective(final_id)
+        status = effective["effective_status"] if independent else row["status"]
+        verdict = {"verified": "verified", "refuted": "refuted", "partial": "partial"}.get(status, "unverified")
+        strength = None
+        if verdict == "verified":
+            strength = (effective["effective_strength"] if independent else row["strength"]) or "decisive"
+            if independent and (effective["effective_basis"] not in ("world", "record")
+                                or strength not in ("decisive", "bounded", "analytic")):
+                verdict = "unverified"
+            elif strength != "decisive":
+                verdict = "supported"
+        if (certificate.get("verdict") != verdict
+                or certificate.get("verdict_strength") != strength
+                or independent and certificate.get("verdict_basis") != effective["effective_basis"]):
+            raise ValueError("certificate verdict differs from the settled root")
         memo = {}
         for entry in entries:
             row = self.store.get(entry["id"])
@@ -744,9 +834,11 @@ class Service:
             expected = {key: row[key] for key in ("kind", "text", "status", "reason", "basis", "strength")}
             expected.update({key: effective[key] for key in (
                 "effective_status", "effective_basis", "effective_strength", "open_premises", "premise_refuted")})
-            if any(entry.get(key) != value for key, value in expected.items()) \
-                    or entry.get("evidence") != self.store.evidence_for(entry["id"]):
+            if any(not _same_data(entry.get(key), value) for key, value in expected.items()) \
+                    or not _same_data(entry.get("evidence"), self.store.evidence_for(entry["id"])):
                 raise ValueError("certificate no longer matches the settled graph")
+            if independent and entry.get("deps") != sorted(self.store.parents(entry["id"])):
+                raise ValueError("independent certificate premise edges changed")
             nodes = self.store.obligation_children(entry["id"])
             exported = entry.get("obligations")
             if not isinstance(exported, list) or len(nodes) != len(exported):
@@ -757,7 +849,10 @@ class Service:
                     clause=node.get("clause", ""),
                     refutable_by_absence=bool(node.get("refutable_by_absence", False)),
                     evidence=self.store.evidence_for(node["id"]))
-                if retained != expected_node:
+                if independent:
+                    expected_node.update(premise_scope=sorted(self.store.parents(node["id"])),
+                        verification_context=self.store.obligation_verification_context(node["id"]))
+                if not _same_data(retained, expected_node):
                     raise ValueError("certificate obligation evidence changed")
 
     def _authenticate_candidate_certificate(self, certificate_id, final_id, full_certificate_id=None):
@@ -771,24 +866,26 @@ class Service:
         if self.evaluator is not None:
             self.evaluator.spec.validate()
         binding = self._cyber_bindings.get(final_id)
-        if binding is None or artifact.get("final") != final_id \
+        if binding is None or binding.get("phase") != "candidate_authorization" \
+                or artifact.get("root") != final_id or "final" in artifact \
                 or self.store.status(final_id) != "verified":
-            raise ValueError("certificate has no matching current candidate final")
+            raise ValueError("certificate has no matching current candidate authorization")
         self._validate_binding(binding)
-        if binding["observations"] != self._observations(binding["subject"]["candidate_id"]):
+        if not _same_data(binding["observations"], self._observations(binding["subject"]["candidate_id"])):
             raise ValueError("new candidate observations require fresh adjudication")
         full = artifact
-        if artifact.get("schema") == "gv-cyber-candidate-acceptance-v1":
+        if artifact.get("schema") == "gv-cyber-candidate-acceptance-v2":
             from .profiles.cyber.acceptance import build_candidate_acceptance
             if full_certificate_id is None or artifact.get("full_certificate_id") != full_certificate_id:
                 raise ValueError("acceptance certificate has no designated full certificate")
             full = self._auth_artifact(full_certificate_id)
-            if build_candidate_acceptance(full, binding) != artifact:
+            if not _same_data(build_candidate_acceptance(full, binding), artifact):
                 raise ValueError("acceptance certificate does not match the full GV audit")
-        elif full_certificate_id is not None or artifact.get("verdict") != "verified":
+        elif (full_certificate_id is not None or artifact.get("verdict") != "verified"
+                or artifact.get("schema") != "gv-independent-claim-root-v1"):
             raise ValueError("full candidate certificate is not verified")
-        if (full.get("final") != final_id
-                or full.get("profile_metadata") != self._certificate_metadata(final_id)):
+        if (full.get("root") != final_id
+                or not _same_data(full.get("profile_metadata"), self._certificate_metadata(final_id))):
             raise ValueError("certificate does not authorize the exact candidate binding")
         self._certificate_matches_store(full)
         # Evidence identities are not enough if their designated executor
@@ -813,11 +910,11 @@ class Service:
 
     def _retained_candidate_certificate(self, final_id):
         for event in reversed(list(self.log.replay())):
-            if event["type"] == "certificate" and event["payload"].get("final") == final_id:
+            if event["type"] == "independent_certificate" and event["payload"].get("root") == final_id:
                 digest = event["payload"]["digest"]
                 artifact = self._auth_artifact(digest)
-                if artifact.get("final") != final_id \
-                        or artifact.get("profile_metadata") != self._certificate_metadata(final_id):
+                if artifact.get("root") != final_id \
+                        or not _same_data(artifact.get("profile_metadata"), self._certificate_metadata(final_id)):
                     raise ValueError("retained candidate certificate has different scope")
                 self._certificate_matches_store(artifact)
                 return {"verdict": artifact["verdict"], "certificate_id": digest,
@@ -826,11 +923,119 @@ class Service:
                                   for entry in artifact["slice"]]}
         return None
 
-    def cyber_finalize_candidate(self, candidate_id: str, destination: str = "", *, retry: bool = False):
+    def _authorization_certificate(self, label):
+        root_id = self.builder.resolve(label)
+        self._validate_binding(self._cyber_bindings[root_id])
+        cert = request_independent_certificate(self.store, self.kernel, self.log,
+            self.artifacts, root_id, profile_metadata=self._certificate_metadata(root_id))
+        return {"verdict": cert["verdict"], "certificate_id": cert["certificate_id"],
+                "profile_metadata": cert["profile_metadata"],
+                "slice": [{"text": entry["text"], "status": entry["status"],
+                           **(_residue(self.store, entry["id"])
+                              if entry["status"] != "verified" else {})}
+                          for entry in cert["slice"]]}
+
+    def _retained_delivery(self, candidate_id, address):
+        """Retained phase state, never proof that an old inode still exists."""
+        rolled_back = set()
+        for event in reversed(list(self.log.replay())):
+            payload = event["payload"]
+            if event["type"] in ("cyber_candidate_delivery_rolled_back", "cyber_candidate_delivery_aborted"):
+                if payload.get("rolled_back") is True or payload.get("aborted") is True:
+                    rolled_back.add(payload["delivery_id"])
+            elif (event["type"] in ("cyber_candidate_delivered", "cyber_candidate_delivery_prepared")
+                    and payload.get("candidate_id") == candidate_id
+                    and payload.get("receipt", {}).get("destination") == address):
+                if payload["delivery_id"] not in rolled_back:
+                    if event["type"] == "cyber_candidate_delivery_prepared":
+                        # A prepared inode is authority for recovery only if
+                        # that exact inode actually reached the canonical path.
+                        try:
+                            self.candidates.verify_delivery(payload["receipt"])
+                        except (OSError, ValueError):
+                            if not os.path.lexists(address):
+                                continue  # Intent persisted, publication did not.
+                            raise
+                    return payload
+        return None
+
+    def _prepare_candidate_delivery(self, receipt):
+        """Persist exact planned inode ownership before canonical publication."""
+        cert = self._active_delivery_authorization
+        if cert is None:
+            raise ValueError("delivery has no active host authorization")
+        root_id = cert["authorization_root_id"]
+        binding = self._cyber_bindings[root_id]
+        self._authenticate_candidate_certificate(cert["certificate_id"], root_id, cert.get("full_certificate_id"))
+        candidate = self._validate_binding(binding)
+        if (receipt.get("candidate_id") != candidate["candidate_id"]
+                or receipt.get("sha256") != candidate["sha256"]
+                or type(receipt.get("size")) is not int or receipt["size"] != candidate["size"]
+                or receipt.get("destination") != binding["delivery_contract"]["destination"]):
+            raise ValueError("prepared delivery differs from the authorized source")
+        delivery = {"schema": "gv-cyber-candidate-delivery-v2", "delivery_id": uuid.uuid4().hex,
+            "receipt": receipt, "receipt_artifact_id": self.artifacts.put(receipt),
+            "candidate_id": candidate["candidate_id"],
+            **({"authorization_full_certificate_id": cert["full_certificate_id"]}
+               if "full_certificate_id" in cert else {}),
+            "authorization_certificate_id": cert["certificate_id"], "authorization_root_id": root_id}
+        self.log.append("cyber_candidate_delivery_prepared", delivery)
+        self.log.sync()  # A crash after link must retain the exact owning inode.
+        self._prepared_delivery = delivery
+
+    def _authenticate_completion_certificate(self, payload):
+        """Select a current whole-task certificate and recheck real byte delivery."""
+        if payload.get("schema") != "gv-cyber-completed-delivery-v2":
+            raise ValueError("delivery lacks a whole-task completion certificate")
+        final_id = payload["final_claim_id"]
+        binding = self._cyber_bindings.get(final_id)
+        if binding is None or binding.get("phase") != "task_completion":
+            raise ValueError("delivery has no host task-completion final")
+        self._validate_binding(binding)
+        if (binding["authorization_root_id"] != payload["authorization_root_id"]
+                or binding["authorization_certificate_id"] != payload["authorization_certificate_id"]
+                or binding["subject"]["candidate_id"] != payload["candidate_id"]
+                or binding["delivery_id"] != payload["delivery_id"]):
+            raise ValueError("completion selects a different authorization")
+        self._authenticate_candidate_certificate(payload["authorization_certificate_id"],
+            payload["authorization_root_id"], payload.get("authorization_full_certificate_id"))
+        certificate = self._auth_artifact(payload["certificate_id"])
+        if (certificate.get("final") != final_id or "root" in certificate
+                or certificate.get("verdict") != "verified"
+                or self.store.status(final_id) != "verified"
+                or not _same_data(certificate.get("profile_metadata"), self._certificate_metadata(final_id))):
+            raise ValueError("delivery has no matching verified whole-task certificate")
+        self._certificate_matches_store(certificate)
+        retained_receipt = self._auth_artifact(binding["receipt_artifact_id"])
+        if not _same_data(retained_receipt, payload["receipt"]):
+            raise ValueError("completion receipt identity changed")
+        with self.candidates.lease(payload["candidate_id"]) as lease:
+            self.candidates.verify_delivery(retained_receipt)
+            self.candidates.validate(lease)
+        for entry in certificate["slice"]:
+            if entry["id"] != final_id:
+                continue
+            for node in entry["obligations"]:
+                if node.get("status") != "verified" or not node.get("evidence"):
+                    continue
+                digest = node["evidence"][-1].get("artifact")
+                if digest:
+                    evidence = self._auth_artifact(digest)
+                    if evidence.get("instrument") == "binding-game" and evidence.get("bound") is not None:
+                        bound = evidence["bound"]
+                        if not isinstance(bound, dict) or not bound.get("discharge_artifact"):
+                            raise ValueError("winning evidence has no executor snapshot")
+                        self._auth_artifact(bound["discharge_artifact"])
+        return certificate
+
+    def _authorize_and_deliver(self, candidate_id: str, destination: str = "", *, retry: bool = False):
+        """Private first phase; its verified result is NOT task completion."""
+        from .profiles.cyber.phases import make_authorization_binding, authorization_statement
         if self.candidates is None:
             return {"error": "cyber profile is not active"}
         receipt = None
         cert = {}
+        prepared_delivery = None
         try:
             with self._cyber_lock:
                 self._check_task()
@@ -840,41 +1045,31 @@ class Service:
                     raise ValueError("a canonical destination must be specified")
                 if self.final_destination and address != self.final_destination:
                     raise ValueError("destination differs from host-required canonical path")
-                for event in reversed(list(self.log.replay())):
-                    if (event["type"] == "cyber_materialized"
-                            and event["payload"].get("candidate_id") == candidate_id
-                            and event["payload"]["receipt"].get("destination") == address):
-                        prior = event["payload"]
-                        final_id = prior["final_claim_id"]
-                        binding = self._cyber_bindings.get(final_id)
-                        artifact, _ = self._authenticate_candidate_certificate(prior["certificate_id"],
-                            final_id, prior.get("full_certificate_id"))
-                        with self.candidates.lease(candidate_id) as lease:
-                            self._validate_binding(binding)
-                            if binding["observations"] != self._observations(candidate_id):
-                                raise ValueError("new candidate observations require fresh adjudication")
-                            self.candidates.verify_delivery(prior["receipt"])
-                            self.candidates.validate(lease)
-                        return {"verdict": "verified", "certificate_id": prior["certificate_id"],
-                                **({"full_certificate_id": prior["full_certificate_id"],
-                                    "full_verdict": artifact["full_verdict"]} if "full_certificate_id" in prior else {}),
-                                "final_claim_id": final_id, "profile_metadata": artifact["profile_metadata"],
-                                "receipt": prior["receipt"], "receipt_event_seq": event["seq"],
-                                "materialized": True, "delivery_pending": False, "official_score": None}
+                prior = self._retained_delivery(candidate_id, address)
+                if prior is not None:
+                    artifact, _ = self._authenticate_candidate_certificate(prior["authorization_certificate_id"],
+                        prior["authorization_root_id"], prior.get("authorization_full_certificate_id"))
+                    self.candidates.verify_delivery(prior["receipt"])
+                    if not any(event["type"] == "cyber_candidate_delivered"
+                               and event["payload"].get("delivery_id") == prior["delivery_id"]
+                               for event in self.log.replay()):
+                        # Recover publication whose owning intent was durable,
+                        # but whose post-publication event was interrupted.
+                        self.log.append("cyber_candidate_delivered", prior)
+                    return {"verdict": "verified", "certificate_id": prior["authorization_certificate_id"],
+                            "authorization_root_id": prior["authorization_root_id"],
+                            "profile_metadata": artifact["profile_metadata"],
+                            "delivery": prior, "receipt": prior["receipt"], "materialized": True,
+                            "delivery_pending": False}
                 # Reject impossible paths before spending any verifier calls.
                 address = self.candidates.preflight_destination(address)
                 with self.candidates.lease(candidate_id) as lease:
                     candidate = lease.candidate
-                    binding = {"certificate_scope": "candidate", "profile_id": self.profile.id,
-                        "task_sha256": self._task_digest(), "delivery_pending": True,
-                        "capability_revision": self._evidence_manifest("obligations")["capability_revision"],
-                        # A live world is not an immutable capture. Separate
-                        # attempts cannot blindly inherit world conclusions.
-                        "verification_epoch": uuid.uuid4().hex,
-                        "subject": {k: candidate[k] for k in ("candidate_id", "blob_path", "sha256", "size")},
-                        "observations": self._observations(candidate_id)}
-                    binding["subject"]["address"] = address
-                    binding["subject"]["address_source"] = ("host_required" if self.final_destination else "candidate_proposal")
+                    binding = make_authorization_binding(candidate, profile_id=self.profile.id,
+                        task_sha256=self._task_digest(), destination=address,
+                        destination_source="host_required" if self.final_destination else "candidate_proposal",
+                        capability_revision=self._evidence_manifest("obligations")["capability_revision"],
+                        verification_epoch=uuid.uuid4().hex, observations=self._observations(candidate_id))
                     key = self._adjudication_key(binding)
                     prior = self._cyber_adjudications.get(key)
                     cert = None
@@ -895,12 +1090,10 @@ class Service:
                         commit = {"claim_id": prior["claim_id"]}
                         cert = self._retained_candidate_certificate(commit["claim_id"])
                     else:
-                        binding["context_id"] = content_hash(binding)
-                        label = "cyber-final:" + uuid.uuid4().hex
+                        label = "cyber-authorization:" + uuid.uuid4().hex
                         # Record the stable identity before entering the kernel.
                         # A restarted service restores it from the commit event.
-                        commit = self._commit(label, "final",
-                            canonical({"schema": "gv-cyber-candidate-v1", "binding": binding}),
+                        commit = self._commit(label, "assertion", authorization_statement(binding),
                             [o["effect_ref"] for o in binding["observations"]], binding=binding)
                         if "claim_id" in commit:
                             self._cyber_adjudications[key] = {"binding": binding,
@@ -908,8 +1101,8 @@ class Service:
                         if "claim_id" not in commit or commit.get("error"):
                             return {**commit, "delivery_pending": True, "materialized": False}
                     if cert is None:
-                        cert = self.certificate(label)
-                    cert["final_claim_id"] = commit["claim_id"]
+                        cert = self._authorization_certificate(label)
+                    cert["authorization_root_id"] = commit["claim_id"]
                     if cert.get("verdict") == "supported":
                         from .profiles.cyber.acceptance import AcceptanceError, build_candidate_acceptance
                         try:
@@ -919,7 +1112,7 @@ class Service:
                             acceptance = build_candidate_acceptance(full, binding)
                             digest = self.artifacts.put(acceptance)
                             self.log.append("cyber_acceptance_certified", {
-                                "final": commit["claim_id"], "digest": digest,
+                                "root": commit["claim_id"], "digest": digest,
                                 "full_certificate_id": full_id, "context_id": binding["context_id"]})
                             cert.update(verdict="verified", certificate_id=digest,
                                 full_certificate_id=full_id, full_verdict=full["verdict"],
@@ -934,7 +1127,16 @@ class Service:
                     if binding["observations"] != self._observations(candidate_id):
                         raise ValueError("new candidate observations invalidate the prepared certificate")
                     self.candidates.validate(lease)
-                    receipt = self.candidates.materialize(lease, address)
+                    self._active_delivery_authorization = cert
+                    self._prepared_delivery = None
+                    try:
+                        receipt = self.candidates.materialize(lease, address)
+                    finally:
+                        # Ownership belongs to this publication attempt, not
+                        # a later request that fails before reaching materialize.
+                        prepared_delivery = self._prepared_delivery
+                        self._prepared_delivery = None
+                        self._active_delivery_authorization = None
                 # Lease exit validates once more before authenticating delivery.
                 self.candidates.verify_delivery(receipt)
                 with self._event_feed_lock:
@@ -944,17 +1146,115 @@ class Service:
                     self._authenticate_candidate_certificate(cert["certificate_id"],
                         commit["claim_id"], cert.get("full_certificate_id"))
                     self.candidates.verify_delivery(receipt)
-                    event = self.log.append("cyber_materialized", {
-                        "receipt": receipt, "candidate_id": candidate_id,
-                        **({"full_certificate_id": cert["full_certificate_id"]} if "full_certificate_id" in cert else {}),
-                        "certificate_id": cert["certificate_id"], "final_claim_id": commit["claim_id"]})
+                    delivery = prepared_delivery
+                    if delivery is None or content_hash(delivery["receipt"]) != content_hash(receipt):
+                        raise ValueError("published delivery has no matching durable preparation")
+                    event = self.log.append("cyber_candidate_delivered", delivery)
                 return {**cert, "materialized": True, "delivery_pending": False,
-                        "receipt": receipt, "receipt_event_seq": event["seq"],
+                        "receipt": receipt, "receipt_event_seq": event["seq"], "delivery": delivery,
                         "official_score": None}
         except (OSError, ValueError, KeyError) as err:
             if receipt is not None:
                 self.candidates.rollback(receipt)
+            if prepared_delivery is not None:
+                try:
+                    self.log.append("cyber_candidate_delivery_aborted", {
+                        "delivery_id": prepared_delivery["delivery_id"], "aborted": True})
+                except (OSError, ValueError):
+                    pass
             return {**(cert or {}), "error": str(err), "delivery_pending": True, "materialized": False}
+
+    def cyber_finalize_candidate(self, candidate_id: str, destination: str = "", *, retry: bool = False):
+        """Authorize bytes, deliver, then independently certify the complete task."""
+        if self.candidates is None:
+            return {"error": "cyber profile is not active", "verified": False}
+        from .profiles.cyber.phases import make_completion_binding, completion_statement
+        delivered = None
+        result = {}
+        try:
+            with self._cyber_lock:
+                self._check_task()
+                address = os.path.abspath(os.path.join(self.project_root,
+                    destination or self.final_destination or ""))
+                if not destination and self.final_destination is None:
+                    raise ValueError("a canonical destination must be specified")
+                if self.final_destination and address != self.final_destination:
+                    raise ValueError("destination differs from host-required canonical path")
+                for event in reversed(list(self.log.replay())):
+                    if (event["type"] == "cyber_materialized"
+                            and event["payload"].get("candidate_id") == candidate_id
+                            and event["payload"].get("receipt", {}).get("destination") == address):
+                        payload = event["payload"]
+                        certificate = self._authenticate_completion_certificate(payload)
+                        return {**payload, "verdict": "verified", "verified": True,
+                                "profile_metadata": certificate["profile_metadata"],
+                                "materialized": True, "delivery_pending": False,
+                                "task_completed": True, "phase": "task_completion",
+                                "receipt_event_seq": event["seq"], "official_score": None}
+                authorization = self._authorize_and_deliver(candidate_id, address, retry=retry)
+                if authorization.get("materialized") is not True:
+                    return {**authorization, "phase": "candidate_authorization", "verified": False,
+                            "task_completed": False, "official_score": None}
+                delivered = authorization["delivery"]
+                root_id = delivered["authorization_root_id"]
+                binding = make_completion_binding(self._cyber_bindings[root_id],
+                    authorization_root_id=root_id,
+                    authorization_certificate_id=delivered["authorization_certificate_id"],
+                    receipt_artifact_id=delivered["receipt_artifact_id"], delivery_id=delivered["delivery_id"],
+                    verification_epoch=uuid.uuid4().hex)
+                key = self._adjudication_key(binding)
+                prior = self._cyber_adjudications.get(key)
+                if prior is not None and not retry:
+                    binding, label = prior["binding"], prior["label"]
+                    self._validate_binding(binding)
+                    commit = {"claim_id": prior["claim_id"]}
+                else:
+                    label = "cyber-final:" + uuid.uuid4().hex
+                    # A final contract has no assumed premises. The audited
+                    # authorization root is exported as evidence, not an axiom.
+                    auth_label = next(label for label, cid in self.builder.labels.items() if cid == root_id)
+                    commit = self._commit(label, "final", completion_statement(binding),
+                        [auth_label], binding=binding)
+                    if "claim_id" in commit:
+                        self._cyber_adjudications[key] = {"claim_id": commit["claim_id"],
+                            "label": label, "binding": binding}
+                if "claim_id" not in commit or commit.get("error"):
+                    result = commit
+                else:
+                    result = self.certificate(label)
+                    result["final_claim_id"] = commit["claim_id"]
+                result.update(phase="task_completion", authorization_root_id=root_id,
+                    authorization_certificate_id=delivered["authorization_certificate_id"])
+                if "authorization_full_certificate_id" in delivered:
+                    result["authorization_full_certificate_id"] = delivered["authorization_full_certificate_id"]
+                if result.get("verdict") != "verified" or result.get("error"):
+                    rolled_back = self.candidates.rollback(delivered["receipt"])
+                    self.log.append("cyber_candidate_delivery_rolled_back", {
+                        "delivery_id": delivered["delivery_id"], "rolled_back": rolled_back,
+                        "cause": "task_completion_not_verified", "receipt_artifact_id": delivered["receipt_artifact_id"]})
+                    return {**result, "verified": False, "task_completed": False,
+                            "materialized": False, "delivery_pending": True, "official_score": None,
+                            "output_rolled_back": rolled_back}
+                payload = {**delivered, "schema": "gv-cyber-completed-delivery-v2",
+                           "certificate_id": result["certificate_id"], "final_claim_id": result["final_claim_id"]}
+                with self._event_feed_lock:
+                    self._authenticate_completion_certificate(payload)
+                    event = self.log.append("cyber_materialized", payload)
+                return {**result, "receipt": delivered["receipt"], "receipt_event_seq": event["seq"],
+                        "verified": True, "task_completed": True, "materialized": True,
+                        "delivery_pending": False, "official_score": None}
+        except (OSError, ValueError, KeyError, StopIteration) as err:
+            rolled_back = False
+            if delivered is not None:
+                rolled_back = self.candidates.rollback(delivered["receipt"])
+                try:
+                    self.log.append("cyber_candidate_delivery_rolled_back", {
+                        "delivery_id": delivered["delivery_id"], "rolled_back": rolled_back,
+                        "cause": "completion_error", "receipt_artifact_id": delivered["receipt_artifact_id"]})
+                except (OSError, ValueError):
+                    pass  # No completion event exists, so recovery fails closed.
+            return {**result, "error": str(err), "verified": False, "task_completed": False,
+                    "delivery_pending": True, "materialized": False, "output_rolled_back": rolled_back}
 
 def _parallel_default(name: str, fallback: int) -> int:
     """Per-trial parallelism defaults: GV_PARALLEL_OBLIGATIONS (discharges
@@ -1126,7 +1426,9 @@ def _default_kernel(sc: Service, model, backend=None,
                   parallel_obligations=parallel_obligations,
                   parallel_claims=parallel_claims,
                   context_provider=context_provider,
-                  context_id_provider=getattr(sc, "profile_context_id", None))
+                  context_id_provider=getattr(sc, "profile_context_id", None),
+                  independent_root_provider=(getattr(sc, "independent_root_contract", None)
+                                             if profile.name == "cyber" else None))
 
 
 # MCP wiring
@@ -1343,9 +1645,9 @@ def build_server(service: Service):
         @server.tool()
         @recoverable_contract
         async def cyber_finalize_candidate(candidate_id: str, destination: str = "") -> str:
-            """Verify the candidate through the normal GV roles, then copy certified bytes.
-            A verified candidate certificate is scoped to content; materialization has its own
-            receipt. Neither the receipt nor a candidate signal asserts an official task score."""
+            """Authorize the candidate through GV, copy exact bytes, then verify the full task.
+            Only a verified whole-task final and current exact delivery complete this operation.
+            Candidate authorization alone is not completion; neither certificate asserts a score."""
             return json.dumps(await dispatcher.call("cyber_finalize_candidate", candidate_id, destination), ensure_ascii=False)
 
         @server.tool()

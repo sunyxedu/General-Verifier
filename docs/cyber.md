@@ -49,6 +49,10 @@ they never redefine acceptance predicates or expected values.
 Whole-task coverage belongs to completion decomposition/certification.
 Intermediate claims retain their residual scope; each Oracle, Discharger and
 Judger handles only its current obligation, not another complete task audit.
+The host explicitly marks ordinary claims separately from candidate phases.
+Registering a candidate does not make every source or analysis assertion owe
+a candidate/destination binding. A claim that actually asserts such a binding
+still has to establish it; public finals still cover the complete task.
 
 Reusable method families cover identity/content comparisons, authenticated
 retained executions, isolated dynamic witnesses, pinned static reasoning, and
@@ -154,20 +158,27 @@ authorize final delivery.
 
 ## Certificate and delivery
 
-`cyber_finalize_candidate` creates a host-bound final claim and submits it to
-the ordinary GV pipeline. Its certificate explicitly has candidate scope:
+`cyber_finalize_candidate` uses two phases of the same ordinary GV pipeline:
+candidate authorization, then actual whole-task completion. It does not seat
+a second independent verifier or replace the original kernel.
+
+The host first creates an independently checked authorization **assertion**:
 
 - The complete task's artifact and security semantics must be checked.
-- The exact registered candidate substitutes only for the configured canonical
-  file whose physical delivery is pending.
+- Its current subject address is the real immutable blob, not the future
+  canonical destination. Only the host's explicit single-file existence,
+  regular-file and exact-byte delivery postconditions are pending.
 - Other required outputs and task postconditions remain ordinary checks.
 - The candidate's digest, size, destination, task, and verification profile are
   bound to the certificate and the obligation context.
 
-Candidate scope does not claim that canonical delivery has already happened.
+This assertion is registered by the host, never inferred from solver text.
+It admits no assumed solver premises or residualized task requirements.
+Its scoped certificate uses an independent `root`, not a task-completion
+`final`, and does not claim canonical delivery has happened.
 It does not apply to public `commit(kind="final")` calls, even when their text
-imitates a candidate binding. Supporting claims cannot eliminate the final's
-independent task requirements.
+imitates a candidate binding. Supporting claims cannot eliminate independent
+task requirements.
 
 Materialization requires an authenticated, current candidate authorization.
 A full `verified` GV certificate is sufficient. If every obligation holds but
@@ -179,10 +190,14 @@ and advisory evidence remain unchanged and retained. Missing/refuted checks,
 weaker MUST evidence and stale bindings cannot authorize delivery.
 This is a mechanical delivery policy over the same GV evidence, not another
 agent verifier or an evaluator-positive shortcut.
-The finalizer copies the certified bytes and mechanically
-checks the actual destination's identity, digest, and size before recording a
-delivery receipt. The receipt records an exact write, not an official benchmark
-score or a new security verdict.
+Before publishing bytes, the host durably records the planned output inode,
+parent identity, hash and delivery transaction. It then copies the certified
+bytes and checks actual delivery. Next it submits an ordinary, independent
+whole-task **final** through Compiler, Critic, Oracle, Discharger and Judger.
+This final checks the complete original task against the actual delivered
+state. Only its `verified` certificate together with current byte delivery
+permits a completion receipt. Candidate MUST acceptance cannot upgrade a
+`supported` or failed whole-task final. No receipt asserts an official score.
 
 The finalizer requires an existing parent directory inside the configured
 project root and refuses symlinks and existing output files. Keep proposed
@@ -195,14 +210,28 @@ identity; ordinary GV obligation identities remain compatible.
 
 Repeating a successful finalization checks the retained certificate, current
 registered bytes, and actual destination and returns the original receipt
-without repeating verification or writing another file. A stale final or new host observations require fresh
-adjudication. If receipt recording fails, the finalizer removes only its own
-unchanged output; it preserves any substituted file.
+without repeating verification or writing another file. A new delivery
+transaction cannot reuse an old completion, even if the OS reuses an inode.
+A stale final or new host observations require fresh adjudication. Failed
+completion or receipt recording rolls back only the host's own unchanged
+output; substituted files are preserved. Replay retains failed historical
+finals without requiring their rolled-back destinations to still exist.
 
 ## Validation
 
 The service tests use deterministic backends through the actual GV pipeline.
 They verify the role sequence, independent final contract, normal Effect
 claims, context isolation and replay, rejection of mismatched certificates,
-and exact materialization only after a verified candidate certificate. These
+and exact materialization only after authorization, whole-task completion
+gating, and real process-crash recovery around canonical publication. These
 checks validate the integration; they do not establish benchmark accuracy.
+
+The pinned CyberGym agent image extends the same Codex base with generic
+Clang/compiler runtimes, CMake, Ninja, LLVM, LLD and GDB. This is an environment
+capability change, not a model upgrade or a payload recipe. The launcher records
+an offline, networkless toolchain metadata probe. The agent remains arm64 while
+the official runtime is amd64; that mismatch is declared, and tool presence
+does not establish build success, runtime fidelity or an official result.
+An incomplete or malformed official fixed result is an infrastructure error,
+not a model failure or success; a completed vulnerable negative needs no fixed
+execution.

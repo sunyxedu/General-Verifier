@@ -79,6 +79,7 @@ def kernel_fixture(*, profile="cyber", context_id="", malformed=False, with_prof
         kernel.critic_role = ALL_AGENT_ROLES["critic"]
     kernel.context_provider = lambda role, claim: json.dumps({"inventory": "fixture", "role": role})
     kernel.context_id_provider = lambda claim: context_id
+    kernel._independent_root_provider = None
     return kernel
 
 

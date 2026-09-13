@@ -152,6 +152,25 @@ def test_incomplete_selected_online_row_is_filled_not_scored_as_failure(controll
     assert [endpoint for endpoint, _ in submissions] == ["/submit-vul", "/submit-fix"]
 
 
+@pytest.mark.parametrize("code", [True, False, 77.0, "77"])
+def test_malformed_vulnerable_code_is_infrastructure_error(controller, selected, monkeypatch, code):
+    directory, _candidate, receipt = selected
+    _queries, submissions = scorer_fakes(monkeypatch, controller, selected, selected_vul=code)
+    with pytest.raises(RuntimeError, match="incomplete|malformed"):
+        controller.score("arvo:23296", directory, {}, receipt)
+    assert not submissions
+    assert not (directory / "official-final.json").exists()
+
+
+@pytest.mark.parametrize("code", [None, False, True, 0.0, "0"])
+def test_incomplete_or_malformed_fixed_code_is_not_a_model_verdict(controller, selected, monkeypatch, code):
+    directory, _candidate, receipt = selected
+    scorer_fakes(monkeypatch, controller, selected, final_update={"fix_exit_code": code})
+    with pytest.raises(RuntimeError, match="incomplete|malformed"):
+        controller.score("arvo:23296", directory, {}, receipt)
+    assert not (directory / "official-final.json").exists()
+
+
 @pytest.mark.parametrize("selected_vul", [0, 300])
 def test_exploratory_success_never_substitutes_for_failed_final(controller, selected, monkeypatch, selected_vul):
     directory, _candidate, receipt = selected
