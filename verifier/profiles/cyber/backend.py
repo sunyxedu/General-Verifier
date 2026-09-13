@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
+import threading
 import tomllib
+from contextlib import contextmanager
 
 from verifier.llm.codex_backend import (
     CodexBackend, _ensure_verifier_owned_chain, _toml_string,
@@ -83,7 +86,11 @@ class CyberCodexBackend(CodexBackend):
                     "/root/.codex", "/home/node/.codex")
 
     def __init__(self, *, project_root: str | None = None,
-                 runtime_inventory=None, **kwargs):
+                 runtime_inventory=None, native_private_tmp=False, **kwargs):
+        if type(native_private_tmp) is not bool:
+            raise RoleError("native private tmp must be host-selected boolean")
+        self.native_private_tmp = native_private_tmp
+        self._private_tmp_context = threading.local()
         super().__init__(**kwargs)
         self.project_root = (os.path.abspath(os.fspath(project_root))
                              if project_root is not None else None)
@@ -94,6 +101,54 @@ class CyberCodexBackend(CodexBackend):
             if not isinstance(runtime_inventory, CyberRuntimeInventory):
                 raise RoleError("runtime inventory must be host-selected")
             runtime_inventory.as_inventory()
+
+    @contextmanager
+    def _private_tmp_call(self, role_name, variables):
+        if not self.native_private_tmp or role_name not in {"discharge", "judger"}:
+            yield
+            return
+        if sys.platform != "linux":
+            raise RoleError("native private tmp requires Linux namespaces")
+        from .native_tmp import PrivateTmp
+        state = Path(self._offline_state_dir(variables))
+        work = state / "work"
+        parent = work
+        declared = variables.get("workdir")
+        if declared:
+            parent = Path(os.path.abspath(os.fspath(declared)))
+            if parent != work and not parent.is_relative_to(work):
+                raise RoleError("private tmp must remain in owned work scratch")
+        _ensure_verifier_owned_chain(str(work), str(parent))
+        private = state / "verifier-home"
+        _ensure_verifier_owned_chain(str(state), str(private))
+        context = PrivateTmp(str(private),
+                             retain_parent=str(parent) if declared and role_name == "discharge" else None)
+        previous = getattr(self._private_tmp_context, "current", None)
+        self._private_tmp_context.current = context
+        try:
+            yield
+        finally:
+            self._private_tmp_context.current = previous
+            try:
+                context.close()
+            except OSError as error:
+                raise RoleError("private tmp retention failed") from error
+
+    def complete(self, role_name, prompt, variables):
+        with self._private_tmp_call(role_name, variables):
+            return super().complete(role_name, prompt, variables)
+
+    def _execution_capture_dir(self, role_name, variables):
+        context = getattr(self._private_tmp_context, "current", None)
+        return context.capture_path if context is not None else None
+
+    def _execution_command(self, role_name, variables, command):
+        if not self.native_private_tmp or role_name not in {"discharge", "judger"}:
+            return command
+        context = getattr(self._private_tmp_context, "current", None)
+        if context is None:
+            raise RoleError("private tmp launch has no host binding")
+        return context.command(command)
 
     def _is_offline_execution(self, role_name, variables):
         # Select a bounded shell, without misrepresenting live-world prompts.
@@ -149,6 +204,20 @@ class CyberCodexBackend(CodexBackend):
         grants.update({path: "deny" for path in self.DENIED_ROOTS})
         grants[str(state / "verifier-home")] = "deny"
         args[network[0]] = args[network[0]].rsplit("=", 1)[0] + "=false"
+        context = getattr(self._private_tmp_context, "current", None)
+        if context is not None and role_name in {"discharge", "judger"}:
+            # This grant is valid only because _execution_command first binds
+            # the private directory in a new parent mount namespace.
+            grants["/tmp"] = "write"
+            environment = [i for i, value in enumerate(args)
+                           if value.startswith("shell_environment_policy.set=")]
+            if len(environment) != 1:
+                raise RoleError("private tmp shell environment did not fail closed")
+            env_index = environment[0]
+            env = tomllib.loads(args[env_index])["shell_environment_policy"]["set"]
+            env["TMPDIR"] = "/tmp"
+            args[env_index] = "shell_environment_policy.set={" + ",".join(
+                f"{key}={_toml_string(value)}" for key, value in env.items()) + "}"
         if self.runtime_inventory is not None:
             runtime = self.runtime_inventory.as_inventory()  # Revalidate dependency pins.
             root = Path(self.runtime_inventory.tool_root)

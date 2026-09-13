@@ -2165,6 +2165,14 @@ class CodexBackend:
                 f"offline state is not owned by this process: {state_dir}")
         return state_dir
 
+    def _execution_capture_dir(self, role_name, variables):
+        """Host-selected storage for CLI output and temporary attachments."""
+        return None
+
+    def _execution_command(self, role_name, variables, command):
+        """Host execution setup, after building the ordinary CLI command."""
+        return command
+
     def _execution_policy_args(self, role_name: str,
                                variables: Dict[str, Any]) -> list[str]:
         """Return the CLI boundary for this seat and evidence context."""
@@ -2787,7 +2795,9 @@ class CodexBackend:
         # contract deliberately exposes ./task.md and ./baseline/ as read-only
         # authoritative inputs. Capability-limited subclasses may narrow cwd.
         execution_cwd = self._execution_cwd(role_name, variables)
-        out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
+        capture_dir = self._execution_capture_dir(role_name, variables)
+        out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False,
+                                         dir=capture_dir)
         out.close()
         image_paths = []
         if self.phase_observer is not None:
@@ -2799,7 +2809,8 @@ class CodexBackend:
                 suffix = (".jpg" if item.mime == "image/jpeg"
                           else "." + item.mime[6:])
                 handle = tempfile.NamedTemporaryFile(
-                    prefix="gv-evidence-image-", suffix=suffix, delete=False)
+                    prefix="gv-evidence-image-", suffix=suffix, delete=False,
+                    dir=capture_dir)
                 image_paths.append(handle.name)
                 try:
                     handle.write(item.data)
@@ -2820,6 +2831,7 @@ class CodexBackend:
                 "-c", f"model_reasoning_effort={self.effort}",
                 "-o", out.name, "--", instruction,
             ])
+            cmd = self._execution_command(role_name, variables, cmd)
             completed_attempt = None
             for attempt in range(TRANSIENT_RETRIES + 1):
                 # Each attempt must produce its own final message. A failed

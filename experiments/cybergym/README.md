@@ -79,6 +79,19 @@ remapped UIDs as host identities. Planning seats cannot read the tool files.
 Tool diagnostics remain ordinary execution output, including when a child
 prints similar text; they never authorize a candidate by themselves.
 
+Execution/audit calls use a private Linux mount namespace for fixed `/tmp`
+paths. The host binds owned per-call scratch before the CLI starts; it never
+grants access to the shared temporary directory or adds `/proc` access to seat
+commands. CLI final output and image uploads use separate private capture
+storage. Discharger temporary files join its bounded evidence snapshot before
+cleanup, with an explicit transport-only mapping manifest. A failed namespace
+setup refuses execution. Run the zero-model native regression before launching
+on a new host or engine:
+
+```sh
+GV_CYBERGYM_HELPER_NATIVE=1 python -B -m pytest -q tests/test_cyber_native_tmp.py tests/test_cybergym_helper_native.py
+```
+
 ## Model configuration
 
 The solver and every verification role use **GPT-5.6 Luna, max effort, fast**.

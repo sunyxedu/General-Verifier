@@ -82,6 +82,9 @@ class PolicyOnlyFallback:
         # This policy-only double bypasses __init__; mirror its optional
         # operator runtime default without loosening the production boundary.
         self.backend.runtime_inventory = None
+        import threading
+        self.backend.native_private_tmp = False
+        self.backend._private_tmp_context = threading.local()
 
     def discharge(self, row, obligation, method=None, tag=""):
         variables = {"world_mode": "live", "ledger_path": str(self.fixture.log.path)}

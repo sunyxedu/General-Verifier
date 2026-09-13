@@ -71,7 +71,8 @@ class SandboxedVerifierBackend(CyberCodexBackend):
         super().__init__(cwd=cwd, model=MODEL, effort=EFFORT,
                          service_tier=SERVICE_TIER, timeout=None,
                          phase_observer=self._diagnostic, project_root=project_root,
-                         runtime_inventory=runtime_inventory)
+                         runtime_inventory=runtime_inventory,
+                         native_private_tmp=True)
         self._diagnostic_failures = 0
 
     def _execution_policy_args(self, role_name, variables):

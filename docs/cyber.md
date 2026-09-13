@@ -79,6 +79,17 @@ disabled. Host-provided custom backends are responsible for their own boundary.
 Optional compact evidence transport preserves the exact frozen record even
 when a runtime opts out; it never falls back to a later live ledger.
 
+The Linux benchmark sidecar maps each execution/audit call's `/tmp` to a
+host-created private directory before starting the native CLI sandbox. This
+supports unmodified programs with fixed temporary paths without exposing the
+sidecar's shared `/tmp`. Namespace setup fails closed; planner shells receive
+no additional grant, and `/proc` remains unavailable to seat commands. CLI final
+messages and image uploads stay in separate host-private capture storage.
+Discharger temporary files are retained in its work directory for the ordinary
+bounded snapshot before cleanup; a transport manifest identifies the mapping
+and omitted aliases/special files. Retention authenticates no result or build.
+Other hosting workflows must explicitly select and support this Linux setup.
+
 ## Start the MCP server
 
 ```sh
