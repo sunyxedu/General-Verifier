@@ -664,14 +664,38 @@ def _fingerprint(value: dict) -> str:
         for call in value["_calls"]]
     stable["jobs"] = [{key: job.get(key) for key in ("job_id", "state", "attempts")}
         for job in value.get("verification_progress", {}).get("jobs", [])]
+    stable["solver_output"] = {key: value.get("solver_activity", {}).get(key)
+                               for key in ("available", "log_bytes")}
+    stable["backend_cli"] = [{
+        **{key: call.get(key) for key in ("backend_call_id", "attempt", "cli_events", "active_tool_items")},
+        "completed_commands": call.get("command_stats", {}).get("completed_items"),
+        "completed_tools": {kind: item.get("count")
+                            for kind, item in call.get("completed_tool_items", {}).items()},
+    } for call in value.get("backend_activity", {}).get("calls", [])]
     return hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()
+
+
+def _solver_activity(directory: Path, root: Path, now: float) -> dict:
+    """Output activity only; never read or publish solver transcript contents."""
+    path = directory / "solver.jsonl"
+    try:
+        info = path.stat(follow_symlinks=False) if _safe_file(path, root) else None
+        if info is not None and not stat.S_ISREG(info.st_mode):
+            info = None
+    except OSError:
+        info = None
+    return {"available": info is not None,
+            "log_bytes": info.st_size if info else None,
+            "last_log_update_unix": info.st_mtime if info else None,
+            "log_age_seconds": max(0, now - info.st_mtime) if info else None,
+            "measurement": "Log output and CLI items are observed activity, not successful task progress or CPU time."}
 
 
 def _source_signature(status_path: Path, root: Path) -> dict:
     """Finished attempts normally never change; avoid rereading 1507 ledgers."""
     state = status_path.parent / "private" / "state"
     signatures = {}
-    for path in (status_path, state / "role_calls.jsonl", state / "backend_usage.jsonl", state / "events.jsonl",
+    for path in (status_path, status_path.parent / "solver.jsonl", state / "role_calls.jsonl", state / "backend_usage.jsonl", state / "events.jsonl",
                  state / "transport_calls.jsonl", status_path.parent / "private/native-progress.json",
                  status_path.parent / "private/telemetry-mirror-calls.jsonl",
                  status_path.parent / "private/telemetry-mirror-errors.jsonl",
@@ -739,6 +763,7 @@ def attempt_snapshot(status_path: Path, root: Path, now: float, *, status: dict 
                           "partial": role_partial or usage_partial,
                           **summarize_calls(calls, now)},
         backend_activity=backend,
+        solver_activity=_solver_activity(status_path.parent, root, now),
         evaluator_timings={"available": bool(events), "partial": event_partial,
                            **summarize_calls(evaluator, now)},
         evaluator_infrastructure_diagnostics=_evaluator_infrastructure_diagnostics(events, event_partial),

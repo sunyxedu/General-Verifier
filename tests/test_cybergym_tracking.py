@@ -1,5 +1,6 @@
 """Tracking fixtures are diagnostics only: no API, Docker or evaluator calls."""
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,64 @@ def test_new_candidate_resets_unchanged_counter(tmp_path):
     value = snapshot(tmp_path, now=630, previous=previous)
     assert value["attempts"][0]["unchanged_snapshots"] == 1
     assert value["alerts"] == []
+
+
+def test_solver_output_growth_resets_warning_without_publishing_contents(tmp_path):
+    path = attempt(tmp_path)
+    log = path / "solver.jsonl"
+    log.write_text("PRIVATE_TRANSCRIPT\n")
+    previous = record_snapshot(tmp_path, now=30)
+    previous = record_snapshot(tmp_path, now=330)
+    with log.open("a") as stream:
+        stream.write("NEW_PRIVATE_COMMAND\n")
+    value = record_snapshot(tmp_path, now=630)
+    item = value["attempts"][0]
+    assert item["unchanged_snapshots"] == 1
+    assert item["solver_activity"]["log_bytes"] == log.stat().st_size
+    assert not value["alerts"]
+    assert "PRIVATE" not in json.dumps(value)
+    assert item["official_pass"] is None
+
+
+def test_touching_solver_log_does_not_count_as_output_activity(tmp_path):
+    path = attempt(tmp_path)
+    log = path / "solver.jsonl"
+    log.write_text("unchanged\n")
+    record_snapshot(tmp_path, now=30)
+    record_snapshot(tmp_path, now=330)
+    os.utime(log, (500, 500))
+    value = record_snapshot(tmp_path, now=630)
+    assert value["attempts"][0]["unchanged_snapshots"] == 3
+    assert value["alerts"][0]["type"] == "unchanged_progress_warning"
+
+
+def test_solver_log_symlink_does_not_expose_external_metadata(tmp_path):
+    path = attempt(tmp_path)
+    outside = tmp_path.parent / (tmp_path.name + "-outside")
+    outside.write_text("PRIVATE_TRANSCRIPT")
+    try:
+        (path / "solver.jsonl").symlink_to(outside)
+        activity = snapshot(tmp_path, now=30)["attempts"][0]["solver_activity"]
+        assert activity["available"] is False
+        assert activity["log_bytes"] is None
+        assert activity["last_log_update_unix"] is None
+    finally:
+        outside.unlink()
+
+
+def test_backend_command_completion_resets_unchanged_counter(tmp_path):
+    path = attempt(tmp_path)
+    from verifier.llm.codex_backend import _CommandStats
+    stats = _CommandStats().snapshot()
+    backend_fixture(path, backend_row("exec_heartbeat", 25, cli_events=2, command_stats=stats))
+    previous = snapshot(tmp_path, now=30)
+    previous = snapshot(tmp_path, now=330, previous=previous)
+    stats = {**stats, "completed_items": 1, "success_exits": 1,
+             "fingerprinted_items": 1, "unique_fingerprints": 1, "max_fingerprint_repetitions": 1}
+    backend_fixture(path, backend_row("exec_heartbeat", 625, cli_events=2, command_stats=stats))
+    value = snapshot(tmp_path, now=630, previous=previous)
+    assert value["attempts"][0]["unchanged_snapshots"] == 1
+    assert "unchanged_progress_warning" not in alert_types(value)
 
 
 def test_terminal_official_failure_is_not_deduced_from_evaluator_exit(tmp_path):

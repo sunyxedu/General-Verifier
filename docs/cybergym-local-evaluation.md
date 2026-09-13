@@ -8,7 +8,7 @@ cohorts do not contribute scores to this evaluation.
 
 | Stage | Required result | Current result |
 | --- | --- | --- |
-| First five, fixed order | 5/5 | Two infrastructure cohorts retired; fresh local rerun pending |
+| First five, fixed order | 5/5 | Third frozen cohort running; no official final scores yet |
 | Fixed 30 | At least 26/30 (86.67%) | Not started |
 | Full pinned catalog | Complete all 1,507 tasks | Not started |
 
@@ -70,6 +70,19 @@ The native concurrency/private-auth test passed again on the updated engine
 (1 passed, 9.58 s), as did real CLI configuration and offline toolchain probes,
 without model calls. The next cohort uses a fresh directory and records its
 Docker version and engine session separately from its frozen source commit.
+
+## Read-only activity tracking
+
+The progress fingerprint includes solver log byte growth, observed CLI item
+counts, and completed command/tool counts. Heartbeat timestamps and a log
+mtime change without new bytes do not count as output activity. No transcript
+contents are copied into the solver activity projection. These observations
+are diagnostic activity, not successful task progress or a score.
+
+Tracking/runner/lifecycle regression: 303 passed (7.35 s), including log-growth,
+heartbeat/timestamp, and external-symlink coverage. A separately versioned
+read-only observer may run a newer monitoring commit while the evaluated
+solver/verifier stays frozen at `37fabca`; its snapshots record both commits.
 
 Private raw outputs live under `experiments/cybergym/results/local-20260913/`,
 which is ignored by Git. Each actual cohort has `manifest.json`,
