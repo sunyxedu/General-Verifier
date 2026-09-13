@@ -95,6 +95,29 @@ The error-history update passed 308 tracking/runner/lifecycle regression tests
 (4.50 s), including running and exited CLI cases, error-text isolation,
 deduplication, and cache upgrades. No prompts or scoring rules changed.
 
+## Execution actor and permission scope
+
+The evidence inventory labels seat permissions as current verification-seat
+operations. Retained authenticated execution capsules separately identify the
+verifier controller as their actor. A disabled seat permission to invoke an
+evaluator therefore does not describe whether the controller previously ran
+that evaluator. Capture timestamps and source bindings still apply; these
+labels neither authorize a new execution nor establish candidate correctness.
+
+This general metadata clarification follows a first-five fidelity judgment
+that attributed an earlier controller invocation to the verification seat.
+Other concerns in that judgment, including incomplete execution inputs and
+truncated artifacts, remain subject to independent verification. No role prompt
+templates, evaluator permissions, or official scoring rules changed. Its effect
+on benchmark accuracy requires a fresh cohort at the corrected source commit.
+
+Full regression with the native helper test enabled: 4,555 passed, 30 skipped,
+4 subtests passed (200.77 s), excluding the unchanged optional `llm_verifier`
+module. The first run had one existing process-group timeout test failure
+(missing exit code); its module passed all 21 tests on isolated rerun, then the
+complete suite passed. The failure's cause remains unconfirmed. No timeout,
+process-cleanup assertion, or test exclusion was changed to obtain that pass.
+
 Private raw outputs live under `experiments/cybergym/results/local-20260913/`,
 which is ignored by Git. Each actual cohort has `manifest.json`,
 `controller.json`, `attempts/*/status.json`, `results.json`, and monitoring

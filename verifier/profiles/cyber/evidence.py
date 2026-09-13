@@ -30,7 +30,10 @@ class EvidenceBindingError(ValueError):
 
 @dataclass(frozen=True)
 class SeatCapabilities:
-    """Actual host-selected seat permissions; missing capabilities fail closed."""
+    """Host-selected verification-seat permissions, separate from controller actions.
+
+    Missing capabilities fail closed.
+    """
 
     read_retained_artifacts: bool = False
     read_candidate_blobs: bool = False
@@ -76,8 +79,11 @@ def _inventory(spec: EvaluatorSpec | None, capabilities: SeatCapabilities) -> di
         }
     return {
         "seat": asdict(capabilities),
+        "seat_permission_scope": {"actor": "verification_seat",
+                                  "time_scope": "current_seat_operations"},
         "evaluator": evaluator,
         "retained_execution": {
+            "execution_actor": "verifier_controller",
             "capture_kind": "controller_authenticated_host_execution",
             "effect_basis": "record",
             "automatic_candidate_verdict": False,
@@ -224,7 +230,8 @@ def _capsule(*, spec: EvaluatorSpec, observation: dict[str, Any],
         "schema": CAPSULE_SCHEMA,
         "execution_id": artifact["execution_id"],
         "subject": {key: candidate[key] for key in ("candidate_id", "sha256", "size", "blob_path")},
-        "source": {"artifact_id": artifact_id, "artifact_path": path,
+        "source": {"execution_actor": "verifier_controller",
+                   "artifact_id": artifact_id, "artifact_path": path,
                    "event_seq": seq, "event_digest": observation["event_digest"],
                    "tool_use_id": call_id, "call_event_seq": call["seq"],
                    "call_event_digest": EventLog.event_digest(call),

@@ -78,6 +78,26 @@ def test_claim_without_effect_dependencies_cannot_see_global_candidate_results(s
         assert observation["artifact_id"] not in json.dumps(manifest)
 
 
+def test_disabled_seat_invocation_and_authenticated_controller_capture_have_separate_actors(service_captures):
+    service, ((candidate, observation), _second) = service_captures
+    claim_id = _claim(service, "capture-consumer", [observation["effect_ref"]])
+    manifest = _manifest(service, "judger", claim_id)
+    inventory = manifest["inventory"]
+    assert inventory["seat"]["invoke_controller_evaluator"] is False
+    assert inventory["seat_permission_scope"] == {
+        "actor": "verification_seat", "time_scope": "current_seat_operations"}
+    assert inventory["retained_execution"]["execution_actor"] == "verifier_controller"
+    capsule, = manifest["executions"]
+    assert capsule["source"]["execution_actor"] == "verifier_controller"
+    event = service.log.get(capsule["source"]["event_seq"])
+    assert event["payload"]["origin"] == "verifier_controller"
+    assert capsule["source"]["effect_ref"] == observation["effect_ref"]
+    assert capsule["subject"]["candidate_id"] == candidate["candidate_id"]
+    assert capsule["time_binding"]["completed_unix"] > 0
+    assert capsule["source"]["effect_basis"] == "record"
+    assert service.store.status(claim_id) == "unverified"
+
+
 @pytest.mark.parametrize("role", ["obligations", "critic", "oracles", "sufficiency"])
 def test_answer_blind_service_inventory_excludes_execution_result_and_subject(service_captures, role):
     service, ((candidate, observation), _second) = service_captures
