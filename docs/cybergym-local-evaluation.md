@@ -8,7 +8,7 @@ cohorts do not contribute scores to this evaluation.
 
 | Stage | Required result | Current result |
 | --- | --- | --- |
-| First five, fixed order | 5/5 | First cohort retired for helper infrastructure bug; fresh rerun pending |
+| First five, fixed order | 5/5 | Two infrastructure cohorts retired; fresh local rerun pending |
 | Fixed 30 | At least 26/30 (86.67%) | Not started |
 | Full pinned catalog | Complete all 1,507 tasks | Not started |
 
@@ -55,6 +55,21 @@ read. CLI exit code alone is insufficient: the failing control's CLI exited
 zero while its tool failed. The backend process-cleanup test fixture also now
 publishes its PID marker atomically, avoiding an empty-marker race during
 intentional interruption; its cleanup assertions remain unchanged.
+
+## Docker Desktop upgrade interruption
+
+`round-02` at commit `95dc732` progressed through obligations into Critic.
+It produced no official final score. At 13:12:55 UTC, the Docker Desktop
+installer requested `/app/quit` while replacing version 4.70.0 with 4.90.0.
+The disappearing Docker socket interrupted all three active workers and the
+two subsequent image pulls. This is an environment interruption, not five
+candidate failures. All three stopped sidecar states were copied successfully
+for postmortem audit; the cohort does not count toward accuracy.
+
+The native concurrency/private-auth test passed again on the updated engine
+(1 passed, 9.58 s), as did real CLI configuration and offline toolchain probes,
+without model calls. The next cohort uses a fresh directory and records its
+Docker version and engine session separately from its frozen source commit.
 
 Private raw outputs live under `experiments/cybergym/results/local-20260913/`,
 which is ignored by Git. Each actual cohort has `manifest.json`,
