@@ -987,7 +987,8 @@ class Evaluation:
             args += ["resume"]
         args += ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
             "--strict-config", "--json", "--skip-git-repo-check", "-m", "gpt-5.6-luna",
-            "-c", 'model_reasoning_effort="max"', "-c", 'service_tier="fast"', "--enable", "fast_mode"]
+            "-c", 'model_reasoning_effort="max"', "-c", 'service_tier="fast"',
+            "-c", 'web_search="disabled"', "--enable", "fast_mode"]
         args += context_cli_args()
         for feature in DISABLED:
             args += ["--disable", feature]

@@ -469,6 +469,23 @@ def test_solver_runtime_uses_luna_max_fast_and_isolated_homes(controller, select
                    for index in range(len(command) - 1))
 
 
+@pytest.mark.parametrize("thread", [None, "existing-thread-id"])
+def test_solver_pins_search_disabled_without_relying_on_home_config(controller, selected, thread):
+    directory, _candidate, _receipt = selected
+    runtime = {"network": "attempt-only-net", "sidecar": "attempt-only-sidecar",
+               "proxy": "attempt-only-proxy", "token": "attempt-isolation-token"}
+    assert not (directory / "solver-home/config.toml").exists()
+    prompt = "generic fixture prompt"
+    command = controller.solver_command(directory, directory / "workspace", runtime,
+                                        "attempt-solver", prompt, thread)
+    overrides = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "-c"]
+    search_overrides = [value for value in overrides if value.split("=", 1)[0] == "web_search"]
+    assert search_overrides == ['web_search="disabled"']
+    assert command[command.index('web_search="disabled"') - 1] == "-c"
+    assert command[-2:] == ([thread, prompt] if thread else ["--", prompt])
+    assert "--ignore-user-config" not in command  # Keep the attempt-local MCP configuration.
+
+
 def prepare_fake(monkeypatch, tmp_path, leaked=False):
     archive_path = tmp_path / "dataset-source.tar.gz"
     with tarfile.open(archive_path, "w:gz") as archive:
