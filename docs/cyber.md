@@ -152,6 +152,16 @@ artifacts cannot act as the authority deciding their own correctness. Task
 requirements are not weakened by a positive observation or a verified
 supporting claim.
 
+Agent snapshots retain a text view, which can change invalid UTF-8 bytes and
+line endings. Selected private regular files whose byte identity would be lost,
+and files containing NUL bytes, also receive exact content-addressed `raw_files`
+references before executor cleanup. This additional pass inherits the selected
+file boundary and uses the text limits as byte caps (65,536 per file and
+2,000,000 total); oversized or unstorable bodies are marked incomplete.
+Raw references are locators for independent inspection, not correctness
+verdicts or automatic image attachments. Raster retention keeps its separate
+existing byte and attachment rules.
+
 Use checkpoints for working theories and next actions. Candidate ranking,
 control-count heuristics, deadlines, and separate relevance verdicts do not
 authorize final delivery.

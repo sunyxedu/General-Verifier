@@ -308,6 +308,7 @@ def test_binary_pass_preserves_head_text_snapshot_for_links_and_images(tmp_path)
     assert envelope["files"]["hard.txt"] == "head-compatible�text"
     assert envelope["files"]["link.txt"] == "head-compatible�text"
     assert set(envelope["binary_files"]) == {"render.png"}
+    assert "raw_files" not in envelope
 
 
 def test_binary_pass_does_not_promote_an_image_beyond_legacy_file_cap(tmp_path):
@@ -323,6 +324,72 @@ def test_binary_pass_does_not_promote_an_image_beyond_legacy_file_cap(tmp_path):
 
     assert envelope["files"] == legacy
     assert "z.png" not in envelope.get("binary_files", {})
+
+
+@pytest.mark.parametrize("raw", [
+    b"\xff\x00\r\nopaque input", b"first\r\nsecond\rlast", b"ascii\x00binary",
+])
+def test_opaque_input_survives_executor_cleanup_byte_for_byte(tmp_path, raw):
+    state = tmp_path / "state"
+    state.mkdir()
+    artifacts = ArtifactStore(str(state / "artifacts"))
+
+    def discharge(variables):
+        path = os.path.join(variables["workdir"], "input.raw")
+        with open(path, "wb") as handle:
+            handle.write(raw)
+        return {"outcome": "holds", "witness": "", "artifact": path}
+
+    obligation = Obligation("c1", "the exact input was examined")
+    result = AgentDischarger(
+        FixtureBackend({"discharge": discharge}), artifacts,
+        workdir_base=str(state / "work"), state_dir=str(state), cleanup=True,
+    ).discharge({"id": "c1", "kind": "assertion", "text": "input was examined"},
+                obligation)
+    envelope = artifacts.get(result.artifact)
+    reference = envelope["raw_files"]["input.raw"]
+    assert reference["complete"] is True
+    assert reference["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert reference["byte_count"] == len(raw)
+    assert (state / "artifacts" / reference["store_relpath"]).read_bytes() == raw
+    assert not (state / "work" / obligation.id[:12]).exists()
+    assert "binary_files" not in envelope
+
+
+def test_raw_retention_inherits_file_and_byte_budgets(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    artifacts = ArtifactStore(str(tmp_path / "artifacts"))
+    (work / "a.raw").write_bytes(b"a\r\n")
+    (work / "b.raw").write_bytes(b"b\r\n")
+    envelope = _snapshot_envelope(str(work), artifacts,
+                                  per_file_cap=4, max_total=4)
+    assert envelope["files"] == {"a.raw": "a\n", "b.raw": "b\n"}
+    assert envelope["raw_files"]["a.raw"]["complete"] is True
+    assert envelope["raw_files"]["b.raw"]["complete"] is False
+    assert "store_relpath" not in envelope["raw_files"]["b.raw"]
+
+    limited = _snapshot_envelope(str(work), artifacts, max_files=1)
+    assert "b.raw" not in limited.get("raw_files", {})
+    oversized = _snapshot_envelope(str(work), artifacts, per_file_cap=2)
+    assert all(not reference["complete"]
+               for reference in oversized["raw_files"].values())
+
+
+def test_failed_raw_store_never_claims_complete_bytes(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "input.raw").write_bytes(b"\xff\x00input")
+    artifacts = ArtifactStore(str(tmp_path / "artifacts"))
+
+    def fail(_raw):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(artifacts, "put_blob", fail)
+    reference = _snapshot_envelope(str(work), artifacts)["raw_files"]["input.raw"]
+    assert reference["complete"] is False
+    assert "store_relpath" not in reference
+    assert "storage unavailable" in reference["reason"]
 
 
 def test_reported_artifact_paths_are_bounded_relative_order_hints(tmp_path):

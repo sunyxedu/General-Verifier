@@ -507,6 +507,37 @@ def _json_pointer_segment(value: str) -> str:
     return value.replace("~", "~0").replace("/", "~1")
 
 
+def _raw_file_inventory(value: dict) -> list[dict]:
+    """Validate opaque locators without opening or interpreting their bodies."""
+    raw_files = value["raw_files"]
+    if not isinstance(raw_files, dict):
+        raise ValueError("artifact raw_files must be an object")
+    entries = []
+    for path in sorted(raw_files):
+        descriptor = raw_files[path]
+        if (not isinstance(path, str) or not path or os.path.isabs(path)
+                or os.path.normpath(path) != path or path.startswith("..")
+                or not isinstance(descriptor, dict)):
+            raise ValueError("artifact raw file has an invalid locator")
+        if (descriptor.get("schema") != "gv-raw-file-blob-ref-v1"
+                or type(descriptor.get("complete")) is not bool
+                or type(descriptor.get("byte_count")) is not int
+                or descriptor["byte_count"] < 0):
+            raise ValueError("artifact raw file descriptor is invalid")
+        if descriptor["complete"]:
+            digest = descriptor.get("sha256")
+            if (set(descriptor) != {"schema", "complete", "byte_count",
+                                    "sha256", "store_relpath"}
+                    or _DIGEST.fullmatch(digest or "") is None
+                    or descriptor["store_relpath"] != f"blobs/{digest}.blob"):
+                raise ValueError("artifact raw file identity is invalid")
+        elif (set(descriptor) != {"schema", "complete", "byte_count", "reason"}
+              or not isinstance(descriptor["reason"], str)):
+            raise ValueError("incomplete artifact raw file descriptor is invalid")
+        entries.append({"logical_path": path, **descriptor})
+    return entries
+
+
 def _standard_artifact_inventory(value: Any) -> dict:
     """Return a mechanical inventory for one AgentDischarger envelope.
 
@@ -518,7 +549,7 @@ def _standard_artifact_inventory(value: Any) -> dict:
         raise ValueError("inventory artifact must be an object")
     keys = set(value)
     binary_present = "binary_files" in keys
-    ordinary_keys = keys - ({"binary_files"} if binary_present else set())
+    ordinary_keys = keys - {"binary_files", "raw_files"}
     if ordinary_keys == {"instrument", "reported", "files"}:
         report_key = "reported"
         if not isinstance(value[report_key], dict):
@@ -580,6 +611,8 @@ def _standard_artifact_inventory(value: Any) -> dict:
             {"logical_path": path, **value["binary_files"][path]}
             for path in sorted(value["binary_files"])
         ]
+    if "raw_files" in value:
+        result["raw_files"] = _raw_file_inventory(value)
     return result
 
 

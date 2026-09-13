@@ -541,7 +541,7 @@ def _snapshot_envelope(
     max_total: int = SNAPSHOT_MAX_TOTAL_CHARS,
     preferred_paths: Iterable[str] = (),
 ) -> Dict[str, Any]:
-    """Capture text plus exact, content-addressed raster evidence.
+    """Capture text plus exact, content-addressed raster and opaque evidence.
 
     Binary retention is additive and mechanical.  Header validation controls
     only automatic model attachment: within the byte caps, even an ineligible
@@ -549,7 +549,8 @@ def _snapshot_envelope(
     that cannot be retained is recorded as incomplete so no downstream seat
     can mistake a partial body or its digest for semantic evidence.  The
     public ``_snapshot`` wrapper preserves the established text-only helper
-    contract.
+    contract. Non-raster bodies that would lose byte identity in that text
+    view get separate bounded raw-file locators, without image attachment.
     """
     # Preserve the established snapshot byte-for-byte, including its handling
     # of text symlinks, hardlinks, replacement decoding, and truncation. Raw
@@ -675,4 +676,81 @@ def _snapshot_envelope(
     result: Dict[str, Any] = {"files": files}
     if binary_files:
         result["binary_files"] = binary_files
+    raw_files = _snapshot_raw_files(
+        workdir, artifacts, files, excluded=binary_files,
+        per_file_cap=per_file_cap, max_total=max_total)
+    if raw_files:
+        result["raw_files"] = raw_files
     return result
+
+
+def _snapshot_raw_files(workdir, artifacts, files, *, excluded,
+                        per_file_cap, max_total):
+    """Retain opaque bytes when the text view cannot preserve their identity.
+
+    Inherit the selected text paths and use its numeric limits as byte caps.
+    References are evidence locators only, never automatic image attachments.
+    Preserve the legacy text view; it is not a lossless raw-byte snapshot.
+    """
+    if artifacts is None:
+        return {}
+    retained = {}
+    total = 0
+    for dirpath, dirnames, filenames, directory_fd in os.fwalk(
+            workdir, follow_symlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d not in SNAPSHOT_SKIP_DIRS)
+        for filename in sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, filename), workdir)
+            if rel not in files or rel in excluded:
+                continue
+            try:
+                expected = os.stat(filename, dir_fd=directory_fd,
+                                   follow_symlinks=False)
+                if not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1:
+                    continue
+                descriptor = os.open(
+                    filename, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_NONBLOCK", 0), dir_fd=directory_fd)
+                try:
+                    before = os.fstat(descriptor)
+                    identity = lambda s: (s.st_dev, s.st_ino, s.st_mode,
+                                          s.st_nlink, s.st_size,
+                                          s.st_mtime_ns, s.st_ctime_ns)
+                    if identity(before) != identity(expected):
+                        continue
+                    incomplete = {
+                        "schema": "gv-raw-file-blob-ref-v1", "complete": False,
+                        "byte_count": before.st_size,
+                        "reason": "snapshot raw-file capacity exceeded"}
+                    if before.st_size > per_file_cap:
+                        retained[rel] = incomplete
+                        continue
+                    raw = os.read(descriptor, per_file_cap + 1)
+                    after = os.fstat(descriptor)
+                    current = os.stat(filename, dir_fd=directory_fd,
+                                      follow_symlinks=False)
+                    if (identity(before) != identity(after)
+                            or identity(before) != identity(current)
+                            or len(raw) != before.st_size):
+                        continue
+                finally:
+                    os.close(descriptor)
+                if raw == files[rel].encode("utf-8") and b"\x00" not in raw:
+                    continue
+                if total + len(raw) > max_total:
+                    retained[rel] = incomplete
+                    continue
+                try:
+                    reference = artifacts.put_blob(raw)
+                except (OSError, TypeError, ValueError) as err:
+                    retained[rel] = {**incomplete,
+                        "reason": f"snapshot raw-file retention failed: {err}"}
+                else:
+                    retained[rel] = {
+                        "schema": "gv-raw-file-blob-ref-v1", "complete": True,
+                        **reference}
+                    total += len(raw)
+            except (OSError, UnicodeError, ValueError):
+                # Do not promote links or unstable reads into exact evidence.
+                continue
+    return retained
