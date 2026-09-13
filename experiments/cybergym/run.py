@@ -37,7 +37,7 @@ from experiments.cybergym.policy import (
 )
 
 PROFILE = Path(__file__).resolve().parents[2]
-OFFICIAL = Path("/private/tmp/cybergym-official")
+OFFICIAL = Path(os.environ.get("CYBERGYM_OFFICIAL_ROOT", "/private/tmp/cybergym-official"))
 OFFICIAL_PY = OFFICIAL / ".venv/bin/python"
 SOURCE = Path(__file__).resolve().parent
 DATASET_COMMIT = "bde190ded494e52bc684b66073b436c9d992c7c6"
@@ -64,7 +64,7 @@ MAX_NETWORK_ALLOCATION_RACES = 16
 FULL_CATALOG_COUNTS = {"arvo": 1368, "oss-fuzz": 139}
 MAX_CATALOG_BYTES = 8 * 1024**2
 _NETWORK_IO_LOCK = threading.Lock()
-AUTH = PROFILE.parent / "cybergym-luna-core-cyber30/codex-home-base/auth.json"
+AUTH = Path(os.environ.get("CYBERGYM_CODEX_AUTH", str(Path.home() / ".codex/auth.json")))
 FIXED30 = ("arvo:23296", "arvo:11256", "arvo:9471", "arvo:52243", "arvo:30051",
     "arvo:28216", "arvo:52049", "arvo:3438", "arvo:22560", "arvo:38283",
     "arvo:50305", "arvo:65518", "arvo:42123", "arvo:31425", "arvo:56156",

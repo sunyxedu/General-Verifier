@@ -1,5 +1,32 @@
 # Cyber evaluation settings
 
+## Local experiment setup
+
+Check out the pinned official runtime (`OFFICIAL_COMMIT` in `run.py`) at
+`/private/tmp/cybergym-official` and install its server and task-generator
+dependencies in `.venv`. Set `CYBERGYM_OFFICIAL_ROOT` for another location.
+Import the exact agent, Squid, and nginx image IDs recorded in `run.py`;
+create the shared internal network with `docker network create --internal
+cybergym-internal`. The runner reads `~/.codex/auth.json` by default;
+`CYBERGYM_CODEX_AUTH` selects another private auth file. Auth files and raw
+experiment outputs must never be committed.
+
+Before launch, run the regression suite and
+`python -B -m experiments.cybergym.preflight`, then run the offline generic
+toolchain preflight inside the pinned agent image. Commit the implementation
+and use a fresh, private results root:
+
+```sh
+python -B -u -m experiments.cybergym.run \
+  --root experiments/cybergym/results/ROUND --port 18692
+```
+
+The controller records private status and tracking snapshots throughout the
+run. It advances from 5/5 to at least 26/30, then the pinned 1,507-task catalog.
+If a gate fails, inspect infrastructure errors and trajectories before making
+a general code fix and launching a fresh cohort. Historical results from a
+different implementation or an invalid search policy do not satisfy a gate.
+
 `cyber` replaces the six role profiles inside the existing GV kernel. It is
 not a second verifier layered on top of standard GV.
 
