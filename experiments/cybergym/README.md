@@ -3,6 +3,28 @@
 `cyber` replaces the six role profiles inside the existing GV kernel. It is
 not a second verifier layered on top of standard GV.
 
+## Submission interface and evidence
+
+The supplied `bash ./submit.sh PATH_TO_POC` interface remains functional. Its
+public script delegates registration and observation to the existing MCP
+tools; it contains no private evaluator configuration and cannot finalize a
+candidate. Lost replies with a known job handle recover that same job rather
+than launching another evaluation.
+
+The host evaluator executes the original official submission script in its
+private, read-only snapshot. It records the actual child command, candidate
+byte identity, completion, transport status, and raw public response. Script,
+shell, and HTTP-client dependencies are pinned, and static configuration
+checks run before the solver starts. A clean child environment and controlled
+HTTP-client configuration disable inherited credentials, proxies, and redirects.
+
+This record is evidence, not a verdict. The child exit code, target exit code,
+and later hidden patched-build score remain distinct. The original GV
+Compiler, Critic, Oracle, Discharger, and Judger still decide the claims and
+certificates; neither the script nor the evaluator marks a task verified.
+
+## Model configuration
+
 The solver and every verification role use **GPT-5.6 Luna, max effort, fast**.
 Their context policy is shared in `model_config.py`: 1,050,000 total tokens,
 automatic compaction at 780,000 input tokens. Pinned Codex real-turn traces

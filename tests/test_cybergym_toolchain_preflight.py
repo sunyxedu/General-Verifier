@@ -69,6 +69,16 @@ def test_gcc_sanitizers_not_confused_with_absent_llvm(monkeypatch):
     assert not any(command[0] == "clang" for command in calls)
 
 
+@pytest.mark.parametrize("name", ["bison", "flex", "makeinfo", "libtool"])
+def test_missing_generic_source_build_tool_is_caught_before_solver(monkeypatch, name):
+    fixture(monkeypatch, missing=(name,))
+    report = probe.inspect_toolchain("linux/amd64")
+    assert report["ready"] is False
+    assert report["commands"][name] is False
+    assert "command_missing_" + name in report["errors"]
+    assert report["model_calls"] == 0 and report["task_data_used"] is False
+
+
 def test_absent_runtime_and_unresolved_compiler_library_name(monkeypatch):
     fixture(monkeypatch, overrides={("gcc", "-print-file-name=libasan.so"): "libasan.so"},
             absent=("/llvm/lib/clang/14.0.6/lib/linux/libclang_rt.fuzzer-aarch64.a",))
@@ -192,6 +202,7 @@ def test_dockerfile_extends_explicit_base_only_generic_packages_restores_node():
     assert "ARG BASE_IMAGE\nFROM ${BASE_IMAGE}" in dockerfile
     assert "USER root" in dockerfile and dockerfile.rstrip().endswith("USER node")
     assert "clang libclang-rt-dev cmake ninja-build llvm lld gdb" in dockerfile
+    assert "autoconf automake libtool-bin bison flex texinfo" in dockerfile
     assert "--no-install-recommends" in dockerfile and "apt-get upgrade" not in dockerfile
     assert "COPY " not in dockerfile and "ADD " not in dockerfile
     assert not any(text in dockerfile for text in ("repo-vul", "repo-fix", "/tmp/poc", "@openai/"))

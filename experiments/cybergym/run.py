@@ -39,7 +39,7 @@ SOURCE = Path(__file__).resolve().parent
 DATASET_COMMIT = "bde190ded494e52bc684b66073b436c9d992c7c6"
 OFFICIAL_COMMIT = "c6fe2027d39471375920b92cf1025e23a99ffda5"
 # Same pinned Codex base, with model-independent Linux build/debug tools.
-IMAGE = "sha256:a328dbba816f0ab16dd583d766451a4b62ca33abea185d18f4851645b2c42d42"
+IMAGE = "sha256:402da88f9548d4c2b56839ec331ba0295da1bd8b57d49c722b31523f3112f3cd"
 EGRESS_IMAGE = "sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029"
 NGINX_IMAGE = "sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3"
 EGRESS_DOMAINS = (".openai.com", ".chatgpt.com", ".oaistatic.com", ".oaiusercontent.com")
@@ -243,6 +243,13 @@ class Evaluation:
             "task_timeout_seconds": None, "role_timeout_seconds": None,
             "evaluator_timeout_seconds": None, "fresh_thread_recovery": False,
             "score": "one-designated-final-vul-not-0-or-300-and-fix-0",
+            "submission_interface": {
+                "public_command": "bash ./submit.sh PATH_TO_POC",
+                "transport": "existing-MCP-candidate-registration-and-observation",
+                "public_script_sha256": digest(SOURCE / "submit.sh"),
+                "transport_source_sha256": digest(SOURCE / "submission.py"),
+                "executor": "host-pinned-original-official-submission-script",
+                "evidence_scope": "candidate_signal; not completion or official score"},
             "solver_egress": "OpenAI-only proxy; no direct judge or patched image",
             "solver_egress_domains": list(EGRESS_DOMAINS),
             "web_search": "disabled", "verifier_shell_network_enabled": False,
@@ -389,6 +396,32 @@ class Evaluation:
         if process.returncode:
             raise RuntimeError("submission relay startup probe failed; solver was not started")
 
+    def probe_evaluator_configuration(self, runtime):
+        # Static readiness only: no candidate, target execution, submission,
+        # verifier turn, or credential disclosure. Catch incompatible private
+        # scripts/configuration before launching an expensive solver.
+        process = docker("exec", runtime["sidecar"], "/usr/bin/python3.11",
+                         "/evaluator/evaluator.py", "--check-config",
+                         "/evaluator/config.json", check=False)
+        def pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("duplicate readiness field")
+                result[key] = value
+            return result
+        try:
+            if process.returncode or len(process.stdout) > 4096:
+                raise ValueError("configuration unavailable")
+            status = json.loads(process.stdout, object_pairs_hook=pairs,
+                                parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+            if (type(status) is not dict
+                    or status.get("schema") != "gv-cybergym-vul-observation-v1"
+                    or status.get("configuration_valid") is not True):
+                raise ValueError("configuration not ready")
+        except (TypeError, ValueError, RecursionError):
+            raise RuntimeError("private evaluator configuration startup probe failed; solver was not started") from None
+
     def request(self, endpoint, value):
         request = urllib.request.Request(self.host_server + endpoint,
             json.dumps(value).encode(), {"Content-Type": "application/json", "X-API-Key": self.api_key})
@@ -484,9 +517,15 @@ class Evaluation:
         metadata = json.loads(re.search(r"metadata=(\{[^\n]+\})'", submit).group(1))
         # Keep authority outside the solver workspace, without editing task text.
         os.replace(workspace / "submit.sh", private / "original-submit.sh")
+        # Preserve the supplied command interface without handing its private
+        # configuration to the solver. The public script delegates through the
+        # same MCP candidate/evidence API; it never certifies or delivers a PoC.
+        shutil.copy2(SOURCE / "submit.sh", workspace / "submit.sh")
+        os.chmod(workspace / "submit.sh", 0o444)
         config = private / "evaluator.json"
         atomic_json(config, {"schema": "gv-cybergym-vul-evaluator-v1", "server_url": self.server,
-            **metadata, "observations_dir": "/state/cybergym-observations"})
+            **metadata, "observations_dir": "/state/cybergym-observations",
+            "submission_script": "/evaluator/submit.sh"})
         for home in (directory / "solver-home", private / "verifier-home"):
             home.mkdir()
             shutil.copy2(AUTH, home / "auth.json")
@@ -534,9 +573,12 @@ class Evaluation:
             "-v", runtime["evaluator_volume"] + ":/snapshot",
             "-v", str(SOURCE / "evaluator.py") + ":/seed-evaluator.py:ro",
             "-v", str(private / "evaluator.json") + ":/seed-config.json:ro",
+            "-v", str(private / "original-submit.sh") + ":/seed-submit.sh:ro",
             "--entrypoint", "sh", IMAGE, "-c",
             "cp /seed-evaluator.py /snapshot/evaluator.py && cp /seed-config.json /snapshot/config.json"
-            " && chown -R 1000:1000 /snapshot && chmod 500 /snapshot && chmod 400 /snapshot/*.py /snapshot/*.json")
+            " && cp /seed-submit.sh /snapshot/submit.sh"
+            " && chown -R 1000:1000 /snapshot && chmod 500 /snapshot"
+            " && chmod 400 /snapshot/*.py /snapshot/*.json /snapshot/*.sh")
         squid = private / "squid.conf"
         squid.write_text('http_port 3128\nacl SSL_ports port 443\nacl CONNECT method CONNECT\n'
             'acl openai dstdomain ' + ' '.join(EGRESS_DOMAINS) + '\n' +
@@ -562,7 +604,10 @@ class Evaluation:
             "--cyber-evaluator-command-json", json.dumps(["/usr/bin/python3.11",
                 "/evaluator/evaluator.py", "/evaluator/config.json", "{candidate}"]),
             "--cyber-evaluator-pin", "/evaluator/evaluator.py",
-            "--cyber-evaluator-pin", "/evaluator/config.json")
+            "--cyber-evaluator-pin", "/evaluator/config.json",
+            "--cyber-evaluator-pin", "/evaluator/submit.sh",
+            "--cyber-evaluator-pin", "/usr/bin/bash",
+            "--cyber-evaluator-pin", "/usr/bin/curl")
         docker("network", "connect", "cybergym-internal", sidecar)
         # Controller stores secret separately; diagnostics do not echo it.
         atomic_json(private / "runtime-secret.json", runtime)
@@ -575,6 +620,7 @@ class Evaluation:
         else:
             raise RuntimeError("sidecar health startup failed")
         self.probe_evidence_storage(runtime)
+        self.probe_evaluator_configuration(runtime)
         self.probe_submission(runtime)
         home = directory / "solver-home"
         with (home / "config.toml").open("a") as config:
@@ -840,7 +886,10 @@ class Evaluation:
             "-e", "HTTPS_PROXY=http://" + runtime["proxy"] + ":3128",
             "-e", "NO_PROXY=" + runtime["sidecar"] + ",localhost,127.0.0.1",
             "-v", str(directory / "solver-home") + ":/codex-home",
-            "-v", str(workspace) + ":/task", "-w", "/task", IMAGE, "exec"]
+            "-v", str(workspace) + ":/task",
+            "-v", str(SOURCE / "submit.sh") + ":/task/submit.sh:ro",
+            "-v", str(SOURCE / "submission.py") + ":/opt/gv-transport/submission.py:ro",
+            "-w", "/task", IMAGE, "exec"]
         if thread:
             args += ["resume"]
         args += ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",

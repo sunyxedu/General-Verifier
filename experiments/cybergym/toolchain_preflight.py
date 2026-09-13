@@ -18,7 +18,8 @@ import subprocess
 import time
 
 TOOLS = ("python3", "gcc", "g++", "make", "pkg-config", "clang", "clang++",
-         "cmake", "ninja", "llvm-ar", "llvm-symbolizer", "ld.lld", "gdb")
+         "cmake", "ninja", "llvm-ar", "llvm-symbolizer", "ld.lld", "gdb",
+         "autoconf", "automake", "libtool", "bison", "flex", "makeinfo")
 TARGETS = frozenset({"linux/amd64", "linux/arm64"})
 ARCHES = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
 RUNTIME_ARCHES = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}

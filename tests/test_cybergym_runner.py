@@ -263,7 +263,9 @@ def test_solver_runtime_uses_luna_max_fast_and_isolated_homes(controller, select
     assert "resume" in command if thread else "resume" not in command
     mounts = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "-v"]
     assert mounts == [str(directory / "solver-home") + ":/codex-home",
-                      str(directory / "workspace") + ":/task"]
+                      str(directory / "workspace") + ":/task",
+                      str(run.SOURCE / "submit.sh") + ":/task/submit.sh:ro",
+                      str(run.SOURCE / "submission.py") + ":/opt/gv-transport/submission.py:ro"]
     assert all("/state" not in mount and "/gv:" not in mount and "/evaluator" not in mount
                and "docker.sock" not in mount for mount in mounts)
     assert "--network" in command and "attempt-only-net" in command
@@ -317,10 +319,17 @@ def test_prepare_retains_task_contract_without_exposing_authority_or_fixed_sourc
     assert (private / "state/task.md").read_text() == raw_task
     assert prompt == raw_task + run.PROTOCOL
     assert "# Runtime protocol" not in (private / "state/task.md").read_text()
-    assert not (workspace / "submit.sh").exists() and (private / "original-submit.sh").is_file()
+    assert (workspace / "submit.sh").is_file() and (private / "original-submit.sh").is_file()
+    public_submit = (workspace / "submit.sh").read_text()
+    assert public_submit == (run.SOURCE / "submit.sh").read_text()
+    assert "/opt/gv-transport/submission.py" in public_submit
+    assert "private-checksum-sentinel" not in public_submit
+    assert "masked-fixture-id" not in public_submit
+    assert "metadata=" not in public_submit
     config = json.loads((private / "evaluator.json").read_text())
     assert config["task_id"] == "masked-fixture-id" and config["require_flag"] is False
     assert config["observations_dir"] == "/state/cybergym-observations"
+    assert config["submission_script"] == "/evaluator/submit.sh"
     assert "private-score-api-key-sentinel" not in (private / "evaluator.json").read_text()
     assert (directory / "solver-home/auth.json").read_text() == (private / "verifier-home/auth.json").read_text()
     assert (directory / "solver-home/config.toml").read_text() == run.MODEL_CONFIG
@@ -714,6 +723,7 @@ def test_route_probe_runs_before_solver_configuration_and_cleans_on_failure(cont
     monkeypatch.setattr(controller, "wait_running", lambda _name: None)
     monkeypatch.setattr(controller, "sidecar_get", lambda *_args: {"status": "ready"})
     monkeypatch.setattr(controller, "probe_evidence_storage", lambda _runtime: None)
+    monkeypatch.setattr(controller, "probe_evaluator_configuration", lambda _runtime: None)
     cleaned, probed = [], []
     monkeypatch.setattr(controller, "cleanup_runtime",
                         lambda runtime, where, secret: cleaned.append((runtime, where, secret)))
@@ -752,6 +762,71 @@ def test_native_storage_probe_failure_prevents_route_probe_and_solver_configurat
     with pytest.raises(RuntimeError, match="native storage readiness failed"):
         controller.create_runtime(directory, workspace, private)
     assert len(probes) == 1 and cleaned == [(probes[0], directory, private)]
+    assert not (home / "hooks.json").exists()
+    assert (home / "config.toml").read_text() == run.MODEL_CONFIG
+
+
+def test_private_evaluator_readiness_probe_is_static_and_has_no_candidate(controller, monkeypatch):
+    calls = []
+    def docker(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "schema": "gv-cybergym-vul-observation-v1", "configuration_valid": True}),
+            stderr="private-configuration-sentinel")
+    monkeypatch.setattr(run, "docker", docker)
+    controller.probe_evaluator_configuration({"sidecar": "fixture-sidecar"})
+    assert calls == [(("exec", "fixture-sidecar", "/usr/bin/python3.11",
+                      "/evaluator/evaluator.py", "--check-config", "/evaluator/config.json"),
+                     {"check": False})]
+
+
+@pytest.mark.parametrize("returncode,output", [
+    (2, '{"error":"private-configuration-sentinel"}'),
+    (0, "private-configuration-sentinel"), (0, "[]"),
+    (0, '{"schema":"gv-cybergym-vul-observation-v1","configuration_valid":1}'),
+    (0, '{"schema":"gv-cybergym-vul-observation-v1","configuration_valid":false}'),
+    (0, '{"schema":"gv-cybergym-vul-observation-v1","configuration_valid":false,"configuration_valid":true}'),
+    (0, '{"schema":"gv-cybergym-vul-observation-v1","configuration_valid":true,"extra":NaN}'),
+    (0, " " * 4097),
+])
+def test_private_evaluator_readiness_failures_are_not_accepted_or_disclosed(
+        controller, monkeypatch, returncode, output):
+    monkeypatch.setattr(run, "docker", lambda *_args, **_kwargs:
+                        SimpleNamespace(returncode=returncode, stdout=output,
+                                        stderr="private-configuration-sentinel"))
+    with pytest.raises(RuntimeError, match="configuration startup probe failed") as caught:
+        controller.probe_evaluator_configuration({"sidecar": "fixture-sidecar"})
+    assert "private-configuration-sentinel" not in str(caught.value)
+
+
+def test_private_evaluator_preflight_failure_prevents_route_probe_and_solver_configuration(
+        controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    private, workspace = directory / "private", directory / "workspace"
+    home = directory / "solver-home"
+    home.mkdir()
+    (home / "config.toml").write_text(run.MODEL_CONFIG)
+    (private / "verifier-home").mkdir()
+    monkeypatch.setattr(run, "docker", lambda *_args, **_kwargs:
+                        SimpleNamespace(returncode=0, stdout="true\n", stderr=""))
+    monkeypatch.setattr(controller, "wait_running", lambda _name: None)
+    monkeypatch.setattr(controller, "sidecar_get", lambda *_args: {"status": "ready"})
+    order, cleaned = [], []
+    monkeypatch.setattr(controller, "probe_evidence_storage", lambda _runtime: order.append("storage"))
+    monkeypatch.setattr(controller, "cleanup_runtime",
+                        lambda runtime, where, secret: cleaned.append((runtime, where, secret)))
+    def reject(runtime):
+        order.append("configuration")
+        assert not (home / "hooks.json").exists()
+        raise RuntimeError("fixture private evaluator configuration rejected")
+    monkeypatch.setattr(controller, "probe_evaluator_configuration", reject)
+    monkeypatch.setattr(controller, "probe_submission", lambda _runtime:
+                        pytest.fail("route probe must follow private evaluator readiness"))
+    monkeypatch.setattr(controller, "run_solver", lambda *_args:
+                        pytest.fail("invalid evaluator must not launch a model"))
+    with pytest.raises(RuntimeError, match="evaluator configuration rejected"):
+        controller.create_runtime(directory, workspace, private)
+    assert order == ["storage", "configuration"] and len(cleaned) == 1
     assert not (home / "hooks.json").exists()
     assert (home / "config.toml").read_text() == run.MODEL_CONFIG
 
@@ -834,6 +909,7 @@ def test_evaluator_snapshot_is_native_readonly_and_both_native_dependencies_are_
     monkeypatch.setattr(controller, "wait_running", lambda _name: None)
     monkeypatch.setattr(controller, "sidecar_get", lambda *_args: {"status": "ready"})
     monkeypatch.setattr(controller, "probe_evidence_storage", lambda _runtime: None)
+    monkeypatch.setattr(controller, "probe_evaluator_configuration", lambda _runtime: None)
     probes = []
     monkeypatch.setattr(controller, "probe_submission", lambda runtime: probes.append(runtime))
     runtime = controller.create_runtime(directory, workspace, private)
@@ -849,16 +925,19 @@ def test_evaluator_snapshot_is_native_readonly_and_both_native_dependencies_are_
                        "/evaluator/config.json", "{candidate}"]
     pins = [sidecar[i + 1] for i, word in enumerate(sidecar[:-1])
             if word == "--cyber-evaluator-pin"]
-    assert pins == ["/evaluator/evaluator.py", "/evaluator/config.json"]
+    assert pins == ["/evaluator/evaluator.py", "/evaluator/config.json",
+                    "/evaluator/submit.sh", "/usr/bin/bash", "/usr/bin/curl"]
     seed = next(call for call in calls if call[0] == "run"
                 and runtime["evaluator_volume"] + ":/snapshot" in call)
     assert calls.index(seed) < calls.index(sidecar)
     assert "--network" in seed and seed[seed.index("--network") + 1] == "none"
     assert str(run.SOURCE / "evaluator.py") + ":/seed-evaluator.py:ro" in seed
     assert str(private / "evaluator.json") + ":/seed-config.json:ro" in seed
+    assert str(private / "original-submit.sh") + ":/seed-submit.sh:ro" in seed
     seed_program = seed[seed.index("-c") + 1]
     assert "cp /seed-evaluator.py /snapshot/evaluator.py" in seed_program
     assert "cp /seed-config.json /snapshot/config.json" in seed_program
+    assert "cp /seed-submit.sh /snapshot/submit.sh" in seed_program
     assert "chmod 400" in seed_program
 
 

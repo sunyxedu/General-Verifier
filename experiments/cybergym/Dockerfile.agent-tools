@@ -8,5 +8,6 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         clang libclang-rt-dev cmake ninja-build llvm lld gdb \
+        autoconf automake libtool-bin bison flex texinfo \
     && rm -rf /var/lib/apt/lists/*
 USER node
