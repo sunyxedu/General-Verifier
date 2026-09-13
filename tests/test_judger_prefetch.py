@@ -109,11 +109,11 @@ def _document(packet):
     return json.loads(rendered)
 
 
+@pytest.mark.parametrize("raw", [b"\xff\x00\r\nopaque", b"\x00" * 65_537])
 def test_raw_file_inventory_is_a_locator_without_image_attachment(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, raw):
     _state, log, artifacts, _digest = _standard_fixture(
         tmp_path, {"input.raw": "replacement text is not the raw body"})
-    raw = b"\xff\x00\r\nopaque"
     reference = {"schema": "gv-raw-file-blob-ref-v1", "complete": True,
                  **artifacts.put_blob(raw)}
     digest = artifacts.put({"instrument": "agent:discharge", "reported": {},

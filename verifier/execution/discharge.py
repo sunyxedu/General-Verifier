@@ -40,6 +40,10 @@ SNAPSHOT_MAX_FILES = 200
 SNAPSHOT_MAX_TOTAL_CHARS = 2_000_000
 SNAPSHOT_IMAGE_PER_FILE_BYTES = 20 * 1024 * 1024
 SNAPSHOT_IMAGE_MAX_TOTAL_BYTES = 40 * 1024 * 1024
+# Raw bodies live in byte blobs, independently of the inline text budget.
+# Keep their bounded transport capacity consistent with raster retention.
+SNAPSHOT_RAW_PER_FILE_BYTES = 20 * 1024 * 1024
+SNAPSHOT_RAW_MAX_TOTAL_BYTES = 40 * 1024 * 1024
 # Repair material is optional. Oversized or invalid retained artifacts simply
 # leave the executor on its existing context-free redo path.
 REPAIR_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
@@ -540,6 +544,9 @@ def _snapshot_envelope(
     max_files: int = SNAPSHOT_MAX_FILES,
     max_total: int = SNAPSHOT_MAX_TOTAL_CHARS,
     preferred_paths: Iterable[str] = (),
+    *,
+    raw_per_file_bytes: int = SNAPSHOT_RAW_PER_FILE_BYTES,
+    raw_max_total_bytes: int = SNAPSHOT_RAW_MAX_TOTAL_BYTES,
 ) -> Dict[str, Any]:
     """Capture text plus exact, content-addressed raster and opaque evidence.
 
@@ -678,7 +685,7 @@ def _snapshot_envelope(
         result["binary_files"] = binary_files
     raw_files = _snapshot_raw_files(
         workdir, artifacts, files, excluded=binary_files,
-        per_file_cap=per_file_cap, max_total=max_total)
+        per_file_cap=raw_per_file_bytes, max_total=raw_max_total_bytes)
     if raw_files:
         result["raw_files"] = raw_files
     return result
@@ -688,7 +695,7 @@ def _snapshot_raw_files(workdir, artifacts, files, *, excluded,
                         per_file_cap, max_total):
     """Retain opaque bytes when the text view cannot preserve their identity.
 
-    Inherit the selected text paths and use its numeric limits as byte caps.
+    Inherit the selected text paths, with independent raw-body byte caps.
     References are evidence locators only, never automatic image attachments.
     Preserve the legacy text view; it is not a lossless raw-byte snapshot.
     """
@@ -725,7 +732,18 @@ def _snapshot_raw_files(workdir, artifacts, files, *, excluded,
                     if before.st_size > per_file_cap:
                         retained[rel] = incomplete
                         continue
-                    raw = os.read(descriptor, per_file_cap + 1)
+                    chunks = []
+                    read_total = 0
+                    while True:
+                        block = os.read(descriptor, min(
+                            1024 * 1024, per_file_cap + 1 - read_total))
+                        if not block:
+                            break
+                        chunks.append(block)
+                        read_total += len(block)
+                        if read_total > per_file_cap:
+                            raise OSError("snapshot raw file exceeded its byte cap")
+                    raw = b"".join(chunks)
                     after = os.fstat(descriptor)
                     current = os.stat(filename, dir_fd=directory_fd,
                                       follow_symlinks=False)

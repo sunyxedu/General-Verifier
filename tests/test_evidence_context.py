@@ -356,14 +356,65 @@ def test_opaque_input_survives_executor_cleanup_byte_for_byte(tmp_path, raw):
     assert "binary_files" not in envelope
 
 
-def test_raw_retention_inherits_file_and_byte_budgets(tmp_path):
+def test_large_opaque_target_survives_cleanup_without_expanding_inline_text(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    raw = b"\x7fELF\xff\x00" + b"\x00" * (19 * 1024 * 1024)
+
+    def discharge(variables):
+        path = os.path.join(variables["workdir"], "target.elf")
+        with open(path, "wb") as handle:
+            handle.write(raw)
+        return {"outcome": "holds", "witness": "", "artifact": path}
+
+    obligation = Obligation("c1", "the exact target was examined")
+    result = AgentDischarger(
+        FixtureBackend({"discharge": discharge}), artifacts,
+        workdir_base=str(state / "work"), state_dir=str(state), cleanup=True,
+    ).discharge({"id": "c1", "kind": "assertion", "text": "target was examined"},
+                obligation)
+    envelope = artifacts.get(result.artifact)
+    reference = envelope["raw_files"]["target.elf"]
+    assert reference["complete"] is True
+    assert reference["byte_count"] == len(raw) > SNAPSHOT_MAX_TOTAL_CHARS
+    assert reference["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert (state / "artifacts" / reference["store_relpath"]).read_bytes() == raw
+    assert len(envelope["files"]["target.elf"]) <= SNAPSHOT_PER_FILE_CAP + 12
+    assert envelope["files"]["target.elf"].endswith("\n<truncated>")
+    assert not (state / "work" / obligation.id[:12]).exists()
+    assert "binary_files" not in envelope
+
+
+def test_raw_retention_completes_short_reads(tmp_path, monkeypatch):
+    class ShortReads:
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        def read(self, descriptor, count):
+            return os.read(descriptor, min(count, 2))
+
+    work = tmp_path / "work"
+    work.mkdir()
+    raw = b"\xff\x00opaque input"
+    (work / "input.raw").write_bytes(raw)
+    artifacts = ArtifactStore(str(tmp_path / "artifacts"))
+    monkeypatch.setattr(discharge_module, "os", ShortReads())
+    reference = _snapshot_envelope(str(work), artifacts)["raw_files"]["input.raw"]
+    assert reference["complete"] is True
+    assert reference["byte_count"] == len(raw)
+    assert (tmp_path / "artifacts" / reference["store_relpath"]).read_bytes() == raw
+
+
+def test_raw_retention_inherits_paths_with_independent_byte_budgets(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     artifacts = ArtifactStore(str(tmp_path / "artifacts"))
     (work / "a.raw").write_bytes(b"a\r\n")
     (work / "b.raw").write_bytes(b"b\r\n")
     envelope = _snapshot_envelope(str(work), artifacts,
-                                  per_file_cap=4, max_total=4)
+                                  per_file_cap=4, max_total=4,
+                                  raw_per_file_bytes=4, raw_max_total_bytes=4)
     assert envelope["files"] == {"a.raw": "a\n", "b.raw": "b\n"}
     assert envelope["raw_files"]["a.raw"]["complete"] is True
     assert envelope["raw_files"]["b.raw"]["complete"] is False
@@ -371,7 +422,10 @@ def test_raw_retention_inherits_file_and_byte_budgets(tmp_path):
 
     limited = _snapshot_envelope(str(work), artifacts, max_files=1)
     assert "b.raw" not in limited.get("raw_files", {})
-    oversized = _snapshot_envelope(str(work), artifacts, per_file_cap=2)
+    text_limited = _snapshot_envelope(str(work), artifacts, per_file_cap=2)
+    assert all(reference["complete"]
+               for reference in text_limited["raw_files"].values())
+    oversized = _snapshot_envelope(str(work), artifacts, raw_per_file_bytes=2)
     assert all(not reference["complete"]
                for reference in oversized["raw_files"].values())
 
