@@ -362,6 +362,10 @@ class AgentDischarger:
                if "{profile_context}" in self.role.template else {}),
             "snapshot_max_files": SNAPSHOT_MAX_FILES,
             "snapshot_max_total_chars": SNAPSHOT_MAX_TOTAL_CHARS,
+            "snapshot_raw_per_file_bytes": SNAPSHOT_RAW_PER_FILE_BYTES,
+            "snapshot_raw_max_total_bytes": SNAPSHOT_RAW_MAX_TOTAL_BYTES,
+            "snapshot_image_per_file_bytes": SNAPSHOT_IMAGE_PER_FILE_BYTES,
+            "snapshot_image_max_total_bytes": SNAPSHOT_IMAGE_MAX_TOTAL_BYTES,
         }
         if self.log is not None:
             variables = bind_source_evidence_variables(

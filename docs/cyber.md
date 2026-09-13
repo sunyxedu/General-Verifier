@@ -173,6 +173,9 @@ file boundary with independent raw-body budgets of 20 MiB per file and
 Raw references are locators for independent inspection, not correctness
 verdicts or automatic image attachments. Raster retention keeps its separate
 existing byte and attachment rules.
+The Discharger receives the inline, raw-body, and raster limits before
+execution, using the same constants as the snapshot implementation. This
+general budget disclosure changes no retention limit or evidence rule.
 
 Use checkpoints for working theories and next actions. Candidate ranking,
 control-count heuristics, deadlines, and separate relevance verdicts do not
