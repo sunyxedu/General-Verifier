@@ -18,6 +18,9 @@ import urllib.parse
 import pytest
 
 from experiments.cybergym import run, tracking
+from experiments.cybergym.policy import (
+    SearchPolicyGuard, SearchPolicyViolation, SearchPolicyEvidenceError, SolverSearchObserver,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1300,11 +1303,20 @@ def solver_process_fakes(monkeypatch, controller, receipts, *, exited=False):
 
     process, calls = Process(), []
     values = iter(receipts)
+    guard = SearchPolicyGuard()
     monkeypatch.setattr(run.subprocess, "Popen", lambda *_args, **_kwargs: process)
     monkeypatch.setattr(controller, "solver_command", lambda *_args: ["fixture-solver"])
-    monkeypatch.setattr(controller, "sidecar_get", lambda _runtime, path:
-                        next(values) if path == "/receipt" else {
-                            "schema": tracking.PROGRESS_SCHEMA, "checked_unix": 100, "jobs": []})
+    def sidecar_get(_runtime, path, *, method="GET"):
+        if path == "/receipt":
+            return next(values)
+        if path == "/policy/seal":
+            assert method == "POST"
+            assert guard.try_seal() is True
+        if path in {"/policy", "/policy/seal"}:
+            return {"schema": "gv-search-policy-response-v1", "instance_id": "a" * 32,
+                    "policy": guard.snapshot()}
+        return {"schema": tracking.PROGRESS_SCHEMA, "checked_unix": 100, "jobs": []}
+    monkeypatch.setattr(controller, "sidecar_get", sidecar_get)
     # Existing receipt/failure tests inject a mirror failure for both routes;
     # independent metadata snapshot tests exercise the real implementation.
     monkeypatch.setattr(controller, "mirror_metadata", lambda *args: controller.mirror(*args))
@@ -1319,7 +1331,7 @@ def test_periodic_and_final_trace_copy_failure_cannot_abort_certified_solver(
         controller, selected, monkeypatch, exited):
     directory, _candidate, receipt = selected
     runtime = {"sidecar": "fixture-owned-sidecar"}
-    receipts = [receipt] if exited else [None, receipt, receipt]
+    receipts = [receipt, receipt] if exited else [None, receipt, receipt]
     process, calls = solver_process_fakes(monkeypatch, controller, receipts, exited=exited)
     copies = []
 
@@ -1572,9 +1584,10 @@ def test_task_waits_before_any_pull_prepare_or_agent_then_continues_same_attempt
         guard("runtime")
         return {"sidecar": "synthetic-sidecar"}
 
-    def solver(directory, *_args):
+    def solver(directory, _workspace, runtime, *_args):
         guard("solver")
         assert directory.name == attempts[0]
+        fixture_sealed_policy(monkeypatch, controller, directory, runtime)
         return {"fixture_receipt": True}
 
     def score(_task, directory, _state, receipt, *, release_vulnerable_image=None):
@@ -1681,6 +1694,21 @@ def test_stop_immediately_after_new_pull_preserves_exact_owned_image_cleanup(con
                         ("image", "rm", image)]
 
 
+def fixture_sealed_policy(monkeypatch, controller, directory, runtime):
+    """Faithful private policy boundary for tests replacing only the solver."""
+    (directory / "solver.jsonl").write_bytes(b'{"type":"turn.completed"}\n')
+    guard = SearchPolicyGuard()
+    assert guard.try_seal() is True
+    observer = SolverSearchObserver(guard)
+    observer.verifier_instance_id = "a" * 32
+    runtime["_search_policy_observer"] = observer
+    def policies(_runtime, path, **_kwargs):
+        assert path == "/policy"
+        return {"schema": "gv-search-policy-response-v1", "instance_id": "a" * 32,
+                "policy": guard.snapshot()}
+    monkeypatch.setattr(controller, "sidecar_get", policies)
+
+
 def task_scorer_fakes(monkeypatch, controller, selected, *, cached=False,
                      initial_row="missing", failure=None, selected_vul=77):
     """Exercise real run_task/score/image admission, never real external I/O."""
@@ -1713,7 +1741,8 @@ def task_scorer_fakes(monkeypatch, controller, selected, *, cached=False,
             vul_exit_code=None if initial_row == "incomplete" else selected_vul)
         return workspace, private, "generic fixture task"
 
-    def solver(*_args):
+    def solver(directory, _workspace, runtime, *_args):
+        fixture_sealed_policy(monkeypatch, controller, directory, runtime)
         # The owned vulnerable image can consume the space the fixed gate
         # needs. Its timely release must resolve this without any resource wait.
         if not cached:
@@ -2262,4 +2291,184 @@ def test_progress_poll_failure_is_private_nonfatal_and_keeps_previous_metadata(
     assert controller.observe_progress({}, directory / "private") is False
     assert previous.read_text() == "previous telemetry"
     assert (directory / "private/telemetry-progress-errors.jsonl").exists()
+    assert not (directory / "final-selection.json").exists()
+
+
+@pytest.mark.parametrize("exited", [False, True])
+@pytest.mark.parametrize("event_type", ["item.started", "item.updated", "item.completed"])
+def test_solver_search_is_rejected_before_receipt_in_live_and_terminal_paths(
+        controller, selected, monkeypatch, exited, event_type):
+    directory, _candidate, receipt = selected
+    process, _calls = solver_process_fakes(monkeypatch, controller, [receipt, receipt], exited=exited)
+    secret = "fixture-search-query-must-not-appear-in-error"
+
+    def emit(*_args, **kwargs):
+        kwargs["stdout"].write(json.dumps({"type": event_type, "item": {
+            "type": "web_search", "query": secret, "output": secret}}).encode()
+            + (b"" if exited else b"\n"))
+        kwargs["stdout"].flush()
+        return process
+
+    monkeypatch.setattr(run.subprocess, "Popen", emit)
+    patch_mirror(monkeypatch, controller, lambda *_args: pytest.fail("tainted final must not be copied"))
+    with pytest.raises(SearchPolicyViolation, match="violation:solver") as error:
+        controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-owned"}, "fixture", {})
+    assert secret not in str(error.value)
+    assert not (directory / "final-selection.json").exists()
+
+
+@pytest.mark.parametrize("exited", [False, True])
+def test_verifier_search_after_solver_launch_is_rejected_before_receipt(
+        controller, selected, monkeypatch, exited):
+    directory, _candidate, receipt = selected
+    solver_process_fakes(monkeypatch, controller, [receipt, receipt], exited=exited)
+    guard = SearchPolicyGuard()
+    policy_calls = []
+
+    def policies(_runtime, path):
+        assert path == "/policy", "no tainted receipt should be requested"
+        if policy_calls:
+            guard.observe_backend_phase({"phase": "cli_event", "event_type": "item.started", "item_kind": "web_search"})
+        policy_calls.append(True)
+        return {"schema": "gv-search-policy-response-v1", "instance_id": "a" * 32, "policy": guard.snapshot()}
+
+    monkeypatch.setattr(controller, "sidecar_get", policies)
+    with pytest.raises(SearchPolicyViolation, match="violation:verifier"):
+        controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-owned"}, "fixture", {})
+    assert len(policy_calls) == 2
+    assert not (directory / "final-selection.json").exists()
+
+
+@pytest.mark.parametrize("policy", [None, {}, {"schema": "unknown"},
+    {"schema": "gv-search-policy-response-v1", "instance_id": "a" * 32, "policy": None}])
+def test_unavailable_private_policy_prevents_any_solver_launch(
+        controller, selected, monkeypatch, policy):
+    directory, _candidate, _receipt = selected
+    monkeypatch.setattr(controller, "sidecar_get", lambda *_args: policy)
+    monkeypatch.setattr(run.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("no launch before policy handshake"))
+    with pytest.raises(SearchPolicyEvidenceError):
+        controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-owned"}, "fixture", {})
+    assert not (directory / "final-selection.json").exists()
+
+
+def test_sidecar_restart_after_solver_stop_cannot_clear_policy_and_accept_receipt(
+        controller, selected, monkeypatch):
+    directory, _candidate, receipt = selected
+    process, calls = solver_process_fakes(monkeypatch, controller, [receipt])
+    original_get = controller.sidecar_get
+    generations = iter(["a" * 32, "a" * 32, "b" * 32])
+
+    def policies(runtime, path, **kwargs):
+        if path == "/policy":
+            return {"schema": "gv-search-policy-response-v1", "instance_id": next(generations),
+                    "policy": SearchPolicyGuard().snapshot()}
+        return original_get(runtime, path, **kwargs)
+
+    monkeypatch.setattr(controller, "sidecar_get", policies)
+    with pytest.raises(SearchPolicyEvidenceError, match="instance_changed"):
+        controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-owned"}, "fixture", {})
+    assert process.waits == 1 and [call[0] for call in calls] == ["stop"]
+    assert not (directory / "final-selection.json").exists()
+
+
+def test_nonsearch_prose_does_not_change_certified_receipt_or_telemetry_rules(
+        controller, selected, monkeypatch):
+    directory, _candidate, receipt = selected
+    process, _calls = solver_process_fakes(monkeypatch, controller, [receipt, receipt])
+
+    def emit(*_args, **kwargs):
+        kwargs["stdout"].write(b'{"type":"item.completed","item":{"type":"agent_message","text":"discuss web_search"}}\n')
+        kwargs["stdout"].flush()
+        return process
+
+    monkeypatch.setattr(run.subprocess, "Popen", emit)
+    patch_mirror(monkeypatch, controller, lambda *_args: (_ for _ in ()).throw(mirror_failure()))
+    assert controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-owned"}, "fixture", {}) == receipt
+    assert json.loads((directory / "final-selection.json").read_text()) == receipt
+
+
+def test_observed_search_retires_experiment_without_calling_official_scorer(
+        controller, monkeypatch):
+    cleanup = []
+    monkeypatch.setattr(controller, "_wait_for_disk", lambda *_args: None)
+    monkeypatch.setattr(controller, "pull", lambda *_args: ("fixture-image", False))
+    monkeypatch.setattr(controller, "prepare", lambda _task, directory:
+                        (directory / "workspace", directory / "private", "fixture"))
+    monkeypatch.setattr(controller, "create_runtime", lambda *_args: {"sidecar": "fixture-owned", "proxy": "fixture-owned-proxy"})
+    monkeypatch.setattr(controller, "run_solver", lambda *_args:
+                        (_ for _ in ()).throw(SearchPolicyViolation("hosted_search_policy_violation:verifier")))
+    monkeypatch.setattr(controller, "score", lambda *_args, **_kwargs: pytest.fail("tainted attempt must never be scored"))
+    monkeypatch.setattr(controller, "cleanup_runtime", lambda *args: cleanup.append(args))
+    result = controller.run_task("arvo:1")
+    assert result["outcome"] == "infrastructure_error" and result["official_pass"] is None
+    assert result["policy_violation"] is True and result["experiment_valid"] is False
+    assert controller.stop.is_set() and len(cleanup) == 1
+    invalid = json.loads((controller.root / "invalid-experiment.json").read_text())
+    assert invalid["reason"] == "hosted_search_policy_violation"
+    assert invalid["attempt_id"] == result["attempt_id"]
+    assert invalid["profile_commit"] == controller.frozen_commit
+
+
+@pytest.mark.parametrize("exited", [False, True])
+def test_search_observed_during_final_mirror_cannot_authorize_selection(
+        controller, selected, monkeypatch, exited):
+    directory, _candidate, receipt = selected
+    solver_process_fakes(monkeypatch, controller, [receipt, receipt], exited=exited)
+    original_get = controller.sidecar_get
+    tainted = []
+
+    def policies(runtime, path, **kwargs):
+        response = original_get(runtime, path, **kwargs)
+        if path == "/policy" and tainted:
+            response["policy"].update(violation=True, violation_source="verifier", event_type="item.completed")
+        return response
+
+    def mirror(*_args):
+        tainted.append(True)
+
+    monkeypatch.setattr(controller, "sidecar_get", policies)
+    patch_mirror(monkeypatch, controller, mirror)
+    with pytest.raises(SearchPolicyViolation, match="violation:verifier"):
+        controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-owned"}, "fixture", {})
+    assert tainted and not (directory / "final-selection.json").exists()
+
+
+def test_known_busy_seal_waits_without_timeout_restart_or_receipt_shortcut(
+        controller, selected, monkeypatch):
+    directory, _candidate, receipt = selected
+    solver_process_fakes(monkeypatch, controller, [receipt, receipt])
+    original_get = controller.sidecar_get
+    attempts, waits = [], []
+
+    def policies(runtime, path, **kwargs):
+        if path == "/policy/seal":
+            assert kwargs == {"method": "POST"}
+            attempts.append(True)
+            if len(attempts) < 3:
+                return {"schema": "gv-search-policy-response-v1", "instance_id": "a" * 32,
+                        "policy": SearchPolicyGuard().snapshot()}
+        return original_get(runtime, path, **kwargs)
+
+    monkeypatch.setattr(controller, "sidecar_get", policies)
+    monkeypatch.setattr(controller.stop, "wait", lambda seconds: waits.append(seconds) or False)
+    patch_mirror(monkeypatch, controller, lambda *_args: None)
+    assert controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-owned"}, "fixture", {}) == receipt
+    assert len(attempts) == 3 and waits == [5, 5]
+
+
+def test_search_in_solver_stop_tail_is_not_hidden_as_controller_stopped(
+        controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    solver_process_fakes(monkeypatch, controller, [None])
+    patch_mirror(monkeypatch, controller, lambda *_args: None)
+
+    def stop(_seconds):
+        controller.stop.set()
+        with (directory / "solver.jsonl").open("ab") as stream:
+            stream.write(b'{"type":"item.completed","item":{"type":"web_search"}}')
+        return True
+
+    monkeypatch.setattr(controller.stop, "wait", stop)
+    with pytest.raises(SearchPolicyViolation, match="violation:solver"):
+        controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-owned"}, "fixture", {})
     assert not (directory / "final-selection.json").exists()

@@ -72,6 +72,19 @@ not allowed. Verification-role shell commands have networking disabled;
 outer model requests and the trusted local evaluator are separate.
 Official vulnerable and patched PoC execution containers use network-none.
 
+Solver starts/resumes and every verification role explicitly pin
+`web_search="disabled"` on the CLI. Hosted search is separate from command
+networking ([official search configuration](https://learn.chatgpt.com/docs/web-search#configure-local-web-search)).
+The host additionally checks structural search events in solver logs and a
+private, per-service verifier latch. A process-generation change, malformed
+policy evidence, or a verifier event-parser gap prevents a valid score.
+Observed search retires the experiment as infrastructure-invalid, not a
+model failure. Before scoring, the solver stops and verification must become
+quiescent; sealing then blocks further verifier model calls. These checks do
+not change GV claims, obligations, or judgments. Configuration conformance
+and an unviolated observed-event guard do not prove a complete internal tool
+registry or the absolute absence of unobservable activity.
+
 [CyberGym FAQ Q1](https://github.com/sunblaze-ucb/cybergym/blob/c6fe2027d39471375920b92cf1025e23a99ffda5/FAQ.md)
 permits controlled networking with disclosure and trajectory review.
 Report this network configuration and check trajectories for patch/PoC

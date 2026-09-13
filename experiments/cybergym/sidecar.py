@@ -30,6 +30,7 @@ from experiments.cybergym.model_config import (
     AUTO_COMPACT_TOKEN_LIMIT, CONTEXT_WINDOW, EFFORT, MODEL, SERVICE_TIER,
     context_cli_args,
 )
+from experiments.cybergym.policy import SearchPolicyGuard
 
 MAX_HOOK_BODY = 4 * 1024 * 1024
 PROFILE_ROOT = Path(__file__).resolve().parents[2]
@@ -62,7 +63,11 @@ class SandboxedVerifierBackend(CyberCodexBackend):
 
     _diagnostic_lock = threading.Lock()
 
-    def __init__(self, *, cwd: str, project_root: str = "/task", runtime_inventory=None):
+    def __init__(self, *, cwd: str, project_root: str = "/task", runtime_inventory=None,
+                 search_policy_guard=None):
+        self.search_policy_guard = SearchPolicyGuard() if search_policy_guard is None else search_policy_guard
+        if not isinstance(self.search_policy_guard, SearchPolicyGuard):
+            raise TypeError("a host search policy guard is required")
         super().__init__(cwd=cwd, model=MODEL, effort=EFFORT,
                          service_tier=SERVICE_TIER, timeout=None,
                          phase_observer=self._diagnostic, project_root=project_root,
@@ -73,6 +78,9 @@ class SandboxedVerifierBackend(CyberCodexBackend):
         return super()._execution_policy_args(role_name, variables) + context_cli_args()
 
     def _diagnostic(self, record):
+        # Policy invalidation is private host state, not a GV verdict. Latch
+        # before serialization or disk I/O so telemetry failures cannot hide it.
+        self.search_policy_guard.observe_backend_phase(record)
         # The log is outside writable verifier scratch; it contains no prompt,
         # response, exception text, auth token, or evaluator configuration.
         path = Path(self.cwd) / "role_calls.jsonl"
@@ -98,28 +106,37 @@ class SandboxedVerifierBackend(CyberCodexBackend):
             self._diagnostic_failures += 1  # Telemetry must not decide a verdict.
 
     def complete(self, role_name, prompt, variables):
-        call_id = uuid.uuid4().hex
-        started = time.monotonic()
-        common = {"call_id": call_id, "role": role_name, "model": MODEL,
-                  "service_tier": SERVICE_TIER,
-                  "model_context_window": CONTEXT_WINDOW,
-                  "model_auto_compact_token_limit": AUTO_COMPACT_TOKEN_LIMIT}
-        self._diagnostic({**common, "type": "role_call_started", "ts": time.time(),
-                          "status": "running"})
-        status = "failed"
+        self.search_policy_guard.begin_execution()
         try:
-            result = super().complete(role_name, prompt, variables)
-            status = "completed"
-            return result
+            call_id = uuid.uuid4().hex
+            started = time.monotonic()
+            common = {"call_id": call_id, "role": role_name, "model": MODEL,
+                      "service_tier": SERVICE_TIER,
+                      "model_context_window": CONTEXT_WINDOW,
+                      "model_auto_compact_token_limit": AUTO_COMPACT_TOKEN_LIMIT}
+            self._diagnostic({**common, "type": "role_call_started", "ts": time.time(),
+                              "status": "running"})
+            status = "failed"
+            try:
+                result = super().complete(role_name, prompt, variables)
+                status = "completed"
+                return result
+            finally:
+                self._diagnostic({**common, "type": "role_call_finished", "ts": time.time(),
+                                  "status": status,
+                                  "duration_seconds": time.monotonic() - started})
         finally:
-            self._diagnostic({**common, "type": "role_call_finished", "ts": time.time(),
-                              "status": status,
-                              "duration_seconds": time.monotonic() - started})
+            self.search_policy_guard.end_execution()
 
 
-def kernel_factory(service):
+def kernel_factory(service, *, search_policy_guard=None):
+    guard = search_policy_guard if search_policy_guard is not None else getattr(service, "search_policy_guard", None)
+    if guard is None:
+        guard = SearchPolicyGuard()
+    service.search_policy_guard = guard
     backend = SandboxedVerifierBackend(cwd=service.state_dir, project_root=service.project_root,
-                                       runtime_inventory=service.seat_runtime)
+                                       runtime_inventory=service.seat_runtime,
+                                       search_policy_guard=guard)
     return _default_kernel(service, model=MODEL, backend=backend)
 
 
@@ -145,7 +162,11 @@ def create_service(args) -> Service:
     from verifier.profiles.cyber.evidence import SeatCapabilities
     from verifier.profiles.cyber.runtime import load_runtime_inventory
     runtime = load_runtime_inventory(getattr(args, "cyber_runtime_manifest", None))
-    return Service(str(state), kernel_factory=kernel_factory, profile="cyber",
+    guard = SearchPolicyGuard()
+    def guarded_kernel_factory(service):
+        service.search_policy_guard = guard
+        return kernel_factory(service, search_policy_guard=guard)
+    service = Service(str(state), kernel_factory=guarded_kernel_factory, profile="cyber",
                    project_root=str(project), evaluator_spec=spec,
                    final_destination="final_poc", seats="codex", model=MODEL,
                    effort=EFFORT, service_tier=SERVICE_TIER,
@@ -153,6 +174,8 @@ def create_service(args) -> Service:
                    seat_capabilities=SeatCapabilities(read_retained_artifacts=True,
                        read_candidate_blobs=True, execute_local_checks=True,
                        invoke_controller_evaluator=False))
+    service.search_policy_guard = guard
+    return service
 
 
 class ReceiptBusy(ValueError):
@@ -229,6 +252,7 @@ class ProtectedApplication:
         self.app, self.token, self.service = app, token.encode("ascii"), service
         self.profile_root = profile_root
         self._hook_lock = asyncio.Lock()
+        self.policy_instance_id = uuid.uuid4().hex
 
     def authorized(self, scope):
         headers = [value for key, value in scope.get("headers", ())
@@ -288,6 +312,32 @@ class ProtectedApplication:
         if not self.authorized(scope):
             return await self.response(send, 401, {"error": "unauthorized"})
         path, method = scope.get("path", ""), scope.get("method", "GET")
+        if path in ("/policy", "/policy/seal"):
+            if method != ("GET" if path == "/policy" else "POST"):
+                return await self.response(send, 405, {"error": "method not allowed"})
+            guard = getattr(self.service, "search_policy_guard", None)
+            if not isinstance(guard, SearchPolicyGuard):
+                return await self.response(send, 503, {"error": "search policy unavailable"})
+            if path == "/policy/seal":
+                try:
+                    progress = await asyncio.to_thread(self.service.verification_jobs)
+                    if (type(progress) is not dict or progress.get("schema") != "gv-verification-progress-v1"
+                            or type(progress.get("jobs")) is not list
+                            or any(type(job) is not dict or type(job.get("state")) is not str
+                                   or job["state"] not in {"queued", "running", "completed", "failed", "interrupted"}
+                                   for job in progress["jobs"])):
+                        raise ValueError("invalid verification progress")
+                    pending = any(job["state"] in {"queued", "running"} for job in progress["jobs"])
+                    if pending and guard.snapshot()["sealed"]:
+                        raise ValueError("pending verification after seal")
+                    if not pending:
+                        guard.try_seal()
+                except Exception:
+                    return await self.response(send, 503, {"error": "search policy seal unavailable"})
+            # This tiny metadata snapshot has no dependency on graph, event,
+            # delivery, or model execution locks.
+            return await self.response(send, 200, {"schema": "gv-search-policy-response-v1",
+                                                  "instance_id": self.policy_instance_id, "policy": guard.snapshot()})
         if path == "/progress":
             if method != "GET":
                 return await self.response(send, 405, {"error": "method not allowed"})

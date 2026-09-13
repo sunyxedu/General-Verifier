@@ -31,6 +31,10 @@ from pathlib import Path
 from experiments.cybergym.model_config import (
     AUTO_COMPACT_TOKEN_LIMIT, CONTEXT_WINDOW, MODEL_CONFIG, context_cli_args,
 )
+from experiments.cybergym.policy import (
+    SearchPolicyGuard, SearchPolicyViolation, SolverSearchObserver,
+    validate_policy_response, validate_policy_snapshot,
+)
 
 PROFILE = Path(__file__).resolve().parents[2]
 OFFICIAL = Path("/private/tmp/cybergym-official")
@@ -344,6 +348,7 @@ class Evaluation:
             "solver_egress": "OpenAI-only proxy; no direct judge or patched image",
             "solver_egress_domains": list(EGRESS_DOMAINS),
             "web_search": "disabled", "verifier_shell_network_enabled": False,
+            "hosted_search_event_guard": "solver-and-private-verifier; pre-score-seal-and-terminal-validation",
             "poc_execution_network": "none",
             "isolated_network_allocation": {"pools": list(ISOLATED_NETWORK_POOLS),
                 "prefix_length": ISOLATED_NETWORK_PREFIX, "internal": True},
@@ -804,9 +809,12 @@ class Evaluation:
                 atomic_json(directory / "cleanup-issues.json", issues)
         return issues  # Native volumes and stopped containers remain intact.
 
-    def sidecar_get(self, runtime, path):
+    def sidecar_get(self, runtime, path, *, method="GET"):
+        if method not in {"GET", "POST"}:
+            raise ValueError("unsupported private sidecar method")
         code = "import json,os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8000" + path + \
-            "',headers={'Authorization':'Bearer '+os.environ['GV_SIDECAR_TOKEN']}); print(urllib.request.urlopen(r).read().decode())"
+            "',headers={'Authorization':'Bearer '+os.environ['GV_SIDECAR_TOKEN']},method=" + repr(method) + \
+            "); print(urllib.request.urlopen(r).read().decode())"
         process = docker("exec", runtime["sidecar"], "python3", "-c", code, check=False)
         if process.returncode:
             return None
@@ -994,29 +1002,73 @@ class Evaluation:
             args += ["--disable", feature]
         return args + ([thread, prompt] if thread else ["--", prompt])
 
+    def _accept_verifier_policy(self, observer, response, *, require_sealed=False):
+        instance_id, violation = validate_policy_response(response,
+            expected_instance_id=observer.verifier_instance_id)
+        observer.verifier_instance_id = instance_id
+        if violation:
+            raise SearchPolicyViolation("hosted_search_policy_violation:verifier")
+        if require_sealed and response["policy"]["sealed"] is not True:
+            raise RuntimeError("verifier policy is not sealed for scoring")
+        return response["policy"]["sealed"]
+
+    def require_search_policy(self, runtime, observer, *, log_path, final=False, require_sealed=False):
+        # These are observed-event checks, not a claim that request projection
+        # reveals the CLI's complete tool registry. Missing private evidence is
+        # an infrastructure error, never clean policy or a model failure.
+        observer.consume(log_path, final=final)
+        if validate_policy_snapshot(observer.guard.snapshot()):
+            raise SearchPolicyViolation("hosted_search_policy_violation:solver")
+        return self._accept_verifier_policy(observer, self.sidecar_get(runtime, "/policy"),
+                                            require_sealed=require_sealed)
+
+    def seal_verifier_policy(self, runtime, observer, *, log_path):
+        # Solver is already stopped. Wait for known queued/running GV jobs,
+        # then close model-call admission atomically with active-call tracking.
+        # A typed unsealed response means busy, not timeout or permission to
+        # restart. Missing/malformed/reset evidence fails closed immediately.
+        while not self.stop.is_set():
+            self.require_search_policy(runtime, observer, log_path=log_path, final=True)
+            response = self.sidecar_get(runtime, "/policy/seal", method="POST")
+            if self._accept_verifier_policy(observer, response):
+                return
+            if self.stop.wait(5):
+                break
+        raise RuntimeError("controller stopped before verifier policy seal")
+
     def run_solver(self, directory, workspace, runtime, prompt, state):
         thread, turn = None, 0
         log_path = directory / "solver.jsonl"
+        observer = SolverSearchObserver(SearchPolicyGuard())
+        runtime["_search_policy_observer"] = observer
         while not self.stop.is_set():
             name = "gv-roles-solver-" + directory.name[-16:] + "-" + str(turn)
             self.phase(directory, state, "solver_running", solver_container=name,
                        sidecar_container=runtime["sidecar"], continuation=turn)
             offset = log_path.stat().st_size if log_path.exists() else 0
             with log_path.open("ab") as log, (directory / "solver.stderr").open("ab") as errors:
+                # Establish the sidecar generation before the solver can make
+                # any calls. A restart cannot silently reset its violation latch.
+                self.require_search_policy(runtime, observer, log_path=log_path)
                 process = subprocess.Popen(self.solver_command(directory, workspace, runtime, name, prompt, thread),
                                            stdout=log, stderr=errors)
                 last_mirror, last_progress = 0, 0
                 while process.poll() is None:
+                    self.require_search_policy(runtime, observer, log_path=log_path)
                     receipt = self.sidecar_get(runtime, "/receipt")
                     if receipt is not None:
                         # Certificate has selected exactlyone final. Stop only this
                         # solver, then check canonicaldelivery against quiescentworld.
                         docker("stop", "--time", "10", name)
                         process.wait()
+                        self.require_search_policy(runtime, observer, log_path=log_path, final=True)
+                        self.seal_verifier_policy(runtime, observer, log_path=log_path)
                         receipt = self.sidecar_get(runtime, "/receipt")
                         if receipt is None:
                             raise RuntimeError("delivery changed as solver stopped")
                         self.safe_mirror(runtime, directory / "private", phase="final")
+                        self.require_search_policy(runtime, observer, log_path=log_path,
+                                                   final=True, require_sealed=True)
                         atomic_json(directory / "final-selection.json", receipt)
                         return receipt
                     if time.time() - last_progress >= PROGRESS_INTERVAL_SECONDS:
@@ -1028,7 +1080,11 @@ class Evaluation:
                     if self.stop.wait(5):
                         docker("stop", "--time", "10", name, check=False)
                         process.wait()
+                        self.require_search_policy(runtime, observer, log_path=log_path, final=True)
                         raise RuntimeError("controller stopped")
+            # A process can emit a search and exit between two live polls.
+            # Inspect the terminal bytes before accepting any receipt/resume.
+            self.require_search_policy(runtime, observer, log_path=log_path, final=True)
             with log_path.open("rb") as stream:
                 stream.seek(offset)
                 for line in stream:
@@ -1040,7 +1096,13 @@ class Evaluation:
                         thread = event.get("thread_id") or thread
             receipt = self.sidecar_get(runtime, "/receipt")
             if receipt is not None:
+                self.seal_verifier_policy(runtime, observer, log_path=log_path)
+                receipt = self.sidecar_get(runtime, "/receipt")
+                if receipt is None:
+                    raise RuntimeError("delivery changed as verifier sealed")
                 self.safe_mirror(runtime, directory / "private", phase="final")
+                self.require_search_policy(runtime, observer, log_path=log_path,
+                                           final=True, require_sealed=True)
                 atomic_json(directory / "final-selection.json", receipt)
                 return receipt
             if not thread:
@@ -1132,11 +1194,26 @@ class Evaluation:
             workspace, private, prompt = self.prepare(task, directory)
             runtime = self.create_runtime(directory, workspace, private)
             receipt = self.run_solver(directory, workspace, runtime, prompt, state)
+            observer = runtime["_search_policy_observer"]
+            self.require_search_policy(runtime, observer, log_path=directory / "solver.jsonl",
+                                       final=True, require_sealed=True)
             passed = self.score(task, directory, state, receipt,
                                 release_vulnerable_image=release_vulnerable_image)
+            self.require_search_policy(runtime, observer, log_path=directory / "solver.jsonl",
+                                       final=True, require_sealed=True)
             self.phase(directory, state, "completed", completed_unix=time.time(),
                        outcome="pass" if passed else "fail", official_pass=passed)
         except Exception as error:
+            if isinstance(error, SearchPolicyViolation):
+                # All workers use this pinned policy. Retire the affected
+                # experiment, rather than silently collecting tainted scores.
+                self.stop.set()
+                with contextlib.suppress(Exception):
+                    atomic_json(self.root / "invalid-experiment.json", {
+                        "schema": "gv-cybergym-invalid-experiment-v1",
+                        "profile_commit": self.frozen_commit, "attempt_id": attempt,
+                        "reason": "hosted_search_policy_violation"})
+                state.update(experiment_valid=False, policy_violation=True)
             self.phase(directory, state, "infrastructure_error", completed_unix=time.time(),
                        outcome="infrastructure_error", official_pass=None,
                        reason=type(error).__name__ + ": " + str(error))
