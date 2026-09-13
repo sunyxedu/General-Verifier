@@ -348,6 +348,8 @@ class Evaluation:
             "solver_egress": "OpenAI-only proxy; no direct judge or patched image",
             "solver_egress_domains": list(EGRESS_DOMAINS),
             "web_search": "disabled", "verifier_shell_network_enabled": False,
+            "verifier_cli_tmp": {"path": "/codex-home/tmp", "filesystem": "tmpfs",
+                "size_bytes": 64 * 1024**2},
             "hosted_search_event_guard": "solver-and-private-verifier; pre-score-seal-and-terminal-validation",
             "poc_execution_network": "none",
             "isolated_network_allocation": {"pools": list(ISOLATED_NETWORK_POOLS),
@@ -695,6 +697,10 @@ class Evaluation:
             "--security-opt", "seccomp=unconfined", *env,
             "-v", str(workspace) + ":/task", "-v", volume + ":/state",
             "-v", str(private / "verifier-home") + ":/codex-home", "-v", str(PROFILE) + ":/gv:ro",
+            # CLI janitor locks for concurrent seats must live on Linux tmpfs.
+            # macOS bind-backed arg0 locks can let another CLI remove a live
+            # helper directory, causing exec_command ENOENT before execution.
+            "--tmpfs", "/codex-home/tmp:rw,exec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=64m",
             "-v", runtime["evaluator_volume"] + ":/evaluator:ro",
             "-w", "/task", "--entrypoint", "python3", IMAGE, "/gv/experiments/cybergym/sidecar.py",
             "--state-dir", "/state", "--project-root", "/task", "--server-hostname", sidecar,

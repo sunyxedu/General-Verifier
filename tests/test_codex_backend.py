@@ -512,8 +512,11 @@ def _sleeper_tree_command(marker, parent_sleep):
         "child=subprocess.Popen([sys.executable,'-c',sys.argv[2]],"
         "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,"
         "stderr=subprocess.DEVNULL)\n"
-        "pathlib.Path(sys.argv[1]).write_text("
+        "marker=pathlib.Path(sys.argv[1])\n"
+        "pending=marker.with_name(marker.name+'.pending')\n"
+        "pending.write_text("
         "f'{os.getpid()} {child.pid}')\n"
+        "os.replace(pending,marker)\n"
         "time.sleep(float(sys.argv[3]))\n"
     )
     return [

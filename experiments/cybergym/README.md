@@ -11,6 +11,13 @@ cybergym-internal`. The runner reads `~/.codex/auth.json` by default;
 `CYBERGYM_CODEX_AUTH` selects another private auth file. Auth files and raw
 experiment outputs must never be committed.
 
+Concurrent verifier CLI helpers use a 64 MiB tmpfs at `/codex-home/tmp`.
+Keep this mount: macOS bind-backed helper directories can disappear during
+another CLI's janitor startup, causing unified execution ENOENT. Private auth
+stays outside tmpfs and the original shell permission profile stays in place.
+An opt-in zero-model native regression exercises the actual runner mount:
+`GV_CYBERGYM_HELPER_NATIVE=1 python -B -m pytest -q tests/test_cybergym_helper_native.py`.
+
 Before launch, run the regression suite and
 `python -B -m experiments.cybergym.preflight`, then run the offline generic
 toolchain preflight inside the pinned agent image. Commit the implementation
