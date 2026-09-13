@@ -177,6 +177,12 @@ The Discharger receives the inline, raw-body, and raster limits before
 execution, using the same constants as the snapshot implementation. This
 general budget disclosure changes no retention limit or evidence rule.
 
+Successful (`holds`) executor results use an empty counterexample witness
+(normalized to null) and `witness_kind=none`. The Judger inspects the retained
+outputs and provenance for positive support; the counterexample-kind audit
+applies to refutations. This schema distinction changes no evidence requirement
+or correctness verdict.
+
 Use checkpoints for working theories and next actions. Candidate ranking,
 control-count heuristics, deadlines, and separate relevance verdicts do not
 authorize final delivery.
