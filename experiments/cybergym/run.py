@@ -53,6 +53,9 @@ PERIODIC_STATE_ENTRIES = ("events.jsonl", "role_calls.jsonl", "backend_usage.jso
     "transport_calls.jsonl", "verification_jobs.jsonl", "task.md", "artifacts",
     "cyber", "cybergym-observations")
 PROGRESS_INTERVAL_SECONDS = 60
+# Best-effort log transport must not strand cleanup after owned agents stop.
+# This bounds diagnostics only, never a solver, role, or evaluator execution.
+LOG_COPY_TIMEOUT_SECONDS = 30
 MIN_TASK_FREE_BYTES = 25 * 1024**3
 # Explicit /24s avoid Docker's small default bridge pool, and retain ample
 # endpoints for stopped solver-continuation containers. Only Docker IPAM
@@ -805,7 +808,8 @@ class Evaluation:
                     issues.append({"component": name, "error": "nonquiescent_state_archive_skipped"})
             try:
                 with (directory / (name + ".log")).open("wb") as log:
-                    result = execute("docker", "logs", name, check=False, stdout=log, stderr=subprocess.STDOUT)
+                    result = execute("docker", "logs", name, check=False, stdout=log,
+                                     stderr=subprocess.STDOUT, timeout=LOG_COPY_TIMEOUT_SECONDS)
                 if result.returncode:
                     issues.append({"component": name, "error": "log_copy_failed"})
             except Exception as error:
@@ -1319,7 +1323,8 @@ class Evaluation:
         if self.created_proxy:
             try:
                 with (self.root / "server/proxy.log").open("wb") as log:
-                    execute("docker", "logs", self.proxy, check=False, stdout=log, stderr=subprocess.STDOUT)
+                    execute("docker", "logs", self.proxy, check=False, stdout=log,
+                            stderr=subprocess.STDOUT, timeout=LOG_COPY_TIMEOUT_SECONDS)
             except Exception as error:
                 issues.append({"component": "submission_relay", "error": "log_copy_failed", "type": type(error).__name__})
             try:

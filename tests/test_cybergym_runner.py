@@ -1213,7 +1213,9 @@ def test_stopped_batch_does_not_queue_or_overwrite_real_outcomes(controller, mon
 
 
 @pytest.mark.parametrize("stop_fails", [False, True])
-def test_service_diagnostic_failure_never_strands_owned_judge(controller, monkeypatch, stop_fails):
+@pytest.mark.parametrize("failure_kind", ["unavailable", "timeout"])
+def test_service_diagnostic_failure_never_strands_owned_judge(
+        controller, monkeypatch, stop_fails, failure_kind):
     controller.created_proxy = True
     class Judge:
         terminated = 0
@@ -1226,6 +1228,9 @@ def test_service_diagnostic_failure_never_strands_owned_judge(controller, monkey
     controller.judge_process = Judge()
     calls = []
     def unavailable(*_args, **_kwargs):
+        assert _kwargs["timeout"] == run.LOG_COPY_TIMEOUT_SECONDS
+        if failure_kind == "timeout":
+            raise run.subprocess.TimeoutExpired(_args, _kwargs["timeout"])
         raise OSError("fixture diagnostic unavailable")
     monkeypatch.setattr(run, "execute", unavailable)
     def docker(*args, **_kwargs):
@@ -2113,6 +2118,25 @@ def test_cleanup_quiesces_owned_solver_and_sidecar_before_best_effort_archive(
     assert min(archive_indices) > sidecar_stop
     assert issues, "archive errors stay diagnostic instead of stranding containers"
     assert (directory / "cleanup-issues.json").exists()
+    assert not any(call[:2] in (("volume", "rm"), ("network", "rm")) for call in calls)
+
+
+def test_cleanup_log_timeout_preserves_stopped_runtime_and_records_diagnostics(
+        controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    runtime, solver, calls = cleanup_runtime_fakes(monkeypatch, controller, selected)
+    def stalled_logs(*args, **kwargs):
+        assert args[:2] == ("docker", "logs")
+        assert kwargs["timeout"] == run.LOG_COPY_TIMEOUT_SECONDS
+        calls.append(tuple(args))
+        raise run.subprocess.TimeoutExpired(args, kwargs["timeout"])
+    monkeypatch.setattr(run, "execute", stalled_logs)
+    issues = controller.cleanup_runtime(runtime, directory, directory / "private")
+    assert {call[-1] for call in calls if call[0] == "stop"} == {
+        solver, runtime["sidecar"], runtime["proxy"]}
+    assert {issue["component"] for issue in issues
+            if issue.get("type") == "TimeoutExpired"} == {
+        solver, runtime["sidecar"], runtime["proxy"]}
     assert not any(call[:2] in (("volume", "rm"), ("network", "rm")) for call in calls)
 
 

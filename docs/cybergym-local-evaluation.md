@@ -118,6 +118,13 @@ module. The first run had one existing process-group timeout test failure
 complete suite passed. The failure's cause remains unconfirmed. No timeout,
 process-cleanup assertion, or test exclusion was changed to obtain that pass.
 
+During controlled retirement, an already-stopped sidecar's `docker logs`
+client blocked cleanup. Cancelling that diagnostic client allowed the
+controller to finish. Best-effort runtime and submission-relay log copies now
+have a 30-second transport limit; failures are recorded and cleanup continues.
+This is not a task, role, or evaluator execution deadline. Cleanup timeout,
+runner, tracking, and lifecycle coverage passed 311 tests (5.78 s).
+
 Private raw outputs live under `experiments/cybergym/results/local-20260913/`,
 which is ignored by Git. Each actual cohort has `manifest.json`,
 `controller.json`, `attempts/*/status.json`, `results.json`, and monitoring
