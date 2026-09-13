@@ -2160,6 +2160,18 @@ def mirror_fixture(monkeypatch, controller, selected, tmp_path, *, foreign=False
     native = tmp_path / "native-state"
     native.mkdir(mode=0o700)
     calls = []
+    native_execute = run.execute
+
+    def execute(*args, **kwargs):
+        if args[:2] != ("docker", "cp"):
+            return native_execute(*args, **kwargs)
+        assert args[-1] == "-"
+        calls.append(tuple(args[1:]))
+        relative = args[2].split(":/state/", 1)[1]
+        source = native if relative == "." else native / relative
+        with tarfile.open(fileobj=kwargs["stdout"], mode="w:") as archive:
+            archive.add(source, arcname="." if relative == "." else relative)
+        return SimpleNamespace(returncode=0, stdout="")
 
     def docker(*args, **_kwargs):
         calls.append(args)
@@ -2183,6 +2195,7 @@ def mirror_fixture(monkeypatch, controller, selected, tmp_path, *, foreign=False
         return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(run, "execute", execute)
     return native, directory / "private", calls
 
 
@@ -2222,6 +2235,37 @@ def test_final_snapshot_is_exact_and_removes_only_old_mirror_members(
     assert outside.read_text() == "controller authority remains private"
     assert stat.S_IMODE((private / "state").stat().st_mode) == 0o700
     assert not list(private.glob(".*mirror-*"))
+
+
+def test_snapshot_extracts_read_only_catalog_without_changing_native_permissions(
+        monkeypatch, controller, selected, tmp_path):
+    native, private, _calls = mirror_fixture(monkeypatch, controller, selected, tmp_path)
+    catalog = native / "oracle_catalog" / "claim"
+    catalog.mkdir(parents=True)
+    record = catalog / "oracle.json"
+    record.write_bytes(b"immutable oracle bytes")
+    record.chmod(0o400)
+    catalog.chmod(0o500)
+    controller.mirror({"sidecar": "fixture-sidecar"}, private)
+    assert (private / "state/oracle_catalog/claim/oracle.json").read_bytes() == record.read_bytes()
+    assert stat.S_IMODE(catalog.stat().st_mode) == 0o500
+    assert stat.S_IMODE(record.stat().st_mode) == 0o400
+    assert stat.S_IMODE((private / "state").stat().st_mode) == 0o700
+
+
+def test_snapshot_rejects_external_archive_link_and_keeps_previous_mirror(
+        monkeypatch, controller, selected, tmp_path):
+    native, private, _calls = mirror_fixture(monkeypatch, controller, selected, tmp_path)
+    outside = tmp_path / "outside-archive"
+    outside.mkdir()
+    sentinel = outside / "authority.json"
+    sentinel.write_bytes(b"host authority")
+    (private / "state/retained.json").write_bytes(b"previous valid mirror")
+    (native / "escape").symlink_to(outside, target_is_directory=True)
+    assert controller.safe_mirror({"sidecar": "fixture-sidecar"}, private, phase="cleanup") is False
+    assert sentinel.read_bytes() == b"host authority"
+    assert (private / "state/retained.json").read_bytes() == b"previous valid mirror"
+    assert not (private / "state/escape").exists()
 
 
 def test_receipt_snapshot_is_metadata_only_and_score_preserves_host_authority(

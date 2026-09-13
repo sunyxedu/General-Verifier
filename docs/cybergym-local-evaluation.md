@@ -125,6 +125,22 @@ have a 30-second transport limit; failures are recorded and cleanup continues.
 This is not a task, role, or evaluator execution deadline. Cleanup timeout,
 runner, tracking, and lifecycle coverage passed 311 tests (5.78 s).
 
+The final full-state copies also failed with host-side permission errors:
+Docker's extractor created a read-only oracle-catalog directory before writing
+its children. Snapshots now receive Docker's tar on disk and extract it with
+Python's `data` filter into private staging. Host archive owner access is
+normalized, external links are rejected, and publication still replaces the
+old mirror only after extraction succeeds. Native state permissions, evidence
+bytes, role inputs, and scoring remain unchanged.
+
+A zero-model native Docker control reproduced the original copy failure;
+filtered extraction retrieved identical oracle bytes while the native directory
+and file retained modes 0500 and 0400. Snapshot/runner/tracking/lifecycle
+regression passed 313 tests (6.70 s), including read-only catalogs and rejection
+of an external link without modifying host authority or the previous mirror.
+This archive fix is prepared separately from the evaluated `round-04` source
+`9f73eeb`; that live cohort remains frozen.
+
 Private raw outputs live under `experiments/cybergym/results/local-20260913/`,
 which is ignored by Git. Each actual cohort has `manifest.json`,
 `controller.json`, `attempts/*/status.json`, `results.json`, and monitoring

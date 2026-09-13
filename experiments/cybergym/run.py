@@ -831,13 +831,25 @@ class Evaluation:
         return json.loads(process.stdout)
 
     def mirror(self, runtime, private):
-        """Full forensic snapshot into a fresh tree, never a merging copy."""
+        """Complete state content into a fresh tree, never a merging copy."""
         private = self._mirror_destination(runtime, private)
         with tempfile.TemporaryDirectory(prefix=".state-mirror-", dir=private) as temporary:
             staged = Path(temporary) / "state"
             staged.mkdir(mode=0o700)
-            docker("cp", runtime["sidecar"] + ":/state/.", str(staged))
+            self._extract_state_archive(runtime["sidecar"] + ":/state/.", staged)
             self._publish_mirror_entry(staged, private / "state")
+
+    @staticmethod
+    def _extract_state_archive(source, destination):
+        # Docker's host-side extractor can make a copied directory read-only
+        # before writing its children. Extract a disk-backed tar with Python's
+        # data filter instead: owner access stays usable, and links cannot write
+        # beyond the private staging tree. Native state permissions are untouched.
+        with tempfile.TemporaryFile(dir=destination.parent) as stream:
+            execute("docker", "cp", source, "-", stdout=stream, stderr=subprocess.PIPE)
+            stream.seek(0)
+            with tarfile.open(fileobj=stream, mode="r:") as archive:
+                archive.extractall(path=destination, filter="data")
 
     def mirror_metadata(self, runtime, private):
         """Small periodic snapshot; absent not-yet-created ledgers are normal."""
@@ -857,7 +869,7 @@ class Evaluation:
         with tempfile.TemporaryDirectory(prefix=".metadata-mirror-", dir=private) as temporary:
             staged = Path(temporary)
             for name in entries:
-                docker("cp", runtime["sidecar"] + ":/state/" + name, str(staged / name))
+                self._extract_state_archive(runtime["sidecar"] + ":/state/" + name, staged)
             state = private / "state"
             if not state.exists():
                 state.mkdir(mode=0o700)
