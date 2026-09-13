@@ -84,6 +84,17 @@ heartbeat/timestamp, and external-symlink coverage. A separately versioned
 read-only observer may run a newer monitoring commit while the evaluated
 solver/verifier stays frozen at `37fabca`; its snapshots record both commits.
 
+Native CLI `error` and `turn.failed` events remain visible in monitoring even
+after later CLI activity. They emit a deduplicated diagnostic alert per CLI
+attempt, without exporting error text or changing the process, job, task
+verdict, or official score. An error event alone does not establish its cause
+or prove that the CLI has terminated. Older completed-attempt caches are
+recomputed when they lack this error history.
+
+The error-history update passed 308 tracking/runner/lifecycle regression tests
+(4.50 s), including running and exited CLI cases, error-text isolation,
+deduplication, and cache upgrades. No prompts or scoring rules changed.
+
 Private raw outputs live under `experiments/cybergym/results/local-20260913/`,
 which is ignored by Git. Each actual cohort has `manifest.json`,
 `controller.json`, `attempts/*/status.json`, `results.json`, and monitoring

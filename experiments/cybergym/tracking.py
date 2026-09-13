@@ -254,6 +254,7 @@ def _backend_activity(rows: list[dict], outer_calls: list[dict], now: float, par
             "wait_category": "unknown", "process_running": None,
             "latest_unix": ts, "last_heartbeat_unix": None, "last_cli_event_unix": None,
             "last_cli_event": None, "last_item_kind": None, "phase_counts": {},
+            "cli_error_events": {}, "last_cli_error_unix": None,
             "completed_tool_items": {}, "command_stats": {"available": False, "partial": True}})
         phase = row["phase"]
         if phase != call["phase"]:
@@ -303,6 +304,9 @@ def _backend_activity(rows: list[dict], outer_calls: list[dict], now: float, par
             event_type = row.get("event_type")
             if isinstance(event_type, str) and event_type in CLI_EVENT_TYPES:
                 call.update(last_cli_event=event_type, last_cli_event_unix=ts)
+                if event_type in {"error", "turn.failed"}:
+                    call["cli_error_events"][event_type] = call["cli_error_events"].get(event_type, 0) + 1
+                    call["last_cli_error_unix"] = ts
             item_kind = row.get("item_kind")
             if isinstance(item_kind, str) and item_kind in CLI_ITEM_KINDS:
                 call["last_item_kind"] = item_kind
@@ -873,6 +877,11 @@ def _backend_warnings(activity: dict, warn) -> None:
         key = call["backend_call_id"] + ":" + str(call["attempt"])
         metadata = _backend_warning_metadata(call)
         counts = call["phase_counts"]
+        if call.get("cli_error_events"):
+            warn("backend_cli_error_warning", key, **metadata,
+                 error_event_counts=call["cli_error_events"],
+                 last_error_event_unix=call["last_cli_error_unix"],
+                 meaning="The native CLI emitted an error or turn.failed event. Error text and cause are unavailable in this metadata; the process may still recover. This is not a task verdict, score, cancellation, or restart instruction.")
         if counts.get("backend_transient_failure") or counts.get("backend_backoff_started"):
             warn("backend_transient_retry_warning", key, **metadata,
                  retry_number=call.get("retry_number"), retry_limit=call.get("retry_limit"),
@@ -927,6 +936,7 @@ def snapshot(root: Path | str, *, now: float | None = None, previous: dict | Non
         if (old and "evaluator_infrastructure_diagnostics" in old
                 and _number(status.get("completed_unix")) is not None
                 and old.get("source_signature") == _source_signature(path, root)
+                and all("cli_error_events" in call for call in old.get("backend_activity", {}).get("calls", []))
                 and not old["verifier_timings"]["active_calls"]
                 and not old["evaluator_timings"]["active_calls"]):
             value = dict(old)

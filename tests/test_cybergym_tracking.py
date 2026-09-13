@@ -744,6 +744,50 @@ def test_completed_short_backoff_and_transient_retry_remain_visible(tmp_path):
     assert snapshot(tmp_path, now=330, previous=first)["alerts"] == []
 
 
+@pytest.mark.parametrize("event_type", ["error", "turn.failed"])
+@pytest.mark.parametrize("exited", [False, True])
+def test_native_cli_error_remains_visible_after_following_activity_without_failing_task(tmp_path, event_type, exited):
+    path = attempt(tmp_path)
+    rows = [backend_row("exec_spawned", 22),
+            backend_row("cli_event", 23, event_type=event_type, message="PRIVATE_ERROR",
+                        error={"message": "PRIVATE_PROVIDER_ERROR"}),
+            backend_row("cli_event", 24, event_type="item.completed", item_kind="agent_message")]
+    if exited:
+        rows.append(backend_row("exec_process_exited", 25))
+    backend_fixture(path, *rows)
+    first = snapshot(tmp_path, now=30)
+    assert alert_types(first) == {"backend_cli_error_warning"}
+    call = first["attempts"][0]["backend_activity"]["calls"][0]
+    assert call["last_cli_event"] == "item.completed"
+    assert call["cli_error_events"] == {event_type: 1}
+    assert call["process_running"] is (not exited)
+    alert = first["alerts"][0]
+    assert alert["error_event_counts"] == {event_type: 1}
+    assert alert["last_error_event_unix"] == 23
+    assert alert["lifecycle_action"] is None
+    assert first["attempts"][0]["official_pass"] is None
+    assert first["attempts"][0]["completed_unix"] is None
+    assert "PRIVATE" not in json.dumps(first)
+    assert snapshot(tmp_path, now=31, previous=first)["alerts"] == []
+
+
+def test_completed_cache_from_older_observer_recomputes_native_error_history(tmp_path):
+    path = attempt(tmp_path, completed_unix=25, stage="completed", official_pass=False)
+    backend_fixture(path,
+        backend_row("exec_spawned", 22),
+        backend_row("cli_event", 23, event_type="error", message="PRIVATE_ERROR"),
+        backend_row("exec_process_exited", 24), outer_rows=[])
+    previous = snapshot(tmp_path, now=30)
+    old_call = previous["attempts"][0]["backend_activity"]["calls"][0]
+    del old_call["cli_error_events"]
+    del old_call["last_cli_error_unix"]
+    value = snapshot(tmp_path, now=31, previous=previous)
+    assert value["attempts"][0]["backend_activity"]["calls"][0]["cli_error_events"] == {"error": 1}
+    assert value["attempts"][0]["official_pass"] is False
+    assert value["completed_attempts"] == 1
+    assert "PRIVATE" not in json.dumps(value)
+
+
 @pytest.mark.parametrize("mirror_unix,overrun", [(100, True), (None, False)])
 def test_backoff_overrun_requires_fresh_copied_metadata_and_never_cancels(tmp_path, mirror_unix, overrun):
     path = attempt(tmp_path)
