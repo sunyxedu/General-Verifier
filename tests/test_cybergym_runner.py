@@ -55,6 +55,30 @@ def controller(tmp_path, monkeypatch):
     return evaluation
 
 
+def full_catalog_fixture():
+    """Synthetic full-size catalog; never relax the production coverage gate."""
+    tasks = list(run.FIXED30)
+    number = 1
+    while sum(task.startswith("arvo:") for task in tasks) < 1368:
+        task = f"arvo:{number}"
+        if task not in tasks:
+            tasks.append(task)
+        number += 1
+    tasks.extend(f"oss-fuzz:{number}" for number in range(1, 140))
+    return {task: f"{index:012x}" for index, task in enumerate(tasks)}
+
+
+def pinned_catalog_fixture(controller, monkeypatch, tmp_path, *, raw=None):
+    official = tmp_path / "official"
+    official.mkdir()
+    catalog = official / "mask_map.json"
+    raw = json.dumps(full_catalog_fixture()).encode() if raw is None else raw
+    catalog.write_bytes(raw)
+    controller.manifest = {"mask_map_sha256": hashlib.sha256(raw).hexdigest()}
+    monkeypatch.setattr(run, "OFFICIAL", official)
+    return catalog, raw
+
+
 @pytest.fixture
 def selected(controller):
     directory = controller.root / "attempts" / "fixture-agent"
@@ -230,10 +254,7 @@ def test_first_five_and_85_percent_gate_control_expansion(controller, monkeypatc
     controller.start_services = lambda: None
     monkeypatch.setattr(tracking, "record_snapshot", lambda _root: None)
     monkeypatch.setattr(run.threading, "Thread", lambda **_kwargs: SimpleNamespace(start=lambda: None))
-    official = tmp_path / "official"
-    official.mkdir()
-    (official / "mask_map.json").write_text(json.dumps({"arvo:23296": "masked-a", "arvo:extra": "masked-b"}))
-    monkeypatch.setattr(run, "OFFICIAL", official)
+    catalog, raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path)
     calls = []
 
     def batch(tasks, stage):
@@ -246,6 +267,180 @@ def test_first_five_and_85_percent_gate_control_expansion(controller, monkeypatc
     assert calls[0][0] == run.FIXED30[:5]
     if len(calls) > 1:
         assert calls[1][0] == run.FIXED30
+    if len(calls) > 2:
+        assert calls[2][0] == tuple(json.loads(raw))
+        assert len(calls[2][0]) == 1507
+
+
+def test_full_catalog_reads_one_pinned_byte_snapshot(controller, monkeypatch, tmp_path):
+    catalog, raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path)
+    monkeypatch.setattr(Path, "read_bytes", lambda _path:
+                        (_ for _ in ()).throw(AssertionError("no second path read")))
+    result = run._read_task_catalog(catalog,
+                                   expected_sha256=controller.manifest["mask_map_sha256"])
+    assert result["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert result["task_ids"] == list(json.loads(raw))
+    assert result["task_counts"] == {"arvo": 1368, "oss-fuzz": 139}
+
+
+@pytest.mark.parametrize("raw", [b"{}", b"[]", b"null", b"not-json",
+    b'{"arvo:1":"a","arvo:1":"b"}',
+    b'{"arvo:1":{"nested":1,"nested":2}}',
+    b'{"arvo:1":NaN}', b'{"arvo:1":Infinity}', b'{"arvo:1":-Infinity}', b"\xff"])
+def test_catalog_rejects_malformed_initial_pin_and_expansion(controller, monkeypatch, tmp_path, raw):
+    catalog, _raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path, raw=raw)
+    for expected in (None, controller.manifest["mask_map_sha256"]):
+        with pytest.raises(RuntimeError, match="task_catalog_"):
+            run._read_task_catalog(catalog, expected_sha256=expected)
+
+
+@pytest.mark.parametrize("task", ["arvo:0", "arvo:01", "arvo:-1", "arvo:1/extra",
+    "arvo:1\n", "oss-fuzz:0001", "oss-fuzz:1e3", "oss-fuzz-latest:1",
+    "other:1", "arvo:99999999999999999999"])
+def test_catalog_rejects_noncanonical_or_unsupported_task_ids(
+        controller, monkeypatch, tmp_path, task):
+    data = full_catalog_fixture()
+    masked = data.pop("arvo:23296")
+    data[task] = masked
+    catalog, _raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path,
+                                           raw=json.dumps(data).encode())
+    with pytest.raises(RuntimeError, match="task_catalog_entry_invalid"):
+        run._read_task_catalog(catalog)
+
+
+@pytest.mark.parametrize("masked", [None, True, 12, {}, "", "unsafe\nidentifier"])
+def test_catalog_rejects_malformed_masked_identifiers(controller, monkeypatch, tmp_path, masked):
+    data = full_catalog_fixture()
+    data["arvo:23296"] = masked
+    catalog, _raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path,
+                                           raw=json.dumps(data).encode())
+    with pytest.raises(RuntimeError, match="task_catalog_entry_invalid"):
+        run._read_task_catalog(catalog)
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "wrong-family", "fixed-task", "duplicate-mask"])
+def test_catalog_preserves_full_dataset_coverage(controller, monkeypatch, tmp_path, change):
+    data = full_catalog_fixture()
+    if change == "missing":
+        data.pop("oss-fuzz:139")
+    elif change == "extra":
+        data["arvo:999999"] = "extra-id"
+    elif change == "wrong-family":
+        data["arvo:999999"] = data.pop("oss-fuzz:139")
+    elif change == "fixed-task":
+        data["arvo:999999"] = data.pop("arvo:23296")
+    else:
+        data["oss-fuzz:139"] = data["arvo:23296"]
+    catalog, _raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path,
+                                           raw=json.dumps(data).encode())
+    with pytest.raises(RuntimeError, match="task_catalog_(coverage|entry)_invalid"):
+        run._read_task_catalog(catalog)
+
+
+def test_catalog_semantically_equivalent_changed_bytes_fail_the_pin(controller, monkeypatch, tmp_path):
+    catalog, raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path)
+    catalog.write_bytes(raw + b"\n")
+    with pytest.raises(RuntimeError, match="task_catalog_digest_drifted"):
+        run._read_task_catalog(catalog, expected_sha256=controller.manifest["mask_map_sha256"])
+
+
+@pytest.mark.parametrize("change", ["rewrite", "replace", "replace-parent"])
+def test_catalog_detects_same_bytes_file_change_during_parse(
+        controller, monkeypatch, tmp_path, change):
+    catalog, raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path)
+    loads = run.json.loads
+    changed = False
+
+    def changing_parse(value, *args, **kwargs):
+        nonlocal changed
+        result = loads(value, *args, **kwargs)
+        if not changed:
+            changed = True
+            if change == "rewrite":
+                catalog.write_bytes(raw)
+            elif change == "replace":
+                replacement = catalog.with_name("replacement.json")
+                replacement.write_bytes(raw)
+                replacement.replace(catalog)
+            else:
+                previous = catalog.parent.with_name("previous-official")
+                catalog.parent.rename(previous)
+                catalog.parent.mkdir()
+                catalog.write_bytes(raw)
+        return result
+
+    monkeypatch.setattr(run.json, "loads", changing_parse)
+    with pytest.raises(RuntimeError, match="task_catalog_file_changed"):
+        run._read_task_catalog(catalog, expected_sha256=controller.manifest["mask_map_sha256"])
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "directory", "fifo", "oversize", "parent-symlink"])
+def test_catalog_reads_only_bounded_private_regular_file(controller, monkeypatch, tmp_path, kind):
+    catalog, raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path)
+    if kind == "parent-symlink":
+        previous = catalog.parent.with_name("previous-official")
+        catalog.parent.rename(previous)
+        catalog.parent.symlink_to(previous, target_is_directory=True)
+    else:
+        catalog.unlink()
+        other = catalog.with_name("other.json")
+        other.write_bytes(raw)
+        if kind == "symlink":
+            catalog.symlink_to(other)
+        elif kind == "hardlink":
+            os.link(other, catalog)
+        elif kind == "directory":
+            catalog.mkdir()
+        elif kind == "fifo":
+            os.mkfifo(catalog)
+        else:
+            with catalog.open("wb") as stream:
+                stream.truncate(run.MAX_CATALOG_BYTES + 1)
+    with pytest.raises(RuntimeError, match="task_catalog_"):
+        run._read_task_catalog(catalog, expected_sha256=controller.manifest["mask_map_sha256"])
+
+
+@pytest.mark.parametrize("digest", [None, True, 1, "", "A" * 64, "f" * 63])
+def test_all_expansion_rejects_missing_or_malformed_manifest_digest(
+        controller, monkeypatch, tmp_path, digest):
+    stopped_run_fakes(monkeypatch, controller)
+    pinned_catalog_fixture(controller, monkeypatch, tmp_path)
+    controller.manifest["mask_map_sha256"] = digest
+    calls = []
+
+    def batch(tasks, stage):
+        calls.append(stage)
+        return 5 if stage == "pilot5" else 26
+
+    controller.batch = batch
+    with pytest.raises(RuntimeError, match="task_catalog_manifest_digest_invalid"):
+        controller.run()
+    assert calls == ["pilot5", "fixed30"]
+    assert controller.results == {}
+    assert not (controller.root / "all1507-summary.json").exists()
+
+
+def test_all_expansion_catalog_drift_is_not_a_model_verdict(controller, monkeypatch, tmp_path):
+    stopped_run_fakes(monkeypatch, controller)
+    catalog, raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path)
+    results = {"arvo:23296": {"official_pass": True, "outcome": "pass"},
+               "arvo:11256": {"official_pass": None, "outcome": "infrastructure_error"}}
+    controller.results = results.copy()
+    calls = []
+
+    def batch(tasks, stage):
+        calls.append(stage)
+        if stage == "fixed30":
+            catalog.write_bytes(raw + b"\n")
+        return 5 if stage == "pilot5" else 26
+
+    controller.batch = batch
+    with pytest.raises(RuntimeError, match="task_catalog_digest_drifted"):
+        controller.run()
+    assert calls == ["pilot5", "fixed30"]
+    assert controller.results == results
+    assert not (controller.root / "all1507-summary.json").exists()
+    assert not (controller.root / "results.json").exists()
 
 
 @pytest.mark.parametrize("thread", [None, "existing-thread-id"])
@@ -965,18 +1160,14 @@ def test_stop_after_completed_batch_cannot_expand_to_next_stage(controller, monk
 
 def test_stop_during_catalog_read_cannot_start_all1507(controller, monkeypatch, tmp_path):
     stopped_run_fakes(monkeypatch, controller)
-    official = tmp_path / "official"
-    official.mkdir()
-    catalog = official / "mask_map.json"
-    catalog.write_text(json.dumps({"arvo:23296": "masked-a", "arvo:extra": "masked-b"}))
-    monkeypatch.setattr(run, "OFFICIAL", official)
-    read_text = Path.read_text
-    def interrupted_read(path, *args, **kwargs):
-        raw = read_text(path, *args, **kwargs)
-        if path == catalog:
+    catalog, _raw = pinned_catalog_fixture(controller, monkeypatch, tmp_path)
+    read = run.os.read
+    def interrupted_read(fd, size):
+        raw = read(fd, size)
+        if os.fstat(fd).st_ino == catalog.stat().st_ino:
             controller.stop.set()  # A SIGTERM can arrive in this exact window.
         return raw
-    monkeypatch.setattr(Path, "read_text", interrupted_read)
+    monkeypatch.setattr(run.os, "read", interrupted_read)
     calls = []
     def batch(tasks, stage):
         calls.append(stage)
@@ -1032,7 +1223,7 @@ def test_frozen_manifest_preserves_no_task_or_role_deadline_and_no_fresh_solver_
         controller, monkeypatch, tmp_path):
     official = tmp_path / "official"
     official.mkdir()
-    (official / "mask_map.json").write_text("{}")
+    (official / "mask_map.json").write_text(json.dumps(full_catalog_fixture()))
     monkeypatch.setattr(run, "OFFICIAL", official)
     def git(*args, **_kwargs):
         output = run.OFFICIAL_COMMIT if args[-2:] == ("rev-parse", "HEAD") else ""

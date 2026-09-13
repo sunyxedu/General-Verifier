@@ -352,7 +352,12 @@ def test_actual_service_long_commit_returns_handle_and_never_blocks_status(tmp_p
     async def scenario():
         first = await asyncio.wait_for(dispatcher.call("commit", *args), 0.8)
         assert first["pending"] and first["job_state"] == "running"
-        assert entered.is_set() and not release.is_set()
+        # Returning a running handle does not promise the worker has already
+        # reached the fixture discharger. Synchronize that test-only phase
+        # before observing its nonblocking status; keep the API guards above
+        # and below unchanged.
+        assert await asyncio.to_thread(entered.wait, 0.8)
+        assert not release.is_set()
         status = await asyncio.wait_for(dispatcher.call("status", None), 0.5)
         assert status["status_snapshot"] == "unavailable_while_verifying"
         duplicate = await asyncio.wait_for(dispatcher.call("commit", *args), 0.8)

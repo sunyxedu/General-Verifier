@@ -85,14 +85,25 @@ def test_fixed30_gate_failure_keeps_terminal_latest_and_alert(evaluation, monkey
 def test_normal_finish_records_last_batch_terminal_status(evaluation, monkeypatch, tmp_path):
     no_periodic_tick(monkeypatch)
     official = tmp_path / "official-fixture"
-    run.atomic_json(official / "mask_map.json", {"synthetic:all": "masked"})
+    # A successful full expansion must retain the real coverage contract;
+    # this monitor-only fixture never weakens it to a one-task catalog.
+    arvo = list(dict.fromkeys((*run.FIXED30,
+                 *(f"arvo:{number}" for number in range(1, 1369)))))[:1368]
+    tasks = arvo + [f"oss-fuzz:{number}" for number in range(1, 140)]
+    catalog = official / "mask_map.json"
+    run.atomic_json(catalog, {task: f"{index:012x}" for index, task in enumerate(tasks)})
+    evaluation.manifest = {"mask_map_sha256": run.digest(catalog)}
     monkeypatch.setattr(run, "OFFICIAL", official)
     stages = []
 
     def batch(_tasks, stage):
         stages.append(stage)
+        if stage == "all1507":
+            # atomic_json serializes keys in sorted order; expansion uses
+            # that exact pinned catalog order, not the fixture's construction.
+            assert tuple(_tasks) == tuple(sorted(tasks)) and len(_tasks) == 1507
         terminal_attempt(evaluation, stage, passed=True)
-        return {"pilot5": 5, "fixed30": 26, "all1507": 1}[stage]
+        return {"pilot5": 5, "fixed30": 26, "all1507": 1507}[stage]
 
     evaluation.batch = batch
     evaluation.run()

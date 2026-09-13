@@ -57,6 +57,8 @@ ISOLATED_NETWORK_POOLS = ("10.240.0.0/12", "10.128.0.0/9",
                           "172.16.0.0/12", "192.168.0.0/16")
 ISOLATED_NETWORK_PREFIX = 24
 MAX_NETWORK_ALLOCATION_RACES = 16
+FULL_CATALOG_COUNTS = {"arvo": 1368, "oss-fuzz": 139}
+MAX_CATALOG_BYTES = 8 * 1024**2
 _NETWORK_IO_LOCK = threading.Lock()
 AUTH = PROFILE.parent / "cybergym-luna-core-cyber30/codex-home-base/auth.json"
 FIXED30 = ("arvo:23296", "arvo:11256", "arvo:9471", "arvo:52243", "arvo:30051",
@@ -106,6 +108,94 @@ def atomic_json(path, value):
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _catalog_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate catalog key")
+        value[key] = item
+    return value
+
+
+def _catalog_nonfinite(_value):
+    raise ValueError("nonfinite catalog value")
+
+
+def _catalog_identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+            info.st_uid, info.st_gid, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _read_task_catalog(path, *, expected_sha256=None):
+    """Read/parse one pinned full-catalog byte snapshot; never execute a task.
+
+    The initial pin records its digest. Expansion must supply that exact
+    digest; counts/grammar additionally reject a malformed initial pin.
+    Held descriptors and final directory-entry checks detect modifications
+    during this read, not arbitrary later writes by a noncooperating host.
+    """
+    if expected_sha256 is not None and (type(expected_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None):
+        raise RuntimeError("task_catalog_manifest_digest_invalid")
+    parent_fd, fd = None, None
+    try:
+        parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        parent_info = os.fstat(parent_fd)
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=parent_fd)
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or not 0 < before.st_size <= MAX_CATALOG_BYTES):
+            raise RuntimeError("task_catalog_file_unsafe")
+        chunks, observed = [], 0
+        while True:
+            chunk = os.read(fd, min(64 * 1024, MAX_CATALOG_BYTES + 1 - observed))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            observed += len(chunk)
+            if observed > MAX_CATALOG_BYTES:
+                raise RuntimeError("task_catalog_file_unsafe")
+        raw = b"".join(chunks)
+        sha256 = hashlib.sha256(raw).hexdigest()
+        if expected_sha256 is not None and sha256 != expected_sha256:
+            raise RuntimeError("task_catalog_digest_drifted")
+        catalog = json.loads(raw.decode("utf-8"), object_pairs_hook=_catalog_object,
+                             parse_constant=_catalog_nonfinite)
+        if not isinstance(catalog, dict):
+            raise RuntimeError("task_catalog_shape_invalid")
+        counts = dict.fromkeys(FULL_CATALOG_COUNTS, 0)
+        masked_ids = set()
+        for task, masked in catalog.items():
+            match = re.fullmatch(r"(arvo|oss-fuzz):[1-9][0-9]{0,18}", task)
+            if (match is None or type(masked) is not str or not masked
+                    or any(ord(char) < 32 or ord(char) == 127 for char in masked)
+                    or masked in masked_ids):
+                raise RuntimeError("task_catalog_entry_invalid")
+            counts[match[1]] += 1
+            masked_ids.add(masked)
+        if counts != FULL_CATALOG_COUNTS or not set(FIXED30) <= catalog.keys():
+            raise RuntimeError("task_catalog_coverage_invalid")
+        after = os.fstat(fd)
+        entry = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        current_parent = os.stat(path.parent, follow_symlinks=False)
+        if (len(raw) != before.st_size
+                or _catalog_identity(before) != _catalog_identity(after)
+                or _catalog_identity(before) != _catalog_identity(entry)
+                or (parent_info.st_dev, parent_info.st_ino)
+                    != (current_parent.st_dev, current_parent.st_ino)):
+            raise RuntimeError("task_catalog_file_changed")
+        return {"sha256": sha256, "task_ids": list(catalog), "task_counts": counts}
+    except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+        raise RuntimeError("task_catalog_unreadable_or_malformed") from None
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
 
 
 @contextlib.contextmanager
@@ -232,6 +322,7 @@ class Evaluation:
         if execute("git", "-C", OFFICIAL, "status", "--porcelain", "--untracked-files=no",
                    capture_output=True, text=True).stdout.strip():
             raise RuntimeError("official runtime has tracked edits")
+        catalog = _read_task_catalog(OFFICIAL / "mask_map.json")
         document = {"schema": 1, "profile_commit": self.frozen_commit,
             "profile_id": get_profile("cyber").id, "pipeline": pipeline_fingerprint(),
             "official_commit": OFFICIAL_COMMIT, "dataset_commit": DATASET_COMMIT,
@@ -257,7 +348,8 @@ class Evaluation:
             "isolated_network_allocation": {"pools": list(ISOLATED_NETWORK_POOLS),
                 "prefix_length": ISOLATED_NETWORK_PREFIX, "internal": True},
             "image": IMAGE, "egress_image": EGRESS_IMAGE,
-            "mask_map_sha256": digest(OFFICIAL / "mask_map.json"),
+            "mask_map_sha256": catalog["sha256"],
+            "full_task_counts": catalog["task_counts"],
             "experiment": self.experiment, "judge_port": self.port}
         path = self.root / "manifest.json"
         if path.exists() and json.loads(path.read_text()) != document:
@@ -1115,7 +1207,11 @@ class Evaluation:
             if fixed_passed < 26:
                 atomic_json(self.root / "controller.json", {"stage": "needs-fixed30-bug-audit", "updated_unix": time.time()})
                 return
-            all_tasks = list(json.loads((OFFICIAL / "mask_map.json").read_text()))
+            expected = self.manifest.get("mask_map_sha256")
+            if type(expected) is not str or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+                raise RuntimeError("task_catalog_manifest_digest_invalid")
+            all_tasks = _read_task_catalog(OFFICIAL / "mask_map.json",
+                                          expected_sha256=expected)["task_ids"]
             if self.stop.is_set():
                 atomic_json(self.root / "controller.json", {"stage": "stopped", "updated_unix": time.time()})
                 return
