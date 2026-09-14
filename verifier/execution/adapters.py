@@ -3289,6 +3289,57 @@ class AdapterRegistry:
             inputs=invocation.inputs,
         )
 
+    def judger_record_program_replay(self, method, obligation, context_factory):
+        """Supply bounded, read-only replay data, never a semantic verdict.
+
+        Only the shipped pure record VM and an explicitly fixed prefix qualify.
+        An agent fallback may retain a hand-built receipt; its self-reported
+        normalization and validation must not substitute for the real VM.
+        Aggregate predicates with no event references remain valid candidates
+        for ordinary toolful judgment, even when typed validation is false.
+        """
+        from .record_program import RecordProgramAdapter
+
+        try:
+            invocation = AdapterInvocation.from_method(method)
+        except (AdapterNotApplicable, TypeError, ValueError):
+            return None
+        if (invocation is None
+                or (invocation.name, invocation.version) != ("record.program", 1)
+                or invocation.arguments.get("scope") != "prefix"):
+            return None
+        adapter = self._adapters.get((invocation.name, invocation.version))
+        # A same-named extension is not permission to replay arbitrary code.
+        if type(adapter) is not RecordProgramAdapter:
+            return None
+        try:
+            self._require_bound_inputs(method)
+            adapter.validate(invocation, method)
+            execution = adapter.execute(invocation, obligation, context_factory())
+            observed = execution.observation
+            return {
+                "schema": "gv-judger-record-program-replay-v1",
+                "origin": "verifier_read_only_replay",
+                "available": True,
+                "certifies_obligation": False,
+                "adapter": adapter.identity,
+                "source_sha256": observed["source_sha256"],
+                "record_scope": observed["record_scope"],
+                "projection": observed["projection"],
+                "typed_observation_validation": observed[
+                    "typed_observation_validation"],
+                "observation_sha256": content_hash(observed),
+                "assertion_count": len(observed["assertions"]),
+            }
+        except Exception as error:
+            return {
+                "schema": "gv-judger-record-program-replay-v1",
+                "origin": "verifier_read_only_replay",
+                "available": False,
+                "certifies_obligation": False,
+                "reason": str(error)[:512],
+            }
+
     def validate_evidence(
         self,
         method: Mapping[str, Any],
@@ -3916,6 +3967,10 @@ class AdapterRoutingDischarger:
         # Deployments may narrow host operations to the same evidence boundary
         # as their execution seat. No method or model output selects this hook.
         return self.context_factory(row) if self.context_factory else self.context
+
+    def judger_record_program_replay(self, row, obligation, method):
+        return self.registry.judger_record_program_replay(
+            method, obligation, lambda: self._context_for(row))
 
     def adapter_catalog(self) -> str:
         return self.registry.catalog()

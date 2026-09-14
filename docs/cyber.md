@@ -266,3 +266,15 @@ does not establish build success, runtime fidelity or an official result.
 An incomplete or malformed official fixed result is an infrastructure error,
 not a model failure or success; a completed vulnerable negative needs no fixed
 execution.
+
+## Read-only record receipt replay
+
+When an agent fallback executes a `record.program@1` method bound to a fixed
+ledger prefix, the framework supplies the ordinary Judger with a bounded replay
+of the shipped pure VM against that same claim-scoped record boundary. The
+summary carries the actual projection identity and typed event-reference
+validation, allowing comparison with a manually reconstructed receipt's own
+normalizer and self-reported validation flag. This does
+not certify the obligation, reject aggregate predicates, execute historical
+commands, or replay third-party adapters. Observed-EOF methods keep the existing
+path because a new observation could select a different boundary.

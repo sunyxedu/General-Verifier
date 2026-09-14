@@ -1058,7 +1058,8 @@ class BindingGame:
                 strength, attempts, tier_listed)
             verdict = self._judge(
                 obligation, method, result, attempt,
-                degradation=degradation, method_attempt=method_attempt)
+                degradation=degradation, method_attempt=method_attempt,
+                row=row)
             if strength != STRENGTH_DECISIVE \
                     and verdict.get("degradation") == "unjustified":
                 # the third signature failed: the judger disputes that the
@@ -1149,7 +1150,7 @@ class BindingGame:
                 verdict = self._judge(
                     obligation, method, result, attempt,
                     redo=rounds, degradation=degradation,
-                    method_attempt=method_attempt)
+                    method_attempt=method_attempt, row=row)
                 if strength != STRENGTH_DECISIVE \
                         and verdict.get("degradation") == "unjustified":
                     degradation_disputed = True
@@ -1425,7 +1426,8 @@ class BindingGame:
                degradation: str = "(none — decisive method, no degradation "
                                   "to audit)",
                method_attempt: int = 0,
-               independent_judger: bool = False) -> Dict[str, str]:
+               independent_judger: bool = False,
+               row: Optional[Dict] = None) -> Dict[str, str]:
         evidence = {
             "outcome": result.outcome,
             "witness": result.witness,
@@ -1535,6 +1537,19 @@ class BindingGame:
                     if call_variables is variables:
                         call_variables = dict(variables)
                     call_variables["_typed_adapter_judger_packet"] = typed_packet
+                if (row is not None and isinstance(result.instrument, str)
+                        and result.instrument.startswith("agent:")):
+                    replay = getattr(
+                        self.discharger, "judger_record_program_replay", None)
+                    if callable(replay):
+                        audit = replay(row, obligation, method)
+                        if audit is not None:
+                            if call_variables is variables:
+                                call_variables = dict(variables)
+                            call_variables["evidence"] = json.dumps(
+                                {**evidence,
+                                 "verifier_record_program_replay": audit},
+                                ensure_ascii=False)
                 with model_scope(
                         stage="judger", method_attempt=method_attempt,
                         redo=redo, judger_retry_index=call_no,
