@@ -490,6 +490,42 @@ def test_snapshot_never_prioritizes_a_symlink_outside_workdir(tmp_path):
     assert "a-link.txt" not in captured
 
 
+def test_long_reported_inventory_retains_checker_before_old_source_tree(tmp_path):
+    # A compact certificate can have more than 32 load-bearing records. Old
+    # source files must not consume the text budget before its final checker.
+    preferred = [f"z-evidence-{i:02d}.json" for i in range(39)] + ["z-checker.sh"]
+    for name in preferred:
+        (tmp_path / name).write_text("retained evidence\n")
+    for index in range(40):
+        (tmp_path / f"a-source-{index:02d}.txt").write_text(
+            "x" * SNAPSHOT_PER_FILE_CAP)
+    payload = {"artifact": ",".join(str(tmp_path / name) for name in preferred)}
+
+    captured = _snapshot(
+        str(tmp_path), preferred_paths=_reported_artifact_paths(payload, str(tmp_path)))
+
+    assert all(captured.get(name) == "retained evidence\n" for name in preferred)
+    assert "<snapshot>" in captured
+    assert len(captured) - 1 <= SNAPSHOT_MAX_FILES
+    assert sum(len(value) for key, value in captured.items() if key != "<snapshot>") <= (
+        SNAPSHOT_MAX_TOTAL_CHARS + SNAPSHOT_PER_FILE_CAP)
+
+
+def test_long_priority_inventory_still_obeys_snapshot_file_limit(tmp_path):
+    preferred = [f"z-record-{index:03d}.txt" for index in range(SNAPSHOT_MAX_FILES + 5)]
+    for name in preferred:
+        (tmp_path / name).write_text("record")
+    payload = {"artifact": ",".join(preferred)}
+
+    captured = _snapshot(
+        str(tmp_path), preferred_paths=_reported_artifact_paths(payload, str(tmp_path)))
+
+    assert len(captured) - 1 == SNAPSHOT_MAX_FILES
+    assert captured[preferred[SNAPSHOT_MAX_FILES - 1]] == "record"
+    assert preferred[SNAPSHOT_MAX_FILES] not in captured
+    assert captured["<snapshot>"] == "truncated: 5 files beyond caps"
+
+
 def test_snapshot_per_file_character_boundary_is_explicit(tmp_path):
     exact = "x" * SNAPSHOT_PER_FILE_CAP
     (tmp_path / "exact.txt").write_text(exact)

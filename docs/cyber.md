@@ -185,6 +185,9 @@ existing byte and attachment rules.
 The Discharger receives the inline, raw-body, and raster limits before
 execution, using the same constants as the snapshot implementation. This
 general budget disclosure changes no retention limit or evidence rule.
+The executor's `artifact` inventory can prioritize up to the same 200 files
+allowed by the snapshot file budget. Priority changes capture order only;
+path validation and all file, character, and byte limits still apply.
 
 Successful (`holds`) executor results use an empty counterexample witness
 (normalized to null) and `witness_kind=none`. The Judger inspects the retained

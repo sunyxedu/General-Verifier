@@ -47,7 +47,10 @@ SNAPSHOT_RAW_MAX_TOTAL_BYTES = 40 * 1024 * 1024
 # Repair material is optional. Oversized or invalid retained artifacts simply
 # leave the executor on its existing context-free redo path.
 REPAIR_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
-SNAPSHOT_MAX_PREFERRED_PATHS = 32
+# Every file that fits the snapshot's file budget can be named for priority
+# retention. A smaller hint limit silently sends later certificate records
+# behind unrelated source trees, even when the certificate itself fits.
+SNAPSHOT_MAX_PREFERRED_PATHS = SNAPSHOT_MAX_FILES
 SNAPSHOT_MAX_PREFERRED_PATH_CHARS = 4096
 
 
