@@ -62,6 +62,7 @@ from .codex_service import (
     service_tier_cli_args,
 )
 from .schema import RoleError, validate
+from .json_event_stream import JsonEventStream
 from .model_spans import model_call_span, model_span_capture
 from ..execution.config import offline_runtime_read_roots
 from ..execution.instruments import validated_image_info
@@ -2468,15 +2469,8 @@ class CodexBackend:
                     return "cli_startup_unknown"
                 return "model_wait_unknown"
 
-            def line_event(raw):
-                try:
-                    event = json.loads(raw.decode("utf-8"))
-                except (ValueError, UnicodeError):
-                    with lock:
-                        counts["unparsed_stdout_lines"] += 1
-                        counts["item_state_complete"] = False
-                    return
-                if not isinstance(event, dict):
+            def line_event(event, strings_redacted=False):
+                if event is None:
                     with lock:
                         counts["unparsed_stdout_lines"] += 1
                         counts["item_state_complete"] = False
@@ -2486,6 +2480,8 @@ class CodexBackend:
                                 "item.started", "item.updated", "item.completed", "error"}:
                     return
                 details = {"child_pid": process.pid, "event_type": kind}
+                if strings_redacted:
+                    details["metadata_string_values_redacted"] = True
                 with lock:
                     counts["cli_events"] += 1
                     counts["last_cli_event"] = kind
@@ -2525,7 +2521,7 @@ class CodexBackend:
                 self._phase(call_id, attempt, "cli_event", **details)
 
             def drain(pipe, name):
-                pending, dropping = b"", False
+                events = JsonEventStream() if name == "stdout" else None
                 try:
                     while True:
                         chunk = os.read(pipe.fileno(), 65536)
@@ -2534,22 +2530,13 @@ class CodexBackend:
                         buffers[name].append(chunk)
                         with lock:
                             counts[name + "_bytes"] += len(chunk)
-                        if name != "stdout":
-                            continue
-                        pending += chunk
-                        while b"\n" in pending:
-                            line, pending = pending.split(b"\n", 1)
-                            if not dropping:
-                                line_event(line)
-                            dropping = False
-                        # Retain complete raw output but bound live metadata parsing.
-                        if len(pending) > 2 * 1024 * 1024:
-                            pending, dropping = b"", True
-                            with lock:
-                                counts["unparsed_stdout_lines"] += 1
-                                counts["item_state_complete"] = False
-                    if name == "stdout" and pending and not dropping:
-                        line_event(pending)
+                        if events is not None:
+                            for event, redacted in events.feed(chunk):
+                                line_event(event, redacted)
+                    if events is not None:
+                        terminal = events.finish()
+                        if terminal is not None:
+                            line_event(*terminal)
                 except Exception:
                     failures.append(name)
                     # A failed reader must not leave a pipe full and stall the CLI.

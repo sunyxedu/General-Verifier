@@ -79,6 +79,15 @@ disabled. Host-provided custom backends are responsible for their own boundary.
 Optional compact evidence transport preserves the exact frozen record even
 when a runtime opts out; it never falls back to a later live ledger.
 
+Native CLI policy telemetry validates JSON incrementally, omitting oversized
+string bodies while retaining event structure. Large command output therefore
+does not hide a subsequent search identifier or invalidate an otherwise parsed
+event. The structural frame remains bounded; malformed JSON, invalid UTF-8,
+oversized keys/frames and failed readers still make policy evidence incomplete.
+Raw CLI output follows the existing private capture path, and no queries or
+results are added to telemetry. This guard detects observed activity; it is not
+a proof that every internal tool registry is search-free.
+
 The Linux benchmark sidecar maps each execution/audit call's `/tmp` to a
 host-created private directory before starting the native CLI sandbox. This
 supports unmodified programs with fixed temporary paths without exposing the

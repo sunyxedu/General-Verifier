@@ -89,8 +89,8 @@ emit({"type":"turn.completed","usage":{}})
     assert returned["stdout_bytes"] > 3_000_000 and returned["stderr_bytes"] > 3_000_000
     assert returned["reader_failed"] is False
     assert any(row["phase"] == "exec_heartbeat" for row in records)
-    assert any(row.get("wait_category") == "cli_activity_unknown" for row in records)
-    assert returned["active_tool_items"] == 0 and returned["item_state_complete"] is False
+    assert any(row.get("metadata_string_values_redacted") for row in records)
+    assert returned["active_tool_items"] == 0 and returned["item_state_complete"] is True
     assert any(row.get("item_kind") == "command_execution" for row in records)
     assert any(row["phase"] == "exec_process_exited" for row in records)
     assert all("thread_id" not in row and "command" not in row and "message" not in row for row in records)

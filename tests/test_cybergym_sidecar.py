@@ -643,29 +643,32 @@ def test_policy_seal_is_authenticated_post_only(method):
     assert request(app, "/policy/seal", method="POST") == (503, {"error": "search policy unavailable"})
 
 
-def test_real_python_oversize_cli_event_marks_policy_evidence_incomplete_without_raw_log(tmp_path, monkeypatch):
+@pytest.mark.parametrize("kind,violation", [("web_search", True), ("command_execution", False)])
+def test_real_python_oversize_cli_event_preserves_policy_structure_without_retaining_body(tmp_path, monkeypatch, kind, violation):
     backend = sidecar.SandboxedVerifierBackend(cwd=str(tmp_path))
     backend.phase_heartbeat_seconds = 0.02
     program = """
 import json,sys
-print(json.dumps({'type':'item.completed','item':{'type':'web_search','query':'do-not-retain-synthetic-query'*100000}}),flush=True)
+print(json.dumps({'type':'item.completed','item':{'query':'do-not-retain-synthetic-query'*100000,'type':EVENT_KIND}}),flush=True)
 print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'synthetic final'}}),flush=True)
 print(json.dumps({'type':'turn.completed','usage':{}}),flush=True)
 """
+    program = program.replace("EVENT_KIND", repr(kind))
     def synthetic_complete(self, role, prompt, variables):
         import subprocess
         with open(os.devnull, "rb") as devnull:
             process = self._run_observed_exec([sys.executable, "-u", "-c", program], str(tmp_path), devnull, "a" * 32, 1)
         assert isinstance(process, subprocess.CompletedProcess) and process.returncode == 0
+        assert process.stdout.count("do-not-retain-synthetic-query") == 100000
         return {"ok": True}
     monkeypatch.setattr(CodexBackend, "complete", synthetic_complete)
     assert backend.complete("critic", "fixture", {}) == {"ok": True}
     snapshot = backend.search_policy_guard.snapshot()
-    assert snapshot["evidence_complete"] is False and snapshot["violation"] is False
+    assert snapshot["evidence_complete"] is True and snapshot["violation"] is violation
     raw = (tmp_path / "role_calls.jsonl").read_text()
     records = [json.loads(line) for line in raw.splitlines()]
     returned = next(record for record in records if record.get("phase") == "exec_returned")
-    assert returned["unparsed_stdout_lines"] > 0 and returned["reader_failed"] is False
+    assert returned["unparsed_stdout_lines"] == 0 and returned["reader_failed"] is False
     assert returned["last_cli_event"] == "turn.completed"
     assert "do-not-retain-synthetic-query" not in raw and "synthetic final" not in raw
     assert backend.search_policy_guard.try_seal() is True
