@@ -16,6 +16,12 @@ class RoleError(RuntimeError):
     pass
 
 
+class RoleTransportError(RoleError):
+    """The seat's CLI transport failed mid-call; partial model actions may be
+    unobserved. Distinct from a completed-but-invalid generation (RoleError),
+    which is fully observed evidence."""
+
+
 # Minimal schema validation (no external deps).
 # schema: {"field": type} where type in {str, bool, int, float, list, dict},
 # {"field": [element_spec]} for a list (elements may be any spec, e.g. [str]

@@ -35,9 +35,9 @@ from typing import Any, Callable, Dict, List, Optional
 from . import prompts
 from .model_spans import (
     role_attempt, role_span, seat_acquired, seat_released,
-    seat_wait_started, submit_with_context,
+    seat_wait_started,
 )
-from .schema import RoleError, validate, field_name, optional_key
+from .schema import RoleError, RoleTransportError, validate, field_name, optional_key
 from .oracle_execution import (
     ORACLE_EXECUTION_WIRE_SCHEMA,
     lower_oracle_execution_payload,
@@ -367,6 +367,34 @@ class AgentRole:
             raise RoleError(f"{self.name}: failed twice: {last_error}")
 
 
+class _SharedSDKLoop:
+    """Process-wide background event loop for claude-agent-sdk queries."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._loop = None
+
+    def run(self, coro):
+        with self._lock:
+            if self._loop is None:
+                ready = threading.Event()
+
+                def serve():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    self._loop = loop
+                    ready.set()
+                    loop.run_forever()
+
+                threading.Thread(target=serve, daemon=True,
+                                 name="gv-claude-sdk-loop").start()
+                ready.wait()
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
+
+_SHARED_SDK_LOOP = _SharedSDKLoop()
+
+
 class AgentBackend:
     """
     Runs AgentRoles through the Claude Agent SDK.
@@ -415,21 +443,16 @@ class AgentBackend:
         """
         Backend entry point (same signature as FixtureBackend.complete).
 
-        Loop-safe sync wrapper: callable from plain sync code AND from code executing inside a running event loop (e.g. an MCP tool handler in the MCP server).
-        In the latter case the coroutine runs on a private loop in a worker thread, because asyncio.run would raise on a running loop.
+        Every call is submitted to the process-wide SDK loop thread. asyncio's
+        Unix child watchers are process-global, so per-thread event loops each
+        spawning CLI subprocesses race and orphan transports ("Unknown child
+        process pid ... returncode 255"); one loop keeps every query under a
+        single watcher, and concurrent calls still run in parallel on it.
         """
         role = self.roles.get(role_name)
         if role is None:
             raise RoleError(f"unknown agent role: {role_name}")
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.run(role, prompt))
-        from concurrent.futures import ThreadPoolExecutor
-
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return submit_with_context(
-                pool, asyncio.run, self.run(role, prompt)).result()
+        return _SHARED_SDK_LOOP.run(self.run(role, prompt))
 
     # statuses worth waiting out (rate limit / overload / gateway); the CLI
     # sometimes reports these only as the opaque "error result: success"
@@ -511,6 +534,10 @@ class AgentBackend:
             # then failing also covers the non-transient case (e.g. auth).
             raise _TransientSDKError(f"{role.name}: {detail}")
         if error is not None:
+            if type(error).__name__ in ("ProcessError", "CLIConnectionError",
+                                        "CLINotFoundError", "CLIJSONDecodeError"):
+                raise RoleTransportError(
+                    f"{role.name}: sdk transport failure: {detail}") from error
             raise RoleError(f"{role.name}: sdk failure: {detail}") from error
         raise RoleError(f"{role.name}: no structured output ({detail})")
 

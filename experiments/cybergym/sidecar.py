@@ -24,6 +24,7 @@ import uuid
 
 from verifier.llm.agents import AgentBackend
 from verifier.llm.codex_backend import codex_usage_ledger
+from verifier.llm.schema import RoleTransportError
 from verifier.mcp_server import Service, _default_kernel, build_server
 from verifier.profiles.cyber.evaluator import EvaluatorSpec
 from verifier.profiles.cyber.backend import CyberCodexBackend
@@ -202,8 +203,10 @@ class ClaudeVerifierBackend(AgentBackend):
 
     def _latch_breadcrumb(self, common, error):
         # Forensic trail for evidence latches: which role call, which failure
-        # kind. Never contains prompts, responses, or exception text.
-        record = {**common, "ts": time.time(), "exception_type": type(error).__name__}
+        # kind, and the SDK status detail (subtype/api_error_status fields
+        # only — never prompt or response content).
+        record = {**common, "ts": time.time(), "exception_type": type(error).__name__,
+                  "detail": str(error)[:300]}
         path = Path(self.cwd) / "policy-latches.jsonl"
         raw = (json.dumps(record, sort_keys=True) + "\n").encode()
         try:
@@ -289,13 +292,14 @@ class ClaudeVerifierBackend(AgentBackend):
                 # observed, and the SDK reaps the subprocess. Not evidence loss.
                 raise
             except BaseException as error:
-                # The call never completed: the host cannot show that every
-                # sub-session ended observed, so fail evidence closed. A
-                # transient mid-retry break does NOT reach here (the retried
-                # session starts fully observed); only whole-call failure does.
-                self._latch_breadcrumb(common, error)
-                self.search_policy_guard.observe_backend_phase(
-                    {"phase": "exec_returned", "reader_failed": True})
+                # Only a transport failure loses observability mid-call (the
+                # CLI process may outlive its broken stream). An ordinary
+                # RoleError means the call completed with an invalid or
+                # exhausted result — fully observed evidence, so no latch.
+                if isinstance(error, RoleTransportError):
+                    self._latch_breadcrumb(common, error)
+                    self.search_policy_guard.observe_backend_phase(
+                        {"phase": "exec_returned", "reader_failed": True})
                 raise
             finally:
                 duration = time.monotonic() - started

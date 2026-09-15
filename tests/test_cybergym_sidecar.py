@@ -17,7 +17,7 @@ from experiments.cybergym.policy import SearchPolicyEvidenceError
 from verifier.core.model import content_hash
 from verifier.llm.agents import ALL_AGENT_ROLES, AgentBackend
 from verifier.llm.codex_backend import CodexBackend
-from verifier.llm.schema import FixtureBackend, RoleError
+from verifier.llm.schema import FixtureBackend, RoleError, RoleTransportError
 from verifier.mcp_server import Service, _default_kernel
 
 
@@ -696,7 +696,7 @@ def claude_sdk_fixture(monkeypatch, transcript, *, fail=False):
         if transcript is not None:
             self.transcripts.append(transcript)
         if fail:
-            raise RoleError("sdk fixture failure")
+            raise fail if not isinstance(fail, bool) else RoleError("sdk fixture failure")
         return {"ok": True}
     monkeypatch.setattr(AgentBackend, "complete", complete)
 
@@ -798,14 +798,27 @@ def test_claude_stream_error_alone_does_not_poison_evidence(tmp_path):
 
 
 def test_claude_call_failure_marks_policy_evidence_incomplete(tmp_path, monkeypatch):
-    claude_sdk_fixture(monkeypatch, {"role": "critic", "usage": CLAUDE_USAGE}, fail=True)
+    claude_sdk_fixture(monkeypatch, {"role": "critic", "usage": CLAUDE_USAGE},
+                       fail=RoleTransportError("sdk transport failure: fixture"))
     backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
-    with pytest.raises(RoleError, match="sdk fixture failure"):
+    with pytest.raises(RoleTransportError, match="transport failure"):
         backend.complete("critic", "fixture", {})
     snapshot = backend.search_policy_guard.snapshot()
     assert snapshot["evidence_complete"] is False and snapshot["violation"] is False
     latch = json.loads((tmp_path / "policy-latches.jsonl").read_text())
-    assert latch["role"] == "critic" and latch["exception_type"] == "RoleError"
+    assert latch["role"] == "critic" and latch["exception_type"] == "RoleTransportError"
+    assert "transport failure" in latch["detail"]
+
+
+def test_claude_generation_failure_does_not_latch_evidence(tmp_path, monkeypatch):
+    # A completed call with an invalid/exhausted result was fully observed;
+    # it is a content-level failure, never an observability gap.
+    claude_sdk_fixture(monkeypatch, {"role": "critic", "usage": CLAUDE_USAGE}, fail=True)
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    with pytest.raises(RoleError, match="sdk fixture failure"):
+        backend.complete("critic", "fixture", {})
+    assert backend.search_policy_guard.snapshot() == clean_search_policy()
+    assert not (tmp_path / "policy-latches.jsonl").exists()
 
 
 def test_claude_cancellation_does_not_latch_evidence(tmp_path, monkeypatch):
