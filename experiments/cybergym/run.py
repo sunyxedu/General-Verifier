@@ -1107,12 +1107,41 @@ class Evaluation:
             self.phase(directory, state, "solver_running", solver_container=name,
                        sidecar_container=runtime["sidecar"], continuation=turn)
             offset = log_path.stat().st_size if log_path.exists() else 0
-            with log_path.open("ab") as log, (directory / "solver.stderr").open("ab") as errors:
+            with log_path.open("ab") as log, (directory / "solver.stderr").open("ab") as errors, \
+                    (directory / "solver-timeline.jsonl").open("ab") as timeline:
                 # Establish the sidecar generation before the solver can make
                 # any calls. A restart cannot silently reset its violation latch.
                 self.require_search_policy(runtime, observer, log_path=log_path)
                 process = subprocess.Popen(self.solver_command(directory, workspace, runtime, name, prompt, thread),
-                                           stdout=log, stderr=errors)
+                                           stdout=subprocess.PIPE, stderr=errors)
+
+                def pump():
+                    # Dual-write: raw bytes stay the policy log; the timeline adds
+                    # per-event arrival times for debugging. Single writer, so
+                    # line order is exact.
+                    line_no = 0
+                    while True:
+                        line = process.stdout.readline()
+                        if not line:
+                            return
+                        log.write(line)
+                        log.flush()
+                        line_no += 1
+                        record = {"ts": time.time(), "line": line_no, "bytes": len(line)}
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            event = None
+                        if isinstance(event, dict):
+                            for key in ("type", "subtype"):
+                                if type(event.get(key)) is str:
+                                    record[key] = event[key]
+                        timeline.write((json.dumps(record, sort_keys=True) + "\n").encode())
+                        timeline.flush()
+
+                pump_thread = threading.Thread(target=pump, daemon=True,
+                                               name="solver-timeline-" + name)
+                pump_thread.start()
                 last_mirror, last_progress = 0, 0
                 while process.poll() is None:
                     self.require_search_policy(runtime, observer, log_path=log_path)
@@ -1122,6 +1151,7 @@ class Evaluation:
                         # solver, then check canonicaldelivery against quiescentworld.
                         docker("stop", "--time", "10", name)
                         process.wait()
+                        pump_thread.join(timeout=30)
                         self.require_search_policy(runtime, observer, log_path=log_path, final=True)
                         self.seal_verifier_policy(runtime, observer, log_path=log_path)
                         receipt = self.sidecar_get(runtime, "/receipt")
@@ -1141,8 +1171,12 @@ class Evaluation:
                     if self.stop.wait(5):
                         docker("stop", "--time", "10", name, check=False)
                         process.wait()
+                        pump_thread.join(timeout=30)
                         self.require_search_policy(runtime, observer, log_path=log_path, final=True)
                         raise RuntimeError("controller stopped")
+                # The raw log must be complete before the terminal policy
+                # consume and the continuation scan below.
+                pump_thread.join(timeout=30)
             # A process can emit a search and exit between two live polls.
             # Inspect the terminal bytes before accepting any receipt/resume.
             self.require_search_policy(runtime, observer, log_path=log_path, final=True)

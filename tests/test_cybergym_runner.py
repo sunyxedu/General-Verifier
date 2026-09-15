@@ -1360,6 +1360,7 @@ def solver_process_fakes(monkeypatch, controller, receipts, *, exited=False):
     """Exercise the real controller loop without Docker, HTTP, or model calls."""
     class Process:
         waits = 0
+        stdout = io.BytesIO(b"")
 
         def poll(self):
             return 0 if exited else None
@@ -2370,10 +2371,9 @@ def test_solver_search_is_rejected_before_receipt_in_live_and_terminal_paths(
     secret = "fixture-search-query-must-not-appear-in-error"
 
     def emit(*_args, **kwargs):
-        kwargs["stdout"].write(json.dumps({"type": event_type, "item": {
+        process.stdout = io.BytesIO(json.dumps({"type": event_type, "item": {
             "type": "web_search", "query": secret, "output": secret}}).encode()
             + (b"" if exited else b"\n"))
-        kwargs["stdout"].flush()
         return process
 
     monkeypatch.setattr(run.subprocess, "Popen", emit)
@@ -2444,8 +2444,7 @@ def test_nonsearch_prose_does_not_change_certified_receipt_or_telemetry_rules(
     process, _calls = solver_process_fakes(monkeypatch, controller, [receipt, receipt])
 
     def emit(*_args, **kwargs):
-        kwargs["stdout"].write(b'{"type":"item.completed","item":{"type":"agent_message","text":"discuss web_search"}}\n')
-        kwargs["stdout"].flush()
+        process.stdout = io.BytesIO(b'{"type":"item.completed","item":{"type":"agent_message","text":"discuss web_search"}}\n')
         return process
 
     monkeypatch.setattr(run.subprocess, "Popen", emit)
@@ -2560,8 +2559,7 @@ def test_claude_solver_continuation_resumes_the_recorded_session(
     monkeypatch.setattr(controller, "solver_command", recorded)
 
     def emit(*_args, **kwargs):
-        kwargs["stdout"].write(claude_init_event())
-        kwargs["stdout"].flush()
+        process.stdout = io.BytesIO(claude_init_event())
         return process
 
     monkeypatch.setattr(run.subprocess, "Popen", emit)
@@ -2570,6 +2568,28 @@ def test_claude_solver_continuation_resumes_the_recorded_session(
                                  {"sidecar": "fixture-owned"}, "fixture", {}) == receipt
     assert threads == [None, "fixture-session-1"]
     assert json.loads((directory / "final-selection.json").read_text()) == receipt
+
+
+def test_solver_timeline_records_per_event_arrival_times(controller, selected, monkeypatch):
+    directory, _candidate, receipt = selected
+    process, _calls = solver_process_fakes(monkeypatch, controller, [receipt, receipt], exited=True)
+
+    def emit(*_args, **_kwargs):
+        process.stdout = io.BytesIO(claude_init_event() + b'{"type":"result","subtype":"success"}\n')
+        return process
+
+    monkeypatch.setattr(run.subprocess, "Popen", emit)
+    patch_mirror(monkeypatch, controller, lambda *_args: None)
+    assert controller.run_solver(directory, directory / "workspace",
+                                 {"sidecar": "fixture-owned"}, "fixture", {}) == receipt
+    raw = (directory / "solver.jsonl").read_bytes()
+    assert raw == claude_init_event() + b'{"type":"result","subtype":"success"}\n'
+    rows = [json.loads(line) for line in (directory / "solver-timeline.jsonl").read_text().splitlines()]
+    assert [row["line"] for row in rows] == [1, 2]
+    assert [row.get("type") for row in rows] == ["system", "result"]
+    assert (rows[0].get("subtype"), rows[1].get("subtype")) == ("init", "success")
+    assert all(type(row["ts"]) is float and type(row["bytes"]) is int for row in rows)
+    assert rows[0]["ts"] <= rows[1]["ts"]
 
 
 @pytest.mark.parametrize("lines", [
@@ -2585,9 +2605,7 @@ def test_claude_solver_without_session_init_has_no_fresh_thread_recovery(
     payloads = list(lines)
 
     def emit(*_args, **kwargs):
-        for payload in payloads:
-            kwargs["stdout"].write(payload.encode() + b"\n")
-        kwargs["stdout"].flush()
+        process.stdout = io.BytesIO(b"".join(payload.encode() + b"\n" for payload in payloads))
         return process
 
     monkeypatch.setattr(run.subprocess, "Popen", emit)
@@ -2603,8 +2621,7 @@ def test_claude_solver_malformed_terminal_log_line_fails_closed(
     process, _calls = solver_process_fakes(monkeypatch, controller, [None], exited=True)
 
     def emit(*_args, **kwargs):
-        kwargs["stdout"].write(b"not json\n")
-        kwargs["stdout"].flush()
+        process.stdout = io.BytesIO(b"not json\n")
         return process
 
     monkeypatch.setattr(run.subprocess, "Popen", emit)
