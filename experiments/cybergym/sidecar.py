@@ -152,13 +152,13 @@ class ClaudeVerifierBackend(AgentBackend):
 
     def _observe_message(self, message):
         # Observation is evidence capture only; it must never crash a role call.
+        # A mid-stream break alone does NOT poison evidence: the SDK terminates
+        # the broken CLI subprocess before the retry, so no unobserved window
+        # exists; the retried session is fully observed from its start. The
+        # fail-closed latch fires only when a whole role call ends in failure
+        # (see complete()).
         try:
             if isinstance(message, dict):
-                if message.get("stream_error") is True:
-                    # A broken stream means the host cannot prove what the
-                    # seat did mid-call: evidence is incomplete.
-                    self.search_policy_guard.observe_backend_phase(
-                        {"phase": "exec_returned", "reader_failed": True})
                 return
             content = getattr(message, "content", None)
             if not isinstance(content, list):
@@ -266,6 +266,14 @@ class ClaudeVerifierBackend(AgentBackend):
                 result = super().complete(role_name, prompt, variables)
                 status = "completed"
                 return result
+            except BaseException:
+                # The call never completed: the host cannot show that every
+                # sub-session ended observed, so fail evidence closed. A
+                # transient mid-retry break does NOT reach here (the retried
+                # session starts fully observed); only whole-call failure does.
+                self.search_policy_guard.observe_backend_phase(
+                    {"phase": "exec_returned", "reader_failed": True})
+                raise
             finally:
                 duration = time.monotonic() - started
                 self._diagnostic({**common, "type": "role_call_finished", "ts": time.time(),

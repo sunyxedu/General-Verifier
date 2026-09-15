@@ -787,13 +787,22 @@ def test_claude_non_search_messages_do_not_latch(tmp_path, message):
     assert backend.search_policy_guard.snapshot() == clean_search_policy()
 
 
-def test_claude_stream_error_marks_policy_evidence_incomplete(tmp_path):
+def test_claude_stream_error_alone_does_not_poison_evidence(tmp_path):
+    # A transient mid-retry stream break leaves no unobserved window (the SDK
+    # terminates the broken subprocess and the retried session starts fully
+    # observed), so it must not trip the fail-closed latch.
     backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
     backend._observe_message({"stream_error": True, "observed_messages": 3})
+    assert backend.search_policy_guard.snapshot() == clean_search_policy()
+
+
+def test_claude_call_failure_marks_policy_evidence_incomplete(tmp_path, monkeypatch):
+    claude_sdk_fixture(monkeypatch, {"role": "critic", "usage": CLAUDE_USAGE}, fail=True)
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    with pytest.raises(RoleError, match="sdk fixture failure"):
+        backend.complete("critic", "fixture", {})
     snapshot = backend.search_policy_guard.snapshot()
     assert snapshot["evidence_complete"] is False and snapshot["violation"] is False
-    backend._observe_message({"stream_error": False})
-    assert backend.search_policy_guard.snapshot()["evidence_complete"] is False
 
 
 def test_claude_message_observation_never_crashes_a_role_call(tmp_path):
