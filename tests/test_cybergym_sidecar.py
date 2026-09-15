@@ -803,6 +803,20 @@ def test_claude_call_failure_marks_policy_evidence_incomplete(tmp_path, monkeypa
         backend.complete("critic", "fixture", {})
     snapshot = backend.search_policy_guard.snapshot()
     assert snapshot["evidence_complete"] is False and snapshot["violation"] is False
+    latch = json.loads((tmp_path / "policy-latches.jsonl").read_text())
+    assert latch["role"] == "critic" and latch["exception_type"] == "RoleError"
+
+
+def test_claude_cancellation_does_not_latch_evidence(tmp_path, monkeypatch):
+    def cancelled(self, role, prompt, variables):
+        self.transcripts.append({"role": "critic", "usage": None})
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(AgentBackend, "complete", cancelled)
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    with pytest.raises(asyncio.CancelledError):
+        backend.complete("critic", "fixture", {})
+    assert backend.search_policy_guard.snapshot() == clean_search_policy()
+    assert not (tmp_path / "policy-latches.jsonl").exists()
 
 
 def test_claude_message_observation_never_crashes_a_role_call(tmp_path):

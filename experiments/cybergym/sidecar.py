@@ -200,6 +200,23 @@ class ClaudeVerifierBackend(AgentBackend):
         except OSError:
             self._diagnostic_failures += 1  # Telemetry must not decide a verdict.
 
+    def _latch_breadcrumb(self, common, error):
+        # Forensic trail for evidence latches: which role call, which failure
+        # kind. Never contains prompts, responses, or exception text.
+        record = {**common, "ts": time.time(), "exception_type": type(error).__name__}
+        path = Path(self.cwd) / "policy-latches.jsonl"
+        raw = (json.dumps(record, sort_keys=True) + "\n").encode()
+        try:
+            with self._diagnostic_lock:
+                fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
+                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                try:
+                    os.write(fd, raw)
+                finally:
+                    os.close(fd)
+        except OSError:
+            self._diagnostic_failures += 1
+
     def _usage_row(self, common, transcripts_before, started_ns, finished_ns,
                    duration, returncode):
         if len(self.transcripts) <= transcripts_before:
@@ -266,11 +283,17 @@ class ClaudeVerifierBackend(AgentBackend):
                 result = super().complete(role_name, prompt, variables)
                 status = "completed"
                 return result
-            except BaseException:
+            except asyncio.CancelledError:
+                # Host-driven teardown (container stop / job shutdown) cancels
+                # in-flight calls; every session up to cancellation stayed
+                # observed, and the SDK reaps the subprocess. Not evidence loss.
+                raise
+            except BaseException as error:
                 # The call never completed: the host cannot show that every
                 # sub-session ended observed, so fail evidence closed. A
                 # transient mid-retry break does NOT reach here (the retried
                 # session starts fully observed); only whole-call failure does.
+                self._latch_breadcrumb(common, error)
                 self.search_policy_guard.observe_backend_phase(
                     {"phase": "exec_returned", "reader_failed": True})
                 raise
