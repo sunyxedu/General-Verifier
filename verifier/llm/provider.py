@@ -13,10 +13,12 @@ Agents ll take their provider env from here:
 Experiments import it through the installed `verifier` package; gv_agent.py file-loads it from GV_ROOT.
 
 Configuration (.env, or real environment variables. The real environment wins; see .env.example for the full reference):
-  GV_PROVIDER = deepseek (default) | openrouter | custom
+  GV_PROVIDER = anthropic | deepseek (default) | openrouter | custom
   GV_MODEL    = model id on that provider (defaults below)
   DEEPSEEK_API_KEY / OPENROUTER_API_KEY = the key for the chosen provider.
   GV_ANTHROPIC_BASE_URL / GV_API_KEY / GV_LITELLM_MODEL = everything explicit, for GV_PROVIDER=custom.
+  GV_PROVIDER=anthropic uses the first-party Claude Code login
+  (CLAUDE_CONFIG_DIR/GV_CLAUDE_CONFIG_DIR override, default ~/.claude/.credentials.json).
 """
 import os
 
@@ -53,7 +55,15 @@ def cfg(name, default=None):
 
 PROVIDER = (cfg("GV_PROVIDER", "deepseek") or "deepseek").lower()
 
-if PROVIDER == "deepseek":
+if PROVIDER == "anthropic":
+    # First-party Claude Code login (OAuth credentials file), no key/proxy overrides.
+    MODEL = cfg("GV_MODEL", "claude-sonnet-5")
+    ANTHROPIC_BASE_URL = None
+    API_KEY = cfg("GV_API_KEY")  # optional fallback only; normally unset
+    KEY_ENV = None
+    LITELLM_MODEL = f"anthropic/{MODEL}"
+    _X_API_KEY = API_KEY
+elif PROVIDER == "deepseek":
     MODEL = cfg("GV_MODEL", "deepseek-v4-flash")
     ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
     API_KEY = cfg("DEEPSEEK_API_KEY")
@@ -77,13 +87,18 @@ elif PROVIDER == "custom":
     _X_API_KEY = API_KEY
 else:
     raise RuntimeError(f"unknown GV_PROVIDER: {PROVIDER!r} "
-                       "(expected deepseek | openrouter | custom)")
+                       "(expected anthropic | deepseek | openrouter | custom)")
 
 # Kept for backward reference; prefer API_KEY.
 DEEPSEEK_API_KEY = API_KEY if PROVIDER == "deepseek" else \
     cfg("DEEPSEEK_API_KEY")
 
-CONFIG_DIR = os.path.expanduser(f"~/.claude-gv-{PROVIDER}")
+if PROVIDER == "anthropic":
+    # OAuth login directory: explicit override > ambient CLI config > real login.
+    CONFIG_DIR = (cfg("GV_CLAUDE_CONFIG_DIR") or os.environ.get("CLAUDE_CONFIG_DIR")
+                  or os.path.expanduser("~/.claude"))
+else:
+    CONFIG_DIR = os.path.expanduser(f"~/.claude-gv-{PROVIDER}")
 
 # Text-only provider: the model cannot accept image content blocks.
 # Set GV_TEXT_ONLY=1 (env or .env) for models like deepseek-v4-flash;
@@ -91,9 +106,6 @@ CONFIG_DIR = os.path.expanduser(f"~/.claude-gv-{PROVIDER}")
 TEXT_ONLY = (cfg("GV_TEXT_ONLY", "") == "1")
 
 CLAUDE_ENV = {
-    "ANTHROPIC_BASE_URL": ANTHROPIC_BASE_URL,
-    "ANTHROPIC_AUTH_TOKEN": API_KEY,
-    "ANTHROPIC_API_KEY": _X_API_KEY,
     "ANTHROPIC_MODEL": MODEL,
     "ANTHROPIC_SMALL_FAST_MODEL": MODEL,
     "ANTHROPIC_DEFAULT_OPUS_MODEL": MODEL,
@@ -104,12 +116,28 @@ CLAUDE_ENV = {
     "API_TIMEOUT_MS": "3600000",
     "MCP_TIMEOUT": "600000",
     "MCP_TOOL_TIMEOUT": "14400000",
-    KEY_ENV: API_KEY,
 }
+if PROVIDER == "anthropic":
+    # OAuth first-party: an explicit API key or base URL would reroute the login.
+    if API_KEY:
+        CLAUDE_ENV["ANTHROPIC_API_KEY"] = API_KEY
+else:
+    CLAUDE_ENV["ANTHROPIC_BASE_URL"] = ANTHROPIC_BASE_URL
+    CLAUDE_ENV["ANTHROPIC_AUTH_TOKEN"] = API_KEY
+    CLAUDE_ENV["ANTHROPIC_API_KEY"] = _X_API_KEY
+    CLAUDE_ENV[KEY_ENV] = API_KEY
 
 
 def validate_configuration():
     """Require credentials only when starting a provider-backed process."""
+    if PROVIDER == "anthropic":
+        if API_KEY:
+            return
+        credentials = os.path.join(CONFIG_DIR, ".credentials.json")
+        if not os.path.isfile(credentials):
+            raise RuntimeError("GV_PROVIDER=anthropic needs a Claude Code login at "
+                               + credentials + " (or GV_API_KEY / ANTHROPIC_API_KEY)")
+        return
     if PROVIDER == "custom" and not (MODEL and ANTHROPIC_BASE_URL and API_KEY):
         raise RuntimeError("GV_PROVIDER=custom needs GV_MODEL, "
                            "GV_ANTHROPIC_BASE_URL and GV_API_KEY")

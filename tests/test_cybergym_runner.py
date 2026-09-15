@@ -446,47 +446,59 @@ def test_all_expansion_catalog_drift_is_not_a_model_verdict(controller, monkeypa
     assert not (controller.root / "results.json").exists()
 
 
-@pytest.mark.parametrize("thread", [None, "existing-thread-id"])
-def test_solver_runtime_uses_luna_max_fast_and_isolated_homes(controller, selected, thread):
+@pytest.mark.parametrize("session", [None, "existing-session-id"])
+def test_solver_runtime_uses_pinned_claude_and_isolated_homes(controller, selected, session):
     directory, _candidate, _receipt = selected
     runtime = {"network": "attempt-only-net", "sidecar": "attempt-only-sidecar",
                "proxy": "attempt-only-proxy", "token": "attempt-isolation-token"}
     command = controller.solver_command(directory, directory / "workspace", runtime,
-                                        "attempt-solver", "generic fixture prompt", thread)
-    assert command[command.index("-m") + 1] == "gpt-5.6-luna"
-    assert 'model_reasoning_effort="max"' in command and 'service_tier="fast"' in command
-    assert "model_context_window=1050000" in command
-    assert "model_auto_compact_token_limit=780000" in command
-    assert "--enable" in command and "fast_mode" in command
-    assert "resume" in command if thread else "resume" not in command
+                                        "attempt-solver", "generic fixture prompt", session)
+    assert command[command.index("--model") + 1] == "claude-sonnet-5"
+    assert "-p" in command and "--dangerously-skip-permissions" in command
+    assert command[command.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in command
+    assert command[command.index("--mcp-config") + 1] == "/claude-home/mcp.json"
+    assert "--strict-mcp-config" in command
+    assert command[command.index("--settings") + 1] == "/claude-home/settings.json"
+    assert command[command.index("--disallowed-tools") + 1] == "WebSearch,WebFetch"
+    if session:
+        assert command[-4:-2] == ["--resume", session]
+    else:
+        assert "--resume" not in command
+    assert command[-2:] == ["--", "generic fixture prompt"]
     mounts = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "-v"]
-    assert mounts == [str(directory / "solver-home") + ":/codex-home",
+    assert mounts == [str(directory / "solver-home") + ":/claude-home",
                       str(directory / "workspace") + ":/task",
                       str(run.SOURCE / "submit.sh") + ":/task/submit.sh:ro",
                       str(run.SOURCE / "submission.py") + ":/opt/gv-transport/submission.py:ro"]
     assert all("/state" not in mount and "/gv:" not in mount and "/evaluator" not in mount
                and "docker.sock" not in mount for mount in mounts)
     assert "--network" in command and "attempt-only-net" in command
-    for feature in run.DISABLED:
-        assert any(command[index:index + 2] == ["--disable", feature]
-                   for index in range(len(command) - 1))
+    env = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "-e"]
+    assert "CLAUDE_CONFIG_DIR=/claude-home" in env and "HOME=/claude-home" in env
+    assert "GV_MCP_BEARER_TOKEN=attempt-isolation-token" in env
+    assert "GV_SIDECAR_URL=http://attempt-only-sidecar:8000" in env
+    assert "HTTP_PROXY=http://attempt-only-proxy:3128" in env
+    assert "HTTPS_PROXY=http://attempt-only-proxy:3128" in env
+    assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in env and "DISABLE_AUTOUPDATER=1" in env
+    assert all(not value.startswith("CODEX_HOME") for value in env)
+    assert "-c" not in command and "--disable" not in command and "exec" not in command
 
 
-@pytest.mark.parametrize("thread", [None, "existing-thread-id"])
-def test_solver_pins_search_disabled_without_relying_on_home_config(controller, selected, thread):
+@pytest.mark.parametrize("session", [None, "existing-session-id"])
+def test_solver_pins_search_disabled_without_relying_on_home_config(controller, selected, session):
     directory, _candidate, _receipt = selected
     runtime = {"network": "attempt-only-net", "sidecar": "attempt-only-sidecar",
                "proxy": "attempt-only-proxy", "token": "attempt-isolation-token"}
-    assert not (directory / "solver-home/config.toml").exists()
+    assert not (directory / "solver-home/settings.json").exists()
     prompt = "generic fixture prompt"
     command = controller.solver_command(directory, directory / "workspace", runtime,
-                                        "attempt-solver", prompt, thread)
-    overrides = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "-c"]
-    search_overrides = [value for value in overrides if value.split("=", 1)[0] == "web_search"]
-    assert search_overrides == ['web_search="disabled"']
-    assert command[command.index('web_search="disabled"') - 1] == "-c"
-    assert command[-2:] == ([thread, prompt] if thread else ["--", prompt])
-    assert "--ignore-user-config" not in command  # Keep the attempt-local MCP configuration.
+                                        "attempt-solver", prompt, session)
+    disallowed = [command[index + 1] for index, value in enumerate(command[:-1])
+                  if value == "--disallowed-tools"]
+    assert disallowed == ["WebSearch,WebFetch"]
+    assert command[-2:] == ["--", prompt]
+    assert not (directory / "solver-home/settings.json").exists()
 
 
 def prepare_fake(monkeypatch, tmp_path, leaked=False):
@@ -497,9 +509,9 @@ def prepare_fake(monkeypatch, tmp_path, leaked=False):
         info = tarfile.TarInfo(name)
         info.size = len(data)
         archive.addfile(info, io.BytesIO(data))
-    authority = tmp_path / "base-auth.json"
+    authority = tmp_path / "base-credentials.json"
     authority.write_text('{"token":"private-auth-sentinel"}')
-    monkeypatch.setattr(run, "AUTH", authority)
+    monkeypatch.setattr(run, "CLAUDE_CREDENTIALS", authority)
     commands = []
 
     def execute(*args, **_kwargs):
@@ -546,9 +558,11 @@ def test_prepare_retains_task_contract_without_exposing_authority_or_fixed_sourc
     assert config["observations_dir"] == "/state/cybergym-observations"
     assert config["submission_script"] == "/evaluator/submit.sh"
     assert "private-score-api-key-sentinel" not in (private / "evaluator.json").read_text()
-    assert (directory / "solver-home/auth.json").read_text() == (private / "verifier-home/auth.json").read_text()
-    assert (directory / "solver-home/config.toml").read_text() == run.MODEL_CONFIG
-    assert (private / "verifier-home/config.toml").read_text() == run.MODEL_CONFIG
+    seeded = (directory / "solver-home/.credentials.json").read_bytes()
+    assert seeded == (private / "verifier-home/.credentials.json").read_bytes()
+    assert stat.S_IMODE((directory / "solver-home/.credentials.json").stat().st_mode) == 0o600
+    assert not (directory / "solver-home/auth.json").exists()
+    assert not (private / "verifier-home/config.toml").exists()
     downloads = [args for args in commands if args[0] == "curl"]
     assert len(downloads) == 2
     assert all("repo-fix" not in str(args) and "patch.diff" not in str(args) for args in commands)
@@ -561,6 +575,17 @@ def test_prepare_rejects_source_history_before_agent_workspace(controller, monke
     with pytest.raises(RuntimeError, match="git history"):
         controller.prepare("arvo:23296", directory)
     assert all(args[0] == "curl" for args in commands)
+
+
+def test_prepare_fails_closed_without_claude_credentials(controller, monkeypatch, tmp_path):
+    prepare_fake(monkeypatch, tmp_path)
+    monkeypatch.setattr(run, "CLAUDE_CREDENTIALS", tmp_path / "absent-credentials.json")
+    directory = tmp_path / "fixture-agent"
+    directory.mkdir()
+    with pytest.raises(RuntimeError, match="credentials"):
+        controller.prepare("arvo:23296", directory)
+    assert not (directory / "solver-home").exists()
+    assert not (directory / "private/verifier-home").exists()
 
 
 def test_prepare_creates_private_evidence_storage_with_explicit_secure_modes(controller, monkeypatch, tmp_path):
@@ -931,7 +956,6 @@ def test_route_probe_runs_before_solver_configuration_and_cleans_on_failure(cont
     private, workspace = directory / "private", directory / "workspace"
     home = directory / "solver-home"
     home.mkdir()
-    (home / "config.toml").write_text(run.MODEL_CONFIG)
     (private / "verifier-home").mkdir()
     monkeypatch.setattr(run, "docker", lambda *_args, **_kwargs:
                         SimpleNamespace(returncode=0, stdout="true\n", stderr=""))
@@ -944,15 +968,15 @@ def test_route_probe_runs_before_solver_configuration_and_cleans_on_failure(cont
                         lambda runtime, where, secret: cleaned.append((runtime, where, secret)))
     def reject(runtime):
         probed.append(runtime)
-        assert not (home / "hooks.json").exists()
-        assert (home / "config.toml").read_text() == run.MODEL_CONFIG
+        assert not (home / "settings.json").exists() and not (home / "mcp.json").exists()
         raise RuntimeError("fixture submission route rejected")
     monkeypatch.setattr(controller, "probe_submission", reject)
     with pytest.raises(RuntimeError, match="submission route rejected"):
         controller.create_runtime(directory, workspace, private)
     assert len(probed) == 1 and len(cleaned) == 1
     assert cleaned[0] == (probed[0], directory, private)
-    assert not (home / "hooks.json").exists()
+    assert not (home / "settings.json").exists() and not (home / "mcp.json").exists()
+    assert not (home / "hook_relay.py").exists()
 
 
 def test_native_storage_probe_failure_prevents_route_probe_and_solver_configuration(controller, selected, monkeypatch):
@@ -960,7 +984,6 @@ def test_native_storage_probe_failure_prevents_route_probe_and_solver_configurat
     private, workspace = directory / "private", directory / "workspace"
     home = directory / "solver-home"
     home.mkdir()
-    (home / "config.toml").write_text(run.MODEL_CONFIG)
     (private / "verifier-home").mkdir()
     monkeypatch.setattr(run, "docker", lambda *_args, **_kwargs:
                         SimpleNamespace(returncode=0, stdout="true\n", stderr=""))
@@ -977,8 +1000,7 @@ def test_native_storage_probe_failure_prevents_route_probe_and_solver_configurat
     with pytest.raises(RuntimeError, match="native storage readiness failed"):
         controller.create_runtime(directory, workspace, private)
     assert len(probes) == 1 and cleaned == [(probes[0], directory, private)]
-    assert not (home / "hooks.json").exists()
-    assert (home / "config.toml").read_text() == run.MODEL_CONFIG
+    assert not (home / "settings.json").exists() and not (home / "mcp.json").exists()
 
 
 def test_private_evaluator_readiness_probe_is_static_and_has_no_candidate(controller, monkeypatch):
@@ -1020,7 +1042,6 @@ def test_private_evaluator_preflight_failure_prevents_route_probe_and_solver_con
     private, workspace = directory / "private", directory / "workspace"
     home = directory / "solver-home"
     home.mkdir()
-    (home / "config.toml").write_text(run.MODEL_CONFIG)
     (private / "verifier-home").mkdir()
     monkeypatch.setattr(run, "docker", lambda *_args, **_kwargs:
                         SimpleNamespace(returncode=0, stdout="true\n", stderr=""))
@@ -1032,7 +1053,7 @@ def test_private_evaluator_preflight_failure_prevents_route_probe_and_solver_con
                         lambda runtime, where, secret: cleaned.append((runtime, where, secret)))
     def reject(runtime):
         order.append("configuration")
-        assert not (home / "hooks.json").exists()
+        assert not (home / "settings.json").exists() and not (home / "mcp.json").exists()
         raise RuntimeError("fixture private evaluator configuration rejected")
     monkeypatch.setattr(controller, "probe_evaluator_configuration", reject)
     monkeypatch.setattr(controller, "probe_submission", lambda _runtime:
@@ -1042,8 +1063,7 @@ def test_private_evaluator_preflight_failure_prevents_route_probe_and_solver_con
     with pytest.raises(RuntimeError, match="evaluator configuration rejected"):
         controller.create_runtime(directory, workspace, private)
     assert order == ["storage", "configuration"] and len(cleaned) == 1
-    assert not (home / "hooks.json").exists()
-    assert (home / "config.toml").read_text() == run.MODEL_CONFIG
+    assert not (home / "settings.json").exists() and not (home / "mcp.json").exists()
 
 
 @pytest.mark.parametrize("stage", ["volume", "egress", "sidecar"])
@@ -1114,7 +1134,6 @@ def test_evaluator_snapshot_is_native_readonly_and_both_native_dependencies_are_
     private, workspace = directory / "private", directory / "workspace"
     home = directory / "solver-home"
     home.mkdir()
-    (home / "config.toml").write_text(run.MODEL_CONFIG)
     (private / "verifier-home").mkdir()
     calls = []
     def docker(*args, **_kwargs):
@@ -1154,6 +1173,54 @@ def test_evaluator_snapshot_is_native_readonly_and_both_native_dependencies_are_
     assert "cp /seed-config.json /snapshot/config.json" in seed_program
     assert "cp /seed-submit.sh /snapshot/submit.sh" in seed_program
     assert "chmod 400" in seed_program
+
+
+def test_create_runtime_seeds_claude_homes_and_sidecar_environment(controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    private, workspace = directory / "private", directory / "workspace"
+    home = directory / "solver-home"
+    home.mkdir()
+    (home / ".credentials.json").write_bytes(b'{"fixture":"oauth"}')
+    verifier_home = private / "verifier-home"
+    verifier_home.mkdir()
+    (verifier_home / ".credentials.json").write_bytes(b'{"fixture":"oauth"}')
+    calls = []
+    def docker(*args, **_kwargs):
+        calls.append(tuple(args))
+        return SimpleNamespace(returncode=0, stdout="true\n", stderr="")
+    monkeypatch.setattr(run, "docker", docker)
+    monkeypatch.setattr(controller, "wait_running", lambda _name: None)
+    monkeypatch.setattr(controller, "sidecar_get", lambda *_args: {"status": "ready"})
+    monkeypatch.setattr(controller, "probe_evidence_storage", lambda _runtime: None)
+    monkeypatch.setattr(controller, "probe_evaluator_configuration", lambda _runtime: None)
+    monkeypatch.setattr(controller, "probe_submission", lambda _runtime: None)
+    runtime = controller.create_runtime(directory, workspace, private)
+    sidecar = next(call for call in calls if call[0] == "run" and "--name" in call
+                   and call[call.index("--name") + 1] == runtime["sidecar"])
+    env = [sidecar[i + 1] for i, word in enumerate(sidecar[:-1]) if word == "-e"]
+    assert "CLAUDE_CONFIG_DIR=/claude-home" in env and "HOME=/claude-home" in env
+    assert "GV_PROVIDER=anthropic" in env and "PYTHONPATH=/gv" in env
+    assert "GV_SIDECAR_TOKEN=" + runtime["token"] in env
+    assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in env and "DISABLE_AUTOUPDATER=1" in env
+    assert "HTTP_PROXY=http://" + runtime["proxy"] + ":3128" in env
+    assert all(not value.startswith("CODEX_HOME") for value in env)
+    assert str(verifier_home) + ":/claude-home" in [
+        sidecar[i + 1] for i, word in enumerate(sidecar[:-1]) if word == "-v"]
+    settings = json.loads((home / "settings.json").read_text())
+    assert settings == {"hooks": {name: [{"matcher": "*", "hooks": [{
+        "type": "command", "command": "python3 /claude-home/hook_relay.py " + kind}]}]
+        for name, kind in (("PreToolUse", "pre"), ("PostToolUse", "post"))}}
+    mcp = json.loads((home / "mcp.json").read_text())
+    assert mcp == {"mcpServers": {"gv": {"type": "http",
+        "url": "http://" + runtime["sidecar"] + ":8000/mcp",
+        "headers": {"Authorization": "Bearer " + runtime["token"]}}}}
+    for seeded in (home / "settings.json", home / "mcp.json"):
+        assert stat.S_IMODE(seeded.stat().st_mode) == 0o600
+    assert (home / "hook_relay.py").read_bytes() == (run.SOURCE / "hook_relay.py").read_bytes()
+    assert not (home / "config.toml").exists() and not (home / "hooks.json").exists()
+    squid = (private / "squid.conf").read_text()
+    assert "acl allowed dstdomain .anthropic.com .claude.ai" in squid
+    assert "http_access allow allowed" in squid and "openai" not in squid
 
 
 def stopped_run_fakes(monkeypatch, controller):
@@ -1255,30 +1322,30 @@ def test_frozen_manifest_preserves_no_task_or_role_deadline_and_no_fresh_solver_
     assert manifest["role_timeout_seconds"] is None
     assert manifest["evaluator_timeout_seconds"] is None
     assert manifest["fresh_thread_recovery"] is False
-    assert manifest["model"] == "gpt-5.6-luna"
-    assert manifest["reasoning_effort"] == "max" and manifest["service_tier"] == "fast"
-    assert manifest["model_context_window"] == 1_050_000
-    assert manifest["model_auto_compact_token_limit"] == 780_000
-    assert manifest["solver_egress_domains"] == list(run.EGRESS_DOMAINS)
+    assert manifest["model"] == "claude-sonnet-5"
+    assert manifest["reasoning_effort"] is None and manifest["service_tier"] is None
+    assert manifest["solver_backend"] == "claude"
+    assert manifest["model_context_window"] == 1_000_000
+    assert manifest["model_auto_compact_token_limit"] is None
+    assert manifest["solver_egress_domains"] == list(run.EGRESS_DOMAINS) == [
+        ".anthropic.com", ".claude.ai"]
     assert manifest["web_search"] == "disabled"
     assert manifest["verifier_shell_network_enabled"] is False
     assert manifest["poc_execution_network"] == "none"
 
 
-def test_context_home_configuration_and_cli_share_the_supported_luna_policy():
-    import tomllib
+def test_claude_backend_selection_is_the_single_model_policy_source():
     from experiments.cybergym import model_config
-    configuration = tomllib.loads(run.MODEL_CONFIG)
-    assert configuration["model"] == "gpt-5.6-luna"
-    assert configuration["web_search"] == "disabled"
-    assert configuration["model_context_window"] == model_config.CONTEXT_WINDOW == 1_050_000
-    assert configuration["model_auto_compact_token_limit"] == model_config.AUTO_COMPACT_TOKEN_LIMIT == 780_000
-    assert model_config.AUTO_COMPACT_TOKEN_LIMIT < 828_400
-    assert 0 < model_config.AUTO_COMPACT_TOKEN_LIMIT < 922_000
-    assert model_config.AUTO_COMPACT_TOKEN_LIMIT + 128_000 <= model_config.CONTEXT_WINDOW
-    overrides = model_config.context_cli_args()
-    assert overrides == ["-c", "model_context_window=1050000",
-                         "-c", "model_auto_compact_token_limit=780000"]
+    assert model_config.BACKEND == "claude"
+    assert model_config.MODEL == run.MODEL == "claude-sonnet-5"
+    assert model_config.EFFORT is None and model_config.SERVICE_TIER is None
+    assert model_config.CONTEXT_WINDOW == 1_000_000
+    assert model_config.AUTO_COMPACT_TOKEN_LIMIT is None
+    assert model_config.MODEL_CONFIG is None
+    assert model_config.EGRESS_DOMAINS == run.EGRESS_DOMAINS == (".anthropic.com", ".claude.ai")
+    assert model_config.context_cli_args() == []
+    assert run.IMAGE == run.CLAUDE_IMAGE
+    assert run.CODEX_IMAGE.startswith("sha256:") and run.CLAUDE_IMAGE.startswith("sha256:")
 
 
 def mirror_failure():
@@ -2471,4 +2538,77 @@ def test_search_in_solver_stop_tail_is_not_hidden_as_controller_stopped(
     monkeypatch.setattr(controller.stop, "wait", stop)
     with pytest.raises(SearchPolicyViolation, match="violation:solver"):
         controller.run_solver(directory, directory / "workspace", {"sidecar": "fixture-owned"}, "fixture", {})
+    assert not (directory / "final-selection.json").exists()
+
+
+def claude_init_event(session_id="fixture-session-1"):
+    return json.dumps({"type": "system", "subtype": "init", "session_id": session_id,
+                       "model": "claude-sonnet-5"}).encode() + b"\n"
+
+
+def test_claude_solver_continuation_resumes_the_recorded_session(
+        controller, selected, monkeypatch):
+    directory, _candidate, receipt = selected
+    process, _calls = solver_process_fakes(monkeypatch, controller,
+                                           [None, receipt, receipt], exited=True)
+    threads = []
+
+    def recorded(_directory, _workspace, _runtime, _name, _prompt, thread=None):
+        threads.append(thread)
+        return ["fixture-solver"]
+
+    monkeypatch.setattr(controller, "solver_command", recorded)
+
+    def emit(*_args, **kwargs):
+        kwargs["stdout"].write(claude_init_event())
+        kwargs["stdout"].flush()
+        return process
+
+    monkeypatch.setattr(run.subprocess, "Popen", emit)
+    patch_mirror(monkeypatch, controller, lambda *_args: None)
+    assert controller.run_solver(directory, directory / "workspace",
+                                 {"sidecar": "fixture-owned"}, "fixture", {}) == receipt
+    assert threads == [None, "fixture-session-1"]
+    assert json.loads((directory / "final-selection.json").read_text()) == receipt
+
+
+@pytest.mark.parametrize("lines", [
+    [],
+    ['{"type":"system","subtype":"init"}'],
+    ['{"type":"system","subtype":"init","session_id":null}'],
+    ['{"type":"assistant","message":{"content":[]}}'],
+])
+def test_claude_solver_without_session_init_has_no_fresh_thread_recovery(
+        controller, selected, monkeypatch, lines):
+    directory, _candidate, _receipt = selected
+    process, _calls = solver_process_fakes(monkeypatch, controller, [None], exited=True)
+    payloads = list(lines)
+
+    def emit(*_args, **kwargs):
+        for payload in payloads:
+            kwargs["stdout"].write(payload.encode() + b"\n")
+        kwargs["stdout"].flush()
+        return process
+
+    monkeypatch.setattr(run.subprocess, "Popen", emit)
+    with pytest.raises(RuntimeError, match="resumable thread"):
+        controller.run_solver(directory, directory / "workspace",
+                              {"sidecar": "fixture-owned"}, "fixture", {})
+    assert not (directory / "final-selection.json").exists()
+
+
+def test_claude_solver_malformed_terminal_log_line_fails_closed(
+        controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    process, _calls = solver_process_fakes(monkeypatch, controller, [None], exited=True)
+
+    def emit(*_args, **kwargs):
+        kwargs["stdout"].write(b"not json\n")
+        kwargs["stdout"].flush()
+        return process
+
+    monkeypatch.setattr(run.subprocess, "Popen", emit)
+    with pytest.raises(SearchPolicyEvidenceError, match="event_invalid"):
+        controller.run_solver(directory, directory / "workspace",
+                              {"sidecar": "fixture-owned"}, "fixture", {})
     assert not (directory / "final-selection.json").exists()

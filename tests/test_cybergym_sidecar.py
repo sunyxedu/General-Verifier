@@ -12,10 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from experiments.cybergym import sidecar
+from experiments.cybergym import model_config, sidecar
 from experiments.cybergym.policy import SearchPolicyEvidenceError
 from verifier.core.model import content_hash
-from verifier.llm.agents import ALL_AGENT_ROLES
+from verifier.llm.agents import ALL_AGENT_ROLES, AgentBackend
 from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.schema import FixtureBackend, RoleError
 from verifier.mcp_server import Service, _default_kernel
@@ -104,16 +104,16 @@ async def unreachable_app(scope, receive, send):
     raise AssertionError("the private endpoint must not reach the MCP application")
 
 
-def test_constructor_uses_shared_cyber_roles_and_only_luna_max_fast(tmp_path):
+def test_constructor_uses_shared_cyber_roles_and_the_pinned_claude_seats(tmp_path):
     args = args_fixture(tmp_path)
     service = sidecar.create_service(args)
     assert service.profile.name == "cyber"
-    assert service.seats == "codex" and service.effort == "max" and service.service_tier == "fast"
+    assert service.seats == "sdk" and service.effort is None and service.service_tier is None
     assert service.final_destination == str(args.project_root / "final_poc")
     backend = service.kernel.backend
-    assert isinstance(backend, sidecar.SandboxedVerifierBackend)
-    assert backend.model == sidecar.MODEL and backend.model_overrides == {}
-    assert backend.timeout is None and backend.search_roles == frozenset()
+    assert isinstance(backend, sidecar.ClaudeVerifierBackend)
+    assert backend.model == sidecar.MODEL and backend.transcripts == []
+    assert backend.message_observer is not None
     assert backend.roles == service.profile.apply_roles(ALL_AGENT_ROLES)
     assert service.evaluator.spec.timeout is None
     assert service.evaluator.spec.authority_scope == "candidate_signal"
@@ -142,8 +142,9 @@ def test_every_role_has_readonly_shell_denied_credentials_and_no_network(tmp_pat
     assert 'approval_policy="never"' in args
     assert any(value.endswith('.extends=":read-only"') for value in args)
     assert any('.network.enabled=false' in value for value in args)
-    assert "model_context_window=1050000" in args
-    assert "model_auto_compact_token_limit=780000" in args
+    context = [value for value in args
+               if value.startswith(("model_context_window=", "model_auto_compact_token_limit="))]
+    assert context == [value for value in model_config.context_cli_args() if value != "-c"]
     filesystem = next(value for value in args if '.filesystem=' in value)
     grants = tomllib.loads("grants=" + filesystem.split("=", 1)[1])["grants"]
     def effective(path):
@@ -214,9 +215,11 @@ def test_role_tracking_logs_times_without_prompt_output_or_credentials(tmp_path,
     assert records[0]["call_id"] == records[1]["call_id"]
     assert records[1]["duration_seconds"] >= 0
     assert records[1]["status"] == ("failed" if fail else "completed")
-    assert all(r["model"] == sidecar.MODEL and r["service_tier"] == "fast" for r in records)
-    assert all(r["model_context_window"] == 1_050_000
-               and r["model_auto_compact_token_limit"] == 780_000 for r in records)
+    assert all(r["model"] == sidecar.MODEL and r["service_tier"] == sidecar.SERVICE_TIER
+               for r in records)
+    assert all(r["model_context_window"] == sidecar.CONTEXT_WINDOW
+               and r["model_auto_compact_token_limit"] == sidecar.AUTO_COMPACT_TOKEN_LIMIT
+               for r in records)
 
 
 def test_receipt_uses_current_authenticated_exact_bytes_without_new_verifier_calls(tmp_path):
@@ -294,7 +297,7 @@ def test_receipt_poll_is_nonblocking_when_any_verifier_lock_is_busy(tmp_path, lo
         sidecar.delivery_receipt(service)
 
 
-def test_usage_capture_is_active_for_whole_sidecar_server_lifetime(tmp_path, monkeypatch):
+def test_claude_backend_writes_usage_rows_without_the_codex_ledger(tmp_path, monkeypatch):
     from verifier.llm import codex_backend
     args = args_fixture(tmp_path)
     args.server_hostname, args.port, args.token_env = "fixture-sidecar", 8000, "FIXTURE_TOKEN"
@@ -308,16 +311,13 @@ def test_usage_capture_is_active_for_whole_sidecar_server_lifetime(tmp_path, mon
     monkeypatch.setenv("FIXTURE_TOKEN", TOKEN)
     observed = []
     def run(app, **kwargs):
-        target = codex_backend._usage_target(str(args.state_dir))
-        observed.append(target)
-        codex_backend._append_usage_record(target[0], {**target[1], "input_tokens": 11})
+        # The claude backend appends usage rows per role call; no process-wide
+        # Codex capture is installed for the server lifetime.
+        observed.append(codex_backend._usage_target(str(args.state_dir)))
     monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=run))
     sidecar.main()
-    assert observed == [(str(args.state_dir / "backend_usage.jsonl"), {
-        "profile_id": service.profile.id, "task_sha256": service._profile_pin["task_sha256"]})]
-    assert codex_backend._usage_target(str(args.state_dir)) is None
-    record = json.loads((args.state_dir / "backend_usage.jsonl").read_text())
-    assert record["input_tokens"] == 11 and TOKEN not in json.dumps(record)
+    assert observed == [None]
+    assert not (args.state_dir / "backend_usage.jsonl").exists()
 
 
 @pytest.mark.parametrize("path", ["/health", "/receipt", "/policy", "/policy/seal", "/hooks/pre", "/hooks/post", "/mcp"])
@@ -405,6 +405,24 @@ def clean_search_policy():
             "violation_source": None, "event_type": None, "sealed": False, "evidence_complete": True}
 
 
+class ToolUseBlock:
+    """SDK-shaped tool_use block (claude_agent_sdk.types.ToolUseBlock)."""
+    def __init__(self, name):
+        self.name = name
+
+
+class ServerToolUseBlock(ToolUseBlock):
+    """SDK-shaped server_tool_use block (claude_agent_sdk.types.ServerToolUseBlock)."""
+
+
+def assistant_message(*blocks):
+    return SimpleNamespace(content=list(blocks))
+
+
+def observe_web_search(backend):
+    backend._observe_message(assistant_message(ToolUseBlock("WebSearch")))
+
+
 def policy_envelope(app, policy):
     return {"schema": "gv-search-policy-response-v1", "instance_id": app.policy_instance_id, "policy": policy}
 
@@ -444,14 +462,14 @@ def test_service_factory_and_repeated_kernel_instances_share_one_private_guard(t
     second = sidecar.kernel_factory(service).backend
     assert first is not second
     assert first.search_policy_guard is second.search_policy_guard is service.search_policy_guard
-    first._phase("a" * 32, 1, "cli_event", event_type="item.started", item_kind="web_search")
+    observe_web_search(first)
     assert second.search_policy_guard.snapshot()["violation"] is True
 
 
 def test_direct_service_kernel_factory_also_installs_one_shared_guard(tmp_path):
     args = args_fixture(tmp_path)
     service = Service(str(args.state_dir), profile="cyber", project_root=str(args.project_root),
-                      model=sidecar.MODEL, seats="codex", kernel_factory=sidecar.kernel_factory)
+                      model=sidecar.MODEL, seats="sdk", kernel_factory=sidecar.kernel_factory)
     second = sidecar.kernel_factory(service).backend
     assert service.kernel.backend.search_policy_guard is second.search_policy_guard is service.search_policy_guard
 
@@ -478,7 +496,7 @@ def test_two_services_and_standalone_backends_do_not_share_latches(tmp_path):
     second = sidecar.create_service(args_fixture(second_root))
     standalone = sidecar.SandboxedVerifierBackend(cwd=str(tmp_path))
     assert len({id(first.search_policy_guard), id(second.search_policy_guard), id(standalone.search_policy_guard)}) == 3
-    first.kernel.backend._phase("a" * 32, 1, "cli_event", event_type="item.completed", item_kind="web_search")
+    observe_web_search(first.kernel.backend)
     assert first.search_policy_guard.snapshot()["violation"] is True
     assert second.search_policy_guard.snapshot() == standalone.search_policy_guard.snapshot() == clean_search_policy()
 
@@ -523,10 +541,10 @@ def test_policy_snapshot_reports_latch_without_becoming_a_gv_verdict(tmp_path):
     service = sidecar.create_service(args_fixture(tmp_path))
     app = sidecar.ProtectedApplication(unreachable_app, token=TOKEN, service=service)
     before = list(service.log.replay())
-    service.kernel.backend._phase("a" * 32, 1, "cli_event", event_type="item.updated", item_kind="web_search")
+    observe_web_search(service.kernel.backend)
     status, response = request(app, "/policy")
     assert status == 200 and response == policy_envelope(app, {**clean_search_policy(), "violation": True,
-        "violation_source": "verifier", "event_type": "item.updated"})
+        "violation_source": "verifier", "event_type": "item.completed"})
     snapshot = response["policy"]
     assert "verdict" not in snapshot and "score" not in snapshot and "query" not in snapshot
     assert list(service.log.replay()) == before
@@ -552,7 +570,7 @@ def test_active_complete_prevents_seal_until_entire_backend_call_returns(tmp_pat
         held.set()
         assert release.wait(5)  # This owned synthetic fixture only, not a role deadline.
         return {"ok": True}
-    monkeypatch.setattr(CodexBackend, "complete", complete)
+    monkeypatch.setattr(AgentBackend, "complete", complete)
     def invoke():
         try:
             result.append(service.kernel.backend.complete("critic", "fixture", {}))
@@ -591,7 +609,7 @@ def test_terminal_jobs_seal_irreversibly_and_new_complete_never_calls_super(tmp_
     assert request(app, "/policy/seal", method="POST") == (200, policy_envelope(app, sealed))
     def forbidden(*args, **kwargs):
         pytest.fail("sealed backend must never enter the model complete method")
-    monkeypatch.setattr(CodexBackend, "complete", forbidden)
+    monkeypatch.setattr(AgentBackend, "complete", forbidden)
     with pytest.raises(SearchPolicyEvidenceError, match="after_policy_seal"):
         service.kernel.backend.complete("critic", "fixture", {})
     assert service.search_policy_guard.snapshot() == sealed
@@ -669,3 +687,127 @@ print(json.dumps({'type':'turn.completed','usage':{}}),flush=True)
     assert returned["last_cli_event"] == "turn.completed"
     assert "do-not-retain-synthetic-query" not in raw and "synthetic final" not in raw
     assert backend.search_policy_guard.try_seal() is True
+
+
+def claude_sdk_fixture(monkeypatch, transcript, *, fail=False):
+    """Mock the SDK layer: complete appends terminal transcript rows."""
+    def complete(self, role, prompt, variables):
+        if transcript is not None:
+            self.transcripts.append(transcript)
+        if fail:
+            raise RoleError("sdk fixture failure")
+        return {"ok": True}
+    monkeypatch.setattr(AgentBackend, "complete", complete)
+
+
+CLAUDE_USAGE = {"input_tokens": 100, "cache_creation_input_tokens": 30,
+    "cache_read_input_tokens": 20, "output_tokens": 10,
+    "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+    "output_tokens_details": {"thinking_tokens": 7}}
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_claude_backend_role_tracking_and_usage_rows_share_one_call(tmp_path, monkeypatch, fail):
+    claude_sdk_fixture(monkeypatch, {"role": "critic", "usage": CLAUDE_USAGE}, fail=fail)
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    if fail:
+        with pytest.raises(RoleError):
+            backend.complete("critic", "fixture prompt", {})
+    else:
+        assert backend.complete("critic", "fixture prompt", {}) == {"ok": True}
+    records = [json.loads(line) for line in (tmp_path / "role_calls.jsonl").read_text().splitlines()]
+    assert [row["type"] for row in records] == ["role_call_started", "role_call_finished"]
+    assert records[0]["call_id"] == records[1]["call_id"]
+    assert records[1]["status"] == ("failed" if fail else "completed")
+    assert all(row["model"] == sidecar.MODEL and row["service_tier"] is None
+               and row["model_context_window"] == sidecar.CONTEXT_WINDOW
+               and row["model_auto_compact_token_limit"] is None for row in records)
+    usage = [json.loads(line) for line in (tmp_path / "backend_usage.jsonl").read_text().splitlines()]
+    assert len(usage) == 1
+    row = usage[0]
+    assert row["call_id"] == records[0]["call_id"] and row["role"] == "critic"
+    assert row["model"] == sidecar.MODEL and row["service_tier"] is None
+    assert row["returncode"] == (1 if fail else 0)
+    assert type(row["started_at_unix_ns"]) is int and type(row["finished_at_unix_ns"]) is int
+    assert row["started_at_unix_ns"] <= row["finished_at_unix_ns"]
+    assert row["duration_seconds"] >= 0
+    assert row["input_tokens"] == 100 and row["cached_input_tokens"] == 50
+    assert row["output_tokens"] == 10
+    assert row["reasoning_tokens"] == 0 and row["reasoning_output_tokens"] == 7
+    assert "fixture prompt" not in json.dumps(records) + json.dumps(usage)
+
+
+@pytest.mark.parametrize("usage", [None, "opaque", {}, {"input_tokens": -1, "output_tokens": "x"}])
+def test_claude_backend_usage_row_is_defensive_about_missing_counters(tmp_path, monkeypatch, usage):
+    claude_sdk_fixture(monkeypatch, {"role": "critic", "usage": usage})
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    assert backend.complete("critic", "fixture", {}) == {"ok": True}
+    row = json.loads((tmp_path / "backend_usage.jsonl").read_text())
+    assert row["input_tokens"] == 0 and row["cached_input_tokens"] == 0
+    assert row["output_tokens"] == 0 and row["reasoning_output_tokens"] == 0
+
+
+def test_claude_backend_without_new_transcript_writes_no_usage_row(tmp_path, monkeypatch):
+    claude_sdk_fixture(monkeypatch, None)
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    assert backend.complete("critic", "fixture", {}) == {"ok": True}
+    assert not (tmp_path / "backend_usage.jsonl").exists()
+    assert backend._diagnostic_failures == 0
+
+
+def test_claude_backend_usage_disk_failure_never_decides_a_call(tmp_path, monkeypatch):
+    (tmp_path / "backend_usage.jsonl").mkdir()  # Deterministic disk path failure.
+    claude_sdk_fixture(monkeypatch, {"role": "critic", "usage": CLAUDE_USAGE})
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    assert backend.complete("critic", "fixture", {}) == {"ok": True}
+    assert backend._diagnostic_failures == 1
+    assert (tmp_path / "role_calls.jsonl").is_file()
+
+
+@pytest.mark.parametrize("block", [ToolUseBlock("WebSearch"), ToolUseBlock("WebFetch"),
+                                   ServerToolUseBlock("WebSearch")])
+def test_claude_assistant_tool_use_blocks_latch_verifier_search(tmp_path, block):
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    backend._observe_message(assistant_message(block))
+    snapshot = backend.search_policy_guard.snapshot()
+    assert snapshot["violation"] is True
+    assert snapshot["violation_source"] == "verifier" and snapshot["event_type"] == "item.completed"
+
+
+@pytest.mark.parametrize("message", [
+    assistant_message(ToolUseBlock("Read")),
+    assistant_message(),
+    SimpleNamespace(content="plain text"),
+    SimpleNamespace(subtype="init", data={}),
+    {"type": "system", "subtype": "init"},
+])
+def test_claude_non_search_messages_do_not_latch(tmp_path, message):
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    backend._observe_message(message)
+    assert backend.search_policy_guard.snapshot() == clean_search_policy()
+
+
+def test_claude_stream_error_marks_policy_evidence_incomplete(tmp_path):
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+    backend._observe_message({"stream_error": True, "observed_messages": 3})
+    snapshot = backend.search_policy_guard.snapshot()
+    assert snapshot["evidence_complete"] is False and snapshot["violation"] is False
+    backend._observe_message({"stream_error": False})
+    assert backend.search_policy_guard.snapshot()["evidence_complete"] is False
+
+
+def test_claude_message_observation_never_crashes_a_role_call(tmp_path):
+    backend = sidecar.ClaudeVerifierBackend(cwd=str(tmp_path))
+
+    class Exploding:
+        @property
+        def content(self):
+            raise RuntimeError("synthetic sdk message failure")
+
+    backend._observe_message(Exploding())
+    assert backend.search_policy_guard.snapshot() == clean_search_policy()
+
+
+def test_claude_backend_requires_a_real_search_policy_guard(tmp_path):
+    with pytest.raises(TypeError, match="search policy guard"):
+        sidecar.ClaudeVerifierBackend(cwd=str(tmp_path), search_policy_guard=object())

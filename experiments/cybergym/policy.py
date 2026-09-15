@@ -60,6 +60,26 @@ class SearchPolicyGuard:
         item = event.get("item")
         if isinstance(item, dict) and item.get("type") == "web_search":
             self._observe("solver", event.get("type"))
+            return
+        # Claude stream-json shapes: assistant tool_use blocks and the
+        # terminal result's server-tool accounting.
+        if event.get("type") == "assistant":
+            message = event.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                for block in content:
+                    if (isinstance(block, dict)
+                            and block.get("type") in ("tool_use", "server_tool_use")
+                            and block.get("name") in ("WebSearch", "WebFetch")):
+                        self._observe("solver", "item.completed")
+                        return
+        if event.get("type") == "result":
+            usage = event.get("usage")
+            server = usage.get("server_tool_use") if isinstance(usage, dict) else None
+            if isinstance(server, dict) and any(
+                    type(server.get(field)) is int and server[field] > 0
+                    for field in ("web_search_requests", "web_fetch_requests")):
+                self._observe("solver", "item.completed")
 
     def snapshot(self):
         with self._lock:

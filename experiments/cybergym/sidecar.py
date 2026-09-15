@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hmac
 import json
 import os
@@ -21,13 +22,14 @@ import threading
 import time
 import uuid
 
+from verifier.llm.agents import AgentBackend
 from verifier.llm.codex_backend import codex_usage_ledger
 from verifier.mcp_server import Service, _default_kernel, build_server
 from verifier.profiles.cyber.evaluator import EvaluatorSpec
 from verifier.profiles.cyber.backend import CyberCodexBackend
 
 from experiments.cybergym.model_config import (
-    AUTO_COMPACT_TOKEN_LIMIT, CONTEXT_WINDOW, EFFORT, MODEL, SERVICE_TIER,
+    AUTO_COMPACT_TOKEN_LIMIT, BACKEND, CONTEXT_WINDOW, EFFORT, MODEL, SERVICE_TIER,
     context_cli_args,
 )
 from experiments.cybergym.policy import SearchPolicyGuard
@@ -129,14 +131,164 @@ class SandboxedVerifierBackend(CyberCodexBackend):
             self.search_policy_guard.end_execution()
 
 
+class ClaudeVerifierBackend(AgentBackend):
+    """The same private wrapper contract, on the Claude Agent SDK seats.
+
+    Streamed SDK messages double as hosted-search evidence; terminal result
+    usage feeds the same backend_usage.jsonl ledger the tracker reads.
+    """
+
+    _diagnostic_lock = threading.Lock()
+
+    def __init__(self, *, cwd: str, project_root: str = "/task", runtime_inventory=None,
+                 search_policy_guard=None):
+        self.search_policy_guard = SearchPolicyGuard() if search_policy_guard is None else search_policy_guard
+        if not isinstance(self.search_policy_guard, SearchPolicyGuard):
+            raise TypeError("a host search policy guard is required")
+        super().__init__(cwd=cwd, model=MODEL, message_observer=self._observe_message)
+        self.project_root = project_root
+        self.runtime_inventory = runtime_inventory
+        self._diagnostic_failures = 0
+
+    def _observe_message(self, message):
+        # Observation is evidence capture only; it must never crash a role call.
+        try:
+            if isinstance(message, dict):
+                if message.get("stream_error") is True:
+                    # A broken stream means the host cannot prove what the
+                    # seat did mid-call: evidence is incomplete.
+                    self.search_policy_guard.observe_backend_phase(
+                        {"phase": "exec_returned", "reader_failed": True})
+                return
+            content = getattr(message, "content", None)
+            if not isinstance(content, list):
+                return
+            for block in content:
+                if (type(block).__name__ in ("ToolUseBlock", "ServerToolUseBlock")
+                        and getattr(block, "name", None) in ("WebSearch", "WebFetch")):
+                    self.search_policy_guard.observe_backend_phase(
+                        {"phase": "cli_event", "item_kind": "web_search",
+                         "event_type": "item.completed"})
+        except Exception:
+            pass
+
+    def _diagnostic(self, record):
+        # Policy invalidation is private host state, not a GV verdict. Latch
+        # before serialization or disk I/O so telemetry failures cannot hide it.
+        self.search_policy_guard.observe_backend_phase(record)
+        # The log is outside writable verifier scratch; it contains no prompt,
+        # response, exception text, auth token, or evaluator configuration.
+        path = Path(self.cwd) / "role_calls.jsonl"
+        raw = (json.dumps(record, sort_keys=True) + "\n").encode()
+        try:
+            with self._diagnostic_lock:
+                fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
+                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                try:
+                    info = os.fstat(fd)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                            or info.st_nlink != 1 or info.st_mode & 0o077):
+                        raise OSError("unsafe role diagnostic log")
+                    view = memoryview(raw)
+                    while view:
+                        written = os.write(fd, view)
+                        if written <= 0:
+                            raise OSError("role diagnostic write failed")
+                        view = view[written:]
+                finally:
+                    os.close(fd)
+        except OSError:
+            self._diagnostic_failures += 1  # Telemetry must not decide a verdict.
+
+    def _usage_row(self, common, transcripts_before, started_ns, finished_ns,
+                   duration, returncode):
+        if len(self.transcripts) <= transcripts_before:
+            return
+        usage = self.transcripts[-1].get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+
+        def count(key):
+            value = usage.get(key)
+            return value if type(value) is int and value >= 0 else 0
+
+        details = usage.get("output_tokens_details")
+        thinking = details.get("thinking_tokens") if isinstance(details, dict) else None
+        self._diagnostic_usage({**common,
+            "started_at_unix_ns": started_ns, "finished_at_unix_ns": finished_ns,
+            "duration_seconds": duration, "returncode": returncode,
+            "input_tokens": count("input_tokens"),
+            "cached_input_tokens": count("cache_read_input_tokens")
+                                 + count("cache_creation_input_tokens"),
+            "output_tokens": count("output_tokens"),
+            "reasoning_tokens": 0,
+            "reasoning_output_tokens": thinking if type(thinking) is int and thinking >= 0 else 0})
+
+    def _diagnostic_usage(self, record):
+        # Same safe-append contract as _diagnostic; usage telemetry must never
+        # raise into a role call.
+        path = Path(self.cwd) / "backend_usage.jsonl"
+        raw = (json.dumps(record, sort_keys=True) + "\n").encode()
+        try:
+            with self._diagnostic_lock:
+                fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
+                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                try:
+                    info = os.fstat(fd)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                            or info.st_nlink != 1 or info.st_mode & 0o077):
+                        raise OSError("unsafe usage diagnostic log")
+                    view = memoryview(raw)
+                    while view:
+                        written = os.write(fd, view)
+                        if written <= 0:
+                            raise OSError("usage diagnostic write failed")
+                        view = view[written:]
+                finally:
+                    os.close(fd)
+        except OSError:
+            self._diagnostic_failures += 1
+
+    def complete(self, role_name, prompt, variables):
+        self.search_policy_guard.begin_execution()
+        try:
+            call_id = uuid.uuid4().hex
+            started = time.monotonic()
+            started_ns = time.time_ns()
+            transcripts_before = len(self.transcripts)
+            common = {"call_id": call_id, "role": role_name, "model": MODEL,
+                      "service_tier": SERVICE_TIER,
+                      "model_context_window": CONTEXT_WINDOW,
+                      "model_auto_compact_token_limit": AUTO_COMPACT_TOKEN_LIMIT}
+            self._diagnostic({**common, "type": "role_call_started", "ts": time.time(),
+                              "status": "running"})
+            status = "failed"
+            try:
+                result = super().complete(role_name, prompt, variables)
+                status = "completed"
+                return result
+            finally:
+                duration = time.monotonic() - started
+                self._diagnostic({**common, "type": "role_call_finished", "ts": time.time(),
+                                  "status": status, "duration_seconds": duration})
+                self._usage_row(common, transcripts_before, started_ns, time.time_ns(),
+                                duration, 0 if status == "completed" else 1)
+        finally:
+            self.search_policy_guard.end_execution()
+
+
 def kernel_factory(service, *, search_policy_guard=None):
     guard = search_policy_guard if search_policy_guard is not None else getattr(service, "search_policy_guard", None)
     if guard is None:
         guard = SearchPolicyGuard()
     service.search_policy_guard = guard
-    backend = SandboxedVerifierBackend(cwd=service.state_dir, project_root=service.project_root,
-                                       runtime_inventory=service.seat_runtime,
-                                       search_policy_guard=guard)
+    if BACKEND == "claude":
+        backend = ClaudeVerifierBackend(cwd=service.state_dir, project_root=service.project_root,
+                                        runtime_inventory=service.seat_runtime,
+                                        search_policy_guard=guard)
+    else:
+        backend = SandboxedVerifierBackend(cwd=service.state_dir, project_root=service.project_root,
+                                           runtime_inventory=service.seat_runtime,
+                                           search_policy_guard=guard)
     return _default_kernel(service, model=MODEL, backend=backend)
 
 
@@ -168,7 +320,8 @@ def create_service(args) -> Service:
         return kernel_factory(service, search_policy_guard=guard)
     service = Service(str(state), kernel_factory=guarded_kernel_factory, profile="cyber",
                    project_root=str(project), evaluator_spec=spec,
-                   final_destination="final_poc", seats="codex", model=MODEL,
+                   final_destination="final_poc",
+                   seats="sdk" if BACKEND == "claude" else "codex", model=MODEL,
                    effort=EFFORT, service_tier=SERVICE_TIER,
                    seat_runtime=runtime,
                    seat_capabilities=SeatCapabilities(read_retained_artifacts=True,
@@ -412,9 +565,14 @@ def main():
     import uvicorn
     # Worker threads share this process-local capture. No usage context or
     # credentials are exported into a verifier seat's shell environment.
-    with codex_usage_ledger(str(args.state_dir / "backend_usage.jsonl"), {
-            str(args.state_dir): {"profile_id": service.profile.id,
-                                 "task_sha256": service._profile_pin["task_sha256"]}}):
+    if BACKEND == "claude":
+        # ClaudeVerifierBackend writes backend_usage.jsonl rows directly.
+        ledger = contextlib.nullcontext()
+    else:
+        ledger = codex_usage_ledger(str(args.state_dir / "backend_usage.jsonl"), {
+                str(args.state_dir): {"profile_id": service.profile.id,
+                                     "task_sha256": service._profile_pin["task_sha256"]}})
+    with ledger:
         uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning", access_log=False)
 
 

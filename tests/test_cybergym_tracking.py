@@ -62,11 +62,11 @@ def test_snapshot_uses_role_events_no_prompt_or_stdout_leak(tmp_path):
     path = attempt(tmp_path)
     state = path / "private/state"
     rows = [{"type": "role_call_started", "ts": 21, "call_id": "a", "role": "critic",
-             "model": "gpt-5.6-luna", "service_tier": "fast", "prompt": "PRIVATE_PROMPT"},
+             "model": "claude-sonnet-5", "service_tier": None, "prompt": "PRIVATE_PROMPT"},
             {"type": "role_call_finished", "ts": 26, "call_id": "a", "role": "critic",
              "status": "completed", "duration_seconds": 5},
             {"type": "role_call_started", "ts": 27, "call_id": "b", "role": "judger",
-             "model": "gpt-5.6-luna", "service_tier": "fast"}]
+             "model": "claude-sonnet-5", "service_tier": None}]
     write_jsonl(state / "role_calls.jsonl", rows)
     write_jsonl(state / "events.jsonl", [
         {"type": "cyber_candidate_registered", "seq": 1, "ts": 21, "payload": {"candidate_id": "x"}},
@@ -95,7 +95,7 @@ def test_snapshot_uses_role_events_no_prompt_or_stdout_leak(tmp_path):
 
 def test_usage_ledger_fallback_and_deduplication(tmp_path):
     state = attempt(tmp_path) / "private/state"
-    row = {"call_id": "x", "role": "oracles", "model": "gpt-5.6-luna", "service_tier": "fast",
+    row = {"call_id": "x", "role": "oracles", "model": "claude-sonnet-5", "service_tier": None,
         "started_at_unix_ns": 20_000_000_000, "finished_at_unix_ns": 25_000_000_000,
         "duration_seconds": 5, "returncode": 0, "input_tokens": 100,
         "cached_input_tokens": 20, "output_tokens": 10, "reasoning_tokens": 7}

@@ -195,3 +195,47 @@ def test_actual_search_remains_violation_even_when_other_evidence_is_incomplete(
     guard.observe_solver_event({"type": "item.started", "item": {"type": "web_search"}})
     guard.observe_backend_phase({"phase": "exec_returned", "reader_failed": True})
     assert validate_policy_snapshot(guard.snapshot()) is True
+
+
+@pytest.mark.parametrize("block_type", ["tool_use", "server_tool_use"])
+@pytest.mark.parametrize("name", ["WebSearch", "WebFetch"])
+def test_claude_assistant_tool_use_blocks_latch_solver_search(block_type, name):
+    guard = SearchPolicyGuard()
+    secret = "fixture-query-and-credential-never-retained"
+    guard.observe_solver_event({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": secret},
+        {"type": block_type, "name": name, "input": {"query": secret}}]}})
+    state = guard.snapshot()
+    assert validate_policy_snapshot(state) is True
+    assert state["violation_source"] == "solver" and state["event_type"] == "item.completed"
+    assert secret not in json.dumps(state)
+
+
+@pytest.mark.parametrize("field", ["web_search_requests", "web_fetch_requests"])
+def test_claude_result_server_tool_counters_latch_solver_search(field):
+    guard = SearchPolicyGuard()
+    guard.observe_solver_event({"type": "result", "session_id": "fixture-session",
+        "usage": {"input_tokens": 1, "output_tokens": 1, "server_tool_use": {field: 2}}})
+    state = guard.snapshot()
+    assert validate_policy_snapshot(state) is True
+    assert state["violation_source"] == "solver" and state["event_type"] == "item.completed"
+
+
+@pytest.mark.parametrize("event", [
+    {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read"}]}},
+    {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "web_search"}]}},
+    {"type": "assistant", "message": {"content": [{"type": "text", "text": "WebSearch"}]}},
+    {"type": "assistant", "message": {"content": "WebSearch"}},
+    {"type": "assistant", "message": None},
+    {"type": "assistant"},
+    {"type": "result", "usage": {"server_tool_use": {"web_search_requests": 0}}},
+    {"type": "result", "usage": {"server_tool_use": {"web_search_requests": "1"}}},
+    {"type": "result", "usage": {"server_tool_use": None}},
+    {"type": "result", "usage": None},
+    {"type": "result"},
+    {"type": "system", "subtype": "init", "session_id": "fixture"},
+])
+def test_claude_non_search_stream_shapes_do_not_latch(event):
+    guard = SearchPolicyGuard()
+    guard.observe_solver_event(event)
+    assert validate_policy_snapshot(guard.snapshot()) is False
