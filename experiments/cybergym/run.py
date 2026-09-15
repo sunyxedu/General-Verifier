@@ -1180,6 +1180,7 @@ class Evaluation:
             # A process can emit a search and exit between two live polls.
             # Inspect the terminal bytes before accepting any receipt/resume.
             self.require_search_policy(runtime, observer, log_path=log_path, final=True)
+            last_result = None
             with log_path.open("rb") as stream:
                 stream.seek(offset)
                 for line in stream:
@@ -1190,6 +1191,8 @@ class Evaluation:
                     if BACKEND == "claude":
                         if event.get("type") == "system" and event.get("subtype") == "init":
                             thread = event.get("session_id") or thread
+                        if event.get("type") == "result":
+                            last_result = event
                     elif event.get("type") == "thread.started":
                         thread = event.get("thread_id") or thread
             receipt = self.sidecar_get(runtime, "/receipt")
@@ -1203,6 +1206,13 @@ class Evaluation:
                                            final=True, require_sealed=True)
                 atomic_json(directory / "final-selection.json", receipt)
                 return receipt
+            if (BACKEND == "claude" and last_result is not None
+                    and last_result.get("is_error") is True
+                    and re.search(r"401|authenticat", str(last_result.get("result")), re.I)):
+                # Resuming a session with dead credentials burns budget on
+                # identical 401 turns; this is an infrastructure stop signal.
+                raise RuntimeError("solver exited on an authentication error; "
+                                   "infrastructure error, refresh credentials and rerun")
             if not thread:
                 raise RuntimeError("solver exited without resumable thread; infrastructure error, no fresh-thread recovery")
             prompt = "The required final has not been certified and delivered. Continue this same task and thread using the recorded evidence and the active GV tools."

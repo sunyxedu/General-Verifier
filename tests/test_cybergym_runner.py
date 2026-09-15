@@ -1219,7 +1219,7 @@ def test_create_runtime_seeds_claude_homes_and_sidecar_environment(controller, s
     assert (home / "hook_relay.py").read_bytes() == (run.SOURCE / "hook_relay.py").read_bytes()
     assert not (home / "config.toml").exists() and not (home / "hooks.json").exists()
     squid = (private / "squid.conf").read_text()
-    assert "acl allowed dstdomain .anthropic.com .claude.ai" in squid
+    assert "acl allowed dstdomain .anthropic.com .claude.ai .claude.com" in squid
     assert "http_access allow allowed" in squid and "openai" not in squid
 
 
@@ -1328,7 +1328,7 @@ def test_frozen_manifest_preserves_no_task_or_role_deadline_and_no_fresh_solver_
     assert manifest["model_context_window"] == 1_000_000
     assert manifest["model_auto_compact_token_limit"] is None
     assert manifest["solver_egress_domains"] == list(run.EGRESS_DOMAINS) == [
-        ".anthropic.com", ".claude.ai"]
+        ".anthropic.com", ".claude.ai", ".claude.com"]
     assert manifest["web_search"] == "disabled"
     assert manifest["verifier_shell_network_enabled"] is False
     assert manifest["poc_execution_network"] == "none"
@@ -1342,7 +1342,7 @@ def test_claude_backend_selection_is_the_single_model_policy_source():
     assert model_config.CONTEXT_WINDOW == 1_000_000
     assert model_config.AUTO_COMPACT_TOKEN_LIMIT is None
     assert model_config.MODEL_CONFIG is None
-    assert model_config.EGRESS_DOMAINS == run.EGRESS_DOMAINS == (".anthropic.com", ".claude.ai")
+    assert model_config.EGRESS_DOMAINS == run.EGRESS_DOMAINS == (".anthropic.com", ".claude.ai", ".claude.com")
     assert model_config.context_cli_args() == []
     assert run.IMAGE == run.CLAUDE_IMAGE
     assert run.CODEX_IMAGE.startswith("sha256:") and run.CLAUDE_IMAGE.startswith("sha256:")
@@ -2590,6 +2590,23 @@ def test_solver_timeline_records_per_event_arrival_times(controller, selected, m
     assert (rows[0].get("subtype"), rows[1].get("subtype")) == ("init", "success")
     assert all(type(row["ts"]) is float and type(row["bytes"]) is int for row in rows)
     assert rows[0]["ts"] <= rows[1]["ts"]
+
+
+def test_claude_solver_auth_error_stops_instead_of_resuming(controller, selected, monkeypatch):
+    directory, _candidate, _receipt = selected
+    process, _calls = solver_process_fakes(monkeypatch, controller, [None], exited=True)
+
+    def emit(*_args, **_kwargs):
+        process.stdout = io.BytesIO(claude_init_event() + b'{"type":"result","subtype":"success",'
+                                    b'"is_error":true,"result":"Failed to authenticate. API Error: '
+                                    b'401 OAuth access token has expired."}\n')
+        return process
+
+    monkeypatch.setattr(run.subprocess, "Popen", emit)
+    with pytest.raises(RuntimeError, match="authentication error"):
+        controller.run_solver(directory, directory / "workspace",
+                              {"sidecar": "fixture-owned"}, "fixture", {})
+    assert not (directory / "final-selection.json").exists()
 
 
 @pytest.mark.parametrize("lines", [

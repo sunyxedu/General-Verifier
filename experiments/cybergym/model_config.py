@@ -17,7 +17,7 @@ if BACKEND == "claude":
     SERVICE_TIER = None
     CONTEXT_WINDOW = 1_000_000
     AUTO_COMPACT_TOKEN_LIMIT = None
-    EGRESS_DOMAINS = (".anthropic.com", ".claude.ai")
+    EGRESS_DOMAINS = (".anthropic.com", ".claude.ai", ".claude.com")
     MODEL_CONFIG = None
 elif BACKEND == "codex":
     # Luna supports a 1,050,000-token total context and at most 922,000 input
