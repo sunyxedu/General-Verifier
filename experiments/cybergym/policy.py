@@ -34,6 +34,7 @@ class SearchPolicyGuard:
         self._sealed = False
         self._active_executions = 0
         self._evidence_complete = True
+        self._latch_origin = None
 
     def _observe(self, source, event_type):
         if not isinstance(event_type, str) or event_type not in ITEM_EVENTS:
@@ -50,6 +51,12 @@ class SearchPolicyGuard:
             if (type(missed) is int and missed > 0) or record.get("reader_failed") is True:
                 with self._lock:
                     self._evidence_complete = False
+                    if self._latch_origin is None:
+                        # Forensic origin only: structural keys, never payloads.
+                        self._latch_origin = {"phase": phase,
+                            "unparsed_stdout_lines": missed,
+                            "reader_failed": record.get("reader_failed"),
+                            "record_keys": sorted(str(key) for key in record)}
         if (isinstance(record, dict) and record.get("phase") == "cli_event"
                 and record.get("item_kind") == "web_search"):
             self._observe("verifier", record.get("event_type"))
@@ -86,7 +93,8 @@ class SearchPolicyGuard:
             return {"schema": POLICY_SCHEMA, "web_search": "disabled",
                     "violation": self._source is not None,
                     "violation_source": self._source, "event_type": self._event_type,
-                    "sealed": self._sealed, "evidence_complete": self._evidence_complete}
+                    "sealed": self._sealed, "evidence_complete": self._evidence_complete,
+                    "latch_origin": self._latch_origin}
 
     def begin_execution(self):
         with self._lock:
@@ -112,7 +120,7 @@ def validate_policy_snapshot(value):
     """Fail closed on missing/malformed responses; return observed violation."""
     if (not isinstance(value, dict)
             or set(value) != {"schema", "web_search", "violation", "violation_source", "event_type",
-                              "sealed", "evidence_complete"}
+                              "sealed", "evidence_complete", "latch_origin"}
             or value.get("schema") != POLICY_SCHEMA or value.get("web_search") != "disabled"
             or type(value.get("violation")) is not bool or type(value.get("sealed")) is not bool
             or type(value.get("evidence_complete")) is not bool):
@@ -128,7 +136,8 @@ def validate_policy_snapshot(value):
     if value["violation"]:
         return True
     if not value["evidence_complete"]:
-        raise SearchPolicyEvidenceError("verifier_search_policy_evidence_incomplete")
+        raise SearchPolicyEvidenceError("verifier_search_policy_evidence_incomplete:" +
+                                        json.dumps(value["latch_origin"], sort_keys=True))
     return False
 
 

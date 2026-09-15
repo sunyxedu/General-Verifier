@@ -402,7 +402,8 @@ def test_constructor_rejects_invalid_private_state_or_host_configuration(tmp_pat
 
 def clean_search_policy():
     return {"schema": "gv-search-policy-v1", "web_search": "disabled", "violation": False,
-            "violation_source": None, "event_type": None, "sealed": False, "evidence_complete": True}
+            "violation_source": None, "event_type": None, "sealed": False, "evidence_complete": True,
+            "latch_origin": None}
 
 
 class ToolUseBlock:

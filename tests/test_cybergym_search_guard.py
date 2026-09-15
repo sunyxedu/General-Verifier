@@ -175,6 +175,8 @@ def test_native_verifier_parser_gap_cannot_become_clean_policy(phase, gap):
     guard.observe_backend_phase({"phase": phase, **gap})
     assert guard.snapshot()["violation"] is False
     assert guard.snapshot()["evidence_complete"] is False
+    origin = guard.snapshot()["latch_origin"]
+    assert origin["phase"] == phase and "record_keys" in origin
     with pytest.raises(SearchPolicyEvidenceError, match="evidence_incomplete"):
         validate_policy_snapshot(guard.snapshot())
 
