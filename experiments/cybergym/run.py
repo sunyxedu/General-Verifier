@@ -303,9 +303,14 @@ def image_name(task, flavor):
 
 
 class Evaluation:
-    def __init__(self, root, port=18676):
+    def __init__(self, root, port=18676, workers=3, prune_scratch=False):
         self.root = root.resolve()
         self.port = port
+        self.workers = workers
+        # Space-constrained hosts prune each completed task's re-derivable
+        # bulk (task workspace, verifier scratch, dataset tarball) once the
+        # result is recorded; every log, ledger, and state record stays.
+        self.prune_scratch = prune_scratch
         self.experiment = "cybergym-luna-roles-" + hashlib.sha256(str(root).encode()).hexdigest()[:10]
         self.proxy = self.experiment + "-submit"
         self.server = "http://" + self.proxy
@@ -339,7 +344,8 @@ class Evaluation:
             "solver_backend": BACKEND,
             "model_context_window": CONTEXT_WINDOW,
             "model_auto_compact_token_limit": AUTO_COMPACT_TOKEN_LIMIT,
-            "workers": 3, "mode": "online", "difficulty": "level1",
+            "workers": self.workers, "attempt_scratch_pruned": self.prune_scratch,
+            "mode": "online", "difficulty": "level1",
             "task_timeout_seconds": None, "role_timeout_seconds": None,
             "evaluator_timeout_seconds": None, "fresh_thread_recovery": False,
             "score": "one-designated-final-vul-not-0-or-300-and-fix-0",
@@ -1330,11 +1336,22 @@ class Evaluation:
                 self.cleanup_runtime(runtime, directory, directory / "private")
             # Retain nativevolumes and stoppedcontainers for trace audit.
             release_vulnerable_image()
+            if self.prune_scratch and state.get("stage") == "completed":
+                self.prune_attempt_scratch(directory)
             with self.lock:
                 self.results[task] = state
                 atomic_json(self.root / "results.json", self.results)
         print(f"{task}: {state['outcome']}", flush=True)
         return state
+
+    @staticmethod
+    def prune_attempt_scratch(directory):
+        """Drop a completed task's re-derivable bulk; keep all evidence."""
+        for relative in ("workspace", "private/state/work"):
+            shutil.rmtree(directory / relative, ignore_errors=True)
+        for tarball in (directory / "data").rglob("repo-vul.tar.gz"):
+            with contextlib.suppress(OSError):
+                tarball.unlink()
 
     def batch(self, tasks, stage):
         if self.stop.is_set():
@@ -1343,7 +1360,7 @@ class Evaluation:
         atomic_json(self.root / "controller.json", {"pid": os.getpid(), "stage": stage,
             "updated_unix": time.time(), "profile_commit": self.frozen_commit})
         pending = [task for task in tasks if task not in self.results]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.workers) as pool:
             list(pool.map(self.run_task, pending))
         passed = sum(self.results[task].get("official_pass") is True for task in tasks)
         atomic_json(self.root / (stage + "-summary.json"), {"stage": stage, "total": len(tasks),
@@ -1448,11 +1465,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--port", type=int, default=18676)
+    parser.add_argument("--workers", type=int, default=3)
+    parser.add_argument("--prune-attempt-scratch", action="store_true")
     args = parser.parse_args()
     args.root.mkdir(parents=True, exist_ok=True)
     with (args.root / "controller.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        evaluation = Evaluation(args.root, args.port)
+        evaluation = Evaluation(args.root, args.port, workers=args.workers,
+                                prune_scratch=args.prune_attempt_scratch)
         previous = {kind: signal.getsignal(kind) for kind in (signal.SIGTERM, signal.SIGINT)}
         try:
             for kind in previous:

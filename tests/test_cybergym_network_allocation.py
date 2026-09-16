@@ -59,6 +59,8 @@ def allocator(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "PROFILE", tmp_path / "formal")
     controller = object.__new__(run.Evaluation)
     controller.stop = threading.Event()
+    controller.workers = 3
+    controller.prune_scratch = False
     return controller
 
 

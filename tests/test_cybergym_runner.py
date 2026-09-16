@@ -51,6 +51,8 @@ def controller(tmp_path, monkeypatch):
     evaluation.frozen_commit = "fixture-commit"
     evaluation.judge_process = None
     evaluation.created_proxy = False
+    evaluation.workers = 3
+    evaluation.prune_scratch = False
     # IPAM behavior has separate allocator regressions; legacy runtime
     # fixtures must never read or allocate the host's real Docker networks.
     monkeypatch.setattr(evaluation, "create_isolated_network",
@@ -2646,3 +2648,27 @@ def test_claude_solver_malformed_terminal_log_line_fails_closed(
         controller.run_solver(directory, directory / "workspace",
                               {"sidecar": "fixture-owned"}, "fixture", {})
     assert not (directory / "final-selection.json").exists()
+
+
+def test_workers_and_prune_scratch_are_runner_settings(tmp_path):
+    ev = run.Evaluation(tmp_path / "r", workers=1, prune_scratch=True)
+    assert ev.workers == 1 and ev.prune_scratch is True
+    default = run.Evaluation(tmp_path / "d")
+    assert default.workers == 3 and default.prune_scratch is False
+
+
+def test_prune_attempt_scratch_drops_bulk_keeps_evidence(tmp_path):
+    directory = tmp_path / "attempt"
+    for rel in ("workspace/src", "private/state/work/scratch", "data/arvo/1"):
+        (directory / rel).mkdir(parents=True)
+    (directory / "workspace" / "repo.c").write_text("src")
+    (directory / "private/state/work/scratch/harness").write_text("bin")
+    (directory / "private/state/events.jsonl").write_text("{}\n")
+    (directory / "data/arvo/1/repo-vul.tar.gz").write_bytes(b"tar")
+    (directory / "data/arvo/1/description.txt").write_text("desc")
+    run.Evaluation.prune_attempt_scratch(directory)
+    assert not (directory / "workspace").exists()
+    assert not (directory / "private/state/work").exists()
+    assert not (directory / "data/arvo/1/repo-vul.tar.gz").exists()
+    assert (directory / "private/state/events.jsonl").is_file()
+    assert (directory / "data/arvo/1/description.txt").is_file()
