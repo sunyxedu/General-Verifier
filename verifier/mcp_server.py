@@ -416,7 +416,13 @@ def _default_kernel(sc: Service, model, backend=None,
                   parallel_obligations=parallel_obligations,
                   parallel_claims=parallel_claims,
                   screener_role=screener,
-                  critic_rounds_nonfinal=nonfinal_rounds)
+                  critic_rounds_nonfinal=nonfinal_rounds,
+                  # online: overlap the critic's review with the checks
+                  # (GV_SPECULATIVE_DISCHARGE=0 disables)
+                  speculative_discharge=(
+                      sc.live_world
+                      and os.environ.get("GV_SPECULATIVE_DISCHARGE", "1")
+                      != "0"))
 
 
 # MCP wiring

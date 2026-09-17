@@ -547,6 +547,17 @@ class ClaimStore:
         return oid
 
     @_locked
+    def remove_obligation_edge(self, claim_id: str, obligation_id: str) -> None:
+        """Drop a claim's reliance on an obligation node it no longer
+        compiles to (a speculative discharge the critic's repair
+        dropped). The node and its evidence stay: content-addressed
+        verdicts are facts about the statement, not about this claim."""
+        self.db.execute(
+            "DELETE FROM obligation_edges WHERE claim=? AND obligation=?",
+            (claim_id, obligation_id))
+        self.db.commit()
+
+    @_locked
     def obligation_children(self, claim_id: str) -> List[Dict]:
         """The obligation nodes materialized under a claim, full rows,
         each carrying the edge attributes (severity, clause,

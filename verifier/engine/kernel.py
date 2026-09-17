@@ -149,6 +149,7 @@ class Kernel:
         record_boundary=None,
         screener_role=None,
         critic_rounds_nonfinal: Optional[int] = None,
+        speculative_discharge: bool = False,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -197,6 +198,17 @@ class Kernel:
         # the last repair stands unreviewed instead of failing closed;
         # 0 seats no critic for non-finals. None -> the full game.
         self.critic_rounds_nonfinal = critic_rounds_nonfinal
+        # SPECULATIVE DISCHARGE: start settling the compiler's obligations
+        # while the critic reviews them. Obligation nodes are
+        # content-addressed, so every obligation the repaired
+        # decomposition keeps is already settled when the review ends;
+        # only added ones are settled afterwards, and dropped ones lose
+        # their edge to this claim (their nodes and evidence remain facts
+        # about their statements). The claim's verdict is folded only
+        # over the reviewed decomposition — no soundness change, the
+        # critic's wall time simply overlaps the checks. Off by default
+        # (offline scoring and tests keep the sequential order).
+        self.speculative_discharge = speculative_discharge
         # admission screener: grades a non-final claim from the retained
         # record before any instrument is spent; `high` admits it as
         # confident (assumed, unverified). None -> every claim is checked.
@@ -492,11 +504,19 @@ class Kernel:
                 and self._screen(row)):
             return
 
-        obligations = self._compile_obligations(row)
+        speculated: Dict[str, tuple] = {}
+        speculate = None
+        if self.speculative_discharge and self.binder is not None:
+            def speculate(unreviewed):
+                for entry in self._settle_obligations(row, unreviewed):
+                    speculated[entry[0].id] = entry
+        obligations = self._compile_obligations(row, speculate=speculate)
         if obligations is None:
             return  # critic fail-closed: evidence and status already recorded
         if not obligations:
             # fail-closed: nothing checkable means nothing verified
+            for oid in speculated:
+                self.store.remove_obligation_edge(row["id"], oid)
             self.store.record_evidence(
                 row["id"],
                 {"outcome": OUTCOME_FAILED, "error": "no obligations"},
@@ -508,7 +528,21 @@ class Kernel:
             )
             return
 
-        settled = self._settle_obligations(row, obligations)
+        if speculated:
+            kept = {o.id for o in obligations}
+            for oid in list(speculated):
+                if oid not in kept:
+                    self.store.remove_obligation_edge(row["id"], oid)
+                    del speculated[oid]
+            fresh = [o for o in obligations if o.id not in speculated]
+            settled_fresh = self._settle_obligations(row, fresh) if fresh \
+                else []
+            by_id = dict(speculated)
+            by_id.update({r[0].id: r for r in settled_fresh})
+            # compile order, over the reviewed decomposition only
+            settled = [by_id[o.id] for o in obligations if o.id in by_id]
+        else:
+            settled = self._settle_obligations(row, obligations)
         outcomes = [r[1] for r in settled]
         bases = [r[3] or BASIS_RECORD for r in settled]
         strengths = [r[4] for r in settled]
@@ -734,6 +768,7 @@ class Kernel:
         if not os.path.isfile(task):
             return False
         self._final_contract: Optional[Dict] = None
+        self._contract_ready = threading.Event()
         self._precompile_thread = threading.Thread(
             target=self._precompile_final, name="gv-precompile", daemon=True)
         self._precompile_thread.start()
@@ -761,12 +796,14 @@ class Kernel:
             self.log.append("contract_precompiled",
                             {"task_hash": task_hash, "error": str(err)[:300],
                              "seconds": round(time.time() - started, 1)})
+            self._contract_ready.set()
             return
         if payload is None:
             self.log.append("contract_precompiled",
                             {"task_hash": task_hash,
                              "error": "decomposition failed critic",
                              "seconds": round(time.time() - started, 1)})
+            self._contract_ready.set()
             return
         self._final_contract = {"task_hash": task_hash, "payload": payload}
         self.log.append(
@@ -774,6 +811,9 @@ class Kernel:
             {"task_hash": task_hash,
              "obligations": [o["text"] for o in payload["obligations"]],
              "seconds": round(time.time() - started, 1)})
+        # the contract is usable from here on; a commit arriving during
+        # the prewarm below waits only for the batches it needs
+        self._contract_ready.set()
         # method batches: the oracle only reads, so its enumeration is
         # as valid now as at commit time; the scripts run against the
         # world as it is then
@@ -798,7 +838,7 @@ class Kernel:
                 or row["id"] == self.PRECOMPILE_ID \
                 or threading.current_thread() is thread:
             return None
-        thread.join()
+        self._contract_ready.wait()
         contract = getattr(self, "_final_contract", None)
         if not contract:
             return None
@@ -807,7 +847,11 @@ class Kernel:
             return None
         return contract["payload"]
 
-    def _compile_obligations(self, row: Dict):
+    def _compile_obligations(self, row: Dict, speculate=None):
+        """Compile the claim's obligations. With ``speculate`` (a callable
+        taking the compiler's unreviewed obligations and settling them),
+        the critic's review runs concurrently with those checks; the
+        reviewed decomposition is what this returns either way."""
         if self.contract_replay is not None:
             if self.live_world:
                 raise ValueError(
@@ -830,10 +874,10 @@ class Kernel:
             self._record_compiled_obligations(row, obligations)
             return obligations
 
-        payload = self._compile_obligation_payload(row)
+        payload = self._compile_obligation_payload(row, speculate=speculate)
         return self._materialize_obligations(row, payload)
 
-    def _compile_obligation_payload(self, row: Dict):
+    def _compile_obligation_payload(self, row: Dict, speculate=None):
         """Run the unchanged Compiler/Critic path and return its raw payload.
 
         This extraction is a seam for the explicit offline isolation setup;
@@ -856,6 +900,28 @@ class Kernel:
         )
         with model_scope(stage="contract_compile", round=0):
             payload = self.obligations_role.call(self.backend, variables)
+        if speculate is not None and self.critic_role is not None:
+            # SPECULATIVE DISCHARGE: the critic reviews while the
+            # compiler's obligations are already being settled; nodes
+            # are content-addressed, so the reviewed decomposition finds
+            # its kept obligations settled and only the added ones wait
+            from concurrent.futures import ThreadPoolExecutor
+            unreviewed = self._materialize_obligations(
+                row, payload, record=False) or []
+            self.log.append(
+                "speculative_discharge",
+                {"claim": row["id"],
+                 "obligations": [o.id for o in unreviewed]})
+            with ThreadPoolExecutor(max_workers=1,
+                                    thread_name_prefix="gv-critic") as pool:
+                review = submit_with_context(
+                    pool, self._critique, row, payload, variables)
+                speculate(unreviewed)
+                payload = review.result()
+            if payload is None:
+                for o in unreviewed:
+                    self.store.remove_obligation_edge(row["id"], o.id)
+            return payload
         return self._critique(row, payload, variables)
 
     def _obligation_compile_variables(self, row: Dict) -> Dict:

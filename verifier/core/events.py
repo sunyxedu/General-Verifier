@@ -63,6 +63,7 @@ EVENT_TYPES = (
     "contract_cache_hit",
 
     # obligation & critic agent
+    "speculative_discharge",
     "obligations_compiled",
     "obligations_residualized",
     "decomposition_attacked",
