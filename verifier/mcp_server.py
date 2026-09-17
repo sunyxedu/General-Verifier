@@ -183,7 +183,21 @@ class Service:
         except VERB_ERRORS as err:
             failure = str(err)
         if label not in self.builder.labels:
-            return {"error": failure or "commit failed"}
+            result = {"error": failure or "commit failed"}
+            if failure and "unknown claim reference" in failure:
+                # the solver cannot see the ledger's sequence numbers; an
+                # unresolved reference gets the record's live index so the
+                # retry needs no status round trip
+                effects = [l for l in self.builder.labels
+                           if l.startswith("effect:")]
+                result["known_references"] = (
+                    [l for l in self.builder.labels
+                     if not l.startswith("effect:")]
+                    + effects[-40:])
+                result["note"] = ("effect:<seq> names a recorded TOOL RESULT "
+                                  "by its ledger sequence number; the most "
+                                  "recent results are listed last")
+            return result
         claim_id = self.builder.labels[label]
         row = self.store.get(claim_id)
         status = row["status"]

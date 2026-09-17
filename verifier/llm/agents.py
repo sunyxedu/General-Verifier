@@ -411,32 +411,33 @@ class AgentBackend:
         if role is None:
             raise RoleError(f"unknown agent role: {role_name}")
         started = time.time()
-        before = len(self.transcripts)
+        attempts: List[Dict[str, Any]] = []   # this call's SDK attempts only
         error: Optional[str] = None
         try:
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
-                return asyncio.run(self.run(role, prompt))
+                return asyncio.run(self.run(role, prompt, attempts))
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=1) as pool:
                 return submit_with_context(
-                    pool, asyncio.run, self.run(role, prompt)).result()
+                    pool, asyncio.run,
+                    self.run(role, prompt, attempts)).result()
         except Exception as err:  # noqa: BLE001 - re-raised after the receipt
             error = str(err)[:300]
             raise
         finally:
-            self._receipt(role, started, before, error, variables)
+            self._receipt(role, started, attempts, error, variables)
 
-    def _receipt(self, role: AgentRole, started: float, before: int,
+    def _receipt(self, role: AgentRole, started: float,
+                 attempts: List[Dict[str, Any]],
                  error: Optional[str], variables: Dict[str, Any]) -> None:
         """One JSONL row per seat call in <cwd>/role_calls.jsonl: role,
         wall time, turns and usage of every SDK attempt. Pure telemetry
         for latency/cost breakdowns; never read by any seat."""
         if not self.cwd:
             return
-        attempts = self.transcripts[before:]
         row = {
             "role": role.name,
             "started": started,
@@ -463,7 +464,8 @@ class AgentBackend:
     TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
     transient_delays = (0, 20, 60, 120)   # seconds before each attempt
 
-    async def run(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
+    async def run(self, role: AgentRole, prompt: str,
+                  attempts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         One role run with backoff on transient infrastructure failures.
         Immediate re-prompts against a rate limit are useless (the Role-level
@@ -475,12 +477,14 @@ class AgentBackend:
             if delay:
                 await asyncio.sleep(delay)
             try:
-                return await self._attempt(role, prompt)
+                return await self._attempt(role, prompt, attempts)
             except _TransientSDKError as err:
                 last = str(err)
         raise RoleError(f"{role.name}: transient sdk failure persisted: {last}")
 
-    async def _attempt(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
+    async def _attempt(self, role: AgentRole, prompt: str,
+                       attempts: Optional[List[Dict[str, Any]]] = None
+                       ) -> Dict[str, Any]:
         stderr_tail: List[str] = []
 
         def keep_stderr(line: str) -> None:
@@ -499,7 +503,7 @@ class AgentBackend:
         except Exception as err:  # noqa: BLE001 - classified below
             error = err
 
-        self.transcripts.append({
+        transcript = {
             "role": role.name,
             "session_id": getattr(result, "session_id", None),
             "subtype": getattr(result, "subtype", None),
@@ -508,7 +512,11 @@ class AgentBackend:
             "usage": getattr(result, "usage", None),
             "api_error_status": getattr(result, "api_error_status", None),
             "stderr_tail": list(stderr_tail),
-        })
+            "error": str(error)[:300] if error is not None else None,
+        }
+        self.transcripts.append(transcript)
+        if attempts is not None:
+            attempts.append(transcript)
 
         if result is not None and result.structured_output is not None and result.subtype == "success":
             payload = result.structured_output
@@ -659,7 +667,9 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
         ]
     },
     tools=["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
-    max_turns=15,      # research takes room; still no Bash — no probing
+    # enumeration is design, not execution: the prompt states the tool
+    # budget the seat is held to, and the turn cap backs it mechanically
+    max_turns=12,
     wire_schema=ORACLE_EXECUTION_WIRE_SCHEMA,
     wire_lower=lower_oracle_execution_payload,
 )
