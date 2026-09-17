@@ -51,6 +51,23 @@ TAR_EXCLUDES = [".git", ".venv", "__pycache__", "experiments", ".gv",
                 ".gv-demo", ".idea", ".pytest_cache", "docs", "report",
                 "general-verifier-report", "*.pdf"]
 
+def login_access_token() -> str:
+    """The interactive Claude Code login's current access token (first-party
+    provider only). Harbor forwards CLAUDE_CODE_OAUTH_TOKEN into the task
+    container; a `claude setup-token` token is long-lived, while the
+    login's access token rotates every few hours, so it is re-read from the
+    credentials file at every trial start (GV_OAUTH_FROM_LOGIN=1)."""
+    path = Path(os.environ.get("GV_CLAUDE_CONFIG_DIR")
+                or os.path.expanduser("~/.claude")) / ".credentials.json"
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)["claudeAiOauth"]["accessToken"]
+
+
+def refresh_login_token() -> None:
+    if os.environ.get("GV_OAUTH_FROM_LOGIN") == "1":
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = login_access_token()
+
+
 GV_SUFFIX = (
     "\n\nFollow the claim protocol in your CLAUDE.md while you work: commit "
     "your key intermediate conclusions as claims, commit a final claim "
@@ -109,11 +126,15 @@ class GVClaudeCode(ClaudeCode):
             f"cd {GV_DEST} && uv sync"))
 
         # stable entry point for the MCP registration (claude spawns it with
-        # the agent user's env, so ANTHROPIC_API_KEY / PATH are inherited)
+        # the agent user's env, so the credential env / PATH are inherited).
+        # The provider selection is pinned explicitly: the shipped .env may
+        # name a different default than the host run was configured with.
         model = (self.model_name or "sonnet").split("/")[-1]
         wrapper = (
             "#!/bin/sh\n"
             'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"\n'
+            f"export GV_PROVIDER={shlex.quote(provider.PROVIDER)}\n"
+            f"export GV_MODEL={shlex.quote(str(provider.MODEL))}\n"
             f"exec uv run --project {GV_DEST} python -m verifier.mcp_server "
             f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
             f'--model {model} "$@"\n')
@@ -130,7 +151,8 @@ class GVClaudeCode(ClaudeCode):
             # pin the in-container claude (and the MCP server it spawns) to
             # DeepSeek — harbor only forwards BASE_URL + key, not the
             # DEFAULT_* model pins
-            "env": dict(provider.CLAUDE_ENV),
+            "env": {k: v for k, v in provider.CLAUDE_ENV.items()
+                    if k != "CLAUDE_CODE_OAUTH_TOKEN"},
             "hooks": {
                 "PreToolUse": [{"matcher": "*",
                                 "hooks": [hook("pre_tool_use.py")]}],
@@ -141,6 +163,7 @@ class GVClaudeCode(ClaudeCode):
     @override
     async def run(self, instruction: str, environment: BaseEnvironment,
                   context: AgentContext) -> None:
+        refresh_login_token()
         cfg = (EnvironmentPaths.agent_dir / "sessions").as_posix()
         protocol = (GV_ROOT / "protocol" / "solver-protocol.md").read_text()
         await self.exec_as_agent(environment, command=(
@@ -182,6 +205,7 @@ class RecClaudeCode(GVClaudeCode):
     @override
     async def run(self, instruction: str, environment: BaseEnvironment,
                   context: AgentContext) -> None:
+        refresh_login_token()
         cfg = (EnvironmentPaths.agent_dir / "sessions").as_posix()
         await self.exec_as_agent(environment, command=(
             f"mkdir -p {cfg} && "

@@ -13,10 +13,11 @@ Agents ll take their provider env from here:
 Experiments import it through the installed `verifier` package; gv_agent.py file-loads it from GV_ROOT.
 
 Configuration (.env, or real environment variables. The real environment wins; see .env.example for the full reference):
-  GV_PROVIDER = deepseek (default) | openrouter | custom
+  GV_PROVIDER = deepseek (default) | anthropic | openrouter | custom
   GV_MODEL    = model id on that provider (defaults below)
   DEEPSEEK_API_KEY / OPENROUTER_API_KEY = the key for the chosen provider.
   GV_ANTHROPIC_BASE_URL / GV_API_KEY / GV_LITELLM_MODEL = everything explicit, for GV_PROVIDER=custom.
+  CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY, or the interactive login) for GV_PROVIDER=anthropic.
 """
 import os
 
@@ -53,7 +54,20 @@ def cfg(name, default=None):
 
 PROVIDER = (cfg("GV_PROVIDER", "deepseek") or "deepseek").lower()
 
-if PROVIDER == "deepseek":
+if PROVIDER == "anthropic":
+    # First-party Claude: the CLI's own login. Credentials come from, in
+    # order, CLAUDE_CODE_OAUTH_TOKEN (a `claude setup-token` token, also the
+    # form Harbor forwards into task containers under CLAUDE_FORCE_OAUTH),
+    # ANTHROPIC_API_KEY / GV_API_KEY, or the interactive login's
+    # .credentials.json in the config dir. No base-URL override.
+    MODEL = cfg("GV_MODEL", "claude-sonnet-5")
+    ANTHROPIC_BASE_URL = None
+    OAUTH_TOKEN = cfg("CLAUDE_CODE_OAUTH_TOKEN")
+    API_KEY = cfg("GV_API_KEY") or cfg("ANTHROPIC_API_KEY")
+    KEY_ENV = "ANTHROPIC_API_KEY"
+    LITELLM_MODEL = f"anthropic/{MODEL}"
+    _X_API_KEY = API_KEY
+elif PROVIDER == "deepseek":
     MODEL = cfg("GV_MODEL", "deepseek-v4-flash")
     ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
     API_KEY = cfg("DEEPSEEK_API_KEY")
@@ -77,13 +91,25 @@ elif PROVIDER == "custom":
     _X_API_KEY = API_KEY
 else:
     raise RuntimeError(f"unknown GV_PROVIDER: {PROVIDER!r} "
-                       "(expected deepseek | openrouter | custom)")
+                       "(expected anthropic | deepseek | openrouter | custom)")
+
+if PROVIDER != "anthropic":
+    OAUTH_TOKEN = None
 
 # Kept for backward reference; prefer API_KEY.
 DEEPSEEK_API_KEY = API_KEY if PROVIDER == "deepseek" else \
     cfg("DEEPSEEK_API_KEY")
 
-CONFIG_DIR = os.path.expanduser(f"~/.claude-gv-{PROVIDER}")
+if PROVIDER == "anthropic" and not (OAUTH_TOKEN or API_KEY):
+    # credentials live in the interactive login's config dir; an explicit
+    # override lets a harness point at a staged copy
+    CONFIG_DIR = (cfg("GV_CLAUDE_CONFIG_DIR")
+                  or os.environ.get("CLAUDE_CONFIG_DIR")
+                  or os.path.expanduser("~/.claude"))
+else:
+    # token/key auth needs no login state: an isolated, hook-free config
+    # dir keeps verifier seats out of any solver-side settings
+    CONFIG_DIR = os.path.expanduser(f"~/.claude-gv-{PROVIDER}")
 
 # Text-only provider: the model cannot accept image content blocks.
 # Set GV_TEXT_ONLY=1 (env or .env) for models like deepseek-v4-flash;
@@ -91,9 +117,6 @@ CONFIG_DIR = os.path.expanduser(f"~/.claude-gv-{PROVIDER}")
 TEXT_ONLY = (cfg("GV_TEXT_ONLY", "") == "1")
 
 CLAUDE_ENV = {
-    "ANTHROPIC_BASE_URL": ANTHROPIC_BASE_URL,
-    "ANTHROPIC_AUTH_TOKEN": API_KEY,
-    "ANTHROPIC_API_KEY": _X_API_KEY,
     "ANTHROPIC_MODEL": MODEL,
     "ANTHROPIC_SMALL_FAST_MODEL": MODEL,
     "ANTHROPIC_DEFAULT_OPUS_MODEL": MODEL,
@@ -104,12 +127,33 @@ CLAUDE_ENV = {
     "API_TIMEOUT_MS": "3600000",
     "MCP_TIMEOUT": "600000",
     "MCP_TOOL_TIMEOUT": "14400000",
-    KEY_ENV: API_KEY,
 }
+if PROVIDER == "anthropic":
+    # first-party: no base URL; whichever credential is configured rides
+    # along (a token and a key together would make the CLI prefer the key)
+    if OAUTH_TOKEN:
+        CLAUDE_ENV["CLAUDE_CODE_OAUTH_TOKEN"] = OAUTH_TOKEN
+    elif API_KEY:
+        CLAUDE_ENV["ANTHROPIC_API_KEY"] = API_KEY
+else:
+    CLAUDE_ENV["ANTHROPIC_BASE_URL"] = ANTHROPIC_BASE_URL
+    CLAUDE_ENV["ANTHROPIC_AUTH_TOKEN"] = API_KEY
+    CLAUDE_ENV["ANTHROPIC_API_KEY"] = _X_API_KEY
+    CLAUDE_ENV[KEY_ENV] = API_KEY
 
 
 def validate_configuration():
     """Require credentials only when starting a provider-backed process."""
+    if PROVIDER == "anthropic":
+        if OAUTH_TOKEN or API_KEY:
+            return
+        credentials = os.path.join(CONFIG_DIR, ".credentials.json")
+        if not os.path.isfile(credentials):
+            raise RuntimeError(
+                "GV_PROVIDER=anthropic needs CLAUDE_CODE_OAUTH_TOKEN "
+                "(`claude setup-token`), ANTHROPIC_API_KEY, or a Claude "
+                f"Code login at {credentials}")
+        return
     if PROVIDER == "custom" and not (MODEL and ANTHROPIC_BASE_URL and API_KEY):
         raise RuntimeError("GV_PROVIDER=custom needs GV_MODEL, "
                            "GV_ANTHROPIC_BASE_URL and GV_API_KEY")

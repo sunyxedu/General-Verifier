@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -408,15 +410,53 @@ class AgentBackend:
         role = self.roles.get(role_name)
         if role is None:
             raise RoleError(f"unknown agent role: {role_name}")
+        started = time.time()
+        before = len(self.transcripts)
+        error: Optional[str] = None
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.run(role, prompt))
-        from concurrent.futures import ThreadPoolExecutor
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return asyncio.run(self.run(role, prompt))
+            from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return submit_with_context(
-                pool, asyncio.run, self.run(role, prompt)).result()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                return submit_with_context(
+                    pool, asyncio.run, self.run(role, prompt)).result()
+        except Exception as err:  # noqa: BLE001 - re-raised after the receipt
+            error = str(err)[:300]
+            raise
+        finally:
+            self._receipt(role, started, before, error, variables)
+
+    def _receipt(self, role: AgentRole, started: float, before: int,
+                 error: Optional[str], variables: Dict[str, Any]) -> None:
+        """One JSONL row per seat call in <cwd>/role_calls.jsonl: role,
+        wall time, turns and usage of every SDK attempt. Pure telemetry
+        for latency/cost breakdowns; never read by any seat."""
+        if not self.cwd:
+            return
+        attempts = self.transcripts[before:]
+        row = {
+            "role": role.name,
+            "started": started,
+            "finished": time.time(),
+            "seconds": round(time.time() - started, 3),
+            "attempts": len(attempts),
+            "num_turns": sum(a.get("num_turns") or 0 for a in attempts),
+            "cost_usd": sum(a.get("total_cost_usd") or 0 for a in attempts),
+            "usage": [a.get("usage") for a in attempts],
+            "subtypes": [a.get("subtype") for a in attempts],
+            "error": error,
+            "claim_text": str(variables.get("claim_text", ""))[:120],
+            "obligation_text": str(variables.get("obligation_text", ""))[:160],
+        }
+        try:
+            with open(os.path.join(self.cwd, "role_calls.jsonl"), "a",
+                      encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        except OSError:
+            pass
 
     # statuses worth waiting out (rate limit / overload / gateway); the CLI
     # sometimes reports these only as the opaque "error result: success"

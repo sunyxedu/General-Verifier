@@ -57,6 +57,18 @@ CODEX_AGENT = "codex_agent:TieredCodex"
 RUNTIME_SNAPSHOT_ROOT = "/gv-runtime-snapshot"
 
 
+def login_access_token():
+    """The interactive Claude Code login's current access token (same
+    reader as gv_agent.login_access_token, duplicated because this module
+    runs outside Harbor's Python)."""
+    import json
+    path = os.path.join(os.environ.get("GV_CLAUDE_CONFIG_DIR")
+                        or os.path.expanduser("~/.claude"),
+                        ".credentials.json")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)["claudeAiOauth"]["accessToken"]
+
+
 def read_tasks(path=None):
     path = path or os.path.join(HERE, "tasks.txt")
     with open(path) as f:
@@ -177,8 +189,25 @@ def main():
     # server-side, so `-m anthropic/sonnet` lands on DeepSeek too.
     env = (dict(os.environ) if args.arm in ("codex", "rec-codex")
            else provider.claude_env())
+    claude_model = args.model or (f"anthropic/{provider.MODEL}"
+                                  if provider.PROVIDER == "anthropic"
+                                  else "anthropic/sonnet")
+    if args.arm not in ("codex", "rec-codex") and provider.PROVIDER == "anthropic":
+        # first-party subscription auth: harbor forwards the OAuth token
+        # into the container (CLAUDE_FORCE_OAUTH mirrors codex's auth
+        # upload). Without a `claude setup-token` token the interactive
+        # login's rotating access token is used and refreshed per trial.
+        env["CLAUDE_FORCE_OAUTH"] = "1"
+        if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = login_access_token()
+            env["GV_OAUTH_FROM_LOGIN"] = "1"
+            print("[tb] no CLAUDE_CODE_OAUTH_TOKEN: using the Claude Code "
+                  "login's access token (rotates; `claude setup-token` "
+                  "gives a long-lived one)", flush=True)
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
     if args.arm == "plain":
-        cmd += ["-a", "claude-code", "-m", args.model or "anthropic/sonnet"]
+        cmd += ["-a", "claude-code", "-m", claude_model]
     elif args.arm == "codex":
         cmd += ["-a", CODEX_AGENT]
         if args.model:
@@ -217,7 +246,7 @@ def main():
         env.pop("OPENAI_API_KEY", None)      # subscription auth, not a key
     elif args.arm == "rec":
         cmd += ["-a", "gv_agent:RecClaudeCode",
-                "-m", args.model or "anthropic/sonnet",
+                "-m", claude_model,
                 "--agent-timeout-multiplier", "1000",
                 "--agent-setup-timeout-multiplier", "100",
                 # The recorder ledger is always required. Additional roots
@@ -228,7 +257,7 @@ def main():
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
     else:  # gv
         cmd += ["-a", "gv_agent:GVClaudeCode",
-                "-m", args.model or "anthropic/sonnet",
+                "-m", claude_model,
                 # effectively no agent time limit (user directive): harbor
                 # only offers multipliers over the per-task official base,
                 # so use one large enough to never bind (900s base -> ~10d)
