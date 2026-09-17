@@ -462,7 +462,9 @@ class AgentBackend:
     # statuses worth waiting out (rate limit / overload / gateway); the CLI
     # sometimes reports these only as the opaque "error result: success"
     TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
-    transient_delays = (0, 20, 60, 120)   # seconds before each attempt
+    # seconds before each attempt: a subscription's rate limit recovers on
+    # the order of minutes, and a seat lost to it costs a whole claim
+    transient_delays = (0, 20, 60, 120, 240, 480)
 
     async def run(self, role: AgentRole, prompt: str,
                   attempts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
