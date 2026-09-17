@@ -75,19 +75,20 @@ def _login_credentials():
         return json.load(f)["claudeAiOauth"]
 
 
-def login_access_token(min_minutes_left: float = 60.0) -> str:
+def login_access_token(min_minutes_left: float = 75.0) -> str:
     """The login's current access token, guaranteed to have at least
-    ``min_minutes_left`` of life: the CLI rotates access tokens on a
-    short cycle and refreshes only on demand, so when the remaining life
-    is too short for a trial this triggers a refresh (a trivial headless
-    call once the token has expired) and waits for the new one."""
+    ``min_minutes_left`` of life: the CLI rotates access tokens on an
+    eight-hour cycle and refreshes only on demand, so when the remaining
+    life is too short for a trial this waits for the expiry, triggers the
+    refresh (a trivial headless call), and returns the rotated token. A
+    trial that outlives its token fails with 401 mid-way, which no
+    retry can repair — hence the wait."""
     import subprocess
     import time
-    deadline = time.time() + 30 * 60
     while True:
         creds = _login_credentials()
         left = creds["expiresAt"] / 1000 - time.time()
-        if left >= min_minutes_left * 60 or time.time() > deadline:
+        if left >= min_minutes_left * 60:
             return creds["accessToken"]
         if left <= 0:
             subprocess.run(
