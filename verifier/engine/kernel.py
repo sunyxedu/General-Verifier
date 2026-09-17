@@ -829,21 +829,22 @@ class Kernel:
         else:
             list(pool.map(lambda o: enumerate(row, o), obligations))
 
-    def _precompiled_contract(self, row: Dict) -> Optional[Dict]:
+    def _precompiled_contract(self, row: Dict, speculate=None) -> Optional[Dict]:
         """The precompiled final contract for the current task statement,
-        waiting for a precompile still in flight (the wait is still
-        shorter than compiling from scratch)."""
+        waiting for a precompile still under review. While waiting, a
+        caller that can speculate settles the compiler's draft: whatever
+        the review keeps is then already settled (content-addressed
+        nodes); the caller reconciles against the reviewed contract."""
         thread = getattr(self, "_precompile_thread", None)
         if thread is None or row["kind"] != CLAIM_FINAL \
                 or row["id"] == self.PRECOMPILE_ID \
                 or threading.current_thread() is thread:
             return None
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        task_hash = self._task_hash(state)
         self._contract_ready.wait()
         contract = getattr(self, "_final_contract", None)
-        if not contract:
-            return None
-        state = os.path.dirname(os.path.abspath(self.log.path))
-        if contract["task_hash"] != self._task_hash(state):
+        if not contract or contract["task_hash"] != task_hash:
             return None
         return contract["payload"]
 

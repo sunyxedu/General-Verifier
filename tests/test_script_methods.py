@@ -98,17 +98,53 @@ def test_script_runs_verbatim_and_the_reader_settles_it(tmp_path):
     assert result.inputs[0]["ref"] == "target.txt"
 
 
-def test_reader_may_refute_at_decisive_with_a_witness(tmp_path):
+COUNTERSIGN = {"sufficient": "yes", "faithful": "yes", "degradation": "n/a",
+               "reason": "the printed count contradicts the obligation"}
+
+
+def test_reader_may_refute_at_decisive_once_the_judger_countersigns(tmp_path):
     game, backend, discharger, artifacts, log = build(
         tmp_path,
         {"script_judger": reader("refuted", witness="printed 2, not 3",
-                                 kind="execution")},
+                                 kind="execution"),
+         "judger": COUNTERSIGN},
         [script_method("printf 'a\\nb\\n' | wc -l")])
     result = game.run(ROW, Obligation("c1", "three lines",
                                       required_basis="world"))
     assert result.outcome == "refuted"
     assert result.witness == "printed 2, not 3"
     assert result.witness_kind == "execution"
+    roles = [c["role"] for c in backend.calls]
+    assert roles == ["oracles", "script_judger", "judger"]
+    # the countersigning judger was handed the retained script run
+    seen = backend.calls[2]["variables"]
+    evidence = json.loads(seen["evidence"])
+    assert evidence["outcome"] == "refuted"
+    assert artifacts.get(evidence["artifact_digest"])["instrument"] == "script"
+    verdicts = [e["payload"] for e in log.replay()
+                if e["type"] == "judger_verdict"]
+    assert [v.get("source") for v in verdicts] == [
+        "script", "refutation countersign"]
+
+
+def test_a_disputed_refutation_is_a_failed_attempt(tmp_path):
+    game, backend, discharger, artifacts, log = build(
+        tmp_path,
+        {"script_judger": reader("refuted", witness="printed 2, not 3",
+                                 kind="execution"),
+         "judger": {"sufficient": "yes", "faithful": "no",
+                    "degradation": "n/a",
+                    "reason": "the file at the task address has 3 lines; "
+                              "the script read a stale copy"}},
+        [script_method("printf 'a\\nb\\n' | wc -l")])
+    result = game.run(ROW, Obligation("c1", "three lines",
+                                      required_basis="world"))
+    assert result.outcome == "failed"
+    rejected = [e["payload"]["reason"] for e in log.replay()
+                if e["type"] == "method_rejected"]
+    assert any("not countersigned" in r for r in rejected)
+    # a holds never needs the countersign
+    assert [c["role"] for c in backend.calls].count("judger") == 1
 
 
 def test_refutation_below_decisive_is_a_contrary_signal_not_a_verdict(tmp_path):

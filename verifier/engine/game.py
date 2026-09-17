@@ -1359,6 +1359,29 @@ class BindingGame:
             self._reject(row, obligation, method, structural)
             attempt.rejected = structural
             return None
+        if outcome == OUTCOME_REFUTED and self.judger_role is not None:
+            # REFUTATION COUNTERSIGN: a refutation is the one verdict that
+            # can send the solver to break a right delivery, and on this
+            # path a single no-tools reader produced it. The independent
+            # judger, with the artifact and the world in reach, must
+            # countersign both signatures before it settles; a disputed
+            # refutation is a failed attempt with the dispute on record.
+            reading = attempt.audit
+            counter = self._judge(obligation, method, result, attempt,
+                                  degradation=degradation,
+                                  source="refutation countersign")
+            attempt.audit = reading
+            if not (counter.get("sufficient") == "yes"
+                    and counter.get("faithful") == "yes"):
+                reason = ("refutation not countersigned: "
+                          f"{counter.get('reason', '')}")
+                attempt.audit = dict(attempt.audit, countersign=counter)
+                if counter.get("sufficient") == "no":
+                    attempt.audit["_structural"] = True
+                self._reject(row, obligation, method, reason)
+                attempt.rejected = reason
+                return None
+            attempt.audit = dict(attempt.audit, countersign=counter)
         return self._settle(row, obligation, attempts, method, result,
                             audit=attempt.audit)
 
@@ -1583,7 +1606,8 @@ class BindingGame:
                degradation: str = "(none — decisive method, no degradation "
                                   "to audit)",
                method_attempt: int = 0,
-               independent_judger: bool = False) -> Dict[str, str]:
+               independent_judger: bool = False,
+               source: Optional[str] = None) -> Dict[str, str]:
         evidence = {
             "outcome": result.outcome,
             "witness": result.witness,
@@ -1763,7 +1787,8 @@ class BindingGame:
         self.log.append(
             "judger_verdict",
             {"obligation": obligation.id, "redo": redo,
-             "procedure": method["procedure"][:80], **public},
+             "procedure": method["procedure"][:80],
+             **({"source": source} if source else {}), **public},
         )
         return verdict
 
