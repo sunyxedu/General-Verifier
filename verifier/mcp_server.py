@@ -404,15 +404,20 @@ def _default_kernel(sc: Service, model, backend=None,
     screener = (SCREENER_AGENT
                 if sc.live_world and os.environ.get("GV_SCREENER", "1") != "0"
                 else None)
-    # online, non-final decompositions get an ADVISORY critic budget (one
-    # review, the repair stands): the task contract lives at the final,
-    # which keeps the full adversarial game. GV_CRITIC_ROUNDS_NONFINAL
-    # sets the budget (0 = no critic for non-finals); offline scoring
-    # keeps the full game everywhere.
+    # online, the task contract lives at the final, which keeps the full
+    # adversarial game; a non-final decomposition is the compiler's own by
+    # default (GV_CRITIC_ROUNDS_NONFINAL=0). A positive budget seats an
+    # ADVISORY review: that many rounds, the last repair standing. Offline
+    # scoring keeps the full game everywhere. (An advisory repair was
+    # observed to replace a concrete obligation with a vaguer, costlier
+    # one; the solver's intermediate feedback is better served by the
+    # compiler's decomposition, gated by the same evidence axioms.)
     nonfinal_rounds = None
     if sc.live_world:
-        nonfinal_rounds = _parallel_default("GV_CRITIC_ROUNDS_NONFINAL", 1)
-        if os.environ.get("GV_CRITIC_ROUNDS_NONFINAL") == "0":
+        try:
+            nonfinal_rounds = max(
+                0, int(os.environ.get("GV_CRITIC_ROUNDS_NONFINAL", "0")))
+        except ValueError:
             nonfinal_rounds = 0
     return Kernel(sc.store, sc.log, backend, sc.artifacts,
                   obligations_role=obligations,

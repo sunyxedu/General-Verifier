@@ -19,6 +19,12 @@ hold **load-bearing conclusions, not a diary**. Decide per claim, from the task 
   its output; a command's result needs no claim of its own — cite it as `effect:<seq>`
   from the claim that relies on it. Do not commit narration ("I will now …"), restated
   task text, or trivially re-observable facts.
+- **One conclusion per claim, without the evidence.** The counts, listings, and outputs
+  that support a conclusion are already on the record; cite the tool executions that
+  produced them as `effect:<seq>` deps instead of copying them into the statement. A
+  bundled claim ("A, because B (12345 lines), and therefore C") compiles into many
+  checks and waits for the slowest of them; three short claims each verify quickly, and a
+  refutation then points at the one that is wrong.
 - Most tasks need **zero to four** intermediate claims plus one `final`. Fewer, sharper
   claims mean less waiting and a clearer certificate; the final's verdict does not depend
   on how many intermediate claims you made.

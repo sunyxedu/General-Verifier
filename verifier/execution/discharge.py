@@ -90,7 +90,7 @@ class DischargeResult:
 # a mechanically executed method: the exact script that ran and what it
 # left behind. Read by the script judger; nothing else interprets it.
 SCRIPT_OUTPUT_CAP = 24_000
-SCRIPT_TIMEOUT_DEFAULT = 600
+SCRIPT_TIMEOUT_DEFAULT = 300   # the oracle is told "a few minutes"
 
 
 @dataclass(frozen=True)
