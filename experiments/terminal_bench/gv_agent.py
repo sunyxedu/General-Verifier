@@ -71,6 +71,14 @@ def refresh_login_token() -> None:
         os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = login_access_token()
 
 
+TOKEN_FILE = ".gv-oauth-token"
+# host GV_* variables are forwarded into the in-container MCP server's
+# environment (verifier knobs such as GV_SCREENER, GV_PARALLEL_OBLIGATIONS,
+# GV_MAX_CONCURRENT_SEATS); these name host-side paths or launcher state
+WRAPPER_ENV_SKIP = {"GV_OAUTH_FROM_LOGIN", "GV_CLAUDE_CONFIG_DIR",
+                    "GV_HOOK_FEED", "GV_PROVIDER", "GV_MODEL", "GV_TRIGGER"}
+
+
 GV_SUFFIX = (
     "\n\nFollow the claim protocol in your CLAUDE.md while you work: commit "
     "your key intermediate conclusions as claims, commit a final claim "
@@ -139,12 +147,29 @@ class GVClaudeCode(ClaudeCode):
             'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"\n'
             f"export GV_PROVIDER={shlex.quote(provider.PROVIDER)}\n"
             f"export GV_MODEL={shlex.quote(str(provider.MODEL))}\n"
+            + "".join(f"export {k}={shlex.quote(v)}\n"
+                      for k, v in sorted(os.environ.items())
+                      if k.startswith("GV_") and k not in WRAPPER_ENV_SKIP)
+            # the CLI does not hand its own credential env to MCP servers;
+            # the trial stages the token in a file the wrapper reads
+            f'if [ -f "$HOME/{TOKEN_FILE}" ]; then '
+            f'export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/{TOKEN_FILE}")"; fi\n'
             f"exec uv run --project {GV_DEST} python -m verifier.mcp_server "
             f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
             f'--model {model} "$@"\n')
         await self.exec_as_root(environment, command=(
             f"printf %s {shlex.quote(wrapper)} > {MCP_SERVER} && "
             f"chmod 755 {MCP_SERVER}"))
+
+    async def _stage_token(self, environment: BaseEnvironment) -> None:
+        """Stage the verifier seats' credential where the MCP wrapper reads
+        it (outside /gv-state, which is pulled as an artifact)."""
+        token = (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or "").strip()
+        if not token:
+            return
+        await self.exec_as_agent(environment, command=(
+            f'umask 077; printf %s "$GV_TOKEN" > "$HOME/{TOKEN_FILE}"'),
+            env={"GV_TOKEN": token})
 
     # -- per-run config ----------------------------------------------------
     def _settings_json(self) -> str:
@@ -168,6 +193,7 @@ class GVClaudeCode(ClaudeCode):
     async def run(self, instruction: str, environment: BaseEnvironment,
                   context: AgentContext) -> None:
         refresh_login_token()
+        await self._stage_token(environment)
         cfg = (EnvironmentPaths.agent_dir / "sessions").as_posix()
         protocol = (GV_ROOT / "protocol" / "solver-protocol.md").read_text()
         await self.exec_as_agent(environment, command=(
