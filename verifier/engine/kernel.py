@@ -498,10 +498,25 @@ class Kernel:
         # already settles is assumed, not checked. A final is the task
         # contract and is always checked; an explicit request (force)
         # always checks.
-        if (self.screener_role is not None and not force
-                and row["kind"] != CLAIM_FINAL
-                and row["status"] == STATUS_UNVERIFIED
-                and self._screen(row)):
+        screen = (self.screener_role is not None and not force
+                  and row["kind"] != CLAIM_FINAL
+                  and row["status"] == STATUS_UNVERIFIED)
+        compiled = None
+        if screen and self.speculative_discharge:
+            # the compiler starts alongside the screener: on anything
+            # below `high` its answer is ready when the screener returns;
+            # on `high` the call is simply dropped (a spent seat, no
+            # waiting solver)
+            from concurrent.futures import ThreadPoolExecutor
+            variables = self._compile_inputs(row)
+            pool = ThreadPoolExecutor(max_workers=1,
+                                      thread_name_prefix="gv-compile")
+            compiled = (variables,
+                        submit_with_context(pool, self.obligations_role.call,
+                                            self.backend, variables))
+            pool.shutdown(wait=False)
+            self.log.append("speculative_compile", {"claim": row["id"]})
+        if screen and self._screen(row):
             return
 
         speculated: Dict[str, tuple] = {}
@@ -510,7 +525,8 @@ class Kernel:
             def speculate(unreviewed):
                 for entry in self._settle_obligations(row, unreviewed):
                     speculated[entry[0].id] = entry
-        obligations = self._compile_obligations(row, speculate=speculate)
+        obligations = self._compile_obligations(row, speculate=speculate,
+                                                compiled=compiled)
         if obligations is None:
             return  # critic fail-closed: evidence and status already recorded
         if not obligations:
@@ -848,7 +864,8 @@ class Kernel:
             return None
         return contract["payload"]
 
-    def _compile_obligations(self, row: Dict, speculate=None):
+    def _compile_obligations(self, row: Dict, speculate=None,
+                             compiled=None):
         """Compile the claim's obligations. With ``speculate`` (a callable
         taking the compiler's unreviewed obligations and settling them),
         the critic's review runs concurrently with those checks; the
@@ -875,10 +892,22 @@ class Kernel:
             self._record_compiled_obligations(row, obligations)
             return obligations
 
-        payload = self._compile_obligation_payload(row, speculate=speculate)
+        payload = self._compile_obligation_payload(
+            row, speculate=speculate, compiled=compiled)
         return self._materialize_obligations(row, payload)
 
-    def _compile_obligation_payload(self, row: Dict, speculate=None):
+    def _compile_inputs(self, row: Dict) -> Dict:
+        """The Compiler's bound inputs for a non-final claim (the same
+        values the inline compile uses), built without invoking a role."""
+        return bind_source_evidence_variables(
+            self.log,
+            self._obligation_compile_variables(row),
+            enabled=(getattr(self.backend, "compact_inspection", False)
+                     is True),
+        )
+
+    def _compile_obligation_payload(self, row: Dict, speculate=None,
+                                    compiled=None):
         """Run the unchanged Compiler/Critic path and return its raw payload.
 
         This extraction is a seam for the explicit offline isolation setup;
@@ -893,14 +922,13 @@ class Kernel:
         handled, payload = self._authority_final_contract(row, state)
         if handled:
             return payload
-        variables = bind_source_evidence_variables(
-            self.log,
-            self._obligation_compile_variables(row),
-            enabled=(getattr(self.backend, "compact_inspection", False)
-                     is True),
-        )
-        with model_scope(stage="contract_compile", round=0):
-            payload = self.obligations_role.call(self.backend, variables)
+        if compiled is not None:
+            variables, future = compiled
+            payload = future.result()
+        else:
+            variables = self._compile_inputs(row)
+            with model_scope(stage="contract_compile", round=0):
+                payload = self.obligations_role.call(self.backend, variables)
         if speculate is not None and self.critic_role is not None:
             # SPECULATIVE DISCHARGE: the critic reviews while the
             # compiler's obligations are already being settled; nodes

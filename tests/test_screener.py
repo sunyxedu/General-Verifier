@@ -187,3 +187,60 @@ def test_no_screener_seated_checks_everything(tmp_path):
     cid = store.add_claim(Claim(CLAIM_ASSERTION, "x holds"))
     assert store.status(cid) == "verified"
     assert [c["role"] for c in backend.calls] == ["obligations"]
+
+
+def test_compile_starts_alongside_the_screener_when_speculating(tmp_path):
+    import threading
+    seen = []
+    gate = threading.Event()
+
+    def compile_role(variables):
+        seen.append("compile")
+        gate.wait(5)
+        return COMPILE(variables)
+
+    def screener(variables):
+        seen.append("screener")
+        gate.set()
+        return MEDIUM
+
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": compile_role,
+                              "screener": screener})
+    discharger = StubDischarger()
+    Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
+           critic_role=None, discharger=discharger, binder=discharger,
+           screener_role=SCREENER_AGENT, speculative_discharge=True)
+    discharger.run = lambda row, obligation: discharger.discharge(
+        row, obligation)
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "x holds"))
+
+    assert store.status(cid) == "verified"
+    # the compiler was running while the screener answered, and its
+    # answer was used: exactly one compile call
+    assert seen == ["compile", "screener"]
+    assert [c["role"] for c in backend.calls].count("obligations") == 1
+    assert [e for e in log.replay() if e["type"] == "speculative_compile"]
+
+
+def test_a_high_screen_drops_the_speculative_compile(tmp_path):
+    seen = []
+
+    def compile_role(variables):
+        seen.append("compile")
+        return COMPILE(variables)
+
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": compile_role, "screener": HIGH})
+    discharger = StubDischarger()
+    Kernel(store, log, backend, ArtifactStore(os.path.join(tmp_path, "art")),
+           critic_role=None, discharger=discharger, binder=discharger,
+           screener_role=SCREENER_AGENT, speculative_discharge=True)
+
+    cid = store.add_claim(Claim(CLAIM_ASSERTION, "x holds"))
+
+    assert store.get(cid)["confident"] is True
+    assert discharger.seen == []
