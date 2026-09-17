@@ -56,6 +56,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import nullcontext
+import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -237,6 +238,25 @@ class BindingGame:
         # Default-off transport experiment. It keeps the same fresh Judger
         # seat and schema, but cannot share accepted methods while enabled.
         self.typed_adapter_judger_packet = typed_adapter_judger_packet
+        # method batches enumerated ahead of time (the final-contract
+        # precompile), keyed by obligation node id: the first-pass
+        # enumeration of a matching obligation is served from here
+        self.batch_cache: Dict[str, List[Dict[str, str]]] = {}
+        self._cache_lock = threading.Lock()
+
+    def prewarm(self, row: Dict, obligation: Obligation) -> None:
+        """Enumerate an obligation's first method batch now and keep it
+        for the commit that will need it."""
+        try:
+            methods = self._enumerate(row, obligation)
+        except RoleError as err:
+            self.log.append(
+                "methods_enumerated",
+                {"claim": row["id"], "obligation": obligation.id,
+                 "prewarm": True, "error": str(err)})
+            return
+        with self._cache_lock:
+            self.batch_cache[obligation.id] = methods
 
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
@@ -1449,6 +1469,20 @@ class BindingGame:
         method_feedback: str = "(none)",
         oracle_round: int = 0,
     ) -> List[Dict[str, str]]:
+        if method_feedback == "(none)":
+            with self._cache_lock:
+                cached = self.batch_cache.pop(obligation.id, None)
+            if cached is not None:
+                self.log.append(
+                    "methods_enumerated",
+                    {"claim": row["id"], "obligation": obligation.id,
+                     "repair": False, "cached": True,
+                     "methods": [{"procedure": m["procedure"][:80],
+                                  "level": m.get("level", ""),
+                                  "basis": m.get("basis", ""),
+                                  "strength": _method_strength(m)}
+                                 for m in cached]})
+                return [dict(m) for m in cached]
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
         catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()

@@ -140,6 +140,12 @@ class Service:
         # a restarted server rebuilds its view from its own ledger
         for event in self.log.replay():
             self.builder.feed(event)
+        # online: compile the final's task contract and its method
+        # batches while the solver works (GV_FINAL_PRECOMPILE=0 disables)
+        if live_world and os.environ.get("GV_FINAL_PRECOMPILE", "1") != "0":
+            start = getattr(self.kernel, "start_final_precompile", None)
+            if start is not None:
+                start()
 
     # hook feed
     def _ingest_hook_event(self, raw_event: Dict[str, Any]) -> None:

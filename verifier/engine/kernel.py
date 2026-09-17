@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from typing import Dict, List, Optional
@@ -697,6 +698,106 @@ class Kernel:
             return set()
         return set(self.store.backward_slice(row["id"])[1:])
 
+    # final-contract precompile: the task contract does not depend on the
+    # solver's final wording (it is compiled from the authoritative task
+    # statement with solver premises withheld), so it can be compiled —
+    # and its methods enumerated — while the solver is still working,
+    # off the critical path. Keyed by the task statement's content.
+    PRECOMPILE_ID = "precompile:final"
+    PRECOMPILE_TEXT = (
+        "The task stated in the authoritative task statement has been "
+        "completed as required. (The solver's own final wording is not "
+        "available yet: compile the contract from the task statement "
+        "alone; where the task's answer would be carried by the solver's "
+        "response rather than by a named artifact, phrase that condition "
+        "on the final claim's stated answer.)")
+
+    def start_final_precompile(self) -> bool:
+        """Compile the final's task contract (compiler + critic) and
+        enumerate a method batch per obligation in a background thread.
+        Returns False when there is nothing to precompile (no task
+        statement, no live world, no binder, already started)."""
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        if not self.live_world or self.binder is None \
+                or getattr(self, "_precompile_thread", None) is not None:
+            return False
+        task = os.path.join(state, "task.md")
+        if not os.path.isfile(task):
+            return False
+        self._final_contract: Optional[Dict] = None
+        self._precompile_thread = threading.Thread(
+            target=self._precompile_final, name="gv-precompile", daemon=True)
+        self._precompile_thread.start()
+        return True
+
+    @staticmethod
+    def _task_hash(state: str) -> Optional[str]:
+        task = os.path.join(state, "task.md")
+        if not os.path.isfile(task):
+            return None
+        with open(task, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    def _precompile_final(self) -> None:
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        task_hash = self._task_hash(state)
+        row = {"id": self.PRECOMPILE_ID, "kind": CLAIM_FINAL,
+               "text": self.PRECOMPILE_TEXT}
+        started = time.time()
+        try:
+            with model_scope(claim_id=row["id"], claim_kind=CLAIM_FINAL,
+                             locus="final_task"):
+                payload = self._compile_obligation_payload(row)
+        except Exception as err:  # noqa: BLE001 - background, never fatal
+            self.log.append("contract_precompiled",
+                            {"task_hash": task_hash, "error": str(err)[:300],
+                             "seconds": round(time.time() - started, 1)})
+            return
+        if payload is None:
+            self.log.append("contract_precompiled",
+                            {"task_hash": task_hash,
+                             "error": "decomposition failed critic",
+                             "seconds": round(time.time() - started, 1)})
+            return
+        self._final_contract = {"task_hash": task_hash, "payload": payload}
+        self.log.append(
+            "contract_precompiled",
+            {"task_hash": task_hash,
+             "obligations": [o["text"] for o in payload["obligations"]],
+             "seconds": round(time.time() - started, 1)})
+        # method batches: the oracle only reads, so its enumeration is
+        # as valid now as at commit time; the scripts run against the
+        # world as it is then
+        obligations = self._materialize_obligations(row, payload,
+                                                    record=False) or []
+        enumerate = getattr(self.binder, "prewarm", None)
+        if enumerate is None:
+            return
+        pool = self._obligation_pool()
+        if pool is None:
+            for obligation in obligations:
+                enumerate(row, obligation)
+        else:
+            list(pool.map(lambda o: enumerate(row, o), obligations))
+
+    def _precompiled_contract(self, row: Dict) -> Optional[Dict]:
+        """The precompiled final contract for the current task statement,
+        waiting for a precompile still in flight (the wait is still
+        shorter than compiling from scratch)."""
+        thread = getattr(self, "_precompile_thread", None)
+        if thread is None or row["kind"] != CLAIM_FINAL \
+                or row["id"] == self.PRECOMPILE_ID \
+                or threading.current_thread() is thread:
+            return None
+        thread.join()
+        contract = getattr(self, "_final_contract", None)
+        if not contract:
+            return None
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        if contract["task_hash"] != self._task_hash(state):
+            return None
+        return contract["payload"]
+
     def _compile_obligations(self, row: Dict):
         if self.contract_replay is not None:
             if self.live_world:
@@ -731,6 +832,10 @@ class Kernel:
         :meth:`_compile_obligations` and materializes exactly once afterwards.
         """
         state = os.path.dirname(os.path.abspath(self.log.path))
+        cached = self._precompiled_contract(row)
+        if cached is not None:
+            self.log.append("contract_cache_hit", {"claim": row["id"]})
+            return cached
         handled, payload = self._authority_final_contract(row, state)
         if handled:
             return payload
@@ -1116,7 +1221,8 @@ class Kernel:
         self.log.append("obligations_compiled", event)
 
     def _critique(self, row: Dict, payload: Dict, variables: Dict, *,
-                  backend=None, obligations_role=None, critic_role=None):
+                  backend=None, obligations_role=None, critic_role=None,
+                  record: bool = True):
         """
         Adversarial second signature on the decomposition: the critic
         tries to construct a world where every obligation and every verified
@@ -1306,6 +1412,8 @@ class Kernel:
         reason = "decomposition failed critic"
         if _repair_oscillation(history):
             reason += " (oscillation)"
+        if not record:
+            return None   # a precompile has no store row to fail closed on
         self.store.record_evidence(
             row["id"],
             {

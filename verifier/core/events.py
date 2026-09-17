@@ -58,6 +58,10 @@ EVENT_TYPES = (
     # assumed, not checked)
     "claim_screened",
 
+    # final-contract precompile (online: compiled while the solver works)
+    "contract_precompiled",
+    "contract_cache_hit",
+
     # obligation & critic agent
     "obligations_compiled",
     "obligations_residualized",
