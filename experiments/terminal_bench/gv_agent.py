@@ -142,14 +142,16 @@ class GVClaudeCode(ClaudeCode):
         # The provider selection is pinned explicitly: the shipped .env may
         # name a different default than the host run was configured with.
         model = (self.model_name or "sonnet").split("/")[-1]
+        knobs = "".join(
+            f"export {k}={shlex.quote(v)}\n"
+            for k, v in sorted(os.environ.items())
+            if k.startswith("GV_") and k not in WRAPPER_ENV_SKIP)
         wrapper = (
             "#!/bin/sh\n"
             'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"\n'
             f"export GV_PROVIDER={shlex.quote(provider.PROVIDER)}\n"
             f"export GV_MODEL={shlex.quote(str(provider.MODEL))}\n"
-            + "".join(f"export {k}={shlex.quote(v)}\n"
-                      for k, v in sorted(os.environ.items())
-                      if k.startswith("GV_") and k not in WRAPPER_ENV_SKIP)
+            f"{knobs}"
             # the CLI does not hand its own credential env to MCP servers;
             # the trial stages the token in a file the wrapper reads
             f'if [ -f "$HOME/{TOKEN_FILE}" ]; then '
