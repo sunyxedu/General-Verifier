@@ -242,21 +242,57 @@ class BindingGame:
         # precompile), keyed by obligation node id: the first-pass
         # enumeration of a matching obligation is served from here
         self.batch_cache: Dict[str, List[Dict[str, str]]] = {}
+        # prewarms in flight: a commit that needs a batch being enumerated
+        # right now waits for that one enumeration instead of starting a
+        # second, and never waits for the others
+        self._prewarm_events: Dict[str, threading.Event] = {}
         self._cache_lock = threading.Lock()
 
     def prewarm(self, row: Dict, obligation: Obligation) -> None:
         """Enumerate an obligation's first method batch now and keep it
-        for the commit that will need it."""
-        try:
-            methods = self._enumerate(row, obligation)
-        except RoleError as err:
-            self.log.append(
-                "methods_enumerated",
-                {"claim": row["id"], "obligation": obligation.id,
-                 "prewarm": True, "error": str(err)})
-            return
+        for the commit that will need it (and for a revised commit of
+        the same contract: the batch is served, never consumed)."""
         with self._cache_lock:
-            self.batch_cache[obligation.id] = methods
+            if obligation.id in self.batch_cache \
+                    or obligation.id in self._prewarm_events:
+                return
+            event = self._prewarm_events[obligation.id] = threading.Event()
+        try:
+            try:
+                methods = self._enumerate(row, obligation, prewarm=True)
+            except RoleError as err:
+                self.log.append(
+                    "methods_enumerated",
+                    {"claim": row["id"], "obligation": obligation.id,
+                     "prewarm": True, "error": str(err)})
+                return
+            with self._cache_lock:
+                self.batch_cache[obligation.id] = methods
+        finally:
+            with self._cache_lock:
+                self._prewarm_events.pop(obligation.id, None)
+            event.set()
+
+    def _served_batch(self, row: Dict, obligation: Obligation):
+        with self._cache_lock:
+            cached = self.batch_cache.get(obligation.id)
+            pending = self._prewarm_events.get(obligation.id)
+        if cached is None and pending is not None:
+            pending.wait()
+            with self._cache_lock:
+                cached = self.batch_cache.get(obligation.id)
+        if cached is None:
+            return None
+        self.log.append(
+            "methods_enumerated",
+            {"claim": row["id"], "obligation": obligation.id,
+             "repair": False, "cached": True,
+             "methods": [{"procedure": m["procedure"][:80],
+                          "level": m.get("level", ""),
+                          "basis": m.get("basis", ""),
+                          "strength": _method_strength(m)}
+                         for m in cached]})
+        return [dict(m) for m in cached]
 
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
@@ -1468,21 +1504,12 @@ class BindingGame:
         obligation: Obligation,
         method_feedback: str = "(none)",
         oracle_round: int = 0,
+        prewarm: bool = False,
     ) -> List[Dict[str, str]]:
-        if method_feedback == "(none)":
-            with self._cache_lock:
-                cached = self.batch_cache.pop(obligation.id, None)
-            if cached is not None:
-                self.log.append(
-                    "methods_enumerated",
-                    {"claim": row["id"], "obligation": obligation.id,
-                     "repair": False, "cached": True,
-                     "methods": [{"procedure": m["procedure"][:80],
-                                  "level": m.get("level", ""),
-                                  "basis": m.get("basis", ""),
-                                  "strength": _method_strength(m)}
-                                 for m in cached]})
-                return [dict(m) for m in cached]
+        if method_feedback == "(none)" and not prewarm:
+            served = self._served_batch(row, obligation)
+            if served is not None:
+                return served
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
         catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
@@ -1535,6 +1562,7 @@ class BindingGame:
             "claim": row["id"],
             "obligation": obligation.id,
             "repair": method_feedback != "(none)",
+            "prewarm": prewarm,
             "methods": [{"procedure": m["procedure"][:80],
                          "level": m.get("level", ""),
                          "basis": m.get("basis", ""),

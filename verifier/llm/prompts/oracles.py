@@ -64,7 +64,16 @@ ORACLES_SYSTEM = (
     + AXIOM_TIME
     + AXIOM_REFERENT
     + AXIOM_STRENGTH
-    + "If this obligation touches a domain you do not thoroughly "
+    + "ENUMERATION IS DESIGN, NOT EXECUTION: you decide HOW the obligation "
+    "would be decided; carrying the check out is the executor's job. "
+    "Inspect the task's materials and the world only as far as writing a "
+    "correct, well-targeted method requires (the addresses involved, the "
+    "shape of the inputs, which instruments the procedure must name), "
+    "then stop and write the methods — do not read the evidence through "
+    "to a conclusion yourself, and do not keep exploring once the method "
+    "is determined. A method that names its inputs and its decision rule "
+    "precisely is complete; the run supplies the observations.\n"
+    "If this obligation touches a domain you do not thoroughly "
     "understand, RESEARCH IT FIRST — read the relevant documentation, "
     "references, and proof techniques until you know what a sufficient "
     "check looks like there, as an expert would; your guarantees and "
