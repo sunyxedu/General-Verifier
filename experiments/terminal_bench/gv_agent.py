@@ -47,9 +47,12 @@ STATE_DIR = "/gv-state"
 TOOLCHAIN = "/opt/gv-toolchain"
 MCP_SERVER = "/usr/local/bin/gv-mcp-server"
 
-TAR_EXCLUDES = [".git", ".venv", "__pycache__", "experiments", ".gv",
-                ".gv-demo", ".idea", ".pytest_cache", "docs", "report",
-                "general-verifier-report", "*.pdf"]
+# only what the in-container verifier needs: the package, the hooks, the
+# solver protocol, and the project files uv syncs from. Tarring the whole
+# checkout would ship experiment archives and scratch trees by the gigabyte.
+TAR_MEMBERS = ["verifier", "hooks", "protocol", "pyproject.toml", "uv.lock",
+               "README.md", "LICENSE", ".env"]
+TAR_EXCLUDES = ["__pycache__", ".pytest_cache", "*.pyc"]
 
 def login_access_token() -> str:
     """The interactive Claude Code login's current access token (first-party
@@ -100,7 +103,8 @@ class GVClaudeCode(ClaudeCode):
         cmd = ["tar", "czf", tmp.name]
         for pat in TAR_EXCLUDES:
             cmd += ["--exclude", pat]
-        cmd += ["-C", str(GV_ROOT), "."]
+        cmd += ["-C", str(GV_ROOT)]
+        cmd += [m for m in TAR_MEMBERS if (GV_ROOT / m).exists()]
         subprocess.run(cmd, check=True)
         return tmp.name
 
