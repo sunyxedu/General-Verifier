@@ -396,6 +396,16 @@ def _default_kernel(sc: Service, model, backend=None,
     screener = (SCREENER_AGENT
                 if sc.live_world and os.environ.get("GV_SCREENER", "1") != "0"
                 else None)
+    # online, non-final decompositions get an ADVISORY critic budget (one
+    # review, the repair stands): the task contract lives at the final,
+    # which keeps the full adversarial game. GV_CRITIC_ROUNDS_NONFINAL
+    # sets the budget (0 = no critic for non-finals); offline scoring
+    # keeps the full game everywhere.
+    nonfinal_rounds = None
+    if sc.live_world:
+        nonfinal_rounds = _parallel_default("GV_CRITIC_ROUNDS_NONFINAL", 1)
+        if os.environ.get("GV_CRITIC_ROUNDS_NONFINAL") == "0":
+            nonfinal_rounds = 0
     return Kernel(sc.store, sc.log, backend, sc.artifacts,
                   obligations_role=obligations,
                   discharger=discharger, binder=binder,
@@ -405,7 +415,8 @@ def _default_kernel(sc: Service, model, backend=None,
                   contract_cache=contract_cache,
                   parallel_obligations=parallel_obligations,
                   parallel_claims=parallel_claims,
-                  screener_role=screener)
+                  screener_role=screener,
+                  critic_rounds_nonfinal=nonfinal_rounds)
 
 
 # MCP wiring

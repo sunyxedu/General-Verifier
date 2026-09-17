@@ -148,6 +148,7 @@ class Kernel:
         contract_replay=None,
         record_boundary=None,
         screener_role=None,
+        critic_rounds_nonfinal: Optional[int] = None,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -188,6 +189,14 @@ class Kernel:
         # A final contract compiled concurrently with extraction; adopted
         # only under an identical contract key (see engine.precompile).
         self._precompiled_final = None
+        # ADVISORY review for non-final claims: whole-task acceptance is
+        # adjudicated only at the final (contract locus), so a non-final
+        # decomposition defect costs the solver a wrong intermediate
+        # verdict, never certificate soundness. With a budget set, the
+        # critic reviews a non-final decomposition that many times and
+        # the last repair stands unreviewed instead of failing closed;
+        # 0 seats no critic for non-finals. None -> the full game.
+        self.critic_rounds_nonfinal = critic_rounds_nonfinal
         # admission screener: grades a non-final claim from the retained
         # record before any instrument is spent; `high` admits it as
         # confident (assumed, unverified). None -> every claim is checked.
@@ -1238,6 +1247,12 @@ class Kernel:
         critic_role = critic_role or self.critic_role
         if critic_role is None:
             return payload
+        advisory = (row["kind"] != CLAIM_FINAL
+                    and self.critic_rounds_nonfinal is not None)
+        rounds = (self.critic_rounds_nonfinal if advisory
+                  else self.critic_rounds)
+        if rounds <= 0:
+            return payload
         # The compiler and critic receive the same inlined harness truth.
         # A path-only pointer let a model skip the Read and then infer task
         # semantics from a solver-authored graph node instead.
@@ -1248,7 +1263,7 @@ class Kernel:
         history: List[Dict] = []  # reviewed rounds, shown to BOTH seats: the
         critic_calls = 0          # critic is bound by its own prior rulings
         repair_calls = 0          # (memoryless rounds oscillated: a demand
-        while critic_calls < self.critic_rounds:  # overruled in round n was
+        while critic_calls < rounds:              # overruled in round n was
             round_no = critic_calls               # re-issued verbatim in n+2)
             with model_scope(stage="contract_critic", round=round_no):
                 critic_variables = bind_source_evidence_variables(
@@ -1303,7 +1318,7 @@ class Kernel:
                 return payload
             failure_counterexample = verdict["counterexample_world"]
             failure_missing_condition = verdict["missing_condition"]
-            if critic_calls == self.critic_rounds:
+            if critic_calls == rounds:
                 break  # last attack stands; a repair would go unreviewed
             append_delta = (
                 self.append_only_deltas
@@ -1322,7 +1337,7 @@ class Kernel:
             repair_accepted = False
             declined = False
             guard_feedback = ""
-            while repair_calls < self.critic_rounds - 1:
+            while repair_calls < rounds - 1:
                 repair_variables = dict(
                     variables,
                     critic_feedback=semantic_feedback + guard_feedback,
@@ -1405,6 +1420,42 @@ class Kernel:
                 continue
             if not repair_accepted:
                 break
+        if advisory and verdict is not None \
+                and verdict["verdict"] != "pass":
+            # advisory review: the last standing attack becomes one
+            # repair instruction the compiler answers, and that repair
+            # stands unreviewed — a non-final claim is adjudicated on a
+            # best-effort decomposition rather than failing closed
+            repair_variables = dict(
+                variables,
+                critic_feedback=prompts.CRITIC_FEEDBACK_TEMPLATE.format(
+                    previous_obligations=json.dumps(
+                        payload["obligations"], ensure_ascii=False),
+                    game_history=json.dumps(history, ensure_ascii=False),
+                    counterexample_world=failure_counterexample,
+                    missing_condition=failure_missing_condition))
+            try:
+                payload = self.obligations_role.call(
+                    self.backend, repair_variables)
+            except Exception as err:  # noqa: BLE001 - keep the reviewed one
+                self.log.append(
+                    "decomposition_attacked",
+                    {"claim": row["id"], "round": critic_calls,
+                     "verdict": "insufficient",
+                     "counterexample_world": failure_counterexample,
+                     "missing_condition": failure_missing_condition,
+                     "resolution": "advisory: repair failed, the reviewed "
+                                   f"decomposition stands ({str(err)[:120]})"})
+                return payload
+            self.log.append(
+                "decomposition_attacked",
+                {"claim": row["id"], "round": critic_calls,
+                 "verdict": "insufficient",
+                 "counterexample_world": failure_counterexample,
+                 "missing_condition": failure_missing_condition,
+                 "resolution": "advisory: unreviewed repair accepted for a "
+                               "non-final claim"})
+            return payload
         # triage metadata only — an oscillating critic still fails closed
         # (auto-passing on critic incoherence would be an incentive to
         # induce it), but the run's analysis can count verifier-internal
