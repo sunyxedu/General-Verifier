@@ -647,6 +647,11 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
                                    "verifier", "public"),
                     "role": ("subject", "input", "authority"),
                 }],
+                # EXECUTABLE FORM: a fixed bash script the executor runs
+                # verbatim (no agent), read afterwards by the script
+                # judger. Optional — the agent executor carries out any
+                # method without one.
+                "script?": str,
             }
         ]
     },
@@ -654,6 +659,28 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
     max_turns=15,      # research takes room; still no Bash — no probing
     wire_schema=ORACLE_EXECUTION_WIRE_SCHEMA,
     wire_lower=lower_oracle_execution_payload,
+)
+
+SCRIPT_JUDGER_AGENT = AgentRole(
+    name="script_judger",
+    system=prompts.SCRIPT_JUDGER_SYSTEM,
+    template=prompts.SCRIPT_JUDGER_TEMPLATE,
+    # the second signer for a mechanically executed method: sufficiency
+    # from the script text, outcome from its recorded output. Fidelity is
+    # by construction (the script ran verbatim), so no redo loop exists
+    # for this path. The run is inlined: no tools, one turn.
+    schema={"sufficient": ("yes", "no"), "outcome": OUTCOMES,
+            "witness": str,
+            "witness_kind?": ("execution", "world_state",
+                              "record_contradiction", "absence", "none"),
+            "inputs?": [{"ref": str,
+                         "provenance": ("task_given", "delivered",
+                                        "ledger", "verifier", "public"),
+                         "role": ("subject", "input", "authority")}],
+            "degradation": ("justified", "unjustified", "n/a"),
+            "reason": str},
+    tools=[],
+    max_turns=2,
 )
 
 DISCHARGE_AGENT = AgentRole(
@@ -761,5 +788,6 @@ ALL_AGENT_ROLES = {
         JUDGER_AGENT,
         EXTRACT_CLAIMS_AGENT,
         SCREENER_AGENT,
+        SCRIPT_JUDGER_AGENT,
     )
 }

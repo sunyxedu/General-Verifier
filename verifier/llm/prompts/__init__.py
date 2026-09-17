@@ -65,3 +65,7 @@ from .screener import (
     SCREENER_SYSTEM,
     SCREENER_TEMPLATE,
 )
+from .script_judger import (
+    SCRIPT_JUDGER_SYSTEM,
+    SCRIPT_JUDGER_TEMPLATE,
+)

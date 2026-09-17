@@ -87,6 +87,34 @@ class DischargeResult:
     inputs: tuple = ()
 
 
+# a mechanically executed method: the exact script that ran and what it
+# left behind. Read by the script judger; nothing else interprets it.
+SCRIPT_OUTPUT_CAP = 24_000
+SCRIPT_TIMEOUT_DEFAULT = 600
+
+
+@dataclass(frozen=True)
+class ScriptRun:
+    artifact: str                # digest in the artifact store
+    script: str
+    exit_code: Optional[int]     # None when the script never ran
+    stdout: str                  # bounded
+    stderr: str                  # bounded
+    stdout_truncated: bool
+    stderr_truncated: bool
+    timed_out: bool
+    launch_error: str            # "" unless bash itself could not start
+    seconds: float
+
+
+def _bounded(text: str, cap: int = SCRIPT_OUTPUT_CAP):
+    if len(text) <= cap:
+        return text, False
+    head = cap * 2 // 3
+    return (text[:head] + "\n<... truncated ...>\n" + text[-(cap - head):],
+            True)
+
+
 class AgentDischarger:
     """
     Discharge agent executes the check itself; we snapshot its workdir.
@@ -403,6 +431,81 @@ class AgentDischarger:
         if reason:
             rendered += "\nfast-path unavailable; execute normally: " + str(reason)
         return rendered
+    def run_script(self, row: Dict, obligation: Obligation,
+                   method: Dict[str, str], tag: str = "") -> ScriptRun:
+        """Execute a method's EXECUTABLE FORM verbatim: bash on the
+        oracle's script, in a scratch working directory, with the
+        toolchain and workspace locations in the environment. No agent
+        touches the run; the complete output is retained as the artifact
+        and the script judger reads it. A timeout or a launch failure is
+        a failed run on record, never a verdict."""
+        import subprocess
+        import time as _time
+        subdir = obligation.id[:12] + (f"-{tag}" if tag else "") + "-script"
+        workdir = os.path.join(self.workdir_base, subdir)
+        os.makedirs(workdir, exist_ok=True)
+        os.makedirs(self.toolchain_dir, exist_ok=True)
+        os.makedirs(self.workspace_dir, exist_ok=True)
+        script = str(method.get("script") or "")
+        path = os.path.join(workdir, "check.sh")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(script if script.endswith("\n") else script + "\n")
+        env = dict(os.environ)
+        env.update({
+            "GV_WORKDIR": workdir,
+            "GV_TOOLCHAIN": self.toolchain_dir,
+            "GV_WORKSPACE": self.workspace_dir,
+            "GV_LEDGER": (os.path.join(self.state_dir, "events.jsonl")
+                          if self.state_dir else ""),
+        })
+        try:
+            timeout = float(os.environ.get("GV_SCRIPT_TIMEOUT",
+                                           SCRIPT_TIMEOUT_DEFAULT))
+        except ValueError:
+            timeout = float(SCRIPT_TIMEOUT_DEFAULT)
+        started = _time.time()
+        exit_code: Optional[int] = None
+        out, err, timed_out, launch_error = "", "", False, ""
+        try:
+            proc = subprocess.run(
+                ["bash", path], cwd=workdir, env=env,
+                capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
+            exit_code = proc.returncode
+            out = proc.stdout.decode("utf-8", errors="replace")
+            err = proc.stderr.decode("utf-8", errors="replace")
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            out = (exc.stdout or b"").decode("utf-8", errors="replace")
+            err = (exc.stderr or b"").decode("utf-8", errors="replace")
+        except OSError as exc:
+            launch_error = str(exc)
+        seconds = round(_time.time() - started, 3)
+        with open(os.path.join(workdir, "stdout.txt"), "w",
+                  encoding="utf-8") as f:
+            f.write(out)
+        with open(os.path.join(workdir, "stderr.txt"), "w",
+                  encoding="utf-8") as f:
+            f.write(err)
+        stdout, out_trunc = _bounded(out)
+        stderr, err_trunc = _bounded(err)
+        digest = self.artifacts.put({
+            "instrument": "script",
+            "obligation": obligation.text,
+            "script": script,
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "launch_error": launch_error,
+            "seconds": seconds,
+            "stdout": stdout, "stdout_truncated": out_trunc,
+            "stderr": stderr, "stderr_truncated": err_trunc,
+            "files": _snapshot(workdir),
+        })
+        self._maybe_cleanup(workdir)
+        return ScriptRun(artifact=digest, script=script, exit_code=exit_code,
+                         stdout=stdout, stderr=stderr,
+                         stdout_truncated=out_trunc,
+                         stderr_truncated=err_trunc, timed_out=timed_out,
+                         launch_error=launch_error, seconds=seconds)
 
     def _maybe_cleanup(self, workdir: str) -> None:
         if self.cleanup:
