@@ -53,9 +53,19 @@ def _state_dirs(root: str) -> List[str]:
     return sorted(found)
 
 
+def _parse_ts(value):
+    from datetime import datetime, timezone
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def _trial_reward(state_dir: str):
-    """Harbor's reward for the trial that produced this state, if the
-    state sits inside a trial directory (artifacts/gv-state)."""
+    """Harbor's reward and agent wall time for the trial that produced
+    this state, if the state sits inside a trial directory."""
     cur = state_dir
     for _ in range(4):
         cur = os.path.dirname(cur)
@@ -69,9 +79,12 @@ def _trial_reward(state_dir: str):
             vr = data.get("verifier_result") or {}
             rewards = vr.get("rewards") or {}
             reward = rewards.get("reward", vr.get("reward"))
-            started = data.get("started_at")
-            finished = data.get("finished_at")
-            return reward, (started, finished)
+            ex = data.get("agent_execution") or {}
+            a, b = _parse_ts(ex.get("started_at")), _parse_ts(ex.get("finished_at"))
+            wall = (b - a) if (a and b) else None
+            return reward, {"task": data.get("task_name"),
+                            "trial": data.get("trial_name"),
+                            "agent_wall_s": wall}
     return None, None
 
 
@@ -95,14 +108,14 @@ def breakdown(state_dir: str) -> dict:
     order: List[str] = []
     for e in commits:
         p = e["payload"]
-        key = p["label"]
-        by_claim[key] = {"label": key, "kind": p["kind"],
+        key = f"{p['label']}#{e['seq']}"   # a label may be recommitted
+        by_claim[key] = {"label": p["label"], "kind": p["kind"],
                          "text": p["text"][:120], "committed": e["ts"],
                          "settled": None, "status": None,
                          "obligations": 0, "critic_rounds": 0,
                          "dedup_hits": 0, "methods_bound": 0,
                          "method_rejected": 0, "redos": 0,
-                         "screened": None,
+                         "screened": None, "contract_cached": False,
                          "seats": defaultdict(float), "seat_calls": 0}
         order.append(key)
     # events after a commit and before the next commit belong to that
@@ -132,6 +145,8 @@ def breakdown(state_dir: str) -> dict:
             current["redos"] += 1
         elif t == "claim_screened":
             current["screened"] = p.get("confidence")
+        elif t == "contract_cache_hit":
+            current["contract_cached"] = True
         elif t == "status_change" and "obligation" not in p:
             current["settled"] = e["ts"]
             current["status"] = p.get("status")
@@ -176,7 +191,9 @@ def breakdown(state_dir: str) -> dict:
     return {
         "state_dir": state_dir,
         "reward": reward,
-        "trial_span": span,
+        "trial": span or {},
+        "commits": len(order),
+        "screened_high": sum(1 for c in claims if c["screened"] == "high"),
         "claims": claims,
         "total_commit_wait_s": total_wait,
         "seat_seconds_total": dict(seat_totals),
@@ -204,7 +221,9 @@ def render(report: dict) -> str:
                           sorted(c["seats"].items(), key=lambda kv: -kv[1]))
         lines.append(
             f"  [{c['kind']}] {c['label']}: wait={wait} status={c['status']}"
-            f" screened={c['screened']} obligations={c['obligations']}"
+            f" screened={c['screened']}"
+            f"{' contract=cached' if c['contract_cached'] else ''}"
+            f" obligations={c['obligations']}"
             f" critic_rounds={c['critic_rounds']} dedup={c['dedup_hits']}"
             f" bound={c['methods_bound']} rejected={c['method_rejected']}"
             f" redos={c['redos']} calls={c['seat_calls']} | {seats}")
@@ -214,10 +233,61 @@ def render(report: dict) -> str:
     return "\n".join(lines)
 
 
+FAMILIES = ("screener", "compile", "critic", "oracle", "executor", "judger",
+            "script_judger")
+
+
+def summary_rows(reports):
+    rows = []
+    for r in reports:
+        seats = r["seat_seconds_total"]
+        verdict = (r["certificates"][-1].get("verdict")
+                   if r["certificates"] else None)
+        rows.append({
+            "task": (r["trial"].get("task") or "?").split("/")[-1],
+            "reward": r["reward"],
+            "verdict": verdict,
+            "agent_wall_s": r["trial"].get("agent_wall_s"),
+            "commit_wait_s": r["total_commit_wait_s"],
+            "commits": r["commits"],
+            "screened_high": r["screened_high"],
+            "seat_calls": r["seat_calls"],
+            **{f: round(seats.get(f, 0)) for f in FAMILIES},
+        })
+    return rows
+
+
+def render_summary(rows) -> str:
+    head = ["task", "reward", "verdict", "agent_wall_s", "commit_wait_s",
+            "commits", "screened_high", "seat_calls", *FAMILIES]
+    widths = {h: max(len(h), *(len(str(row.get(h, ""))[:28]) for row in rows))
+              for h in head}
+    lines = ["  ".join(h.ljust(widths[h]) for h in head)]
+    for row in rows:
+        cells = []
+        for h in head:
+            v = row.get(h)
+            if isinstance(v, float):
+                v = f"{v:.0f}"
+            cells.append(str(v)[:28].ljust(widths[h]))
+        lines.append("  ".join(cells))
+    n = len(rows)
+    if n:
+        walls = [r["agent_wall_s"] for r in rows if r["agent_wall_s"]]
+        rewards = [r["reward"] for r in rows if r["reward"] is not None]
+        lines.append(
+            f"trials={n} reward_sum={sum(rewards):.0f}/{len(rewards)} "
+            f"agent_wall_total={sum(walls):.0f}s "
+            f"commit_wait_total={sum(r['commit_wait_s'] for r in rows):.0f}s")
+    return "\n".join(lines)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--summary", action="store_true",
+                    help="one row per trial instead of per-claim detail")
     args = ap.parse_args()
     dirs = _state_dirs(args.root)
     if not dirs:
@@ -225,6 +295,9 @@ def main() -> None:
     reports = [breakdown(d) for d in dirs]
     if args.json:
         print(json.dumps(reports, indent=1, default=str))
+        return
+    if args.summary:
+        print(render_summary(summary_rows(reports)))
         return
     for r in reports:
         print(render(r))
