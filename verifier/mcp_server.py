@@ -406,6 +406,9 @@ def _default_kernel(sc: Service, model, backend=None,
     if parallel_claims is None:
         parallel_claims = getattr(sc, "parallel_claims", None)
     if parallel_obligations is None:
+        # a compound claim can compile to dozens of obligations; with the
+        # executable-form path most of them are a short script plus one
+        # no-tools reading, so eight in flight is well inside the seat gate
         parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 8)
     if parallel_claims is None:
         # online (live world): one claim at a time as commits arrive
