@@ -695,7 +695,9 @@ SCRIPT_JUDGER_AGENT = AgentRole(
             "degradation": ("justified", "unjustified", "n/a"),
             "reason": str},
     tools=[],
-    max_turns=2,
+    # no tools, but a structured answer still takes the harness a turn
+    # or two beyond the reply itself; a cap of two cut honest answers off
+    max_turns=4,
 )
 
 DISCHARGE_AGENT = AgentRole(
@@ -789,7 +791,9 @@ SCREENER_AGENT = AgentRole(
     schema={"confidence": ("high", "medium", "low"),
             "grounds": str, "reason": str},
     tools=[],
-    max_turns=2,
+    # no tools, but a structured answer still takes the harness a turn
+    # or two beyond the reply itself; a cap of two cut honest answers off
+    max_turns=4,
 )
 
 ALL_AGENT_ROLES = {
