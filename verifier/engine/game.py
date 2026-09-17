@@ -242,6 +242,11 @@ class BindingGame:
         # precompile), keyed by obligation node id: the first-pass
         # enumeration of a matching obligation is served from here
         self.batch_cache: Dict[str, List[Dict[str, str]]] = {}
+        # the fixed evidence boundary is one boundary for every check of
+        # a claim: an input a sibling check found absent is absent for
+        # this one too, so the oracle is told before it lists a method
+        # that needs it
+        self._boundary: Dict[str, List[str]] = {}
         # prewarms in flight: a commit that needs a batch being enumerated
         # right now waits for that one enumeration instead of starting a
         # second, and never waits for the others
@@ -1067,6 +1072,7 @@ class BindingGame:
                 detail = str(result.witness or
                              "required instrument or evidence unavailable")
                 unavailable_reasons.append(detail)
+                self._note_boundary(row, obligation, detail)
                 audited_gap = True
                 tier_unobtainable.add(strength)
                 reason = f"unobtainable: {detail}"
@@ -1334,6 +1340,7 @@ class BindingGame:
         if outcome == OUTCOME_UNOBTAINABLE:
             detail = str(result.witness
                          or "required instrument or evidence unavailable")
+            self._note_boundary(row, obligation, detail)
             reason = f"unobtainable: {detail}"
             self._reject(row, obligation, method, reason)
             attempt.rejected = reason
@@ -1521,6 +1528,20 @@ class BindingGame:
         )
 
     # enumeration and advisory review
+    BOUNDARY_NOTES = 12
+
+    def _note_boundary(self, row: Dict, obligation: Obligation,
+                       detail: str) -> None:
+        with self._cache_lock:
+            notes = self._boundary.setdefault(row["id"], [])
+            notes.append(f"[{obligation.text[:80]}] {str(detail)[:300]}")
+            del notes[:-self.BOUNDARY_NOTES]
+
+    def _sibling_boundary(self, row: Dict) -> str:
+        with self._cache_lock:
+            notes = list(self._boundary.get(row["id"], ()))
+        return json.dumps(notes, ensure_ascii=False) if notes else "[]"
+
     def _enumerate(
         self,
         row: Dict,
@@ -1567,6 +1588,7 @@ class BindingGame:
                 "registry": registry,
                 "adapter_catalog": oracle_catalog,
                 "method_feedback": method_feedback,
+                "sibling_boundary": self._sibling_boundary(row),
                 "ledger_path": self.log.record_path_for(row["id"]),
                 "record_shape": record_shape_json(self.log),
                 "artifact_root": os.path.abspath(self.artifacts.root),

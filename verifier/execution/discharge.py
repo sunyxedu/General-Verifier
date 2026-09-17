@@ -447,9 +447,21 @@ class AgentDischarger:
         os.makedirs(self.toolchain_dir, exist_ok=True)
         os.makedirs(self.workspace_dir, exist_ok=True)
         script = str(method.get("script") or "")
-        path = os.path.join(workdir, "check.sh")
+        # the interpreter is the script's own shebang when it has one (a
+        # program in another language is run as that program), else the
+        # command interpreter; the file keeps a neutral name either way
+        first = script.lstrip().split("\n", 1)[0] if script.strip() else ""
+        if first.startswith("#!"):
+            interpreter = first[2:].strip().split()
+            name = "check"
+        else:
+            interpreter = ["bash"]
+            name = "check.sh"
+        path = os.path.join(workdir, name)
         with open(path, "w", encoding="utf-8") as f:
-            f.write(script if script.endswith("\n") else script + "\n")
+            f.write(script.lstrip() if script.endswith("\n")
+                    else script.lstrip() + "\n")
+        os.chmod(path, 0o755)
         from ..llm.provider import without_verifier_venv
         env = without_verifier_venv(os.environ)
         env.update({
@@ -469,7 +481,7 @@ class AgentDischarger:
         out, err, timed_out, launch_error = "", "", False, ""
         try:
             proc = subprocess.run(
-                ["bash", path], cwd=workdir, env=env,
+                [*interpreter, path], cwd=workdir, env=env,
                 capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
             exit_code = proc.returncode
             out = proc.stdout.decode("utf-8", errors="replace")

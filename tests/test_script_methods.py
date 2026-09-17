@@ -250,3 +250,35 @@ def test_agent_method_without_a_script_takes_the_agent_path(tmp_path):
     assert result.outcome == "holds"
     assert discharger.agent_calls == 1
     assert "script_judger" not in [c["role"] for c in backend.calls]
+
+
+def test_a_shebang_selects_the_interpreter(tmp_path):
+    script = "#!/usr/bin/env python3\nimport sys\nprint('lines', 3, sys.argv[0].endswith('check'))\n"
+    game, backend, discharger, artifacts, log = build(
+        tmp_path, {"script_judger": reader("holds")}, [script_method(script)])
+    result = game.run(ROW, Obligation("c1", "three lines",
+                                      required_basis="world"))
+    assert result.outcome == "holds"
+    seen = backend.calls[1]["variables"]
+    assert seen["exit_code"] == 0
+    assert seen["stdout"].strip() == "lines 3 True"
+
+
+def test_sibling_unobtainable_findings_reach_the_next_oracle(tmp_path):
+    seen_feedback = []
+
+    def oracle(variables):
+        seen_feedback.append(variables["sibling_boundary"])
+        return {"methods": [script_method("echo missing")]}
+
+    game, backend, discharger, artifacts, log = build(
+        tmp_path,
+        {"script_judger": reader("unobtainable", witness="the log file "
+                                 "the task names does not exist")},
+        [])
+    backend.fixtures["oracles"] = oracle
+    game.run(ROW, Obligation("c1", "first check", required_basis="world"))
+    game.run(ROW, Obligation("c1", "second check", required_basis="world"))
+    assert seen_feedback[0] == "[]"
+    assert "does not exist" in seen_feedback[-1]
+    assert "first check" in seen_feedback[-1]
