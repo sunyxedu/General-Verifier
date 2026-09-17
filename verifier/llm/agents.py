@@ -736,6 +736,20 @@ SUFFICIENCY_AGENT = AgentRole(
     max_turns=1,
 )
 
+SCREENER_AGENT = AgentRole(
+    name="screener",
+    system=prompts.SCREENER_SYSTEM,
+    template=prompts.SCREENER_TEMPLATE,
+    # a LEVEL, not a status: high admits the claim as confident (assumed,
+    # unverified, no instrument spent); medium/low route it through the
+    # full pipeline. The whole record excerpt is inlined so the seat needs
+    # no tools — one turn, the cheapest call in the system.
+    schema={"confidence": ("high", "medium", "low"),
+            "grounds": str, "reason": str},
+    tools=[],
+    max_turns=2,
+)
+
 ALL_AGENT_ROLES = {
     role.name: role
     for role in (
@@ -746,5 +760,6 @@ ALL_AGENT_ROLES = {
         DISCHARGE_AGENT,
         JUDGER_AGENT,
         EXTRACT_CLAIMS_AGENT,
+        SCREENER_AGENT,
     )
 }

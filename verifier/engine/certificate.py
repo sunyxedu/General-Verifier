@@ -113,6 +113,11 @@ def request_certificate(
                 # open_premises lists the transitive premises still
                 # unsettled; premise_refuted names the poisoning node.
                 "status": row["status"],
+                # admission flag, orthogonal to status: the screener found
+                # the claim settled by the retained record and the
+                # verifier assumed it without a check (never on a final)
+                "confident": bool(row.get("confident")),
+                "confidence_reason": row.get("confidence_reason"),
                 "effective_status": effective["effective_status"],
                 "effective_basis": effective["effective_basis"],
                 "effective_strength": effective["effective_strength"],

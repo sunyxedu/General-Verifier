@@ -54,6 +54,10 @@ EVENT_TYPES = (
     "status_change",
     "certificate",
 
+    # admission screening (online economy: a claim the record settles is
+    # assumed, not checked)
+    "claim_screened",
+
     # obligation & critic agent
     "obligations_compiled",
     "obligations_residualized",

@@ -171,12 +171,20 @@ class Service:
         if label not in self.builder.labels:
             return {"error": failure or "commit failed"}
         claim_id = self.builder.labels[label]
-        status = self.store.status(claim_id)
+        row = self.store.get(claim_id)
+        status = row["status"]
         result = {"claim_id": claim_id, "status": status}
         if failure is not None:
             # the claim is recorded; its check did not finish — fail-closed, so
             # the status stands as unverified and the solver is told why
             result["error"] = failure
+        if row.get("confident"):
+            # admitted on the record: assumed by every consumer, no check
+            # run, nothing owed — the solver may build on it (and may ask
+            # for the full check with `verify` if it wants one)
+            result["confident"] = True
+            result["confidence_reason"] = row.get("confidence_reason")
+            return result
         if kind != "effect" and status != "verified":
             # the verdict lands on the commit call now, so its residue must too
             result.update(_residue(self.store, claim_id))
@@ -187,7 +195,9 @@ class Service:
         try:
             claim_id = self.builder.resolve(label)
             self.log.append("verify_request", {"target": claim_id, "cause": "mcp"})
-            status = self.kernel.verify(claim_id)
+            # an explicit request is never answered by the screener: a
+            # confident claim gets its full check here
+            status = self.kernel.verify(claim_id, force=True)
         except VERB_ERRORS as err:
             return {"error": str(err)}
         result = {"claim_id": claim_id, "status": status}
@@ -210,6 +220,10 @@ class Service:
         slice_summary = []
         for e in cert["slice"]:
             entry = {"text": e["text"], "status": e["status"]}
+            if e.get("confident"):
+                entry["confident"] = True
+                slice_summary.append(entry)
+                continue
             if e["status"] != "verified":
                 obligations = [
                     {"text": o["text"], "status": o["status"],
@@ -241,13 +255,18 @@ class Service:
                 return {"error": str(err)}
             row = self.store.get(claim_id)
             result = {k: row[k] for k in ("id", "kind", "text", "status")}
-            if row["status"] != "verified":
+            if row.get("confident"):
+                result["confident"] = True
+                result["confidence_reason"] = row.get("confidence_reason")
+            elif row["status"] != "verified":
                 result.update(_residue(self.store, claim_id))
             return result
-        return {
-            label: self.store.status(cid)
-            for label, cid in self.builder.labels.items()
-        }
+        out = {}
+        for label, cid in self.builder.labels.items():
+            row = self.store.get(cid)
+            out[label] = (f"{row['status']} (confident)"
+                          if row.get("confident") else row["status"])
+        return out
 
 def _parallel_default(name: str, fallback: int) -> int:
     """Per-trial parallelism defaults: GV_PARALLEL_OBLIGATIONS (discharges
@@ -282,7 +301,7 @@ def _default_kernel(sc: Service, model, backend=None,
                     critic_rounds: Optional[int] = None,
                     parallel_obligations: Optional[int] = None,
                     parallel_claims: Optional[int] = None) -> Kernel:
-    from .llm.agents import AgentBackend
+    from .llm.agents import AgentBackend, SCREENER_AGENT
     from .execution.config import (
         contract_cache_enabled,
         method_cache_enabled,
@@ -364,6 +383,13 @@ def _default_kernel(sc: Service, model, backend=None,
         # online (live world): one claim at a time as commits arrive
         parallel_claims = (1 if sc.live_world
                            else _parallel_default("GV_PARALLEL_CLAIMS", 4))
+    # the admission screener is an ONLINE economy: with a live world the
+    # solver waits on every commit, and a claim the record already settles
+    # is assumed rather than checked. Offline scoring seats none — every
+    # claim in a scored slice gets its check. GV_SCREENER=0 disables it.
+    screener = (SCREENER_AGENT
+                if sc.live_world and os.environ.get("GV_SCREENER", "1") != "0"
+                else None)
     return Kernel(sc.store, sc.log, backend, sc.artifacts,
                   obligations_role=obligations,
                   discharger=discharger, binder=binder,
@@ -372,7 +398,8 @@ def _default_kernel(sc: Service, model, backend=None,
                   critic_rounds=critic_rounds,
                   contract_cache=contract_cache,
                   parallel_obligations=parallel_obligations,
-                  parallel_claims=parallel_claims)
+                  parallel_claims=parallel_claims,
+                  screener_role=screener)
 
 
 # MCP wiring
@@ -412,7 +439,9 @@ def build_server(service: Service):
 
     @server.tool()
     def verify(label: str) -> str:
-        """Verify a committed claim now; returns its status."""
+        """Run the full independent check on a committed claim now (also
+        for a claim that commit admitted as `confident`); returns its
+        status."""
         return json.dumps(service.verify(label), ensure_ascii=False)
 
     @server.tool()

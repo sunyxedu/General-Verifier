@@ -64,7 +64,13 @@ CREATE TABLE IF NOT EXISTS claims (
     -- evidence strength of a settled node (decisive | bounded | analytic);
     -- NULL = settled outside the ladder (direct discharge, ledger checks,
     -- pre-ladder rows), read as decisive downstream.
-    strength TEXT
+    strength TEXT,
+    -- admission flag, ORTHOGONAL to status: the screener found the claim
+    -- settled by the retained record and the verifier assumed it without
+    -- spending a check. Status stays unverified; cleared when the claim
+    -- goes stale. Never set on a final.
+    confident INTEGER NOT NULL DEFAULT 0,
+    confidence_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS deps (
     child  TEXT NOT NULL,
@@ -118,6 +124,12 @@ class ClaimStore:
             self.db.commit()
         if "strength" not in cols:
             self.db.execute("ALTER TABLE claims ADD COLUMN strength TEXT")
+            self.db.commit()
+        if "confident" not in cols:
+            self.db.execute("ALTER TABLE claims ADD COLUMN confident "
+                            "INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("ALTER TABLE claims ADD COLUMN "
+                            "confidence_reason TEXT")
             self.db.commit()
         edge_cols = {r[1] for r in
                      self.db.execute("PRAGMA table_info(obligation_edges)")}
@@ -234,6 +246,22 @@ class ClaimStore:
                          allowed={STATUS_UNVERIFIED, STATUS_STALE})
 
     @_locked
+    def set_confident(self, claim_id: str, reason: str) -> None:
+        """Admit an UNVERIFIED claim on the record's strength: the flag is
+        orthogonal to the status machine (the status stays unverified —
+        nothing was checked) and it clears with the claim's staleness."""
+        current = self.status(claim_id)
+        if current != STATUS_UNVERIFIED:
+            raise IllegalTransition(
+                f"confident admission requires unverified, not {current}")
+        if self._row(claim_id)["kind"] == CLAIM_FINAL:
+            raise IllegalTransition("a final is never admitted confident")
+        self.db.execute(
+            "UPDATE claims SET confident=1, confidence_reason=? WHERE id=?",
+            (reason, claim_id))
+        self.db.commit()
+
+    @_locked
     def set_unverified(self, claim_id: str,
                        reason: Optional[str] = None) -> None:
         """Finish a stale/failed recheck without claiming new evidence."""
@@ -287,7 +315,8 @@ class ClaimStore:
             stale.add(cid)
             pending.extend(affected_by.get(cid, ()))
         self.db.executemany(
-            "UPDATE claims SET status=?, reason=NULL, basis=NULL, strength=NULL "
+            "UPDATE claims SET status=?, reason=NULL, basis=NULL, "
+            "strength=NULL, confident=0, confidence_reason=NULL "
             "WHERE id=?", [(STATUS_STALE, cid) for cid in stale])
 
     # evidence
@@ -464,16 +493,18 @@ class ClaimStore:
     @_locked
     def _row(self, claim_id: str) -> Dict:
         cur = self.db.execute(
-            "SELECT id, kind, text, revises, status, reason, basis, strength "
-            "FROM claims WHERE id=?",
+            "SELECT id, kind, text, revises, status, reason, basis, strength, "
+            "confident, confidence_reason FROM claims WHERE id=?",
             (claim_id,),
         )
         row = cur.fetchone()
         if row is None:
             raise UnknownDependency(f"{claim_id[:12]}… not in store")
         keys = ("id", "kind", "text", "revises", "status", "reason", "basis",
-                "strength")
-        return dict(zip(keys, row))
+                "strength", "confident", "confidence_reason")
+        out = dict(zip(keys, row))
+        out["confident"] = bool(out["confident"])
+        return out
 
     @_locked
     def parents(self, claim_id: str) -> List[str]:
@@ -575,6 +606,8 @@ class ClaimStore:
                      "text": text[:300]}
             if eff["status"] != eff["effective_status"]:
                 entry["local_status"] = eff["status"]
+            if self._row(cid)["confident"]:
+                entry["confident"] = True
             if eff["effective_basis"]:
                 entry["basis"] = eff["effective_basis"]
             if eff["effective_strength"]:

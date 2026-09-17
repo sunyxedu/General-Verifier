@@ -146,6 +146,7 @@ class Kernel:
         contract_cache=None,
         contract_replay=None,
         record_boundary=None,
+        screener_role=None,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -186,6 +187,10 @@ class Kernel:
         # A final contract compiled concurrently with extraction; adopted
         # only under an identical contract key (see engine.precompile).
         self._precompiled_final = None
+        # admission screener: grades a non-final claim from the retained
+        # record before any instrument is spent; `high` admits it as
+        # confident (assumed, unverified). None -> every claim is checked.
+        self.screener_role = screener_role
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),
@@ -240,13 +245,19 @@ class Kernel:
             return self._pool
 
     # entry
-    def verify(self, claim_id: str) -> str:
+    def verify(self, claim_id: str, force: bool = False) -> str:
         """Verify one claim; returns its resulting status. Idempotent, and
         serialized per claim: two callers verifying the same claim
-        concurrently (parallel certificate slices) do the work once."""
+        concurrently (parallel certificate slices) do the work once.
+
+        A claim admitted confident stays assumed until it goes stale or
+        a caller asks for the check explicitly (force): the solver's
+        `verify` verb and the certificate never take the screener's word."""
         with self._lock_for(self._claim_locks, claim_id):
             row = self.store.get(claim_id)
             if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
+                return row["status"]
+            if row.get("confident") and not force:
                 return row["status"]
             with model_scope(
                     claim_id=row["id"], claim_kind=row["kind"],
@@ -256,7 +267,7 @@ class Kernel:
                     self._verify_effect(row)
                 else:
                     self._freeze_record(row)
-                    self._verify_assertion(row)
+                    self._verify_assertion(row, force=force)
             return self.store.status(claim_id)
 
     def _freeze_record(self, row: Dict) -> None:
@@ -312,8 +323,126 @@ class Kernel:
         self._settle(row["id"], [result.outcome], [BASIS_RECORD],
                      [STRENGTH_DECISIVE], [SEVERITY_MUST])
 
+    # admission screening
+    def _screen(self, row: Dict) -> bool:
+        """Grade a non-final claim from the retained record before any
+        instrument is spent. `high` admits it as confident: assumed by
+        every consumer, unverified, no check run. Returns True when the
+        claim was admitted and verification must stop here."""
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        premises = []
+        for pid in self.store.parents(row["id"]):
+            prow = self.store.get(pid)
+            eff = self.store.effective(pid)
+            premises.append({
+                "id": pid[:12],
+                "text": ("[a tool-execution record]"
+                         if prow["kind"] == CLAIM_EFFECT else prow["text"]),
+                "status": eff["effective_status"],
+                "confident": bool(prow.get("confident")),
+            })
+        cited, index, recent = self._record_excerpt(row)
+        variables = {
+            "task_context": authoritative_task_context(state),
+            "claim_text": row["text"],
+            "claim_kind": row["kind"],
+            "premises": json.dumps(premises, ensure_ascii=False),
+            "cited_events": json.dumps(cited, ensure_ascii=False),
+            "call_index": json.dumps(index, ensure_ascii=False),
+            "recent_events": json.dumps(recent, ensure_ascii=False),
+            "graph": json.dumps(self.store.graph_snapshot(exclude=row["id"]),
+                                ensure_ascii=False),
+        }
+        try:
+            verdict = self.screener_role.call(self.backend, variables)
+        except Exception as err:  # noqa: BLE001 - screening is advisory
+            # a screener failure never blocks: the claim takes the full
+            # pipeline exactly as if no screener were seated
+            self.log.append("claim_screened",
+                            {"claim": row["id"], "confidence": "error",
+                             "error": str(err)[:300]})
+            return False
+        self.log.append(
+            "claim_screened",
+            {"claim": row["id"], "confidence": verdict["confidence"],
+             "grounds": verdict["grounds"][:1000],
+             "reason": verdict["reason"][:500]})
+        if verdict["confidence"] != "high":
+            return False
+        self.store.set_confident(
+            row["id"], f"{verdict['reason']} — grounds: {verdict['grounds']}"[:1000])
+        self.store.record_evidence(
+            row["id"],
+            {"outcome": "admitted", "instrument": "screener",
+             "confidence": "high", "grounds": verdict["grounds"],
+             "reason": verdict["reason"]})
+        self.log.append("status_change",
+                        {"claim": row["id"], "status": STATUS_UNVERIFIED,
+                         "confident": True, "reason": "admitted on the record"})
+        return True
+
+    # the retained record, sliced for the screener: each cited event in
+    # full (bounded), a compact index of every recorded call, and the most
+    # recent events bounded per entry — a table of contents plus the
+    # decisive pages, never the whole ledger
+    SCREEN_CITED_CHARS = 8_000
+    SCREEN_INDEX_ENTRIES = 150
+    SCREEN_RECENT_EVENTS = 24
+    SCREEN_RECENT_CHARS = 2_500
+
+    def _record_excerpt(self, row: Dict):
+        cited_seqs = set()
+        for pid in self.store.parents(row["id"]):
+            prow = self.store.get(pid)
+            if prow["kind"] != CLAIM_EFFECT:
+                continue
+            try:
+                cited_seqs.add(int(json.loads(prow["text"])["event_seq"]))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+        calls: List[Dict] = []
+        results: List[Dict] = []
+        for event in self.log.replay():
+            if event["type"] == "tool_call":
+                calls.append(event)
+            elif event["type"] == "tool_result":
+                results.append(event)
+        call_by_id = {}
+        for c in calls:
+            cid = c["payload"].get("tool_use_id")
+            if cid:
+                call_by_id[cid] = c
+
+        def render_call(c, cap):
+            p = c["payload"]
+            return {"seq": c["seq"], "tool": p.get("tool"),
+                    "input": self._bounded_context_value(p.get("input"), cap)}
+
+        def render_result(r, cap):
+            p = r["payload"]
+            entry = {"seq": r["seq"], "tool": p.get("tool"),
+                     "excerpt": self._bounded_context_value(
+                         p.get("excerpt"), cap),
+                     "response_chars": p.get("response_chars"),
+                     "excerpt_truncated": p.get("excerpt_truncated")}
+            call = call_by_id.get(p.get("tool_use_id"))
+            if call is not None:
+                entry["call"] = render_call(call, cap)
+            return entry
+
+        cited = [render_result(r, self.SCREEN_CITED_CHARS)
+                 for r in results if r["seq"] in cited_seqs]
+        index = [{"seq": c["seq"], "tool": c["payload"].get("tool"),
+                  "input": json.dumps(c["payload"].get("input"),
+                                      ensure_ascii=False,
+                                      default=str)[:120]}
+                 for c in calls[-self.SCREEN_INDEX_ENTRIES:]]
+        recent = [render_result(r, self.SCREEN_RECENT_CHARS)
+                  for r in results[-self.SCREEN_RECENT_EVENTS:]]
+        return cited, index, recent
+
     # assertion / final
-    def _verify_assertion(self, row: Dict) -> None:
+    def _verify_assertion(self, row: Dict, force: bool = False) -> None:
         # Local verdicts are CONDITIONAL: a claim is verified/refuted
         # assuming its premises (deps) are true, and the read-time
         # effective fold (store.effective) charges the premise chain's
@@ -341,6 +470,16 @@ class Kernel:
                 {"claim": row["id"], "status": STATUS_UNVERIFIED,
                  "reason": "premise chain refuted"},
             )
+            return
+
+        # admission screening: a non-final claim the retained record
+        # already settles is assumed, not checked. A final is the task
+        # contract and is always checked; an explicit request (force)
+        # always checks.
+        if (self.screener_role is not None and not force
+                and row["kind"] != CLAIM_FINAL
+                and row["status"] == STATUS_UNVERIFIED
+                and self._screen(row)):
             return
 
         obligations = self._compile_obligations(row)
@@ -656,9 +795,11 @@ class Kernel:
                     basis = eff["effective_basis"] or BASIS_RECORD
                     verified_deps.append(f"[{basis}-level] {prow['text']}")
                 else:
+                    tag = (" (admitted confident on the record)"
+                           if prow.get("confident") else "")
                     pending_deps.append(
                         f"[assumed premise — status: "
-                        f"{eff['effective_status']}] {prow['text']}")
+                        f"{eff['effective_status']}{tag}] {prow['text']}")
         # a run scored after the fact (offline ORM) has no live world; the
         # harness may instead have captured the delivered tree next to the
         # ledger. Absolute, like ledger_path: the checker runs elsewhere.
