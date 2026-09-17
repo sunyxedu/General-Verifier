@@ -37,6 +37,7 @@ Usage:
   uv run python experiments/terminal_bench/run.py --arm codex
 """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -57,16 +58,50 @@ CODEX_AGENT = "codex_agent:TieredCodex"
 RUNTIME_SNAPSHOT_ROOT = "/gv-runtime-snapshot"
 
 
-def login_access_token():
-    """The interactive Claude Code login's current access token (same
-    reader as gv_agent.login_access_token, duplicated because this module
-    runs outside Harbor's Python)."""
-    import json
+def _login_credentials():
+    """The interactive login's OAuth record: the macOS Keychain entry the
+    CLI maintains (the file copy in the config dir goes stale once the
+    CLI refreshes through the Keychain), else the file."""
+    import subprocess
+    try:
+        raw = subprocess.run(
+            ["security", "find-generic-password", "-s",
+             "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        if raw:
+            return json.loads(raw)["claudeAiOauth"]
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass
     path = os.path.join(os.environ.get("GV_CLAUDE_CONFIG_DIR")
                         or os.path.expanduser("~/.claude"),
                         ".credentials.json")
     with open(path, encoding="utf-8") as f:
-        return json.load(f)["claudeAiOauth"]["accessToken"]
+        return json.load(f)["claudeAiOauth"]
+
+
+def login_access_token(min_minutes_left: float = 60.0) -> str:
+    """The login's current access token, guaranteed to have at least
+    ``min_minutes_left`` of life: the CLI rotates access tokens on a
+    short cycle and refreshes only on demand, so when the remaining life
+    is too short for a trial this triggers a refresh (a trivial headless
+    call once the token has expired) and waits for the new one."""
+    import subprocess
+    import time
+    deadline = time.time() + 30 * 60
+    while True:
+        creds = _login_credentials()
+        left = creds["expiresAt"] / 1000 - time.time()
+        if left >= min_minutes_left * 60 or time.time() > deadline:
+            return creds["accessToken"]
+        if left <= 0:
+            subprocess.run(
+                ["claude", "-p", "Reply with exactly: OK", "--model",
+                 "claude-sonnet-5", "--output-format", "json"],
+                capture_output=True, text=True, timeout=180, cwd="/tmp")
+        else:
+            print(f"[tb] login token has {left / 60:.0f} min left; waiting "
+                  f"for the CLI to rotate it before starting", flush=True)
+            time.sleep(min(60, left + 5))
 
 
 def read_tasks(path=None):
