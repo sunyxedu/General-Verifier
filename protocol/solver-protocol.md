@@ -66,7 +66,9 @@ hold **load-bearing conclusions, not a diary**. Decide per claim, from the task 
   want the full independent check anyway, call `gv.verify(label)`.
 - Any other status comes back with the obligation that failed and its counterexample (or,
   if the claim rests on something already refuted, the fail-closed reason). Read that
-  residue and revise **before** building anything on top of the claim.
+  residue and revise **before** building anything on top of the claim. `gv.verify` on an
+  already-checked claim repeats the same check on the same statement; it is not a second
+  roll of the dice — change the world or the wording and `revises=` instead.
 
 ## Wrap-up
 

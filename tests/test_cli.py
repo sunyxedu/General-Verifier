@@ -72,3 +72,22 @@ def test_score_cli_rejects_codex_options_for_sdk(option, capsys):
         cli.main(["score", "--state-dir", "/tmp/example", *option])
     assert error.value.code == 2
     assert "require --seats codex" in capsys.readouterr().err
+
+
+def test_seat_environment_leaves_the_verifier_venv_out(monkeypatch):
+    """A check's `python3` must be the world's interpreter, never the
+    verifier's own virtualenv that `uv run` puts first on PATH."""
+    import os
+    from verifier.llm import provider
+    venv = os.path.join(provider.ROOT, ".venv")
+    env = provider.without_verifier_venv({
+        "PATH": os.pathsep.join([os.path.join(venv, "bin"), "/usr/bin",
+                                 "/bin"]),
+        "VIRTUAL_ENV": venv, "HOME": "/h"})
+    assert env["PATH"] == os.pathsep.join(["/usr/bin", "/bin"])
+    assert "VIRTUAL_ENV" not in env and env["HOME"] == "/h"
+    # an unrelated virtualenv (the task's own) is left alone
+    other = provider.without_verifier_venv(
+        {"PATH": "/task/.venv/bin:/usr/bin", "VIRTUAL_ENV": "/task/.venv"})
+    assert other["PATH"] == "/task/.venv/bin:/usr/bin"
+    assert other["VIRTUAL_ENV"] == "/task/.venv"

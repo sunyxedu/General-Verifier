@@ -548,9 +548,12 @@ class AgentBackend:
             max_turns=role.max_turns,
             cwd=self.cwd,
             setting_sources=[],                # hermetic: no ambient project settings
-            env=provider.claude_env(base={}),  # every seat runs on the
-                                               # configured provider (SDK
-                                               # merges over os.environ)
+            # every seat runs on the configured provider; the SDK merges
+            # this over os.environ, so PATH is passed explicitly without
+            # the verifier's own virtualenv (a seat's `python3` must be
+            # the world's, not ours)
+            env=provider.claude_env(
+                base={"PATH": os.environ.get("PATH", "")}),
             output_format={
                 "type": "json_schema",
                 "schema": to_json_schema(role.wire_schema or role.schema),

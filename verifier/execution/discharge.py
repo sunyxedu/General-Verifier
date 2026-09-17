@@ -450,7 +450,8 @@ class AgentDischarger:
         path = os.path.join(workdir, "check.sh")
         with open(path, "w", encoding="utf-8") as f:
             f.write(script if script.endswith("\n") else script + "\n")
-        env = dict(os.environ)
+        from ..llm.provider import without_verifier_venv
+        env = without_verifier_venv(os.environ)
         env.update({
             "GV_WORKDIR": workdir,
             "GV_TOOLCHAIN": self.toolchain_dir,

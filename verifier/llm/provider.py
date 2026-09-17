@@ -162,13 +162,31 @@ def validate_configuration():
                            "(in .env or the environment)")
 
 
+def without_verifier_venv(env):
+    """The environment with the verifier's own virtualenv taken out of
+    the way. The MCP server runs under `uv run`, which puts the
+    verifier's .venv first on PATH and sets VIRTUAL_ENV; a check that
+    then runs `python3` gets the verifier's interpreter — without the
+    task's packages — instead of the task's own. Checks, and the seats
+    that run them, must see the world's interpreters, not ours."""
+    env = dict(env)
+    venv = os.path.join(ROOT, ".venv")
+    parts = [p for p in env.get("PATH", "").split(os.pathsep)
+             if p and not os.path.abspath(p).startswith(venv + os.sep)
+             and os.path.abspath(p) != venv]
+    env["PATH"] = os.pathsep.join(parts)
+    if os.path.abspath(env.get("VIRTUAL_ENV", "") or "/") == venv:
+        env.pop("VIRTUAL_ENV", None)
+    return env
+
+
 def claude_env(base=None):
     """
     Full process env for spawning `claude` (or anything that spawns it) against the configured provider.    
     The current environment overlaid with CLAUDE_ENV, plus a login-free CLAUDE_CONFIG_DIR.
     """
     validate_configuration()
-    env = dict(os.environ if base is None else base)
+    env = without_verifier_venv(os.environ if base is None else base)
     env.update(CLAUDE_ENV)
     os.makedirs(CONFIG_DIR, exist_ok=True)
     env["CLAUDE_CONFIG_DIR"] = CONFIG_DIR
