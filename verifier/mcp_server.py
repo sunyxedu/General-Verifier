@@ -140,12 +140,20 @@ class Service:
         # a restarted server rebuilds its view from its own ledger
         for event in self.log.replay():
             self.builder.feed(event)
-        # online: compile the final's task contract and its method
-        # batches while the solver works (GV_FINAL_PRECOMPILE=0 disables)
-        if live_world and os.environ.get("GV_FINAL_PRECOMPILE", "1") != "0":
-            start = getattr(self.kernel, "start_final_precompile", None)
-            if start is not None:
-                start()
+
+    def start_background(self) -> bool:
+        """Online: compile the final's task contract and its method
+        batches while the solver works (GV_FINAL_PRECOMPILE=0 disables).
+        Called by the entry point AFTER the server's own imports are
+        done: the seat thread imports the Agent SDK, whose import chain
+        shares modules with the MCP server's, and two threads importing
+        the same package concurrently deadlock the import lock — which
+        killed the server at startup on some hosts."""
+        if not self.live_world \
+                or os.environ.get("GV_FINAL_PRECOMPILE", "1") == "0":
+            return False
+        start = getattr(self.kernel, "start_final_precompile", None)
+        return bool(start is not None and start())
 
     # hook feed
     def _ingest_hook_event(self, raw_event: Dict[str, Any]) -> None:
@@ -494,7 +502,16 @@ def main() -> None:
                       memory_dir=args.memory_dir,
                       toolchain_dir=args.toolchain_dir,
                       trigger=args.trigger)
-    build_server(service).run()   # stdio
+    server = build_server(service)   # imports the MCP server modules
+    # every module the seats import must be importable by the main thread
+    # first: a seat thread and the server importing the same package at
+    # once deadlock the import lock (observed at startup)
+    try:
+        import claude_agent_sdk  # noqa: F401
+    except ImportError:
+        pass
+    service.start_background()
+    server.run()   # stdio
 
 
 if __name__ == "__main__":
