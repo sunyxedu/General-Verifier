@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS obligation_edges (
     severity   TEXT NOT NULL DEFAULT 'must',
     clause     TEXT NOT NULL DEFAULT '',
     refutable_by_absence INTEGER NOT NULL DEFAULT 0,
+    task_bearing TEXT NOT NULL DEFAULT 'unclear',
     PRIMARY KEY (claim, obligation)
 );
 CREATE TABLE IF NOT EXISTS evidence (
@@ -136,7 +137,8 @@ class ClaimStore:
         for name, decl in (("severity", "TEXT NOT NULL DEFAULT 'must'"),
                            ("clause", "TEXT NOT NULL DEFAULT ''"),
                            ("refutable_by_absence",
-                            "INTEGER NOT NULL DEFAULT 0")):
+                            "INTEGER NOT NULL DEFAULT 0"),
+                           ("task_bearing", "TEXT NOT NULL DEFAULT 'unclear'")):
             if name not in edge_cols:
                 self.db.execute(
                     f"ALTER TABLE obligation_edges ADD COLUMN {name} {decl}")
@@ -547,11 +549,12 @@ class ClaimStore:
         )
         self.db.execute(
             "INSERT OR IGNORE INTO obligation_edges "
-            "(claim, obligation, severity, clause, refutable_by_absence) "
-            "VALUES (?,?,?,?,?)",
+            "(claim, obligation, severity, clause, refutable_by_absence, "
+            "task_bearing) VALUES (?,?,?,?,?,?)",
             (claim_id, oid, getattr(obligation, "severity", "must"),
              getattr(obligation, "clause", "") or "",
-             1 if getattr(obligation, "refutable_by_absence", False) else 0),
+             1 if getattr(obligation, "refutable_by_absence", False) else 0,
+             getattr(obligation, "task_bearing", "unclear") or "unclear"),
         )
         self.db.commit()
         return oid
@@ -573,16 +576,17 @@ class ClaimStore:
         each carrying the edge attributes (severity, clause,
         refutable_by_absence) of THIS claim's reliance on it."""
         cur = self.db.execute(
-            "SELECT obligation, severity, clause, refutable_by_absence "
-            "FROM obligation_edges WHERE claim=?",
+            "SELECT obligation, severity, clause, refutable_by_absence, "
+            "task_bearing FROM obligation_edges WHERE claim=?",
             (claim_id,),
         )
         out = []
-        for oid, severity, clause, absence in cur.fetchall():
+        for oid, severity, clause, absence, bearing in cur.fetchall():
             row = self._row(oid)
             row["severity"] = severity
             row["clause"] = clause
             row["refutable_by_absence"] = bool(absence)
+            row["task_bearing"] = bearing
             out.append(row)
         return out
 

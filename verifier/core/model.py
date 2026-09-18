@@ -115,6 +115,14 @@ SEVERITY_MUST = "must"
 SEVERITY_SHOULD = "should"
 SEVERITIES = (SEVERITY_MUST, SEVERITY_SHOULD)
 
+# task bearing of an obligation — whether the authoritative task requires
+# the condition, or the claim asserted it beyond the task
+TASK_BEARING_REQUIRED = "required"
+TASK_BEARING_BEYOND = "beyond_task"
+TASK_BEARING_UNCLEAR = "unclear"
+TASK_BEARINGS = (TASK_BEARING_REQUIRED, TASK_BEARING_BEYOND,
+                 TASK_BEARING_UNCLEAR)
+
 # witness kinds — what a refutation is made of. Only a POSITIVE, retained,
 # replayable observation may refute: an execution whose recorded output
 # contradicts the obligation, a world artifact whose recorded content
@@ -222,6 +230,15 @@ class Obligation:
     severity: str = SEVERITY_MUST
     clause: str = ""
     refutable_by_absence: bool = False
+    # task_bearing — whether the AUTHORITATIVE TASK itself requires this
+    #   condition (required), or the claim asserted it beyond what the
+    #   task demands (beyond_task), or the compiler could not tell
+    #   (unclear). Compiled from the task statement by the seat that sees
+    #   it; returned with a refutation so the solver learns whether the
+    #   failing condition is something the deliverable must satisfy or
+    #   only something its own statement over-promised. A final's
+    #   conditions are task-derived by construction.
+    task_bearing: str = "unclear"
     # Set by the kernel, never by a model. Conditional checks may share a
     # verdict only within the same set of assumable premises. Finals use ().
     premise_scope: Tuple[str, ...] = ()
@@ -235,6 +252,8 @@ class Obligation:
                 f"unknown required_basis: {self.required_basis!r}")
         if self.severity not in SEVERITIES:
             raise ValueError(f"unknown severity: {self.severity!r}")
+        if self.task_bearing not in TASK_BEARINGS:
+            object.__setattr__(self, "task_bearing", TASK_BEARING_UNCLEAR)
         object.__setattr__(self, "premise_scope",
                            tuple(sorted(set(self.premise_scope))))
 

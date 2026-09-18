@@ -100,7 +100,8 @@ def test_residue_names_what_still_holds(tmp_path):
     def compile_two(v):
         return {"obligations": [
             {"text": "the file exists", "required_basis": "world"},
-            {"text": "the file is well-formed", "required_basis": "world"}]}
+            {"text": "the file is well-formed", "required_basis": "world",
+             "task_bearing": "beyond_task"}]}
 
     class Mixed:
         def discharge(self, row, obligation, method=None, tag=""):
@@ -120,4 +121,5 @@ def test_residue_names_what_still_holds(tmp_path):
     assert store.status(cid) == "refuted"
     residue = _residue(store, cid)
     assert [o["text"] for o in residue["obligations"]] == ["the file is well-formed"]
+    assert residue["obligations"][0]["required_by_task"] == "beyond_task"
     assert residue["still_holding"] == ["the file exists"]

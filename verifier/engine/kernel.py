@@ -40,6 +40,7 @@ from ..core.model import (
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
     STRENGTH_DECISIVE, strength_rank, weakest_strength,
     SEVERITY_MUST, SEVERITY_SHOULD, SEVERITIES,
+    TASK_BEARING_REQUIRED, TASK_BEARING_UNCLEAR,
     WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm import prompts
@@ -1315,6 +1316,10 @@ class Kernel:
                        clause=str(o.get("clause") or ""),
                        refutable_by_absence=bool(
                            o.get("refutable_by_absence", False)),
+                       task_bearing=(TASK_BEARING_REQUIRED
+                                     if row["kind"] == CLAIM_FINAL
+                                     else str(o.get("task_bearing")
+                                              or TASK_BEARING_UNCLEAR)),
                        premise_scope=tuple(self._premises_in_force(row)))
             for o in payload["obligations"]
         ]

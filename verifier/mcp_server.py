@@ -64,7 +64,8 @@ def _obligation_summary(store, claim_id: str) -> list:
     for o in store.obligation_children(claim_id):
         if o["status"] == "verified":
             continue
-        entry = {"text": o["text"], "status": o["status"]}
+        entry = {"text": o["text"], "status": o["status"],
+                 "required_by_task": o.get("task_bearing", "unclear")}
         reason = o.get("reason")
         if not reason:
             ev = store.evidence_for(o["id"])
@@ -95,9 +96,15 @@ def _residue(store, claim_id: str) -> Dict[str, Any]:
         holding = _holding(store, claim_id)
         if holding:
             out["still_holding"] = holding
-            out["note"] = ("still_holding lists the conditions of the same "
-                           "contract that were established; a fix for the "
-                           "failing ones must keep every one of them true")
+        out["note"] = (
+            "required_by_task says whether the AUTHORITATIVE TASK requires "
+            "the failing condition (required: the deliverable must satisfy "
+            "it), or the claim asserted it beyond the task (beyond_task: "
+            "narrow or drop the claim; the deliverable need not change), or "
+            "the verifier could not tell (unclear: read the task). "
+            "still_holding lists the conditions of the same contract that "
+            "were established; a fix for the failing ones must keep every "
+            "one of them true")
         return out
     for ev in reversed(store.evidence_for(claim_id)):
         if ev.get("error"):

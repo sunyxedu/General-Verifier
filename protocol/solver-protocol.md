@@ -71,11 +71,13 @@ hold **load-bearing conclusions, not a diary**. Decide per claim, from the task 
   another is the most common way a repair makes the delivery worse. `gv.verify` on an
   already-checked claim repeats the same check on the same statement; it is not a second
   roll of the dice — change the world or the wording and `revises=` instead.
-- A refuted **intermediate** claim means the statement as written is false; it is
-  information, not an instruction to change the deliverable. Ask first whether the task
-  actually requires what the statement asserted: if not, narrow or drop the claim; only
-  if it does, change the world. The task statement is the only contract the deliverable
-  must satisfy; your own claims are not a second one.
+- A refuted **intermediate** claim means the statement as written is false. Each failing
+  obligation comes back with `required_by_task`, the verifier's reading of the task
+  statement: `required` — the deliverable must satisfy it, change the world;
+  `beyond_task` — your statement promised more than the task demands, narrow or drop the
+  claim and leave the deliverable alone; `unclear` — read the task yourself. The task
+  statement is the only contract the deliverable must satisfy; your own claims are not a
+  second one.
 - The verifier checks world conditions against the world **as it is now**. After you
   change files or state, earlier world-based verdicts are stale and are re-checked when
   next relied on; commit the `final` only after your last change to the deliverable.

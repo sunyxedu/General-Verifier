@@ -602,11 +602,16 @@ COMPILE_OBLIGATIONS_AGENT = AgentRole(
     # runner-interface quotient or governing modality, each with its
     # reason.  The Critic reviews these rulings with the contract; the
     # kernel never verifies them.  Optional: absent reads as an empty ledger.
+    # task_bearing: whether the authoritative task itself requires the
+    # condition, or the claim asserted it beyond the task — returned with
+    # a refutation so the solver knows what the deliverable must satisfy
     schema={"obligations": [{"text": str,
                              "required_basis": ("world", "record"),
                              "severity?": ("must", "should"),
                              "clause?": str,
-                             "refutable_by_absence?": bool}],
+                             "refutable_by_absence?": bool,
+                             "task_bearing?": ("required", "beyond_task",
+                                               "unclear")}],
             "excluded?": [{"clause": str, "reason": str}]},
     tools=["Read", "Grep", "Glob"],
 )
