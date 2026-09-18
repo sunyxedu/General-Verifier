@@ -134,3 +134,36 @@ def load_world_view(state_dir: Optional[str],
                 note=str(manifest.get("note") or ""),
             )
     return WorldView(mode=MODE_LIVE if live_world else MODE_UNAVAILABLE)
+
+
+# WORLD EPOCH — a world-basis verdict is about the world as it was when
+# the check ran. Every solver action that can change the world (anything
+# but a read-only tool) advances the epoch; a world-basis verdict settled
+# in an earlier epoch is stale for the current one and must be re-checked
+# rather than reused. Record-basis verdicts (about the immutable ledger)
+# never go stale this way. The classification is by tool KIND, not task:
+# reading, searching, fetching, and the verifier's own verbs leave the
+# world alone; execution and editing may not.
+READ_ONLY_TOOLS = frozenset({
+    "Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "ToolSearch",
+    "TodoWrite", "TodoRead", "AskUserQuestion",
+})
+
+
+def tool_mutates_world(tool) -> bool:
+    name = str(tool or "")
+    if name in READ_ONLY_TOOLS:
+        return False
+    if name.startswith("mcp__gv__"):
+        return False
+    return True
+
+
+def world_epoch(events) -> int:
+    """The number of world-mutating solver actions in the ledger so far."""
+    n = 0
+    for event in events:
+        if event.get("type") == "tool_call" and tool_mutates_world(
+                (event.get("payload") or {}).get("tool")):
+            n += 1
+    return n

@@ -241,6 +241,16 @@ class ClaimStore:
                          reason=reason, basis=basis, strength=strength)
 
     @_locked
+    def set_stale(self, claim_id: str, reason: Optional[str] = None) -> None:
+        """A settled verdict the world has moved past: reopened for a
+        fresh check (world-basis obligation nodes whose epoch is over)."""
+        self._transition(claim_id, STATUS_STALE,
+                         allowed={STATUS_VERIFIED, STATUS_REFUTED,
+                                  STATUS_PARTIAL, STATUS_UNVERIFIED,
+                                  STATUS_STALE},
+                         reason=reason)
+
+    @_locked
     def set_partial(self, claim_id: str) -> None:
         self._transition(claim_id, STATUS_PARTIAL,
                          allowed={STATUS_UNVERIFIED, STATUS_STALE})

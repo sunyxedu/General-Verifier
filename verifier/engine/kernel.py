@@ -53,6 +53,7 @@ from .contract_cache import (
     CompiledFinalContract, contract_cache_key,
 )
 from .source_evidence import bind_source_evidence_variables
+from ..core.world import world_epoch
 
 # attack rounds on a decomposition before the claim fails closed: each round
 # is one critic attempt; an `insufficient` verdict sends the decomposition
@@ -566,6 +567,12 @@ class Kernel:
         refuting_witness = next(
             (r[2] for r in settled if r[1] == OUTCOME_REFUTED
              and r[0].severity == SEVERITY_MUST), None)
+        # the epoch this verdict is about (a world-basis claim's verdict
+        # is about the world as it was now); recorded before the fold so
+        # the fold's own rows stay the last word on the claim
+        self.store.record_evidence(
+            row["id"], {"outcome": "epoch",
+                        "world_epoch": self._current_epoch()})
         self._settle(row["id"], outcomes, bases, strengths, severities)
         refutation = next((r for r in settled if r[1] == OUTCOME_REFUTED
                            and r[0].severity == SEVERITY_MUST), None)
@@ -645,6 +652,24 @@ class Kernel:
             out.append((obligation, *fut.result()))
         return out
 
+    def _current_epoch(self) -> int:
+        """The world epoch now: how many world-mutating solver actions the
+        ledger holds. Offline the world is fixed (epoch 0)."""
+        if not self.live_world:
+            return 0
+        return world_epoch(self.log.replay())
+
+    def _node_epoch_current(self, oid: str, epoch: int) -> bool:
+        """Whether a settled node's verdict belongs to the current world:
+        record-basis verdicts always do; a world-basis verdict only when
+        its evidence was recorded in this epoch."""
+        node = self.store.get(oid)
+        if node["basis"] != BASIS_WORLD:
+            return True
+        ev = self.store.evidence_for(oid)
+        recorded = (ev[-1].get("world_epoch") if ev else None)
+        return recorded is not None and int(recorded) == epoch
+
     def _settle_one(self, row: Dict, obligation: Obligation):
         """Settle one obligation node for this claim — by dedup, by
         inheritance from a same-text claim, or by fresh discharge — under
@@ -652,8 +677,22 @@ class Kernel:
         twice: the second waits, then takes the dedup path. Returns
         (outcome, witness, basis, strength)."""
         oid = self.store.add_obligation(row["id"], obligation)
+        epoch = self._current_epoch()
         with self._lock_for(self._node_locks, oid):
             known = self.store.status(oid)
+            if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL) \
+                    and not self._node_epoch_current(oid, epoch):
+                # WORLD EPOCH: the world moved since this world-basis
+                # verdict was won; reusing it would certify the new world
+                # on the old world's evidence. Reopen and check afresh.
+                self.log.append(
+                    "dedup_hit",
+                    {"claim": row["id"], "obligation": oid,
+                     "status": known, "refused": "world moved",
+                     "world_epoch": epoch})
+                self.store.set_stale(oid, reason="world moved since the "
+                                                 "verdict was won")
+                known = self.store.status(oid)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 # foreign-assumption gate: a node settled under another
                 # claim may have ASSUMED that claim's premises (declared
@@ -718,6 +757,13 @@ class Kernel:
                         and src_eff["premise_refuted"] is None
                         and not src_eff["open_premises"])
                 )
+                if transferable and src_eff["effective_basis"] == BASIS_WORLD:
+                    src_ev = self.store.evidence_for(src["id"])
+                    stamp = next((e.get("world_epoch") for e in
+                                  reversed(src_ev)
+                                  if e.get("world_epoch") is not None), None)
+                    if stamp is None or int(stamp) != epoch:
+                        transferable = False   # the world moved since
                 if transferable and not basis_satisfies(
                         src_eff["effective_basis"],
                         obligation.required_basis):
@@ -1961,6 +2007,7 @@ class Kernel:
                 "witness_kind": ev[-1].get("witness_kind") if ev else None,
                 "artifact": ev[-1].get("artifact", "") if ev else "",
                 "assumed_premises": [],
+                "world_epoch": self._current_epoch(),
             },
         )
         # The node lock and scoped identity keep its verdict paired with
@@ -2129,6 +2176,7 @@ class Kernel:
             "instrument": result.instrument,
             "outcome": result.outcome,
             "basis": result.basis,
+            "world_epoch": self._current_epoch(),
             "strength": result.strength,
             "bridges": list(result.bridges),
             "assumed_premises": list(result.assumed_premises),

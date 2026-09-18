@@ -61,7 +61,79 @@ def snapshot(root: str, out_dir: str) -> dict:
                 continue
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump({"root": root, "files": manifest}, f, indent=1)
+    with open(os.path.join(out_dir, "environment.json"), "w") as f:
+        json.dump(environment_fingerprint(), f, indent=1)
     return {"git": git, "file_count": len(manifest)}
+
+
+def environment_fingerprint() -> dict:
+    """The environment as the task supplies it, independent of any task:
+    the executables reachable on PATH and the packages each Python on
+    PATH can import. A deliverable is accepted as delivered, so whatever
+    the solver adds here for its own session is not part of the delivery;
+    the delta against this record tells the seats what was added."""
+    seen = set()
+    executables = set()
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if not d or d in seen or not os.path.isdir(d):
+            continue
+        seen.add(d)
+        try:
+            for name in os.listdir(d):
+                path = os.path.join(d, name)
+                if os.access(path, os.X_OK) and not os.path.isdir(path):
+                    executables.add(name)
+        except OSError:
+            continue
+    pythons = {}
+    for interp in ("python", "python3"):
+        if interp not in executables:
+            continue
+        try:
+            proc = subprocess.run(
+                [interp, "-c", "import json,sys;"
+                 "from importlib import metadata;"
+                 "print(json.dumps({'executable': sys.executable,"
+                 "'version': sys.version.split()[0],"
+                 "'packages': sorted({d.metadata['Name'].lower() "
+                 "for d in metadata.distributions() if d.metadata['Name']})}))"],
+                capture_output=True, text=True, timeout=60)
+            if proc.returncode == 0:
+                pythons[interp] = json.loads(proc.stdout)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+    return {"executables": sorted(executables), "pythons": pythons}
+
+
+def environment_delta(baseline_dir: str) -> dict:
+    """What the environment now has beyond (or short of) the baseline
+    record: executables and Python packages added or removed since the
+    task started. Empty when nothing changed or no record exists."""
+    path = os.path.join(baseline_dir, "environment.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            before = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    now = environment_fingerprint()
+    delta = {}
+    b_exe, n_exe = set(before.get("executables", [])), set(now["executables"])
+    if n_exe - b_exe:
+        delta["executables_added"] = sorted(n_exe - b_exe)
+    if b_exe - n_exe:
+        delta["executables_removed"] = sorted(b_exe - n_exe)
+    for interp, info in now.get("pythons", {}).items():
+        was = (before.get("pythons") or {}).get(interp) or {}
+        added = sorted(set(info.get("packages", []))
+                       - set(was.get("packages", [])))
+        if added:
+            delta.setdefault("python_packages_added", {})[interp] = added
+        if was.get("executable") and was["executable"] != info.get("executable"):
+            delta.setdefault("python_interpreter_changed", {})[interp] = {
+                "before": was["executable"], "now": info.get("executable")}
+    return delta
 
 
 if __name__ == "__main__":

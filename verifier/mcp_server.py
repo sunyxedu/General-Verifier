@@ -76,6 +76,14 @@ def _obligation_summary(store, claim_id: str) -> list:
     return out
 
 
+def _holding(store, claim_id: str) -> list:
+    """The claim's obligations that DID hold: a fix must keep them true.
+    Returned beside the residue so a repair aimed at one failing condition
+    is not made by breaking another the same contract demands."""
+    return [o["text"] for o in store.obligation_children(claim_id)
+            if o["status"] == "verified"]
+
+
 def _residue(store, claim_id: str) -> Dict[str, Any]:
     """What a non-verified claim owes the solver: the obligations that did not
     hold with their counterexamples — or, when no obligation was ever compiled,
@@ -83,7 +91,14 @@ def _residue(store, claim_id: str) -> Dict[str, Any]:
     invisible to the solver."""
     obligations = _obligation_summary(store, claim_id)
     if obligations:
-        return {"obligations": obligations}
+        out = {"obligations": obligations}
+        holding = _holding(store, claim_id)
+        if holding:
+            out["still_holding"] = holding
+            out["note"] = ("still_holding lists the conditions of the same "
+                           "contract that were established; a fix for the "
+                           "failing ones must keep every one of them true")
+        return out
     for ev in reversed(store.evidence_for(claim_id)):
         if ev.get("error"):
             out = {"error": ev["error"]}

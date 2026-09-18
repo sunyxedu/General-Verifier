@@ -65,10 +65,20 @@ hold **load-bearing conclusions, not a diary**. Decide per claim, from the task 
   on a verified claim; the certificate lists it as `confident`, not `verified`. If you
   want the full independent check anyway, call `gv.verify(label)`.
 - Any other status comes back with the obligation that failed and its counterexample (or,
-  if the claim rests on something already refuted, the fail-closed reason). Read that
-  residue and revise **before** building anything on top of the claim. `gv.verify` on an
+  if the claim rests on something already refuted, the fail-closed reason), plus
+  `still_holding`: the conditions of the same contract that were established. A fix for
+  the failing condition must keep every one of those true — trading one requirement for
+  another is the most common way a repair makes the delivery worse. `gv.verify` on an
   already-checked claim repeats the same check on the same statement; it is not a second
   roll of the dice — change the world or the wording and `revises=` instead.
+- A refuted **intermediate** claim means the statement as written is false; it is
+  information, not an instruction to change the deliverable. Ask first whether the task
+  actually requires what the statement asserted: if not, narrow or drop the claim; only
+  if it does, change the world. The task statement is the only contract the deliverable
+  must satisfy; your own claims are not a second one.
+- The verifier checks world conditions against the world **as it is now**. After you
+  change files or state, earlier world-based verdicts are stale and are re-checked when
+  next relied on; commit the `final` only after your last change to the deliverable.
 
 ## Wrap-up
 
