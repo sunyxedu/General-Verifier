@@ -1308,6 +1308,15 @@ class BindingGame:
             self._reject(row, obligation, method, reason)
             attempt.rejected = reason
             return None
+        if run.world_changes:
+            reason = self._structural_defect(
+                DischargeResult(outcome=OUTCOME_FAILED,
+                                world_changes=run.world_changes), obligation)
+            attempt.discharge_outcome = OUTCOME_FAILED
+            attempt.audit = {"_structural": True, "reason": reason}
+            self._reject(row, obligation, method, reason)
+            attempt.rejected = reason
+            return None
 
         degradation = self._degradation_record(strength, attempts, tier_listed)
         verdict = self._judge_script(obligation, method, run, attempt,
@@ -1462,11 +1471,22 @@ class BindingGame:
     @staticmethod
     def _structural_defect(result: DischargeResult,
                            obligation: Obligation) -> Optional[str]:
-        """The two axioms checked on the executor's own declaration,
-        before any semantic audit: a refutation needs an admissible
-        witness kind (positive observation; absence only against a
-        presence requirement), and a holds must not rest on a delivered
-        artifact standing as authority (the circular certificate)."""
+        """The axioms checked on the executor's own declaration, before
+        any semantic audit: a refutation needs an admissible witness kind
+        (positive observation; absence only against a presence
+        requirement), a holds must not rest on a delivered artifact
+        standing as authority (the circular certificate), and a check
+        must leave the delivered world as it found it — a check is an
+        observation, and one that altered the delivery both corrupts the
+        subject for every later check and may have changed what the task
+        is graded on."""
+        changes = getattr(result, "world_changes", None)
+        if changes:
+            return ("check altered the delivered world: "
+                    + json.dumps(changes, ensure_ascii=False)[:400]
+                    + " — a check must leave the delivery as it found it "
+                    "(exercise mutable behaviour on a copy, or restore the "
+                    "state it changed before finishing)")
         if result.outcome == OUTCOME_REFUTED and not witness_admissible(
                 result.witness_kind, obligation.refutable_by_absence):
             kind = result.witness_kind or WITNESS_NONE

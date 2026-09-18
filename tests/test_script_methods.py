@@ -283,3 +283,43 @@ def test_sibling_unobtainable_findings_reach_the_next_oracle(tmp_path):
     assert seen_feedback[0] == "[]"
     assert "does not exist" in seen_feedback[-1]
     assert "first check" in seen_feedback[-1]
+
+
+def test_a_script_that_alters_the_delivered_world_is_rejected(tmp_path):
+    import json as _json
+    world = tmp_path / "world"
+    world.mkdir()
+    (world / "keep.txt").write_text("as delivered\n")
+    (tmp_path / "baseline").mkdir()
+    (tmp_path / "baseline" / "manifest.json").write_text(
+        _json.dumps({"root": str(world), "files": {}}))
+    game, backend, discharger, artifacts, log = build(
+        tmp_path, {"script_judger": reader("holds")},
+        [script_method(f"echo probe > {world}/probe.txt; cat {world}/keep.txt")])
+
+    result = game.run(ROW, Obligation("c1", "keep.txt says as delivered",
+                                      required_basis="world"))
+
+    assert result.outcome == "failed"
+    rejected = [e["payload"]["reason"] for e in log.replay()
+                if e["type"] == "method_rejected"]
+    assert any("altered the delivered world" in r and "probe.txt" in r
+               for r in rejected)
+    # the reader was never asked about a run that corrupted the subject
+    assert "script_judger" not in [c["role"] for c in backend.calls]
+
+
+def test_a_read_only_script_leaves_no_world_changes(tmp_path):
+    import json as _json
+    world = tmp_path / "world"
+    world.mkdir()
+    (world / "keep.txt").write_text("as delivered\n")
+    (tmp_path / "baseline").mkdir()
+    (tmp_path / "baseline" / "manifest.json").write_text(
+        _json.dumps({"root": str(world), "files": {}}))
+    game, backend, discharger, artifacts, log = build(
+        tmp_path, {"script_judger": reader("holds")},
+        [script_method(f"cat {world}/keep.txt; echo scratch > $GV_WORKDIR/s.txt")])
+    result = game.run(ROW, Obligation("c1", "keep.txt says as delivered",
+                                      required_basis="world"))
+    assert result.outcome == "holds"

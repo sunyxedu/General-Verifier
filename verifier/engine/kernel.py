@@ -1364,7 +1364,8 @@ class Kernel:
                                   "severity": o.severity,
                                   "clause": o.clause,
                                   "refutable_by_absence":
-                                      o.refutable_by_absence}
+                                      o.refutable_by_absence,
+                                  "task_bearing": o.task_bearing}
                                  for o in obligations]}
         if excluded:
             # The compiler's exclusion ledger, as the Critic reviewed it:

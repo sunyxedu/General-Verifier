@@ -14,7 +14,7 @@ import os
 import re
 import stat
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Optional
 
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
@@ -50,9 +50,9 @@ SNAPSHOT_MAX_PREFERRED_PATH_CHARS = 4096
 @dataclass(frozen=True)
 class DischargeResult:
     outcome: str                 # holds | refuted | failed | unobtainable
-    witness: Optional[Any]
-    artifact: str                # digest in the artifact store
-    instrument: str
+    witness: Optional[Any] = None
+    artifact: str = ""           # digest in the artifact store
+    instrument: str = ""
     # evidence basis (world | record): what a 'holds' entitles downstream
     # reliance to. Declared by the bound method and audited by the judger;
     # defaults to record — the fail-closed direction — for paths with no
@@ -85,6 +85,11 @@ class DischargeResult:
     # independence axiom is enforced on this declaration: a delivered
     # artifact in the authority role makes a holds circular.
     inputs: tuple = ()
+    # what the check changed in the delivered world (tree delta of the
+    # baseline root, empty when nothing changed or no baseline exists). A
+    # check is an observation: one that alters the delivered world is a
+    # defect the binding game rejects, whatever it reported.
+    world_changes: dict = field(default_factory=dict)
 
 
 # a mechanically executed method: the exact script that ran and what it
@@ -96,6 +101,7 @@ SCRIPT_TIMEOUT_DEFAULT = 300   # the oracle is told "a few minutes"
 @dataclass(frozen=True)
 class ScriptRun:
     artifact: str                # digest in the artifact store
+    world_changes: dict          # tree delta of the delivered root, if any
     script: str
     exit_code: Optional[int]     # None when the script never ran
     stdout: str                  # bounded
@@ -239,6 +245,29 @@ class AgentDischarger:
                 break
         return {"premises": premises, "prior_evidence": prior}
 
+    def _world_before(self):
+        """Fingerprint the delivered world before a check runs (live
+        world with a baseline only; the captured world is immutable)."""
+        from ..baseline import delivered_root, tree_manifest
+        if not self.live_world:
+            return None, None
+        root = delivered_root(self.state_dir)
+        if not root:
+            return None, None
+        try:
+            return root, tree_manifest(root)
+        except OSError:
+            return None, None
+
+    def _world_changes(self, root, before) -> dict:
+        from ..baseline import manifest_delta, tree_manifest
+        if root is None:
+            return {}
+        try:
+            return manifest_delta(before, tree_manifest(root))
+        except OSError:
+            return {}
+
     def discharge(self, row: Dict, obligation: Obligation,
                   method: Optional[Dict[str, str]] = None,
                   tag: str = "") -> DischargeResult:
@@ -309,6 +338,7 @@ class AgentDischarger:
     def _discharge(self, row: Dict, obligation: Obligation,
                    method=None, tag="", *,
                    previous_artifact=None) -> DischargeResult:
+        root, before = self._world_before()
         subdir = obligation.id[:12] + (f"-{tag}" if tag else "")
         workdir = os.path.join(self.workdir_base, subdir)
         os.makedirs(workdir, exist_ok=True)
@@ -402,12 +432,14 @@ class AgentDischarger:
             return DischargeResult(OUTCOME_FAILED, str(err), digest,
                                    self.instrument)
 
+        changes = self._world_changes(root, before)
         snapshot = _snapshot_envelope(
             workdir, self.artifacts,
             preferred_paths=_reported_artifact_paths(payload, workdir))
         digest = self.artifacts.put({
             "instrument": self.instrument,
             "reported": payload,
+            "world_changes": changes,
             **snapshot,
         })
         self._maybe_cleanup(workdir)
@@ -419,6 +451,7 @@ class AgentDischarger:
             assumed_premises=tuple(payload.get("assumed_premises") or ()),
             witness_kind=payload.get("witness_kind"),
             inputs=tuple(payload.get("inputs") or ()),
+            world_changes=changes,
         )
 
     @staticmethod
@@ -441,6 +474,7 @@ class AgentDischarger:
         a failed run on record, never a verdict."""
         import subprocess
         import time as _time
+        root, before = self._world_before()
         subdir = obligation.id[:12] + (f"-{tag}" if tag else "") + "-script"
         workdir = os.path.join(self.workdir_base, subdir)
         os.makedirs(workdir, exist_ok=True)
@@ -501,8 +535,10 @@ class AgentDischarger:
             f.write(err)
         stdout, out_trunc = _bounded(out)
         stderr, err_trunc = _bounded(err)
+        changes = self._world_changes(root, before)
         digest = self.artifacts.put({
             "instrument": "script",
+            "world_changes": changes,
             "obligation": obligation.text,
             "script": script,
             "exit_code": exit_code,
@@ -514,7 +550,8 @@ class AgentDischarger:
             "files": _snapshot(workdir),
         })
         self._maybe_cleanup(workdir)
-        return ScriptRun(artifact=digest, script=script, exit_code=exit_code,
+        return ScriptRun(artifact=digest, world_changes=changes,
+                         script=script, exit_code=exit_code,
                          stdout=stdout, stderr=stderr,
                          stdout_truncated=out_trunc,
                          stderr_truncated=err_trunc, timed_out=timed_out,

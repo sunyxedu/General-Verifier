@@ -64,7 +64,7 @@ def test_repair_locator_survives_cleanup_without_restoring_verdict(tmp_path, liv
     assert json.dumps(locator) in variables["redo_repair_context"]
     assert len(backend.calls) == 2  # a new execution, not an outcome shortcut
     assert json.dumps(method) == before
-    assert set(artifacts.get(result.artifact)) == {"instrument", "reported", "files"}
+    assert set(artifacts.get(result.artifact)) == {"instrument", "reported", "files", "world_changes"}
     rendered = DISCHARGE_AGENT.render(variables)
     assert "not accepted evidence or authority" in rendered
     assert "execute the repaired check" in rendered

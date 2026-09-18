@@ -43,6 +43,17 @@ def snapshot(root: str, out_dir: str) -> dict:
     with open(os.path.join(out_dir, "git.json"), "w") as f:
         json.dump(git, f, indent=1)
 
+    manifest = tree_manifest(root)
+    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+        json.dump({"root": root, "files": manifest}, f, indent=1)
+    with open(os.path.join(out_dir, "environment.json"), "w") as f:
+        json.dump(environment_fingerprint(), f, indent=1)
+    return {"git": git, "file_count": len(manifest)}
+
+
+def tree_manifest(root: str) -> dict:
+    """relative path -> sha256 (or size:/link: marker) for every file under
+    root, skipping VCS internals and vendored trees."""
     manifest = {}
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -59,11 +70,36 @@ def snapshot(root: str, out_dir: str) -> dict:
                         manifest[rel] = hashlib.sha256(fh.read()).hexdigest()
             except OSError:
                 continue
-    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump({"root": root, "files": manifest}, f, indent=1)
-    with open(os.path.join(out_dir, "environment.json"), "w") as f:
-        json.dump(environment_fingerprint(), f, indent=1)
-    return {"git": git, "file_count": len(manifest)}
+    return manifest
+
+
+def manifest_delta(before: dict, after: dict, cap: int = 20) -> dict:
+    """What changed between two tree manifests: added, removed, modified
+    relative paths (each list bounded to cap entries, with counts)."""
+    added = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
+    modified = sorted(k for k in before if k in after and before[k] != after[k])
+    out = {}
+    for name, items in (("added", added), ("removed", removed),
+                        ("modified", modified)):
+        if items:
+            out[name] = items[:cap]
+            out[name + "_count"] = len(items)
+    return out
+
+
+def delivered_root(state_dir) -> str:
+    """The delivered world's root as the pre-task baseline recorded it
+    ("" when no baseline exists or the root is gone)."""
+    if not state_dir:
+        return ""
+    path = os.path.join(state_dir, "baseline", "manifest.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            root = json.load(f).get("root") or ""
+    except (OSError, ValueError):
+        return ""
+    return root if root and os.path.isdir(root) else ""
 
 
 def environment_fingerprint() -> dict:
