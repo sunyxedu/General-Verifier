@@ -118,6 +118,7 @@ def test_reader_may_refute_at_decisive_once_the_judger_countersigns(tmp_path):
     assert roles == ["oracles", "script_judger", "judger"]
     # the countersigning judger was handed the retained script run
     seen = backend.calls[2]["variables"]
+    assert "REFUTATION COUNTERSIGN" in seen["countersign"]
     evidence = json.loads(seen["evidence"])
     assert evidence["outcome"] == "refuted"
     assert artifacts.get(evidence["artifact_digest"])["instrument"] == "script"

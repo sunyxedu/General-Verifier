@@ -151,7 +151,30 @@ JUDGER_SYSTEM = (
     "reject on a plain reading of the task and the delivery.\n"
 )
 
+# Rendered into JUDGER_TEMPLATE's {countersign} slot when the judger is
+# countersigning a REFUTATION that a mechanically executed method produced.
+# The WITNESS axiom fixes what the second signature must decide there: one
+# genuine, in-domain, admissible counterexample decides the negative
+# direction; the parts of the procedure that were not run bear on a
+# positive verdict, never on a counterexample that was actually obtained.
+COUNTERSIGN_REFUTATION = (
+    "REFUTATION COUNTERSIGN: the evidence reports a counterexample obtained "
+    "by a script run verbatim, and you are asked whether THAT COUNTEREXAMPLE "
+    "STANDS. Answer sufficient=yes and faithful=yes exactly when the "
+    "retained observation is genuine (it was produced against the right "
+    "target, inside the described world, by the recorded run), lies inside "
+    "the obligation's domain under every reading the controlling text "
+    "admits, is of an admissible witness kind, and is not an over-demand a "
+    "careful grader would set aside. Coverage the run did not deliver — a "
+    "smaller fixture than promised, a dimension not exercised, a baseline "
+    "built with another library — bears only on a positive verdict; it does "
+    "not dissolve a counterexample the run did obtain, and must not be the "
+    "reason for faithful=no here. Reject the refutation only by naming what "
+    "makes this counterexample itself invalid.\n"
+)
+
 JUDGER_TEMPLATE = (
+    "{countersign}"
     "Obligation (exact proposition UNDER TEST; trusted identity does not "
     "imply truth or semantic authority): {obligation_text}\n"
     "Severity (must | should) and controlling clause: {severity} — "

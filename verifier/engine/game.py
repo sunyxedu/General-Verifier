@@ -1655,7 +1655,10 @@ class BindingGame:
         state = os.path.dirname(os.path.abspath(self.log.path))
         world_mode, world, manifest = world_evidence_context(
             state, live_world=self.live_world)
+        from ..llm import prompts
         variables = {
+            "countersign": (prompts.COUNTERSIGN_REFUTATION
+                            if source == "refutation countersign" else ""),
             "obligation_text": obligation.text,
             "severity": obligation.severity,
             "clause": obligation.clause,

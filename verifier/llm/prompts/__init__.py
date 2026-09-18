@@ -52,6 +52,7 @@ from .discharge import (
 from .judger import (
     JUDGER_SYSTEM,
     JUDGER_TEMPLATE,
+    COUNTERSIGN_REFUTATION,
 )
 from .sufficiency import (
     SUFFICIENCY_SYSTEM,
