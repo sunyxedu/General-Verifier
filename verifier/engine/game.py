@@ -57,12 +57,15 @@ import json
 import os
 from copy import deepcopy
 from contextlib import nullcontext
+import threading
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
-from ..llm.agents import ENUMERATE_ORACLES_AGENT, JUDGER_AGENT
+from ..llm.agents import (
+    ENUMERATE_ORACLES_AGENT, JUDGER_AGENT, SCRIPT_JUDGER_AGENT,
+)
 from ..llm.model_spans import model_scope
-from ..execution.discharge import DischargeResult
+from ..execution.discharge import DischargeResult, ScriptRun
 from ..execution.adapters import (
     AdapterInvocation, AdapterNotApplicable, adapter_method_view,
 )
@@ -183,6 +186,7 @@ class BindingGame:
         discharger,
         oracles_role=ENUMERATE_ORACLES_AGENT,
         judger_role=JUDGER_AGENT,
+        script_judger_role=SCRIPT_JUDGER_AGENT,
         redo_rounds: int = 3,
         registry: str = "[]",
         memory=None,
@@ -214,6 +218,11 @@ class BindingGame:
         self.discharger = discharger
         self.oracles_role = oracles_role
         self.judger_role = judger_role
+        # the reader of a method in EXECUTABLE FORM (a script the executor
+        # ran verbatim): sufficiency from the script, outcome from its
+        # output. None -> scripts are ignored and every method goes to
+        # the agent executor.
+        self.script_judger_role = script_judger_role
         self.redo_rounds = redo_rounds
         # AgentRole already gives one malformed generation a schema-fix
         # re-prompt.  If that whole role call still fails (transport, parse,
@@ -241,6 +250,66 @@ class BindingGame:
         # Profile-owned compiler transport only.  The default keeps the
         # established variables and truthful executor/Judger/event record.
         self.oracle_feedback_filter = oracle_feedback_filter
+        # method batches enumerated ahead of time (the final-contract
+        # precompile), keyed by obligation node id: the first-pass
+        # enumeration of a matching obligation is served from here
+        self.batch_cache: Dict[str, List[Dict[str, str]]] = {}
+        # the fixed evidence boundary is one boundary for every check of
+        # a claim: an input a sibling check found absent is absent for
+        # this one too, so the oracle is told before it lists a method
+        # that needs it
+        self._boundary: Dict[str, List[str]] = {}
+        # prewarms in flight: a commit that needs a batch being enumerated
+        # right now waits for that one enumeration instead of starting a
+        # second, and never waits for the others
+        self._prewarm_events: Dict[str, threading.Event] = {}
+        self._cache_lock = threading.Lock()
+
+    def prewarm(self, row: Dict, obligation: Obligation) -> None:
+        """Enumerate an obligation's first method batch now and keep it
+        for the commit that will need it (and for a revised commit of
+        the same contract: the batch is served, never consumed)."""
+        with self._cache_lock:
+            if obligation.id in self.batch_cache \
+                    or obligation.id in self._prewarm_events:
+                return
+            event = self._prewarm_events[obligation.id] = threading.Event()
+        try:
+            try:
+                methods = self._enumerate(row, obligation, prewarm=True)
+            except RoleError as err:
+                self.log.append(
+                    "methods_enumerated",
+                    {"claim": row["id"], "obligation": obligation.id,
+                     "prewarm": True, "error": str(err)})
+                return
+            with self._cache_lock:
+                self.batch_cache[obligation.id] = methods
+        finally:
+            with self._cache_lock:
+                self._prewarm_events.pop(obligation.id, None)
+            event.set()
+
+    def _served_batch(self, row: Dict, obligation: Obligation):
+        with self._cache_lock:
+            cached = self.batch_cache.get(obligation.id)
+            pending = self._prewarm_events.get(obligation.id)
+        if cached is None and pending is not None:
+            pending.wait()
+            with self._cache_lock:
+                cached = self.batch_cache.get(obligation.id)
+        if cached is None:
+            return None
+        self.log.append(
+            "methods_enumerated",
+            {"claim": row["id"], "obligation": obligation.id,
+             "repair": False, "cached": True,
+             "methods": [{"procedure": m["procedure"][:80],
+                          "level": m.get("level", ""),
+                          "basis": m.get("basis", ""),
+                          "strength": _method_strength(m)}
+                         for m in cached]})
+        return [dict(m) for m in cached]
 
     # Entry point
     def run(self, row: Dict, obligation: Obligation) -> DischargeResult:
@@ -954,6 +1023,45 @@ class BindingGame:
                 oracle_contracts[id(attempt)] = deepcopy(method)
             attempts.append(attempt)
 
+            if method.get("script") and self.script_judger_role is not None \
+                    and hasattr(self.discharger, "run_script"):
+                # EXECUTABLE FORM: the script runs verbatim (no agent, so
+                # fidelity holds by construction and there is no redo
+                # loop); the script judger signs sufficiency and reads
+                # the outcome off the retained output. The same axioms
+                # and floors gate the result as on the agent path.
+                settled = self._run_script_method(
+                    row, obligation, method, attempt, attempts, tier_listed)
+                if settled is not None:
+                    return settled
+                outcome = attempt.discharge_outcome
+                detail = str(attempt.rejected or "")
+                audit = attempt.audit or {}
+                if outcome == OUTCOME_UNOBTAINABLE:
+                    unavailable_reasons.append(
+                        detail[len("unobtainable: "):]
+                        if detail.startswith("unobtainable: ") else detail)
+                    audited_gap = True
+                    tier_unobtainable.add(strength)
+                    continue
+                failed_seen = True
+                if audit.get("_contrary"):
+                    contrary_signal = True
+                disputed = (audit.get("degradation") == "unjustified"
+                            and strength != STRENGTH_DECISIVE
+                            and audit.get("sufficient") == "yes")
+                if disputed:
+                    degradation_disputed = True
+                if audit and (audit.get("sufficient") != "yes" or disputed
+                              or audit.get("_contrary")
+                              or audit.get("_structural")):
+                    # a method defect the oracle's repair pass may fix
+                    # (an execution failure is not one: it stays in the
+                    # exhausted-attempts diagnostic only)
+                    structural_feedback.append(
+                        {"procedure": procedure, "reason": detail})
+                continue
+
             method_attempt = len(attempts)
             preaudit = self._preaudit(row, obligation, method, method_attempt)
             if preaudit is not None and preaudit.get("sufficient") == "no":
@@ -996,6 +1104,7 @@ class BindingGame:
                 detail = str(result.witness or
                              "required instrument or evidence unavailable")
                 unavailable_reasons.append(detail)
+                self._note_boundary(row, obligation, detail)
                 audited_gap = True
                 tier_unobtainable.add(strength)
                 reason = f"unobtainable: {detail}"
@@ -1207,14 +1316,210 @@ class BindingGame:
         return self._fail(row, obligation, attempts, reason,
                           unobtainable=unavailable_only)
 
+    def _run_script_method(self, row, obligation, method, attempt,
+                           attempts, tier_listed) -> Optional[DischargeResult]:
+        """Run a method's EXECUTABLE FORM and adjudicate it. Returns the
+        settled DischargeResult when the method binds; otherwise records
+        the terminal reason on the attempt (attempt.rejected, with
+        attempt.discharge_outcome and attempt.audit for the caller's
+        aggregation) and returns None."""
+        strength = _method_strength(method)
+        procedure = method["procedure"]
+        run: ScriptRun = self.discharger.run_script(
+            row, obligation, method=method, tag="bound")
+        attempt.discharge_artifact = run.artifact
+        self.log.append(
+            "discharge",
+            {"claim": row["id"], "obligation": obligation.id,
+             "instrument": "script", "outcome": "ran",
+             "exit_code": run.exit_code, "timed_out": run.timed_out,
+             "seconds": run.seconds, "artifact": run.artifact})
+        if run.launch_error or run.timed_out:
+            reason = ("script execution failure: "
+                      + (run.launch_error or f"timed out after {run.seconds}s"))
+            attempt.discharge_outcome = OUTCOME_FAILED
+            self._reject(row, obligation, method, reason)
+            attempt.rejected = reason
+            return None
+        if run.world_changes:
+            reason = self._structural_defect(
+                DischargeResult(outcome=OUTCOME_FAILED,
+                                world_changes=run.world_changes), obligation)
+            attempt.discharge_outcome = OUTCOME_FAILED
+            attempt.audit = {"_structural": True, "reason": reason}
+            self._reject(row, obligation, method, reason)
+            attempt.rejected = reason
+            return None
+
+        degradation = self._degradation_record(strength, attempts, tier_listed)
+        verdict = self._judge_script(obligation, method, run, attempt,
+                                     degradation)
+        outcome = verdict.get("outcome", OUTCOME_FAILED)
+        attempt.discharge_outcome = outcome
+        if verdict.get("sufficient") != "yes":
+            reason = f"judger method insufficient: {verdict['reason']}"
+            if verdict.get("_infra"):
+                reason = verdict["reason"]
+            self._reject(row, obligation, method, reason)
+            attempt.rejected = reason
+            return None
+        if strength != STRENGTH_DECISIVE \
+                and verdict.get("degradation") == "unjustified":
+            reason = f"judger degradation unjustified: {verdict['reason']}"
+            self._reject(row, obligation, method, reason)
+            attempt.rejected = reason
+            return None
+        result = DischargeResult(
+            outcome=outcome,
+            witness=verdict.get("witness") or None,
+            artifact=run.artifact,
+            instrument="script",
+            basis=method.get("basis", BASIS_RECORD),
+            strength=strength,
+            witness_kind=verdict.get("witness_kind"),
+            inputs=tuple(verdict.get("inputs") or ()),
+        )
+        if outcome == OUTCOME_UNOBTAINABLE:
+            detail = str(result.witness
+                         or "required instrument or evidence unavailable")
+            self._note_boundary(row, obligation, detail)
+            reason = f"unobtainable: {detail}"
+            self._reject(row, obligation, method, reason)
+            attempt.rejected = reason
+            return None
+        if outcome == OUTCOME_FAILED:
+            reason = "script did not decide the obligation"
+            if result.witness:
+                reason += f": {result.witness}"
+            self._reject(row, obligation, method, reason)
+            attempt.rejected = reason
+            return None
+        if outcome == OUTCOME_REFUTED and strength != STRENGTH_DECISIVE:
+            reason = (f"refutation below decisive strength is "
+                      f"inadmissible ({strength} instrument reported: "
+                      f"{result.witness})")
+            attempt.audit["_contrary"] = True
+            self._reject(row, obligation, method, reason)
+            attempt.rejected = reason
+            return None
+        structural = self._structural_defect(result, obligation)
+        if structural:
+            attempt.audit["_structural"] = True
+            self._reject(row, obligation, method, structural)
+            attempt.rejected = structural
+            return None
+        if outcome == OUTCOME_REFUTED and self.judger_role is not None:
+            # REFUTATION COUNTERSIGN: a refutation is the one verdict that
+            # can send the solver to break a right delivery, and on this
+            # path a single no-tools reader produced it. The independent
+            # judger, with the artifact and the world in reach, must
+            # countersign both signatures before it settles; a disputed
+            # refutation is a failed attempt with the dispute on record.
+            reading = attempt.audit
+            counter = self._judge(obligation, method, result, attempt,
+                                  degradation=degradation,
+                                  source="refutation countersign")
+            attempt.audit = reading
+            if not (counter.get("sufficient") == "yes"
+                    and counter.get("faithful") == "yes"):
+                reason = ("refutation not countersigned: "
+                          f"{counter.get('reason', '')}")
+                attempt.audit = dict(attempt.audit, countersign=counter)
+                if counter.get("sufficient") == "no":
+                    attempt.audit["_structural"] = True
+                self._reject(row, obligation, method, reason)
+                attempt.rejected = reason
+                return None
+            attempt.audit = dict(attempt.audit, countersign=counter)
+        return self._settle(row, obligation, attempts, method, result,
+                            audit=attempt.audit)
+
+    def _judge_script(self, obligation, method, run: ScriptRun, attempt,
+                      degradation: str) -> Dict[str, str]:
+        """The script judger: one no-tools call over the script and its
+        retained output. Fail-closed on infrastructure failure, mirroring
+        the agent-path judger (no redo is ever awarded on this path)."""
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        world_mode, world, _manifest = world_evidence_context(
+            state, live_world=self.live_world)
+        from ..execution.discharge import SCRIPT_OUTPUT_CAP
+        variables = {
+            "obligation_text": obligation.text,
+            "severity": obligation.severity,
+            "clause": obligation.clause,
+            "refutable_by_absence": obligation.refutable_by_absence,
+            "required_basis": obligation.required_basis,
+            "task_context": authoritative_task_context(state),
+            "procedure": method["procedure"],
+            "basis": method.get("basis", ""),
+            "declared_strength": _method_strength(method),
+            "bridges": json.dumps(method.get("bridges", []),
+                                  ensure_ascii=False),
+            "degradation_record": degradation,
+            "world_mode": world_mode,
+            "world_path": world,
+            "world_map": world_map(state, live_world=self.live_world),
+            "script": run.script,
+            "exit_code": run.exit_code,
+            "seconds": run.seconds,
+            "timed_out": run.timed_out,
+            "output_cap": SCRIPT_OUTPUT_CAP,
+            "stdout": run.stdout,
+            "stdout_truncated": run.stdout_truncated,
+            "stderr": run.stderr,
+            "stderr_truncated": run.stderr_truncated,
+        }
+        total_calls = self.judger_error_retries + 1
+        for call_no in range(1, total_calls + 1):
+            try:
+                verdict = dict(self.script_judger_role.call(
+                    self.backend, variables))
+                break
+            except RoleError as err:
+                self.log.append(
+                    "judger_call_failed",
+                    {"obligation": obligation.id, "redo": 0,
+                     "procedure": method["procedure"][:80],
+                     "artifact_digest": run.artifact,
+                     "call": call_no, "max_calls": total_calls,
+                     "will_retry": call_no < total_calls,
+                     "source": "script", "error": str(err)[:500]})
+                if call_no < total_calls:
+                    continue
+                verdict = {"sufficient": "unknown", "outcome": OUTCOME_FAILED,
+                           "witness": "", "degradation": "n/a",
+                           "reason": f"script judger failed: {err}",
+                           "_infra": True}
+        # fidelity is by construction on this path: the script ran verbatim
+        verdict["faithful"] = "yes" if verdict.get("sufficient") == "yes" \
+            else verdict.get("faithful", "yes")
+        attempt.audit = verdict
+        public = {k: v for k, v in verdict.items() if not k.startswith("_")}
+        self.log.append(
+            "judger_verdict",
+            {"obligation": obligation.id, "redo": 0, "source": "script",
+             "procedure": method["procedure"][:80], **public})
+        return verdict
+
     @staticmethod
     def _structural_defect(result: DischargeResult,
                            obligation: Obligation) -> Optional[str]:
-        """The two axioms checked on the executor's own declaration,
-        before any semantic audit: a refutation needs an admissible
-        witness kind (positive observation; absence only against a
-        presence requirement), and a holds must not rest on a delivered
-        artifact standing as authority (the circular certificate)."""
+        """The axioms checked on the executor's own declaration, before
+        any semantic audit: a refutation needs an admissible witness kind
+        (positive observation; absence only against a presence
+        requirement), a holds must not rest on a delivered artifact
+        standing as authority (the circular certificate), and a check
+        must leave the delivered world as it found it — a check is an
+        observation, and one that altered the delivery both corrupts the
+        subject for every later check and may have changed what the task
+        is graded on."""
+        changes = getattr(result, "world_changes", None)
+        if changes:
+            return ("check altered the delivered world: "
+                    + json.dumps(changes, ensure_ascii=False)[:400]
+                    + " — a check must leave the delivery as it found it "
+                    "(exercise mutable behaviour on a copy, or restore the "
+                    "state it changed before finishing)")
         if result.outcome == OUTCOME_REFUTED and not witness_admissible(
                 result.witness_kind, obligation.refutable_by_absence):
             kind = result.witness_kind or WITNESS_NONE
@@ -1314,6 +1619,19 @@ class BindingGame:
             # Never recover a failed safe view by handing over its raw text.
             return json.dumps({"mode": "unknown", "available": False},
                               sort_keys=True)
+    BOUNDARY_NOTES = 12
+
+    def _note_boundary(self, row: Dict, obligation: Obligation,
+                       detail: str) -> None:
+        with self._cache_lock:
+            notes = self._boundary.setdefault(row["id"], [])
+            notes.append(f"[{obligation.text[:80]}] {str(detail)[:300]}")
+            del notes[:-self.BOUNDARY_NOTES]
+
+    def _sibling_boundary(self, row: Dict) -> str:
+        with self._cache_lock:
+            notes = list(self._boundary.get(row["id"], ()))
+        return json.dumps(notes, ensure_ascii=False) if notes else "[]"
 
     def _enumerate(
         self,
@@ -1321,7 +1639,12 @@ class BindingGame:
         obligation: Obligation,
         method_feedback: str = "(none)",
         oracle_round: int = 0,
+        prewarm: bool = False,
     ) -> List[Dict[str, str]]:
+        if method_feedback == "(none)" and not prewarm:
+            served = self._served_batch(row, obligation)
+            if served is not None:
+                return served
         registry = (self.memory.registry_summary()
                     if self.memory is not None else self.registry)
         catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
@@ -1366,6 +1689,7 @@ class BindingGame:
                 "registry": registry,
                 "adapter_catalog": oracle_catalog,
                 "method_feedback": filtered_feedback,
+                "sibling_boundary": self._sibling_boundary(row),
                 "ledger_path": self.log.record_path_for(row["id"]),
                 "record_shape": (self._oracle_record_shape(row["id"])
                                  if self.oracle_feedback_filter is not None
@@ -1406,6 +1730,7 @@ class BindingGame:
             "repair": repair,
             "method_plan_artifact_id": plan_artifact_id,
             "method_plan_schema": ORACLE_METHOD_PLAN_SCHEMA,
+            "prewarm": prewarm,
             "methods": [{"procedure": m["procedure"][:80],
                          "level": m.get("level", ""),
                          "basis": m.get("basis", ""),
@@ -1427,7 +1752,8 @@ class BindingGame:
                                   "to audit)",
                method_attempt: int = 0,
                independent_judger: bool = False,
-               row: Optional[Dict] = None) -> Dict[str, str]:
+               row: Optional[Dict] = None,
+               source: Optional[str] = None) -> Dict[str, str]:
         evidence = {
             "outcome": result.outcome,
             "witness": result.witness,
@@ -1453,7 +1779,10 @@ class BindingGame:
         state = os.path.dirname(os.path.abspath(self.log.path))
         world_mode, world, manifest = world_evidence_context(
             state, live_world=self.live_world)
+        from ..llm import prompts
         variables = {
+            "countersign": (prompts.COUNTERSIGN_REFUTATION
+                            if source == "refutation countersign" else ""),
             "obligation_text": obligation.text,
             "severity": obligation.severity,
             "clause": obligation.clause,
@@ -1622,7 +1951,8 @@ class BindingGame:
         self.log.append(
             "judger_verdict",
             {"obligation": obligation.id, "redo": redo,
-             "procedure": method["procedure"][:80], **public},
+             "procedure": method["procedure"][:80],
+             **({"source": source} if source else {}), **public},
         )
         return verdict
 
@@ -1816,6 +2146,8 @@ def _attempt_diagnostic(attempt: Attempt, *, include_declared_contract=False,
         "strength": _method_strength(attempt.method),
         "bridges": attempt.method.get("bridges", []),
     }
+    if attempt.method.get("script"):
+        method["script"] = str(attempt.method["script"])[:4000]
 
     def public(audit):
         if audit is None:

@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from typing import Dict, List, Optional
@@ -39,6 +40,7 @@ from ..core.model import (
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
     STRENGTH_DECISIVE, strength_rank, weakest_strength,
     SEVERITY_MUST, SEVERITY_SHOULD, SEVERITIES,
+    TASK_BEARING_REQUIRED, TASK_BEARING_UNCLEAR,
     WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm import prompts
@@ -52,6 +54,7 @@ from .contract_cache import (
     CompiledFinalContract, contract_cache_key,
 )
 from .source_evidence import bind_source_evidence_variables
+from ..core.world import world_epoch
 
 # attack rounds on a decomposition before the claim fails closed: each round
 # is one critic attempt; an `insufficient` verdict sends the decomposition
@@ -149,6 +152,9 @@ class Kernel:
         contract_replay=None,
         record_boundary=None,
         independent_root_provider=None,
+        screener_role=None,
+        critic_rounds_nonfinal: Optional[int] = None,
+        speculative_discharge: bool = False,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -189,6 +195,29 @@ class Kernel:
         # A final contract compiled concurrently with extraction; adopted
         # only under an identical contract key (see engine.precompile).
         self._precompiled_final = None
+        # ADVISORY review for non-final claims: whole-task acceptance is
+        # adjudicated only at the final (contract locus), so a non-final
+        # decomposition defect costs the solver a wrong intermediate
+        # verdict, never certificate soundness. With a budget set, the
+        # critic reviews a non-final decomposition that many times and
+        # the last repair stands unreviewed instead of failing closed;
+        # 0 seats no critic for non-finals. None -> the full game.
+        self.critic_rounds_nonfinal = critic_rounds_nonfinal
+        # SPECULATIVE DISCHARGE: start settling the compiler's obligations
+        # while the critic reviews them. Obligation nodes are
+        # content-addressed, so every obligation the repaired
+        # decomposition keeps is already settled when the review ends;
+        # only added ones are settled afterwards, and dropped ones lose
+        # their edge to this claim (their nodes and evidence remain facts
+        # about their statements). The claim's verdict is folded only
+        # over the reviewed decomposition — no soundness change, the
+        # critic's wall time simply overlaps the checks. Off by default
+        # (offline scoring and tests keep the sequential order).
+        self.speculative_discharge = speculative_discharge
+        # admission screener: grades a non-final claim from the retained
+        # record before any instrument is spent; `high` admits it as
+        # confident (assumed, unverified). None -> every claim is checked.
+        self.screener_role = screener_role
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),
@@ -262,6 +291,11 @@ class Kernel:
         return row["kind"] == CLAIM_FINAL or self.is_independent_root(row["id"])
 
     def verification_context_for(self, claim_id: str) -> str:
+        if claim_id == self.PRECOMPILE_ID:
+            # the final-contract precompile's synthetic row is not in the
+            # store; its contract is adopted only under the same task
+            # statement, and the real final carries its own context
+            return ""
         context_id = self.context_id_provider(claim_id)
         descriptor = self.independent_root_context(claim_id)
         if descriptor is not None and not isinstance(context_id, str):
@@ -290,15 +324,21 @@ class Kernel:
             return self._pool
 
     # entry
-    def verify(self, claim_id: str) -> str:
+    def verify(self, claim_id: str, force: bool = False) -> str:
         """Verify one claim; returns its resulting status. Idempotent, and
         serialized per claim: two callers verifying the same claim
-        concurrently (parallel certificate slices) do the work once."""
+        concurrently (parallel certificate slices) do the work once.
+
+        A claim admitted confident stays assumed until it goes stale or
+        a caller asks for the check explicitly (force): the solver's
+        `verify` verb and the certificate never take the screener's word."""
         with self._lock_for(self._claim_locks, claim_id):
             row = self.store.get(claim_id)
             # Check registration before the settled-status fast path.
             self.is_independent_root(claim_id)
             if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
+                return row["status"]
+            if row.get("confident") and not force:
                 return row["status"]
             with model_scope(
                     claim_id=row["id"], claim_kind=row["kind"],
@@ -308,7 +348,7 @@ class Kernel:
                     self._verify_effect(row)
                 else:
                     self._freeze_record(row)
-                    self._verify_assertion(row)
+                    self._verify_assertion(row, force=force)
             return self.store.status(claim_id)
 
     def _freeze_record(self, row: Dict) -> None:
@@ -364,8 +404,126 @@ class Kernel:
         self._settle(row["id"], [result.outcome], [BASIS_RECORD],
                      [STRENGTH_DECISIVE], [SEVERITY_MUST])
 
+    # admission screening
+    def _screen(self, row: Dict) -> bool:
+        """Grade a non-final claim from the retained record before any
+        instrument is spent. `high` admits it as confident: assumed by
+        every consumer, unverified, no check run. Returns True when the
+        claim was admitted and verification must stop here."""
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        premises = []
+        for pid in self.store.parents(row["id"]):
+            prow = self.store.get(pid)
+            eff = self.store.effective(pid)
+            premises.append({
+                "id": pid[:12],
+                "text": ("[a tool-execution record]"
+                         if prow["kind"] == CLAIM_EFFECT else prow["text"]),
+                "status": eff["effective_status"],
+                "confident": bool(prow.get("confident")),
+            })
+        cited, index, recent = self._record_excerpt(row)
+        variables = {
+            "task_context": authoritative_task_context(state),
+            "claim_text": row["text"],
+            "claim_kind": row["kind"],
+            "premises": json.dumps(premises, ensure_ascii=False),
+            "cited_events": json.dumps(cited, ensure_ascii=False),
+            "call_index": json.dumps(index, ensure_ascii=False),
+            "recent_events": json.dumps(recent, ensure_ascii=False),
+            "graph": json.dumps(self.store.graph_snapshot(exclude=row["id"]),
+                                ensure_ascii=False),
+        }
+        try:
+            verdict = self.screener_role.call(self.backend, variables)
+        except Exception as err:  # noqa: BLE001 - screening is advisory
+            # a screener failure never blocks: the claim takes the full
+            # pipeline exactly as if no screener were seated
+            self.log.append("claim_screened",
+                            {"claim": row["id"], "confidence": "error",
+                             "error": str(err)[:300]})
+            return False
+        self.log.append(
+            "claim_screened",
+            {"claim": row["id"], "confidence": verdict["confidence"],
+             "grounds": verdict["grounds"][:1000],
+             "reason": verdict["reason"][:500]})
+        if verdict["confidence"] != "high":
+            return False
+        self.store.set_confident(
+            row["id"], f"{verdict['reason']} — grounds: {verdict['grounds']}"[:1000])
+        self.store.record_evidence(
+            row["id"],
+            {"outcome": "admitted", "instrument": "screener",
+             "confidence": "high", "grounds": verdict["grounds"],
+             "reason": verdict["reason"]})
+        self.log.append("status_change",
+                        {"claim": row["id"], "status": STATUS_UNVERIFIED,
+                         "confident": True, "reason": "admitted on the record"})
+        return True
+
+    # the retained record, sliced for the screener: each cited event in
+    # full (bounded), a compact index of every recorded call, and the most
+    # recent events bounded per entry — a table of contents plus the
+    # decisive pages, never the whole ledger
+    SCREEN_CITED_CHARS = 8_000
+    SCREEN_INDEX_ENTRIES = 150
+    SCREEN_RECENT_EVENTS = 24
+    SCREEN_RECENT_CHARS = 2_500
+
+    def _record_excerpt(self, row: Dict):
+        cited_seqs = set()
+        for pid in self.store.parents(row["id"]):
+            prow = self.store.get(pid)
+            if prow["kind"] != CLAIM_EFFECT:
+                continue
+            try:
+                cited_seqs.add(int(json.loads(prow["text"])["event_seq"]))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+        calls: List[Dict] = []
+        results: List[Dict] = []
+        for event in self.log.replay():
+            if event["type"] == "tool_call":
+                calls.append(event)
+            elif event["type"] == "tool_result":
+                results.append(event)
+        call_by_id = {}
+        for c in calls:
+            cid = c["payload"].get("tool_use_id")
+            if cid:
+                call_by_id[cid] = c
+
+        def render_call(c, cap):
+            p = c["payload"]
+            return {"seq": c["seq"], "tool": p.get("tool"),
+                    "input": self._bounded_context_value(p.get("input"), cap)}
+
+        def render_result(r, cap):
+            p = r["payload"]
+            entry = {"seq": r["seq"], "tool": p.get("tool"),
+                     "excerpt": self._bounded_context_value(
+                         p.get("excerpt"), cap),
+                     "response_chars": p.get("response_chars"),
+                     "excerpt_truncated": p.get("excerpt_truncated")}
+            call = call_by_id.get(p.get("tool_use_id"))
+            if call is not None:
+                entry["call"] = render_call(call, cap)
+            return entry
+
+        cited = [render_result(r, self.SCREEN_CITED_CHARS)
+                 for r in results if r["seq"] in cited_seqs]
+        index = [{"seq": c["seq"], "tool": c["payload"].get("tool"),
+                  "input": json.dumps(c["payload"].get("input"),
+                                      ensure_ascii=False,
+                                      default=str)[:120]}
+                 for c in calls[-self.SCREEN_INDEX_ENTRIES:]]
+        recent = [render_result(r, self.SCREEN_RECENT_CHARS)
+                  for r in results[-self.SCREEN_RECENT_EVENTS:]]
+        return cited, index, recent
+
     # assertion / final
-    def _verify_assertion(self, row: Dict) -> None:
+    def _verify_assertion(self, row: Dict, force: bool = False) -> None:
         # Local verdicts are CONDITIONAL: a claim is verified/refuted
         # assuming its premises (deps) are true, and the read-time
         # effective fold (store.effective) charges the premise chain's
@@ -395,11 +553,47 @@ class Kernel:
             )
             return
 
-        obligations = self._compile_obligations(row)
+        # admission screening: a non-final claim the retained record
+        # already settles is assumed, not checked. A final is the task
+        # contract and is always checked; an explicit request (force)
+        # always checks.
+        screen = (getattr(self, "screener_role", None) is not None
+                  and not force
+                  and row["kind"] != CLAIM_FINAL
+                  and row["status"] == STATUS_UNVERIFIED)
+        compiled = None
+        if screen and getattr(self, "speculative_discharge", False):
+            # the compiler starts alongside the screener: on anything
+            # below `high` its answer is ready when the screener returns;
+            # on `high` the call is simply dropped (a spent seat, no
+            # waiting solver)
+            from concurrent.futures import ThreadPoolExecutor
+            variables = self._compile_inputs(row)
+            pool = ThreadPoolExecutor(max_workers=1,
+                                      thread_name_prefix="gv-compile")
+            compiled = (variables,
+                        submit_with_context(pool, self.obligations_role.call,
+                                            self.backend, variables))
+            pool.shutdown(wait=False)
+            self.log.append("speculative_compile", {"claim": row["id"]})
+        if screen and self._screen(row):
+            return
+
+        speculated: Dict[str, tuple] = {}
+        speculate = None
+        if getattr(self, "speculative_discharge", False) \
+                and self.binder is not None:
+            def speculate(unreviewed):
+                for entry in self._settle_obligations(row, unreviewed):
+                    speculated[entry[0].id] = entry
+        obligations = self._compile_obligations(row, speculate=speculate,
+                                                compiled=compiled)
         if obligations is None:
             return  # critic fail-closed: evidence and status already recorded
         if not obligations:
             # fail-closed: nothing checkable means nothing verified
+            for oid in speculated:
+                self.store.remove_obligation_edge(row["id"], oid)
             self.store.record_evidence(
                 row["id"],
                 {"outcome": OUTCOME_FAILED, "error": "no obligations"},
@@ -411,7 +605,21 @@ class Kernel:
             )
             return
 
-        settled = self._settle_obligations(row, obligations)
+        if speculated:
+            kept = {o.id for o in obligations}
+            for oid in list(speculated):
+                if oid not in kept:
+                    self.store.remove_obligation_edge(row["id"], oid)
+                    del speculated[oid]
+            fresh = [o for o in obligations if o.id not in speculated]
+            settled_fresh = self._settle_obligations(row, fresh) if fresh \
+                else []
+            by_id = dict(speculated)
+            by_id.update({r[0].id: r for r in settled_fresh})
+            # compile order, over the reviewed decomposition only
+            settled = [by_id[o.id] for o in obligations if o.id in by_id]
+        else:
+            settled = self._settle_obligations(row, obligations)
         outcomes = [r[1] for r in settled]
         bases = [r[3] or BASIS_RECORD for r in settled]
         strengths = [r[4] for r in settled]
@@ -419,6 +627,12 @@ class Kernel:
         refuting_witness = next(
             (r[2] for r in settled if r[1] == OUTCOME_REFUTED
              and r[0].severity == SEVERITY_MUST), None)
+        # the epoch this verdict is about (a world-basis claim's verdict
+        # is about the world as it was now); recorded before the fold so
+        # the fold's own rows stay the last word on the claim
+        self.store.record_evidence(
+            row["id"], {"outcome": "epoch",
+                        "world_epoch": self._current_epoch()})
         self._settle(row["id"], outcomes, bases, strengths, severities)
         refutation = next((r for r in settled if r[1] == OUTCOME_REFUTED
                            and r[0].severity == SEVERITY_MUST), None)
@@ -498,6 +712,24 @@ class Kernel:
             out.append((obligation, *fut.result()))
         return out
 
+    def _current_epoch(self) -> int:
+        """The world epoch now: how many world-mutating solver actions the
+        ledger holds. Offline the world is fixed (epoch 0)."""
+        if not self.live_world:
+            return 0
+        return world_epoch(self.log.replay())
+
+    def _node_epoch_current(self, oid: str, epoch: int) -> bool:
+        """Whether a settled node's verdict belongs to the current world:
+        record-basis verdicts always do; a world-basis verdict only when
+        its evidence was recorded in this epoch."""
+        node = self.store.get(oid)
+        if node["basis"] != BASIS_WORLD:
+            return True
+        ev = self.store.evidence_for(oid)
+        recorded = (ev[-1].get("world_epoch") if ev else None)
+        return recorded is not None and int(recorded) == epoch
+
     def _settle_one(self, row: Dict, obligation: Obligation):
         """Settle one obligation node for this claim — by dedup, by
         inheritance from a same-text claim, or by fresh discharge — under
@@ -505,8 +737,22 @@ class Kernel:
         twice: the second waits, then takes the dedup path. Returns
         (outcome, witness, basis, strength)."""
         oid = self.store.add_obligation(row["id"], obligation)
+        epoch = self._current_epoch()
         with self._lock_for(self._node_locks, oid):
             known = self.store.status(oid)
+            if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL) \
+                    and not self._node_epoch_current(oid, epoch):
+                # WORLD EPOCH: the world moved since this world-basis
+                # verdict was won; reusing it would certify the new world
+                # on the old world's evidence. Reopen and check afresh.
+                self.log.append(
+                    "dedup_hit",
+                    {"claim": row["id"], "obligation": oid,
+                     "status": known, "refused": "world moved",
+                     "world_epoch": epoch})
+                self.store.set_stale(oid, reason="world moved since the "
+                                                 "verdict was won")
+                known = self.store.status(oid)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 # foreign-assumption gate: a node settled under another
                 # claim may have ASSUMED that claim's premises (declared
@@ -577,6 +823,13 @@ class Kernel:
                     # Equal prose cannot transfer authority between task
                     # completion, ordinary premises and candidate qualification.
                     transferable = False
+                if transferable and src_eff["effective_basis"] == BASIS_WORLD:
+                    src_ev = self.store.evidence_for(src["id"])
+                    stamp = next((e.get("world_epoch") for e in
+                                  reversed(src_ev)
+                                  if e.get("world_epoch") is not None), None)
+                    if stamp is None or int(stamp) != epoch:
+                        transferable = False   # the world moved since
                 if transferable and not basis_satisfies(
                         src_eff["effective_basis"],
                         obligation.required_basis):
@@ -616,7 +869,119 @@ class Kernel:
             return set()
         return set(self.store.backward_slice(row["id"])[1:])
 
-    def _compile_obligations(self, row: Dict):
+    # final-contract precompile: the task contract does not depend on the
+    # solver's final wording (it is compiled from the authoritative task
+    # statement with solver premises withheld), so it can be compiled —
+    # and its methods enumerated — while the solver is still working,
+    # off the critical path. Keyed by the task statement's content.
+    PRECOMPILE_ID = "precompile:final"
+    PRECOMPILE_TEXT = (
+        "The task stated in the authoritative task statement has been "
+        "completed as required. (The solver's own final wording is not "
+        "available yet: compile the contract from the task statement "
+        "alone; where the task's answer would be carried by the solver's "
+        "response rather than by a named artifact, phrase that condition "
+        "on the final claim's stated answer.)")
+
+    def start_final_precompile(self) -> bool:
+        """Compile the final's task contract (compiler + critic) and
+        enumerate a method batch per obligation in a background thread.
+        Returns False when there is nothing to precompile (no task
+        statement, no live world, no binder, already started)."""
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        if not self.live_world or self.binder is None \
+                or getattr(self, "_precompile_thread", None) is not None:
+            return False
+        task = os.path.join(state, "task.md")
+        if not os.path.isfile(task):
+            return False
+        self._final_contract: Optional[Dict] = None
+        self._contract_ready = threading.Event()
+        self._precompile_thread = threading.Thread(
+            target=self._precompile_final, name="gv-precompile", daemon=True)
+        self._precompile_thread.start()
+        return True
+
+    @staticmethod
+    def _task_hash(state: str) -> Optional[str]:
+        task = os.path.join(state, "task.md")
+        if not os.path.isfile(task):
+            return None
+        with open(task, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    def _precompile_final(self) -> None:
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        task_hash = self._task_hash(state)
+        row = {"id": self.PRECOMPILE_ID, "kind": CLAIM_FINAL,
+               "text": self.PRECOMPILE_TEXT}
+        started = time.time()
+        try:
+            with model_scope(claim_id=row["id"], claim_kind=CLAIM_FINAL,
+                             locus="final_task"):
+                payload = self._compile_obligation_payload(row)
+        except Exception as err:  # noqa: BLE001 - background, never fatal
+            self.log.append("contract_precompiled",
+                            {"task_hash": task_hash, "error": str(err)[:300],
+                             "seconds": round(time.time() - started, 1)})
+            self._contract_ready.set()
+            return
+        if payload is None:
+            self.log.append("contract_precompiled",
+                            {"task_hash": task_hash,
+                             "error": "decomposition failed critic",
+                             "seconds": round(time.time() - started, 1)})
+            self._contract_ready.set()
+            return
+        self._final_contract = {"task_hash": task_hash, "payload": payload}
+        self.log.append(
+            "contract_precompiled",
+            {"task_hash": task_hash,
+             "obligations": [o["text"] for o in payload["obligations"]],
+             "seconds": round(time.time() - started, 1)})
+        # the contract is usable from here on; a commit arriving during
+        # the prewarm below waits only for the batches it needs
+        self._contract_ready.set()
+        # method batches: the oracle only reads, so its enumeration is
+        # as valid now as at commit time; the scripts run against the
+        # world as it is then
+        obligations = self._materialize_obligations(row, payload,
+                                                    record=False) or []
+        enumerate = getattr(self.binder, "prewarm", None)
+        if enumerate is None:
+            return
+        pool = self._obligation_pool()
+        if pool is None:
+            for obligation in obligations:
+                enumerate(row, obligation)
+        else:
+            list(pool.map(lambda o: enumerate(row, o), obligations))
+
+    def _precompiled_contract(self, row: Dict, speculate=None) -> Optional[Dict]:
+        """The precompiled final contract for the current task statement,
+        waiting for a precompile still under review. While waiting, a
+        caller that can speculate settles the compiler's draft: whatever
+        the review keeps is then already settled (content-addressed
+        nodes); the caller reconciles against the reviewed contract."""
+        thread = getattr(self, "_precompile_thread", None)
+        if thread is None or row["kind"] != CLAIM_FINAL \
+                or row["id"] == self.PRECOMPILE_ID \
+                or threading.current_thread() is thread:
+            return None
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        task_hash = self._task_hash(state)
+        self._contract_ready.wait()
+        contract = getattr(self, "_final_contract", None)
+        if not contract or contract["task_hash"] != task_hash:
+            return None
+        return contract["payload"]
+
+    def _compile_obligations(self, row: Dict, speculate=None,
+                             compiled=None):
+        """Compile the claim's obligations. With ``speculate`` (a callable
+        taking the compiler's unreviewed obligations and settling them),
+        the critic's review runs concurrently with those checks; the
+        reviewed decomposition is what this returns either way."""
         if self.contract_replay is not None:
             if self.live_world:
                 raise ValueError(
@@ -639,10 +1004,23 @@ class Kernel:
             self._record_compiled_obligations(row, obligations)
             return obligations
 
-        payload = self._compile_obligation_payload(row)
+        payload = self._compile_obligation_payload(
+            row, speculate=speculate, compiled=compiled)
         return self._materialize_obligations(row, payload)
 
-    def _compile_obligation_payload(self, row: Dict):
+    def _compile_inputs(self, row: Dict) -> Dict:
+        """The Compiler's bound inputs for a non-final claim (the same
+        values the inline compile uses), built without invoking a role."""
+        return bind_source_evidence_variables(
+            self.log,
+            self._obligation_compile_variables(row),
+            enabled=(getattr(self.backend, "compact_inspection", False)
+                     is True and not self._planner_inventory_only(row["id"])
+                     and not self.is_independent_root(row["id"])),
+        )
+
+    def _compile_obligation_payload(self, row: Dict, speculate=None,
+                                    compiled=None):
         """Run the unchanged Compiler/Critic path and return its raw payload.
 
         This extraction is a seam for the explicit offline isolation setup;
@@ -650,18 +1028,42 @@ class Kernel:
         :meth:`_compile_obligations` and materializes exactly once afterwards.
         """
         state = os.path.dirname(os.path.abspath(self.log.path))
+        cached = self._precompiled_contract(row)
+        if cached is not None:
+            self.log.append("contract_cache_hit", {"claim": row["id"]})
+            return cached
         handled, payload = self._authority_final_contract(row, state)
         if handled:
             return payload
-        variables = bind_source_evidence_variables(
-            self.log,
-            self._obligation_compile_variables(row),
-            enabled=(getattr(self.backend, "compact_inspection", False)
-                     is True and not self._planner_inventory_only(row["id"])
-                     and not self.is_independent_root(row["id"])),
-        )
-        with model_scope(stage="contract_compile", round=0):
-            payload = self.obligations_role.call(self.backend, variables)
+        if compiled is not None:
+            variables, future = compiled
+            payload = future.result()
+        else:
+            variables = self._compile_inputs(row)
+            with model_scope(stage="contract_compile", round=0):
+                payload = self.obligations_role.call(self.backend, variables)
+        if speculate is not None and self.critic_role is not None:
+            # SPECULATIVE DISCHARGE: the critic reviews while the
+            # compiler's obligations are already being settled; nodes
+            # are content-addressed, so the reviewed decomposition finds
+            # its kept obligations settled and only the added ones wait
+            from concurrent.futures import ThreadPoolExecutor
+            unreviewed = self._materialize_obligations(
+                row, payload, record=False) or []
+            self.log.append(
+                "speculative_discharge",
+                {"claim": row["id"],
+                 "obligations": [o.id for o in unreviewed]})
+            with ThreadPoolExecutor(max_workers=1,
+                                    thread_name_prefix="gv-critic") as pool:
+                review = submit_with_context(
+                    pool, self._critique, row, payload, variables)
+                speculate(unreviewed)
+                payload = review.result()
+            if payload is None:
+                for o in unreviewed:
+                    self.store.remove_obligation_edge(row["id"], o.id)
+            return payload
         return self._critique(row, payload, variables)
 
     def _obligation_compile_variables(self, row: Dict) -> Dict:
@@ -718,9 +1120,11 @@ class Kernel:
                     basis = eff["effective_basis"] or BASIS_RECORD
                     verified_deps.append(f"[{basis}-level] {prow['text']}")
                 else:
+                    tag = (" (admitted confident on the record)"
+                           if prow.get("confident") else "")
                     pending_deps.append(
                         f"[assumed premise — status: "
-                        f"{eff['effective_status']}] {prow['text']}")
+                        f"{eff['effective_status']}{tag}] {prow['text']}")
         # a run scored after the fact (offline ORM) has no live world; the
         # harness may instead have captured the delivered tree next to the
         # ledger. Absolute, like ledger_path: the checker runs elsewhere.
@@ -1005,6 +1409,10 @@ class Kernel:
                        clause=str(o.get("clause") or ""),
                        refutable_by_absence=bool(
                            o.get("refutable_by_absence", False)),
+                       task_bearing=(TASK_BEARING_REQUIRED
+                                     if row["kind"] == CLAIM_FINAL
+                                     else str(o.get("task_bearing")
+                                              or TASK_BEARING_UNCLEAR)),
                        premise_scope=tuple(self._premises_in_force(row)),
                        verification_context=self.verification_context_for(row["id"]))
             for o in payload["obligations"]
@@ -1052,7 +1460,8 @@ class Kernel:
                                   "severity": o.severity,
                                   "clause": o.clause,
                                   "refutable_by_absence":
-                                      o.refutable_by_absence}
+                                      o.refutable_by_absence,
+                                  "task_bearing": o.task_bearing}
                                  for o in obligations]}
         if excluded:
             # The compiler's exclusion ledger, as the Critic reviewed it:
@@ -1064,7 +1473,8 @@ class Kernel:
         self.log.append("obligations_compiled", event)
 
     def _critique(self, row: Dict, payload: Dict, variables: Dict, *,
-                  backend=None, obligations_role=None, critic_role=None):
+                  backend=None, obligations_role=None, critic_role=None,
+                  record: bool = True):
         """
         Adversarial second signature on the decomposition: the critic
         tries to construct a world where every obligation and every verified
@@ -1080,6 +1490,11 @@ class Kernel:
         critic_role = critic_role or self.critic_role
         if critic_role is None:
             return payload
+        nonfinal_budget = getattr(self, "critic_rounds_nonfinal", None)
+        advisory = (row["kind"] != CLAIM_FINAL and nonfinal_budget is not None)
+        rounds = nonfinal_budget if advisory else self.critic_rounds
+        if rounds <= 0:
+            return payload
         # The compiler and critic receive the same inlined harness truth.
         # A path-only pointer let a model skip the Read and then infer task
         # semantics from a solver-authored graph node instead.
@@ -1090,7 +1505,7 @@ class Kernel:
         history: List[Dict] = []  # reviewed rounds, shown to BOTH seats: the
         critic_calls = 0          # critic is bound by its own prior rulings
         repair_calls = 0          # (memoryless rounds oscillated: a demand
-        while critic_calls < self.critic_rounds:  # overruled in round n was
+        while critic_calls < rounds:              # overruled in round n was
             round_no = critic_calls               # re-issued verbatim in n+2)
             with model_scope(stage="contract_critic", round=round_no):
                 critic_variables = bind_source_evidence_variables(
@@ -1148,7 +1563,7 @@ class Kernel:
                 return payload
             failure_counterexample = verdict["counterexample_world"]
             failure_missing_condition = verdict["missing_condition"]
-            if critic_calls == self.critic_rounds:
+            if critic_calls == rounds:
                 break  # last attack stands; a repair would go unreviewed
             append_delta = (
                 self.append_only_deltas
@@ -1167,7 +1582,7 @@ class Kernel:
             repair_accepted = False
             declined = False
             guard_feedback = ""
-            while repair_calls < self.critic_rounds - 1:
+            while repair_calls < rounds - 1:
                 repair_variables = dict(
                     variables,
                     critic_feedback=semantic_feedback + guard_feedback,
@@ -1250,6 +1665,42 @@ class Kernel:
                 continue
             if not repair_accepted:
                 break
+        if advisory and verdict is not None \
+                and verdict["verdict"] != "pass":
+            # advisory review: the last standing attack becomes one
+            # repair instruction the compiler answers, and that repair
+            # stands unreviewed — a non-final claim is adjudicated on a
+            # best-effort decomposition rather than failing closed
+            repair_variables = dict(
+                variables,
+                critic_feedback=prompts.CRITIC_FEEDBACK_TEMPLATE.format(
+                    previous_obligations=json.dumps(
+                        payload["obligations"], ensure_ascii=False),
+                    game_history=json.dumps(history, ensure_ascii=False),
+                    counterexample_world=failure_counterexample,
+                    missing_condition=failure_missing_condition))
+            try:
+                payload = self.obligations_role.call(
+                    self.backend, repair_variables)
+            except Exception as err:  # noqa: BLE001 - keep the reviewed one
+                self.log.append(
+                    "decomposition_attacked",
+                    {"claim": row["id"], "round": critic_calls,
+                     "verdict": "insufficient",
+                     "counterexample_world": failure_counterexample,
+                     "missing_condition": failure_missing_condition,
+                     "resolution": "advisory: repair failed, the reviewed "
+                                   f"decomposition stands ({str(err)[:120]})"})
+                return payload
+            self.log.append(
+                "decomposition_attacked",
+                {"claim": row["id"], "round": critic_calls,
+                 "verdict": "insufficient",
+                 "counterexample_world": failure_counterexample,
+                 "missing_condition": failure_missing_condition,
+                 "resolution": "advisory: unreviewed repair accepted for a "
+                               "non-final claim"})
+            return payload
         # triage metadata only — an oscillating critic still fails closed
         # (auto-passing on critic incoherence would be an incentive to
         # induce it), but the run's analysis can count verifier-internal
@@ -1257,6 +1708,8 @@ class Kernel:
         reason = "decomposition failed critic"
         if _repair_oscillation(history):
             reason += " (oscillation)"
+        if not record:
+            return None   # a precompile has no store row to fail closed on
         self.store.record_evidence(
             row["id"],
             {
@@ -1704,6 +2157,7 @@ class Kernel:
                 "witness_kind": ev[-1].get("witness_kind") if ev else None,
                 "artifact": ev[-1].get("artifact", "") if ev else "",
                 "assumed_premises": [],
+                "world_epoch": self._current_epoch(),
             },
         )
         # The node lock and scoped identity keep its verdict paired with
@@ -1873,6 +2327,7 @@ class Kernel:
             "instrument": result.instrument,
             "outcome": result.outcome,
             "basis": result.basis,
+            "world_epoch": self._current_epoch(),
             "strength": result.strength,
             "bridges": list(result.bridges),
             "assumed_premises": list(result.assumed_premises),

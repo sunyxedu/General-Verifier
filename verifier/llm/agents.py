@@ -26,9 +26,12 @@ be a hard boundary.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import contextlib
+import json
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -54,6 +57,12 @@ from ..engine.source_evidence import (
 def _sdk():
     import claude_agent_sdk
     return claude_agent_sdk
+
+# the SDK attempts of the seat call in progress (per call, propagated to
+# the worker thread with the context): the receipt sums exactly these
+_ATTEMPT_SINK: "contextvars.ContextVar[Optional[List[Dict[str, Any]]]]" = \
+    contextvars.ContextVar("gv_attempt_sink", default=None)
+
 
 class _TransientSDKError(RuntimeError):
     """Infrastructure failure worth backing off and retrying (internal)."""
@@ -417,20 +426,62 @@ class AgentBackend:
         role = self.roles.get(role_name)
         if role is None:
             raise RoleError(f"unknown agent role: {role_name}")
+        started = time.time()
+        attempts: List[Dict[str, Any]] = []   # this call's SDK attempts only
+        error: Optional[str] = None
+        token = _ATTEMPT_SINK.set(attempts)
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.run(role, prompt))
-        from concurrent.futures import ThreadPoolExecutor
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return asyncio.run(self.run(role, prompt))
+            from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return submit_with_context(
-                pool, asyncio.run, self.run(role, prompt)).result()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                return submit_with_context(
+                    pool, asyncio.run, self.run(role, prompt)).result()
+        except Exception as err:  # noqa: BLE001 - re-raised after the receipt
+            error = str(err)[:300]
+            raise
+        finally:
+            _ATTEMPT_SINK.reset(token)
+            self._receipt(role, started, attempts, error, variables)
+
+    def _receipt(self, role: AgentRole, started: float,
+                 attempts: List[Dict[str, Any]],
+                 error: Optional[str], variables: Dict[str, Any]) -> None:
+        """One JSONL row per seat call in <cwd>/role_calls.jsonl: role,
+        wall time, turns and usage of every SDK attempt. Pure telemetry
+        for latency/cost breakdowns; never read by any seat."""
+        if not self.cwd:
+            return
+        row = {
+            "role": role.name,
+            "started": started,
+            "finished": time.time(),
+            "seconds": round(time.time() - started, 3),
+            "attempts": len(attempts),
+            "num_turns": sum(a.get("num_turns") or 0 for a in attempts),
+            "cost_usd": sum(a.get("total_cost_usd") or 0 for a in attempts),
+            "usage": [a.get("usage") for a in attempts],
+            "subtypes": [a.get("subtype") for a in attempts],
+            "error": error,
+            "claim_text": str(variables.get("claim_text", ""))[:120],
+            "obligation_text": str(variables.get("obligation_text", ""))[:160],
+        }
+        try:
+            with open(os.path.join(self.cwd, "role_calls.jsonl"), "a",
+                      encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        except OSError:
+            pass
 
     # statuses worth waiting out (rate limit / overload / gateway); the CLI
     # sometimes reports these only as the opaque "error result: success"
     TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
-    transient_delays = (0, 20, 60, 120)   # seconds before each attempt
+    # seconds before each attempt: a subscription's rate limit recovers on
+    # the order of minutes, and a seat lost to it costs a whole claim
+    transient_delays = (0, 20, 60, 120, 240, 480)
 
     async def run(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
         """
@@ -469,7 +520,7 @@ class AgentBackend:
         except Exception as err:  # noqa: BLE001 - classified below
             error = err
 
-        self.transcripts.append({
+        transcript = {
             "role": role.name,
             "session_id": getattr(result, "session_id", None),
             "subtype": getattr(result, "subtype", None),
@@ -478,7 +529,12 @@ class AgentBackend:
             "usage": getattr(result, "usage", None),
             "api_error_status": getattr(result, "api_error_status", None),
             "stderr_tail": list(stderr_tail),
-        })
+            "error": str(error)[:300] if error is not None else None,
+        }
+        self.transcripts.append(transcript)
+        sink = _ATTEMPT_SINK.get(None)
+        if sink is not None:
+            sink.append(transcript)
 
         if result is not None and result.structured_output is not None and result.subtype == "success":
             payload = result.structured_output
@@ -518,9 +574,12 @@ class AgentBackend:
             max_turns=role.max_turns,
             cwd=self.cwd,
             setting_sources=[],                # hermetic: no ambient project settings
-            env=provider.claude_env(base={}),  # every seat runs on the
-                                               # configured provider (SDK
-                                               # merges over os.environ)
+            # every seat runs on the configured provider; the SDK merges
+            # this over os.environ, so PATH is passed explicitly without
+            # the verifier's own virtualenv (a seat's `python3` must be
+            # the world's, not ours)
+            env=provider.claude_env(
+                base={"PATH": os.environ.get("PATH", "")}),
             output_format={
                 "type": "json_schema",
                 "schema": to_json_schema(role.wire_schema or role.schema),
@@ -559,11 +618,16 @@ COMPILE_OBLIGATIONS_AGENT = AgentRole(
     # runner-interface quotient or governing modality, each with its
     # reason.  The Critic reviews these rulings with the contract; the
     # kernel never verifies them.  Optional: absent reads as an empty ledger.
+    # task_bearing: whether the authoritative task itself requires the
+    # condition, or the claim asserted it beyond the task — returned with
+    # a refutation so the solver knows what the deliverable must satisfy
     schema={"obligations": [{"text": str,
                              "required_basis": ("world", "record"),
                              "severity?": ("must", "should"),
                              "clause?": str,
-                             "refutable_by_absence?": bool}],
+                             "refutable_by_absence?": bool,
+                             "task_bearing?": ("required", "beyond_task",
+                                               "unclear")}],
             "excluded?": [{"clause": str, "reason": str}]},
     tools=["Read", "Grep", "Glob"],
 )
@@ -617,13 +681,44 @@ ENUMERATE_ORACLES_AGENT = AgentRole(
                                    "verifier", "public"),
                     "role": ("subject", "input", "authority"),
                 }],
+                # EXECUTABLE FORM: a fixed bash script the executor runs
+                # verbatim (no agent), read afterwards by the script
+                # judger. Optional — the agent executor carries out any
+                # method without one.
+                "script?": str,
             }
         ]
     },
     tools=["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
-    max_turns=15,      # research takes room; still no Bash — no probing
+    # enumeration is design, not execution: the prompt states the tool
+    # budget the seat is held to, and the turn cap backs it mechanically
+    max_turns=12,
     wire_schema=ORACLE_EXECUTION_WIRE_SCHEMA,
     wire_lower=lower_oracle_execution_payload,
+)
+
+SCRIPT_JUDGER_AGENT = AgentRole(
+    name="script_judger",
+    system=prompts.SCRIPT_JUDGER_SYSTEM,
+    template=prompts.SCRIPT_JUDGER_TEMPLATE,
+    # the second signer for a mechanically executed method: sufficiency
+    # from the script text, outcome from its recorded output. Fidelity is
+    # by construction (the script ran verbatim), so no redo loop exists
+    # for this path. The run is inlined: no tools, one turn.
+    schema={"sufficient": ("yes", "no"), "outcome": OUTCOMES,
+            "witness": str,
+            "witness_kind?": ("execution", "world_state",
+                              "record_contradiction", "absence", "none"),
+            "inputs?": [{"ref": str,
+                         "provenance": ("task_given", "delivered",
+                                        "ledger", "verifier", "public"),
+                         "role": ("subject", "input", "authority")}],
+            "degradation": ("justified", "unjustified", "n/a"),
+            "reason": str},
+    tools=[],
+    # no tools, but a structured answer still takes the harness a turn
+    # or two beyond the reply itself; a cap of two cut honest answers off
+    max_turns=4,
 )
 
 DISCHARGE_AGENT = AgentRole(
@@ -706,6 +801,22 @@ SUFFICIENCY_AGENT = AgentRole(
     max_turns=1,
 )
 
+SCREENER_AGENT = AgentRole(
+    name="screener",
+    system=prompts.SCREENER_SYSTEM,
+    template=prompts.SCREENER_TEMPLATE,
+    # a LEVEL, not a status: high admits the claim as confident (assumed,
+    # unverified, no instrument spent); medium/low route it through the
+    # full pipeline. The whole record excerpt is inlined so the seat needs
+    # no tools — one turn, the cheapest call in the system.
+    schema={"confidence": ("high", "medium", "low"),
+            "grounds": str, "reason": str},
+    tools=[],
+    # no tools, but a structured answer still takes the harness a turn
+    # or two beyond the reply itself; a cap of two cut honest answers off
+    max_turns=4,
+)
+
 ALL_AGENT_ROLES = {
     role.name: role
     for role in (
@@ -716,5 +827,7 @@ ALL_AGENT_ROLES = {
         DISCHARGE_AGENT,
         JUDGER_AGENT,
         EXTRACT_CLAIMS_AGENT,
+        SCREENER_AGENT,
+        SCRIPT_JUDGER_AGENT,
     )
 }

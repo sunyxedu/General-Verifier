@@ -37,6 +37,7 @@ Usage:
   uv run python experiments/terminal_bench/run.py --arm codex
 """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -55,6 +56,53 @@ DATASET = "terminal-bench/terminal-bench-2-1"
 JOBS_DIR = os.path.join(HERE, "results", "jobs")
 CODEX_AGENT = "codex_agent:TieredCodex"
 RUNTIME_SNAPSHOT_ROOT = "/gv-runtime-snapshot"
+
+
+def _login_credentials():
+    """The interactive login's OAuth record: the macOS Keychain entry the
+    CLI maintains (the file copy in the config dir goes stale once the
+    CLI refreshes through the Keychain), else the file."""
+    import subprocess
+    try:
+        raw = subprocess.run(
+            ["security", "find-generic-password", "-s",
+             "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        if raw:
+            return json.loads(raw)["claudeAiOauth"]
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass
+    path = os.path.join(os.environ.get("GV_CLAUDE_CONFIG_DIR")
+                        or os.path.expanduser("~/.claude"),
+                        ".credentials.json")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)["claudeAiOauth"]
+
+
+def login_access_token(min_minutes_left: float = 75.0) -> str:
+    """The login's current access token, guaranteed to have at least
+    ``min_minutes_left`` of life: the CLI rotates access tokens on an
+    eight-hour cycle and refreshes only on demand, so when the remaining
+    life is too short for a trial this waits for the expiry, triggers the
+    refresh (a trivial headless call), and returns the rotated token. A
+    trial that outlives its token fails with 401 mid-way, which no
+    retry can repair — hence the wait."""
+    import subprocess
+    import time
+    while True:
+        creds = _login_credentials()
+        left = creds["expiresAt"] / 1000 - time.time()
+        if left >= min_minutes_left * 60:
+            return creds["accessToken"]
+        if left <= 0:
+            subprocess.run(
+                ["claude", "-p", "Reply with exactly: OK", "--model",
+                 "claude-sonnet-5", "--output-format", "json"],
+                capture_output=True, text=True, timeout=180, cwd="/tmp")
+        else:
+            print(f"[tb] login token has {left / 60:.0f} min left; waiting "
+                  f"for the CLI to rotate it before starting", flush=True)
+            time.sleep(min(60, left + 5))
 
 
 def read_tasks(path=None):
@@ -177,8 +225,25 @@ def main():
     # server-side, so `-m anthropic/sonnet` lands on DeepSeek too.
     env = (dict(os.environ) if args.arm in ("codex", "rec-codex")
            else provider.claude_env())
+    claude_model = args.model or (f"anthropic/{provider.MODEL}"
+                                  if provider.PROVIDER == "anthropic"
+                                  else "anthropic/sonnet")
+    if args.arm not in ("codex", "rec-codex") and provider.PROVIDER == "anthropic":
+        # first-party subscription auth: harbor forwards the OAuth token
+        # into the container (CLAUDE_FORCE_OAUTH mirrors codex's auth
+        # upload). Without a `claude setup-token` token the interactive
+        # login's rotating access token is used and refreshed per trial.
+        env["CLAUDE_FORCE_OAUTH"] = "1"
+        if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = login_access_token()
+            env["GV_OAUTH_FROM_LOGIN"] = "1"
+            print("[tb] no CLAUDE_CODE_OAUTH_TOKEN: using the Claude Code "
+                  "login's access token (rotates; `claude setup-token` "
+                  "gives a long-lived one)", flush=True)
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
     if args.arm == "plain":
-        cmd += ["-a", "claude-code", "-m", args.model or "anthropic/sonnet"]
+        cmd += ["-a", "claude-code", "-m", claude_model]
     elif args.arm == "codex":
         cmd += ["-a", CODEX_AGENT]
         if args.model:
@@ -217,7 +282,7 @@ def main():
         env.pop("OPENAI_API_KEY", None)      # subscription auth, not a key
     elif args.arm == "rec":
         cmd += ["-a", "gv_agent:RecClaudeCode",
-                "-m", args.model or "anthropic/sonnet",
+                "-m", claude_model,
                 "--agent-timeout-multiplier", "1000",
                 "--agent-setup-timeout-multiplier", "100",
                 # The recorder ledger is always required. Additional roots
@@ -228,7 +293,7 @@ def main():
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
     else:  # gv
         cmd += ["-a", "gv_agent:GVClaudeCode",
-                "-m", args.model or "anthropic/sonnet",
+                "-m", claude_model,
                 # effectively no agent time limit (user directive): harbor
                 # only offers multipliers over the per-task official base,
                 # so use one large enough to never bind (900s base -> ~10d)

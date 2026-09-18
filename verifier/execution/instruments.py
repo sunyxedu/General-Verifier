@@ -438,10 +438,25 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
         return "(none supplied)"
     with open(task, encoding="utf-8") as handle:
         text = handle.read()
-    return json.dumps(
-        {"path": os.path.abspath(task), "text": text},
-        ensure_ascii=False,
-    )
+    context = {"path": os.path.abspath(task), "text": text}
+    baseline = os.path.join(os.path.abspath(state_dir), "baseline")
+    if os.path.isdir(baseline):
+        from ..baseline import environment_delta
+        try:
+            delta = environment_delta(baseline)
+        except Exception:  # noqa: BLE001 - context, never a verdict
+            delta = {}
+        if delta:
+            # the environment as the task supplied it is the one a
+            # delivery must run in; what the solver added for its own
+            # session is disclosed so no seat mistakes it for the task's
+            context["environment_changes_since_task_start"] = delta
+            context["environment_note"] = (
+                "the task's environment is the one recorded at task start; "
+                "executables and packages listed here were added by the "
+                "solver during its session and are not part of the "
+                "delivered environment")
+    return json.dumps(context, ensure_ascii=False)
 
 
 class LedgerInstrument:

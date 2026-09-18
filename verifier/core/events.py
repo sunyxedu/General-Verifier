@@ -55,7 +55,17 @@ EVENT_TYPES = (
     "certificate",
     "independent_certificate",
 
+    # admission screening (online economy: a claim the record settles is
+    # assumed, not checked)
+    "claim_screened",
+
+    # final-contract precompile (online: compiled while the solver works)
+    "contract_precompiled",
+    "contract_cache_hit",
+
     # obligation & critic agent
+    "speculative_compile",
+    "speculative_discharge",
     "obligations_compiled",
     "obligations_residualized",
     "decomposition_attacked",

@@ -64,7 +64,13 @@ CREATE TABLE IF NOT EXISTS claims (
     -- evidence strength of a settled node (decisive | bounded | analytic);
     -- NULL = settled outside the ladder (direct discharge, ledger checks,
     -- pre-ladder rows), read as decisive downstream.
-    strength TEXT
+    strength TEXT,
+    -- admission flag, ORTHOGONAL to status: the screener found the claim
+    -- settled by the retained record and the verifier assumed it without
+    -- spending a check. Status stays unverified; cleared when the claim
+    -- goes stale. Never set on a final.
+    confident INTEGER NOT NULL DEFAULT 0,
+    confidence_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS deps (
     child  TEXT NOT NULL,
@@ -82,6 +88,7 @@ CREATE TABLE IF NOT EXISTS obligation_edges (
     severity   TEXT NOT NULL DEFAULT 'must',
     clause     TEXT NOT NULL DEFAULT '',
     refutable_by_absence INTEGER NOT NULL DEFAULT 0,
+    task_bearing TEXT NOT NULL DEFAULT 'unclear',
     PRIMARY KEY (claim, obligation)
 );
 CREATE TABLE IF NOT EXISTS evidence (
@@ -119,12 +126,19 @@ class ClaimStore:
         if "strength" not in cols:
             self.db.execute("ALTER TABLE claims ADD COLUMN strength TEXT")
             self.db.commit()
+        if "confident" not in cols:
+            self.db.execute("ALTER TABLE claims ADD COLUMN confident "
+                            "INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("ALTER TABLE claims ADD COLUMN "
+                            "confidence_reason TEXT")
+            self.db.commit()
         edge_cols = {r[1] for r in
                      self.db.execute("PRAGMA table_info(obligation_edges)")}
         for name, decl in (("severity", "TEXT NOT NULL DEFAULT 'must'"),
                            ("clause", "TEXT NOT NULL DEFAULT ''"),
                            ("refutable_by_absence",
-                            "INTEGER NOT NULL DEFAULT 0")):
+                            "INTEGER NOT NULL DEFAULT 0"),
+                           ("task_bearing", "TEXT NOT NULL DEFAULT 'unclear'")):
             if name not in edge_cols:
                 self.db.execute(
                     f"ALTER TABLE obligation_edges ADD COLUMN {name} {decl}")
@@ -260,9 +274,35 @@ class ClaimStore:
                          reason=reason, basis=basis, strength=strength)
 
     @_locked
+    def set_stale(self, claim_id: str, reason: Optional[str] = None) -> None:
+        """A settled verdict the world has moved past: reopened for a
+        fresh check (world-basis obligation nodes whose epoch is over)."""
+        self._transition(claim_id, STATUS_STALE,
+                         allowed={STATUS_VERIFIED, STATUS_REFUTED,
+                                  STATUS_PARTIAL, STATUS_UNVERIFIED,
+                                  STATUS_STALE},
+                         reason=reason)
+
+    @_locked
     def set_partial(self, claim_id: str) -> None:
         self._transition(claim_id, STATUS_PARTIAL,
                          allowed={STATUS_UNVERIFIED, STATUS_STALE})
+
+    @_locked
+    def set_confident(self, claim_id: str, reason: str) -> None:
+        """Admit an UNVERIFIED claim on the record's strength: the flag is
+        orthogonal to the status machine (the status stays unverified —
+        nothing was checked) and it clears with the claim's staleness."""
+        current = self.status(claim_id)
+        if current != STATUS_UNVERIFIED:
+            raise IllegalTransition(
+                f"confident admission requires unverified, not {current}")
+        if self._row(claim_id)["kind"] == CLAIM_FINAL:
+            raise IllegalTransition("a final is never admitted confident")
+        self.db.execute(
+            "UPDATE claims SET confident=1, confidence_reason=? WHERE id=?",
+            (reason, claim_id))
+        self.db.commit()
 
     @_locked
     def set_unverified(self, claim_id: str,
@@ -318,7 +358,8 @@ class ClaimStore:
             stale.add(cid)
             pending.extend(affected_by.get(cid, ()))
         self.db.executemany(
-            "UPDATE claims SET status=?, reason=NULL, basis=NULL, strength=NULL "
+            "UPDATE claims SET status=?, reason=NULL, basis=NULL, "
+            "strength=NULL, confident=0, confidence_reason=NULL "
             "WHERE id=?", [(STATUS_STALE, cid) for cid in stale])
 
     # evidence
@@ -501,16 +542,18 @@ class ClaimStore:
     @_locked
     def _row(self, claim_id: str) -> Dict:
         cur = self.db.execute(
-            "SELECT id, kind, text, revises, status, reason, basis, strength "
-            "FROM claims WHERE id=?",
+            "SELECT id, kind, text, revises, status, reason, basis, strength, "
+            "confident, confidence_reason FROM claims WHERE id=?",
             (claim_id,),
         )
         row = cur.fetchone()
         if row is None:
             raise UnknownDependency(f"{claim_id[:12]}… not in store")
         keys = ("id", "kind", "text", "revises", "status", "reason", "basis",
-                "strength")
-        return dict(zip(keys, row))
+                "strength", "confident", "confidence_reason")
+        out = dict(zip(keys, row))
+        out["confident"] = bool(out["confident"])
+        return out
 
     @_locked
     def parents(self, claim_id: str) -> List[str]:
@@ -549,11 +592,12 @@ class ClaimStore:
         )
         self.db.execute(
             "INSERT OR IGNORE INTO obligation_edges "
-            "(claim, obligation, severity, clause, refutable_by_absence) "
-            "VALUES (?,?,?,?,?)",
+            "(claim, obligation, severity, clause, refutable_by_absence, "
+            "task_bearing) VALUES (?,?,?,?,?,?)",
             (claim_id, oid, getattr(obligation, "severity", "must"),
              getattr(obligation, "clause", "") or "",
-             1 if getattr(obligation, "refutable_by_absence", False) else 0),
+             1 if getattr(obligation, "refutable_by_absence", False) else 0,
+             getattr(obligation, "task_bearing", "unclear") or "unclear"),
         )
         self.db.execute(
             "INSERT OR IGNORE INTO store_metadata VALUES (?,?)", (key, context))
@@ -569,6 +613,15 @@ class ClaimStore:
             "SELECT value FROM store_metadata WHERE key=?",
             ("obligation_context:" + obligation_id,)).fetchone()
         return retained[0] if retained is not None else None
+    def remove_obligation_edge(self, claim_id: str, obligation_id: str) -> None:
+        """Drop a claim's reliance on an obligation node it no longer
+        compiles to (a speculative discharge the critic's repair
+        dropped). The node and its evidence stay: content-addressed
+        verdicts are facts about the statement, not about this claim."""
+        self.db.execute(
+            "DELETE FROM obligation_edges WHERE claim=? AND obligation=?",
+            (claim_id, obligation_id))
+        self.db.commit()
 
     @_locked
     def obligation_children(self, claim_id: str) -> List[Dict]:
@@ -576,16 +629,17 @@ class ClaimStore:
         each carrying the edge attributes (severity, clause,
         refutable_by_absence) of THIS claim's reliance on it."""
         cur = self.db.execute(
-            "SELECT obligation, severity, clause, refutable_by_absence "
-            "FROM obligation_edges WHERE claim=?",
+            "SELECT obligation, severity, clause, refutable_by_absence, "
+            "task_bearing FROM obligation_edges WHERE claim=?",
             (claim_id,),
         )
         out = []
-        for oid, severity, clause, absence in cur.fetchall():
+        for oid, severity, clause, absence, bearing in cur.fetchall():
             row = self._row(oid)
             row["severity"] = severity
             row["clause"] = clause
             row["refutable_by_absence"] = bool(absence)
+            row["task_bearing"] = bearing
             out.append(row)
         return out
 
@@ -630,6 +684,8 @@ class ClaimStore:
                      "text": text[:300]}
             if eff["status"] != eff["effective_status"]:
                 entry["local_status"] = eff["status"]
+            if self._row(cid)["confident"]:
+                entry["confident"] = True
             if eff["effective_basis"]:
                 entry["basis"] = eff["effective_basis"]
             if eff["effective_strength"]:

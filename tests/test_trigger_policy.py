@@ -243,6 +243,7 @@ def test_partial_residue_names_only_the_unavailable_obligation(tmp_path):
     assert out["obligations"] == [{
         "text": "the ledger retains the complete historical output",
         "status": "partial",
+        "required_by_task": "unclear",
         "reason": "effect excerpt was truncated before the required field",
     }]
 

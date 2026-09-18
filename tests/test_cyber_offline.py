@@ -137,7 +137,8 @@ def test_cyber_score_selects_all_six_agents_and_ordinary_full_task_scope(tmp_pat
                              parallel_claims=1, parallel_obligations=1)
     assert features["verdict"] == "verified"
     assert features["profile_id"] == get_profile("cyber").id
-    assert {role for role, _, _ in backend.prompts} == set(ALL_AGENT_ROLES) - {"sufficiency"}
+    assert {role for role, _, _ in backend.prompts} == set(ALL_AGENT_ROLES) - {
+        "sufficiency", "screener", "script_judger"}
     expected_roles = get_profile("cyber").apply_roles(ALL_AGENT_ROLES)
     for registry in backend.registries:
         assert all(registry[name].system == expected_roles[name].system for name in registry)
@@ -227,7 +228,8 @@ def test_cli_cyber_certify_imports_trace_and_keeps_full_task_scope(tmp_path, cap
     assert cli.certify(str(source), str(state), model="fixture", profile="cyber",
                        kernel_factory=fixture_factory(backend)) == 0
     assert json.loads(capsys.readouterr().out)["verdict"] == "verified"
-    assert {role for role, _, _ in backend.prompts} == set(ALL_AGENT_ROLES) - {"extract", "sufficiency"}
+    assert {role for role, _, _ in backend.prompts} == set(ALL_AGENT_ROLES) - {
+        "extract", "sufficiency", "screener", "script_judger"}
     assert all(json.loads(variables["profile_context"])["certificate_scope"] == "task"
                for _, _, variables in backend.prompts)
 

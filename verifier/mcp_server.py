@@ -80,7 +80,8 @@ def _obligation_summary(store, claim_id: str) -> list:
     for o in store.obligation_children(claim_id):
         if o["status"] == "verified":
             continue
-        entry = {"text": o["text"], "status": o["status"]}
+        entry = {"text": o["text"], "status": o["status"],
+                 "required_by_task": o.get("task_bearing", "unclear")}
         reason = o.get("reason")
         if not reason:
             ev = store.evidence_for(o["id"])
@@ -92,6 +93,14 @@ def _obligation_summary(store, claim_id: str) -> list:
     return out
 
 
+def _holding(store, claim_id: str) -> list:
+    """The claim's obligations that DID hold: a fix must keep them true.
+    Returned beside the residue so a repair aimed at one failing condition
+    is not made by breaking another the same contract demands."""
+    return [o["text"] for o in store.obligation_children(claim_id)
+            if o["status"] == "verified"]
+
+
 def _residue(store, claim_id: str) -> Dict[str, Any]:
     """What a non-verified claim owes the solver: the obligations that did not
     hold with their counterexamples — or, when no obligation was ever compiled,
@@ -99,7 +108,20 @@ def _residue(store, claim_id: str) -> Dict[str, Any]:
     invisible to the solver."""
     obligations = _obligation_summary(store, claim_id)
     if obligations:
-        return {"obligations": obligations}
+        out = {"obligations": obligations}
+        holding = _holding(store, claim_id)
+        if holding:
+            out["still_holding"] = holding
+        out["note"] = (
+            "required_by_task says whether the AUTHORITATIVE TASK requires "
+            "the failing condition (required: the deliverable must satisfy "
+            "it), or the claim asserted it beyond the task (beyond_task: "
+            "narrow or drop the claim; the deliverable need not change), or "
+            "the verifier could not tell (unclear: read the task). "
+            "still_holding lists the conditions of the same contract that "
+            "were established; a fix for the failing ones must keep every "
+            "one of them true")
+        return out
     for ev in reversed(store.evidence_for(claim_id)):
         if ev.get("error"):
             out = {"error": ev["error"]}
@@ -203,6 +225,20 @@ class Service:
             from .service_jobs import VerificationJobs
             self._jobs = VerificationJobs(self.state_dir)
 
+    def start_background(self) -> bool:
+        """Online: compile the final's task contract and its method
+        batches while the solver works (GV_FINAL_PRECOMPILE=0 disables).
+        Called by the entry point AFTER the server's own imports are
+        done: the seat thread imports the Agent SDK, whose import chain
+        shares modules with the MCP server's, and two threads importing
+        the same package concurrently deadlock the import lock — which
+        killed the server at startup on some hosts."""
+        if not self.live_world \
+                or os.environ.get("GV_FINAL_PRECOMPILE", "1") == "0":
+            return False
+        start = getattr(self.kernel, "start_final_precompile", None)
+        return bool(start is not None and start())
+
     # hook feed
     def _ingest_hook_event(self, raw_event: Dict[str, Any]) -> None:
         if (not isinstance(raw_event, dict)
@@ -262,14 +298,36 @@ class Service:
         except VERB_ERRORS as err:
             failure = str(err)
         if label not in self.builder.labels:
-            return {"error": failure or "commit failed"}
+            result = {"error": failure or "commit failed"}
+            if failure and "unknown claim reference" in failure:
+                # the solver cannot see the ledger's sequence numbers; an
+                # unresolved reference gets the record's live index so the
+                # retry needs no status round trip
+                effects = [l for l in self.builder.labels
+                           if l.startswith("effect:")]
+                result["known_references"] = (
+                    [l for l in self.builder.labels
+                     if not l.startswith("effect:")]
+                    + effects[-40:])
+                result["note"] = ("effect:<seq> names a recorded TOOL RESULT "
+                                  "by its ledger sequence number; the most "
+                                  "recent results are listed last")
+            return result
         claim_id = self.builder.labels[label]
-        status = self.store.status(claim_id)
+        row = self.store.get(claim_id)
+        status = row["status"]
         result = {"claim_id": claim_id, "status": status}
         if failure is not None:
             # the claim is recorded; its check did not finish — fail-closed, so
             # the status stands as unverified and the solver is told why
             result["error"] = failure
+        if row.get("confident"):
+            # admitted on the record: assumed by every consumer, no check
+            # run, nothing owed — the solver may build on it (and may ask
+            # for the full check with `verify` if it wants one)
+            result["confident"] = True
+            result["confidence_reason"] = row.get("confidence_reason")
+            return result
         if kind != "effect" and status != "verified":
             # the verdict lands on the commit call now, so its residue must too
             result.update(_residue(self.store, claim_id))
@@ -281,7 +339,9 @@ class Service:
             self._check_task()
             claim_id = self.builder.resolve(label)
             self.log.append("verify_request", {"target": claim_id, "cause": "mcp"})
-            status = self.kernel.verify(claim_id)
+            # an explicit request is never answered by the screener: a
+            # confident claim gets its full check here
+            status = self.kernel.verify(claim_id, force=True)
         except VERB_ERRORS + (OSError,) as err:
             return {"error": str(err)}
         result = {"claim_id": claim_id, "status": status}
@@ -308,6 +368,10 @@ class Service:
         slice_summary = []
         for e in cert["slice"]:
             entry = {"text": e["text"], "status": e["status"]}
+            if e.get("confident"):
+                entry["confident"] = True
+                slice_summary.append(entry)
+                continue
             if e["status"] != "verified":
                 obligations = [
                     {"text": o["text"], "status": o["status"],
@@ -364,7 +428,10 @@ class Service:
                 return {"error": str(err)}
             row = self.store.get(claim_id)
             result = {k: row[k] for k in ("id", "kind", "text", "status")}
-            if row["status"] != "verified":
+            if row.get("confident"):
+                result["confident"] = True
+                result["confidence_reason"] = row.get("confidence_reason")
+            elif row["status"] != "verified":
                 result.update(_residue(self.store, claim_id))
             return result
         # New commits and hook Effects may add labels on another worker.
@@ -372,10 +439,12 @@ class Service:
         # it before querying the store; status does not hold a verification lock.
         with self._event_feed_lock:
             labels = tuple(self.builder.labels.items())
-        return {
-            label: self.store.status(cid)
-            for label, cid in labels
-        }
+        out = {}
+        for label, cid in labels:
+            status = self.store.status(cid)
+            confident = self.store.get(cid).get("confident")
+            out[label] = f"{status} (confident)" if confident else status
+        return out
 
     def _pin_profile(self, model):
         pins = [e["payload"] for e in self.log.replay()
@@ -860,7 +929,12 @@ class Service:
                 if independent:
                     expected_node.update(premise_scope=sorted(self.store.parents(node["id"])),
                         verification_context=self.store.obligation_verification_context(node["id"]))
-                if not _same_data(retained, expected_node):
+                # compare the retained node on the keys the receipt fixes;
+                # disclosure-only keys the certificate may add (task
+                # bearing, admission flags) are not evidence
+                projected = ({key: retained.get(key) for key in expected_node}
+                             if isinstance(retained, dict) else retained)
+                if not _same_data(projected, expected_node):
                     raise ValueError("certificate obligation evidence changed")
 
     def _authenticate_candidate_certificate(self, certificate_id, final_id, full_certificate_id=None):
@@ -1301,7 +1375,7 @@ def _default_kernel(sc: Service, model, backend=None,
 
     from .llm import prompts
     from .llm.agents import (
-        ALL_AGENT_ROLES, AgentBackend,
+        ALL_AGENT_ROLES, AgentBackend, SCREENER_AGENT,
     )
     from .execution.config import (
         contract_cache_enabled,
@@ -1419,11 +1493,43 @@ def _default_kernel(sc: Service, model, backend=None,
     if parallel_claims is None:
         parallel_claims = getattr(sc, "parallel_claims", None)
     if parallel_obligations is None:
+        # a compound claim can compile to dozens of obligations; with the
+        # executable-form path most of them are a short script plus one
+        # no-tools reading, so eight in flight is well inside the seat gate
         parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 8)
     if parallel_claims is None:
         # online (live world): one claim at a time as commits arrive
         parallel_claims = (1 if sc.live_world
                            else _parallel_default("GV_PARALLEL_CLAIMS", 4))
+    # the admission screener is an ONLINE economy: with a live world the
+    # solver waits on every commit, and a claim the record already settles
+    # is assumed rather than checked. Offline scoring seats none — every
+    # claim in a scored slice gets its check. GV_SCREENER=0 disables it.
+    # the online economies below (screener, advisory critic budget,
+    # speculative discharge) are seated for the default profile only: a
+    # profile with its own adjudication protocol keeps the sequential
+    # compile -> critic -> discharge order it was built and tested on
+    profile_obj = getattr(sc, "profile", None)
+    online = sc.live_world and (
+        profile_obj is None or getattr(profile_obj, "name", "default") == "default")
+    screener = (SCREENER_AGENT
+                if online and os.environ.get("GV_SCREENER", "1") != "0"
+                else None)
+    # online, the task contract lives at the final, which keeps the full
+    # adversarial game; a non-final decomposition is the compiler's own by
+    # default (GV_CRITIC_ROUNDS_NONFINAL=0). A positive budget seats an
+    # ADVISORY review: that many rounds, the last repair standing. Offline
+    # scoring keeps the full game everywhere. (An advisory repair was
+    # observed to replace a concrete obligation with a vaguer, costlier
+    # one; the solver's intermediate feedback is better served by the
+    # compiler's decomposition, gated by the same evidence axioms.)
+    nonfinal_rounds = None
+    if online:
+        try:
+            nonfinal_rounds = max(
+                0, int(os.environ.get("GV_CRITIC_ROUNDS_NONFINAL", "0")))
+        except ValueError:
+            nonfinal_rounds = 0
     return Kernel(sc.store, sc.log, backend, sc.artifacts,
                   obligations_role=obligations,
                   critic_role=roles["critic"],
@@ -1437,7 +1543,15 @@ def _default_kernel(sc: Service, model, backend=None,
                   context_provider=context_provider,
                   context_id_provider=getattr(sc, "profile_context_id", None),
                   independent_root_provider=(getattr(sc, "independent_root_contract", None)
-                                             if profile.name == "cyber" else None))
+                                             if profile.name == "cyber" else None),
+                  screener_role=screener,
+                  critic_rounds_nonfinal=nonfinal_rounds,
+                  # online: overlap the critic's review with the checks
+                  # (GV_SPECULATIVE_DISCHARGE=0 disables)
+                  speculative_discharge=(
+                      online
+                      and os.environ.get("GV_SPECULATIVE_DISCHARGE", "1")
+                      != "0"))
 
 
 # MCP wiring
@@ -1726,7 +1840,18 @@ def main() -> None:
                       project_root=args.project_root, evaluator_spec=evaluator_spec,
                       final_destination=args.cyber_final_destination,
                       seats=args.seats, effort=args.effort, service_tier=args.service_tier)
-    build_server(service).run()   # stdio
+    server = build_server(service)   # imports the MCP server modules
+    # every module the seats import must be importable by the main thread
+    # first: a seat thread and the server importing the same package at
+    # once deadlock the import lock (observed at startup)
+    try:
+        import claude_agent_sdk  # noqa: F401
+    except ImportError:
+        pass
+    start_background = getattr(service, "start_background", None)
+    if callable(start_background):
+        start_background()
+    server.run()   # stdio
 
 
 if __name__ == "__main__":
