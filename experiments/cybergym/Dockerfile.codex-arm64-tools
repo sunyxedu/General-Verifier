@@ -1,0 +1,14 @@
+# Extend an audited, local arm64 Codex 0.153.4 image ID; no model upgrade.
+# Use --build-arg BASE_IMAGE=sha256:<validated-local-image-id>.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 python3-pip gcc g++ make pkg-config \
+        clang libclang-rt-dev cmake ninja-build llvm lld gdb \
+        autoconf automake libtool libtool-bin bison flex texinfo ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /codex-home /task && chown -R 1000:1000 /codex-home /task
+USER node

@@ -42,8 +42,9 @@ OFFICIAL_PY = OFFICIAL / ".venv/bin/python"
 SOURCE = Path(__file__).resolve().parent
 DATASET_COMMIT = "bde190ded494e52bc684b66073b436c9d992c7c6"
 OFFICIAL_COMMIT = "c6fe2027d39471375920b92cf1025e23a99ffda5"
-# Same pinned Codex base, with model-independent Linux build/debug tools.
-IMAGE = "sha256:83c3918e9e9bf35ab1cadea78b01679a60b884f930b95c0a60b7b9def4125ff0"
+# Host-native arm64 Codex 0.153.4 with generic build/debug/sanitizer tools.
+# The official scorer still runs its pinned target images as linux/amd64.
+IMAGE = "sha256:30baacb7022954c9bd215396d22c0521fa8ae3332766ca9cadfac8d9491f7f04"
 EGRESS_IMAGE = "sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029"
 NGINX_IMAGE = "sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3"
 EGRESS_DOMAINS = (".openai.com", ".chatgpt.com", ".oaistatic.com", ".oaiusercontent.com")
@@ -361,6 +362,8 @@ class Evaluation:
                 "prefix_length": ISOLATED_NETWORK_PREFIX, "internal": True},
             "submission_relay_network": self.relay_network,
             "image": IMAGE, "egress_image": EGRESS_IMAGE,
+            "solver_image_platform": "linux/arm64",
+            "official_target_platform": "linux/amd64",
             "mask_map_sha256": catalog["sha256"],
             "full_task_counts": catalog["task_counts"],
             "experiment": self.experiment, "judge_port": self.port}
@@ -699,7 +702,9 @@ class Evaluation:
             "-v", str(squid) + ":/etc/squid/squid.conf:ro", EGRESS_IMAGE,
             "-f", "/etc/squid/squid.conf", "-NYC")
         docker("network", "connect", "bridge", proxy)
-        env = ["-e", "CODEX_HOME=/codex-home", "-e", "HOME=/codex-home", "-e", "PYTHONPATH=/gv",
+        # Keep private Codex auth in CODEX_HOME while letting its sandbox use
+        # the image's ordinary user home for standard cache mountpoints.
+        env = ["-e", "CODEX_HOME=/codex-home", "-e", "HOME=/home/node", "-e", "PYTHONPATH=/gv",
             "-e", "GV_SIDECAR_TOKEN=" + token, "-e", "HTTP_PROXY=http://" + proxy + ":3128",
             "-e", "HTTPS_PROXY=http://" + proxy + ":3128", "-e", "ALL_PROXY=http://" + proxy + ":3128",
             "-e", "NO_PROXY=" + self.proxy + ",localhost,127.0.0.1"]

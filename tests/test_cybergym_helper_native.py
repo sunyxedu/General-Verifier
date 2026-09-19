@@ -43,7 +43,7 @@ b=CyberCodexBackend(cwd='/probe/state',project_root='/task')
 args=b._execution_policy_args('discharge',{'world_mode':'live'})
 provider='{name="synthetic",base_url="http://127.0.0.1:'+str(s.server_port)+'/v1",wire_api="responses",requires_openai_auth=false,supports_websockets=false,request_max_retries=0,stream_max_retries=0}'
 cmd=['codex','exec',*args,'--json','--skip-git-repo-check','-m','gpt-5.6-luna','-c','model_provider="synthetic"','-c','model_providers.synthetic='+provider,'--','Execute the synthetic probe.']
-env={**os.environ,'CODEX_HOME':'/codex-home','HOME':'/codex-home'}
+env={**os.environ,'CODEX_HOME':'/codex-home','HOME':'/home/node'}
 p=subprocess.run(cmd,env=env,capture_output=True,text=True,timeout=30)
 s.shutdown()
 print(json.dumps({'returncode':p.returncode,'request_count':len(requests),'function_outputs':[x for r in requests for x in r['outputs']],'stdout':p.stdout[-6000:],'stderr':p.stderr[-2000:],'real_model_calls':0,'task_data_used':False},indent=2))

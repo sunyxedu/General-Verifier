@@ -6,9 +6,12 @@ Check out the pinned official runtime (`OFFICIAL_COMMIT` in `run.py`) at
 `/private/tmp/cybergym-official` and install its server and task-generator
 dependencies in `.venv`. Set `CYBERGYM_OFFICIAL_ROOT` for another location.
 Import the exact agent, Squid, and nginx image IDs recorded in `run.py`.
-`Dockerfile.codex-base` plus `Dockerfile.sanitizer-tools` document the generic
-Linux/amd64 Codex 0.153.4 solver image used for the local PR #2 pilot; the
-runner still uses the final image's exact ID, not a mutable tag.
+`Dockerfile.codex-arm64-tools` plus `Dockerfile.sanitizer-tools` document the
+generic host-native Codex 0.153.4 solver image used for the local PR #2 pilot;
+the runner uses its exact final ID, not a mutable tag. The solver image is
+linux/arm64 on this host; the official target images are linux/amd64. This
+platform mismatch is declared in the manifest and the toolchain preflight,
+not silently treated as proof that target binaries execute locally.
 The runner creates a dedicated internal submission-relay network for each
 experiment and refuses to reuse an existing network of the same name. It
 retains that network with the stopped containers for audit. The runner reads

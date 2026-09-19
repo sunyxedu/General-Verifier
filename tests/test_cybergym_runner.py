@@ -1153,6 +1153,9 @@ def test_evaluator_snapshot_is_native_readonly_and_both_native_dependencies_are_
     assert probes == [runtime]
     sidecar = next(call for call in calls if call[0] == "run" and "--name" in call
                    and call[call.index("--name") + 1] == runtime["sidecar"])
+    variables = [sidecar[i + 1] for i, word in enumerate(sidecar[:-1]) if word == "-e"]
+    assert "CODEX_HOME=/codex-home" in variables
+    assert "HOME=/home/node" in variables
     mounts = [sidecar[i + 1] for i, word in enumerate(sidecar[:-1]) if word == "-v"]
     assert runtime["evaluator_volume"] + ":/evaluator:ro" in mounts
     assert all(str(private / "evaluator.json") not in mount for mount in mounts)
