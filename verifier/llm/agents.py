@@ -38,7 +38,7 @@ from typing import Any, Callable, Dict, List, Optional
 from . import prompts
 from .model_spans import (
     role_attempt, role_span, seat_acquired, seat_released,
-    seat_wait_started, submit_with_context,
+    seat_wait_started,
 )
 from .schema import RoleError, validate, field_name, optional_key
 from .oracle_execution import (
@@ -376,6 +376,38 @@ class AgentRole:
             raise RoleError(f"{self.name}: failed twice: {last_error}")
 
 
+class _SharedSDKLoop:
+    """Keep concurrent SDK subprocesses under one Unix child watcher."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._loop = None
+        self._thread = None
+
+    def run(self, coroutine):
+        with self._lock:
+            if self._loop is None:
+                ready = threading.Event()
+
+                def serve():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    self._loop = loop
+                    ready.set()
+                    loop.run_forever()
+
+                self._thread = threading.Thread(target=serve, daemon=True,
+                                                name="gv-claude-sdk-loop")
+                self._thread.start()
+                ready.wait()
+        if threading.current_thread() is self._thread:
+            raise RuntimeError("synchronous SDK call from its own event-loop thread")
+        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
+
+
+_SHARED_SDK_LOOP = _SharedSDKLoop()
+
+
 class AgentBackend:
     """
     Runs AgentRoles through the Claude Agent SDK.
@@ -422,8 +454,9 @@ class AgentBackend:
         """
         Backend entry point (same signature as FixtureBackend.complete).
 
-        Loop-safe sync wrapper: callable from plain sync code AND from code executing inside a running event loop (e.g. an MCP tool handler in the MCP server).
-        In the latter case the coroutine runs on a private loop in a worker thread, because asyncio.run would raise on a running loop.
+        SDK calls share one process-wide loop: asyncio's Unix child watcher is
+        process-global, and separate loops racing to reap concurrent CLI
+        subprocesses can orphan a role transport. Calls still run concurrently.
         """
         role = self.roles.get(role_name)
         if role is None:
@@ -433,15 +466,7 @@ class AgentBackend:
         error: Optional[str] = None
         token = _ATTEMPT_SINK.set(attempts)
         try:
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                return asyncio.run(self.run(role, prompt))
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                return submit_with_context(
-                    pool, asyncio.run, self.run(role, prompt)).result()
+            return _SHARED_SDK_LOOP.run(self.run(role, prompt))
         except Exception as err:  # noqa: BLE001 - re-raised after the receipt
             error = str(err)[:300]
             raise
