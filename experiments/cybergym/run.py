@@ -43,7 +43,7 @@ SOURCE = Path(__file__).resolve().parent
 DATASET_COMMIT = "bde190ded494e52bc684b66073b436c9d992c7c6"
 OFFICIAL_COMMIT = "c6fe2027d39471375920b92cf1025e23a99ffda5"
 # Same pinned Codex base, with model-independent Linux build/debug tools.
-IMAGE = "sha256:74485dae737c33b75d6339b479546a9b0fcbe95fc187e6f66d4ed1360e3d09bc"
+IMAGE = "sha256:83c3918e9e9bf35ab1cadea78b01679a60b884f930b95c0a60b7b9def4125ff0"
 EGRESS_IMAGE = "sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029"
 NGINX_IMAGE = "sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3"
 EGRESS_DOMAINS = (".openai.com", ".chatgpt.com", ".oaistatic.com", ".oaiusercontent.com")
