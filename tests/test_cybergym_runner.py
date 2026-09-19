@@ -42,6 +42,7 @@ def controller(tmp_path, monkeypatch):
     evaluation.port = 18676
     evaluation.experiment = "fixture-experiment"
     evaluation.proxy = "fixture-private-submit"
+    evaluation.relay_network = "fixture-private-relay"
     evaluation.server = "http://fixture-private-submit"
     evaluation.host_server = "http://127.0.0.1:18676"
     evaluation.api_key = "private-score-api-key-sentinel"
@@ -51,6 +52,7 @@ def controller(tmp_path, monkeypatch):
     evaluation.frozen_commit = "fixture-commit"
     evaluation.judge_process = None
     evaluation.created_proxy = False
+    evaluation.created_relay_network = False
     # IPAM behavior has separate allocator regressions; legacy runtime
     # fixtures must never read or allocate the host's real Docker networks.
     monkeypatch.setattr(evaluation, "create_isolated_network",
@@ -712,6 +714,8 @@ def startup_fakes(monkeypatch, controller):
         calls.append(tuple(args))
         if args == ("inspect", controller.proxy):
             return SimpleNamespace(returncode=1, stdout="", stderr="")
+        if args == ("network", "inspect", controller.relay_network):
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="true\n", stderr="")
     monkeypatch.setattr(run, "docker", docker)
     def execute(*args, **_kwargs):
@@ -727,16 +731,34 @@ def startup_fakes(monkeypatch, controller):
 
 def test_submission_proxy_starts_on_bridge_before_authority_network(controller, monkeypatch):
     calls, _judge = startup_fakes(monkeypatch, controller)
+    monkeypatch.setattr(controller, "create_isolated_network",
+                        lambda name, labels: calls.append(("create_internal", name, tuple(labels))))
     controller.start_services()
+    created = ("create_internal", controller.relay_network,
+               ("--label", "gv.experiment=" + controller.experiment))
     launched = next(call for call in calls if call[0] == "run" and controller.proxy in call)
     assert launched[launched.index("--network") + 1] == "bridge"
-    connected = ("network", "connect", "cybergym-internal", controller.proxy)
+    connected = ("network", "connect", controller.relay_network, controller.proxy)
     ready = ("wait_running", controller.proxy)
     checked = ("exec", controller.proxy, "nginx", "-t")
     listening = ("wait_listener", controller.proxy, 80)
-    assert calls.index(launched) < calls.index(connected) < calls.index(ready)
+    assert calls.index(created) < calls.index(launched) < calls.index(connected) < calls.index(ready)
     assert calls.index(ready) < calls.index(checked) < calls.index(listening)
     assert controller.created_proxy is True
+    assert controller.created_relay_network is True
+
+
+def test_submission_relay_refuses_existing_network(controller, monkeypatch):
+    calls = []
+    def docker(*args, **_kwargs):
+        calls.append(tuple(args))
+        return SimpleNamespace(returncode=1 if args == ("inspect", controller.proxy) else 0)
+    monkeypatch.setattr(run, "docker", docker)
+    with pytest.raises(RuntimeError, match="relay network already exists"):
+        controller.start_services()
+    assert calls == [("inspect", controller.proxy),
+                     ("network", "inspect", controller.relay_network)]
+    assert controller.judge_process is None
 
 
 def test_dead_submission_proxy_prevents_batch_and_cleans_services(controller, monkeypatch):

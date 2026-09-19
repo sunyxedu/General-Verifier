@@ -5,9 +5,11 @@
 Check out the pinned official runtime (`OFFICIAL_COMMIT` in `run.py`) at
 `/private/tmp/cybergym-official` and install its server and task-generator
 dependencies in `.venv`. Set `CYBERGYM_OFFICIAL_ROOT` for another location.
-Import the exact agent, Squid, and nginx image IDs recorded in `run.py`;
-create the shared internal network with `docker network create --internal
-cybergym-internal`. The runner reads `~/.codex/auth.json` by default;
+Import the exact agent, Squid, and nginx image IDs recorded in `run.py`.
+The runner creates a dedicated internal submission-relay network for each
+experiment and refuses to reuse an existing network of the same name. It
+retains that network with the stopped containers for audit. The runner reads
+`~/.codex/auth.json` by default;
 `CYBERGYM_CODEX_AUTH` selects another private auth file. Auth files and raw
 experiment outputs must never be committed.
 

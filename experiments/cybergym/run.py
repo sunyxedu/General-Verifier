@@ -307,6 +307,7 @@ class Evaluation:
         self.port = port
         self.experiment = "cybergym-luna-roles-" + hashlib.sha256(str(root).encode()).hexdigest()[:10]
         self.proxy = self.experiment + "-submit"
+        self.relay_network = self.experiment + "-relay"
         self.server = "http://" + self.proxy
         self.host_server = f"http://127.0.0.1:{port}"
         self.results = {}
@@ -314,6 +315,7 @@ class Evaluation:
         self.stop = threading.Event()
         self.judge_process = None
         self.created_proxy = False
+        self.created_relay_network = False
         self.frozen_commit = execute("git", "-C", PROFILE, "rev-parse", "HEAD",
                                     capture_output=True, text=True).stdout.strip()
 
@@ -357,6 +359,7 @@ class Evaluation:
             "poc_execution_network": "none",
             "isolated_network_allocation": {"pools": list(ISOLATED_NETWORK_POOLS),
                 "prefix_length": ISOLATED_NETWORK_PREFIX, "internal": True},
+            "submission_relay_network": self.relay_network,
             "image": IMAGE, "egress_image": EGRESS_IMAGE,
             "mask_map_sha256": catalog["sha256"],
             "full_task_counts": catalog["task_counts"],
@@ -375,6 +378,8 @@ class Evaluation:
         (server / "logs").mkdir(parents=True, exist_ok=True)
         if docker("inspect", self.proxy, check=False).returncode == 0:
             raise RuntimeError("submission proxy already exists; do not launch duplicate controller")
+        if docker("network", "inspect", self.relay_network, check=False).returncode == 0:
+            raise RuntimeError("submission relay network already exists; use a fresh root")
         # Override the public placeholder key. The secret never enters an agent container.
         self.api_key = secrets.token_urlsafe(48)
         atomic_json(server / "controller-secret.json", {"api_key": self.api_key})
@@ -410,6 +415,9 @@ class Evaluation:
                 raise RuntimeError("judge authentication challenge failed") from error
         if self.judge_process.poll() is not None:
             raise RuntimeError("new judge died; refusing an unrelated service on this port")
+        self.create_isolated_network(self.relay_network,
+                                     ["--label", "gv.experiment=" + self.experiment])
+        self.created_relay_network = True
         config = server / "nginx.conf"
         config.write_text('events {}\nhttp { server { listen 80; client_max_body_size 16m; '
             'location = /submit-vul { proxy_pass http://host.docker.internal:' + str(self.port) +
@@ -421,7 +429,7 @@ class Evaluation:
             "--label", "gv.experiment=" + self.experiment, "-v", str(config) + ":/etc/nginx/nginx.conf:ro",
             NGINX_IMAGE)
         self.created_proxy = True
-        docker("network", "connect", "cybergym-internal", self.proxy)
+        docker("network", "connect", self.relay_network, self.proxy)
         self.wait_running(self.proxy)
         docker("exec", self.proxy, "nginx", "-t")
         self.wait_listener(self.proxy, 80)
@@ -715,7 +723,7 @@ class Evaluation:
             "--cyber-evaluator-pin", "/usr/bin/bash",
             "--cyber-evaluator-pin", "/usr/bin/curl",
             "--cyber-runtime-manifest", "/usr/local/lib/gv-sanitizer/manifest.json")
-        docker("network", "connect", "cybergym-internal", sidecar)
+        docker("network", "connect", self.relay_network, sidecar)
         # Controller stores secret separately; diagnostics do not echo it.
         atomic_json(private / "runtime-secret.json", runtime)
         for _ in range(60):
