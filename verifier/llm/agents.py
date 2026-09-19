@@ -394,11 +394,13 @@ class AgentBackend:
         cwd: Optional[str] = None,
         model: Optional[str] = None,
         permission_mode: str = "bypassPermissions",
+        message_observer=None,
     ):
         self.roles = dict(roles) if roles is not None else dict(ALL_AGENT_ROLES)
         self.cwd = cwd
         self.model = model
         self.permission_mode = permission_mode
+        self.message_observer = message_observer
         self.uses_role_wire_schema = True
         self.transcripts: List[Dict[str, Any]] = []
 
@@ -513,12 +515,18 @@ class AgentBackend:
         sdk = _sdk()
         result = None
         error: Optional[Exception] = None
+        observed = 0
         try:
             async for message in sdk.query(prompt=prompt, options=options):
+                if self.message_observer is not None:
+                    self.message_observer(message)
+                observed += 1
                 if isinstance(message, sdk.ResultMessage):
                     result = message
         except Exception as err:  # noqa: BLE001 - classified below
             error = err
+            if self.message_observer is not None:
+                self.message_observer({"stream_error": True, "observed_messages": observed})
 
         transcript = {
             "role": role.name,

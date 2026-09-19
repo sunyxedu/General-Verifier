@@ -102,7 +102,7 @@ GV_CYBERGYM_HELPER_NATIVE=1 python -B -m pytest -q tests/test_cyber_native_tmp.p
 
 ## Model configuration
 
-The solver and every verification role use **GPT-5.6 Luna, max effort, fast**.
+By default the solver and every verification role use **GPT-5.6 Luna, max effort, fast**.
 Their context policy is shared in `model_config.py`: 1,050,000 total tokens,
 automatic compaction at 780,000 input tokens. Pinned Codex real-turn traces
 report 828,400 usable tokens; the threshold leaves 48,400 below that budget.
@@ -115,21 +115,37 @@ are 922,000 input and 128,000 output tokens.
 [Official Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
 documents the context-window and automatic-compaction settings.
 
+Set `CYBERGYM_BACKEND=claude` for a diagnostic comparison with the exact
+`claude-sonnet-5` model through Claude Code and the Claude Agent SDK. This
+selects a pinned arm64 image and first-party OAuth credentials, while keeping
+the GV kernel, cyber profile, task cohort, finalizer, and official scorer.
+Run `CYBERGYM_BACKEND=claude python -m experiments.cybergym.preflight`
+before starting. This zero-model smoke does **not** prove verifier-seat
+filesystem sandbox equivalence: the SDK seats do not use the Codex backend's
+private mount-namespace policy. Treat any Claude score as a diagnostic
+comparison until that boundary is independently validated. This backend
+choice is general and contains no task-specific parameter or prompt change.
+
 ## Network boundary
 
 Online mode submits to a **local** CyberGym service; it is not an Internet
 answer service. Solver containers have no direct Internet route. Their
 proxy allowlist consists of `.openai.com`, `.chatgpt.com`, `.oaistatic.com`,
-and `.oaiusercontent.com` for the Codex backend. These are domain suffixes,
+and `.oaiusercontent.com` for the Codex backend, or `.anthropic.com`,
+`.claude.ai`, and `.claude.com` for Claude. These are domain suffixes,
 not a claim that arbitrary URLs on those domains are inaccessible.
 Web search is disabled, and source-hosting and package-mirror domains are
-not allowed. Verification-role shell commands have networking disabled;
-outer model requests and the trusted local evaluator are separate.
+not allowed. Codex verification-role shell commands have networking disabled;
+the Claude SDK comparator currently has only the provider proxy boundary, not
+an equivalent shell-network or filesystem boundary. Outer model requests and
+the trusted local evaluator are separate.
 Official vulnerable and patched PoC execution containers use network-none.
 
-Solver starts/resumes and every verification role explicitly pin
-`web_search="disabled"` on the CLI. Hosted search is separate from command
-networking ([official search configuration](https://learn.chatgpt.com/docs/web-search#configure-local-web-search)).
+Codex solver starts/resumes and every verification role explicitly pin
+`web_search="disabled"` on the CLI. Claude Code disallows `WebSearch` and
+`WebFetch` for the solver and removes them from verifier tool palettes.
+Hosted search is separate from command networking
+([official search configuration](https://learn.chatgpt.com/docs/web-search#configure-local-web-search)).
 The host additionally checks structural search events in solver logs and a
 private, per-service verifier latch. A process-generation change, malformed
 policy evidence, or a verifier event-parser gap prevents a valid score.

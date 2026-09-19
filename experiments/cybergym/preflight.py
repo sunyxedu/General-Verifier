@@ -26,7 +26,7 @@ import time
 import tomllib
 import uuid
 
-from .model_config import AUTO_COMPACT_TOKEN_LIMIT, CONTEXT_WINDOW, MODEL, EFFORT, SERVICE_TIER
+from .model_config import AUTO_COMPACT_TOKEN_LIMIT, BACKEND, CONTEXT_WINDOW, MODEL, EFFORT, SERVICE_TIER
 from .run import IMAGE
 
 LABEL = "gv.preflight"
@@ -41,6 +41,44 @@ ANSWER_BLIND_ROLES = frozenset({"obligations", "critic", "oracles", "sufficiency
 
 class PreflightError(ValueError):
     """Static error codes only; never echo a CLI response or configuration."""
+
+
+def claude_preflight(timeout=20.0):
+    """Offline, credential-free smoke of the pinned Claude CLI and SDK."""
+    if type(timeout) not in (int, float) or not 5 <= timeout <= 60:
+        raise PreflightError("invalid_preflight_timeout")
+    base = ["docker", "run", "--rm", "--network", "none", "--user", "1000:1000",
+            "--read-only", "--tmpfs", "/tmp:rw,uid=1000,gid=1000,mode=0700"]
+    try:
+        help_result = subprocess.run([*base, "--entrypoint", "claude", IMAGE, "--help"],
+                                     capture_output=True, timeout=timeout)
+        if help_result.returncode or len(help_result.stdout) > MAX_OUTPUT:
+            raise PreflightError("pinned_claude_help_failed")
+        required = (b"--model", b"--output-format", b"--mcp-config", b"--strict-mcp-config",
+                    b"--settings", b"--disallowed-tools", b"--resume")
+        if any(flag not in help_result.stdout for flag in required):
+            raise PreflightError("pinned_claude_flags_missing")
+        source = str(Path(__file__).resolve().parents[2])
+        code = ("import json, claude_agent_sdk; "
+                "from experiments.cybergym.sidecar import ClaudeVerifierBackend; "
+                "from verifier.llm.agents import ENUMERATE_ORACLES_AGENT; "
+                "b=ClaudeVerifierBackend(cwd='/tmp'); "
+                "print(json.dumps({'roles':len(b.roles),'model':b.model}))")
+        sdk_result = subprocess.run([*base, "--mount", "type=bind,source=" + source
+                                     + ",target=/gv,readonly", "--env", "PYTHONPATH=/gv",
+                                     "--env", "CYBERGYM_BACKEND=claude",
+                                     "--entrypoint", "python3", IMAGE, "-c", code],
+                                    capture_output=True, timeout=timeout)
+        if sdk_result.returncode or len(sdk_result.stdout) > 4096:
+            raise PreflightError("pinned_claude_sdk_failed")
+        payload = json.loads(sdk_result.stdout)
+        if payload != {"roles": 9, "model": MODEL}:
+            raise PreflightError("pinned_claude_backend_mismatch")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        raise PreflightError("pinned_claude_preflight_failed") from None
+    return {"schema": "gv-cybergym-claude-preflight-v1", "image": IMAGE,
+            "model": MODEL, "backend": BACKEND, "roles": payload["roles"], "model_calls": 0,
+            "sandbox_enforcement_tested": False}
 
 
 def _remaining(deadline, maximum=5.0):
@@ -439,6 +477,8 @@ def cli_help():
 
 
 def run(timeout=20.0):
+    if BACKEND == "claude":
+        return claude_preflight(timeout)
     if type(timeout) not in (int, float) or not 5 <= timeout <= 60:
         raise PreflightError("invalid_preflight_timeout")
     marker = uuid.uuid4().hex

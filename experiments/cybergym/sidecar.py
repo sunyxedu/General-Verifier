@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+from dataclasses import replace
 import hmac
 import json
 import os
@@ -21,13 +23,14 @@ import threading
 import time
 import uuid
 
+from verifier.llm.agents import AgentBackend, ALL_AGENT_ROLES
 from verifier.llm.codex_backend import codex_usage_ledger
 from verifier.mcp_server import Service, _default_kernel, build_server
 from verifier.profiles.cyber.evaluator import EvaluatorSpec
 from verifier.profiles.cyber.backend import CyberCodexBackend
 
 from experiments.cybergym.model_config import (
-    AUTO_COMPACT_TOKEN_LIMIT, CONTEXT_WINDOW, EFFORT, MODEL, SERVICE_TIER,
+    AUTO_COMPACT_TOKEN_LIMIT, BACKEND, CONTEXT_WINDOW, EFFORT, MODEL, SERVICE_TIER,
     context_cli_args,
 )
 from experiments.cybergym.policy import SearchPolicyGuard
@@ -130,14 +133,143 @@ class SandboxedVerifierBackend(CyberCodexBackend):
             self.search_policy_guard.end_execution()
 
 
+class ClaudeVerifierBackend(AgentBackend):
+    """Run the unchanged GV role contracts on first-party Claude Code."""
+
+    _diagnostic_lock = threading.Lock()
+
+    def __init__(self, *, cwd: str, project_root: str = "/task", runtime_inventory=None,
+                 search_policy_guard=None):
+        self.search_policy_guard = (SearchPolicyGuard() if search_policy_guard is None
+                                    else search_policy_guard)
+        if not isinstance(self.search_policy_guard, SearchPolicyGuard):
+            raise TypeError("a host search policy guard is required")
+        roles = {name: replace(role, tools=[tool for tool in role.tools
+                 if tool not in ("WebSearch", "WebFetch")])
+                 for name, role in ALL_AGENT_ROLES.items()}
+        super().__init__(roles=roles, cwd=cwd, model=MODEL,
+                         message_observer=self._observe_message)
+        self.project_root = project_root
+        self.runtime_inventory = runtime_inventory
+        self._diagnostic_failures = 0
+
+    def _receipt(self, role, started, attempts, error, variables):
+        # The common SDK receipt includes claim text; use the private,
+        # metadata-only role diagnostics below for this evaluation.
+        return None
+
+    def _build_options(self, role, stderr_cb):
+        # _default_kernel installs profile-expanded roles after construction.
+        # Keep the experiment-wide no-hosted-search rule at the final SDK
+        # invocation boundary, independent of that role expansion.
+        options = super()._build_options(role, stderr_cb)
+        permitted = [tool for tool in options.tools
+                     if tool not in ("WebSearch", "WebFetch")]
+        return replace(options, tools=permitted, allowed_tools=permitted,
+                       disallowed_tools=[*options.disallowed_tools, "WebSearch", "WebFetch"])
+
+    def _observe_message(self, message):
+        try:
+            if isinstance(message, dict):
+                if message.get("stream_error") is True:
+                    self.search_policy_guard.observe_backend_phase(
+                        {"phase": "exec_returned", "reader_failed": True})
+                return
+            for block in getattr(message, "content", None) or ():
+                if (type(block).__name__ in ("ToolUseBlock", "ServerToolUseBlock")
+                        and getattr(block, "name", None) in ("WebSearch", "WebFetch")):
+                    self.search_policy_guard.observe_backend_phase(
+                        {"phase": "cli_event", "item_kind": "web_search",
+                         "event_type": "item.completed"})
+            usage = getattr(message, "usage", None)
+            if isinstance(usage, dict):
+                server = usage.get("server_tool_use")
+                if isinstance(server, dict) and any(
+                        type(server.get(field)) is int and server[field] > 0
+                        for field in ("web_search_requests", "web_fetch_requests")):
+                    self.search_policy_guard.observe_backend_phase(
+                        {"phase": "cli_event", "item_kind": "web_search",
+                         "event_type": "item.completed"})
+        except Exception:
+            # Observation failure must invalidate policy evidence, not change
+            # the GV role's judgment.
+            self.search_policy_guard.observe_backend_phase(
+                {"phase": "exec_returned", "reader_failed": True})
+
+    def _diagnostic(self, record):
+        SandboxedVerifierBackend._diagnostic(self, record)
+
+    def _usage_row(self, common, before, started_ns, duration, status):
+        if len(self.transcripts) <= before:
+            return
+        usage = self.transcripts[-1].get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        def count(key):
+            value = usage.get(key)
+            return value if type(value) is int and value >= 0 else 0
+        row = {**common, "started_at_unix_ns": started_ns,
+               "finished_at_unix_ns": time.time_ns(), "duration_seconds": duration,
+               "returncode": 0 if status == "completed" else 1,
+               "input_tokens": count("input_tokens"),
+               "cached_input_tokens": count("cache_read_input_tokens")
+                                      + count("cache_creation_input_tokens"),
+               "output_tokens": count("output_tokens"),
+               "reasoning_tokens": 0, "reasoning_output_tokens": 0}
+        path = Path(self.cwd) / "backend_usage.jsonl"
+        try:
+            with self._diagnostic_lock:
+                fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
+                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                try:
+                    info = os.fstat(fd)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                            or info.st_nlink != 1 or info.st_mode & 0o077):
+                        raise OSError("unsafe usage diagnostic log")
+                    data = (json.dumps(row, sort_keys=True) + "\n").encode()
+                    while data:
+                        written = os.write(fd, data)
+                        if written <= 0:
+                            raise OSError("usage diagnostic write failed")
+                        data = data[written:]
+                finally:
+                    os.close(fd)
+        except OSError:
+            self._diagnostic_failures += 1
+
+    def complete(self, role_name, prompt, variables):
+        self.search_policy_guard.begin_execution()
+        try:
+            common = {"call_id": uuid.uuid4().hex, "role": role_name,
+                      "model": MODEL, "service_tier": SERVICE_TIER,
+                      "model_context_window": CONTEXT_WINDOW,
+                      "model_auto_compact_token_limit": AUTO_COMPACT_TOKEN_LIMIT}
+            started, started_ns = time.monotonic(), time.time_ns()
+            before = len(self.transcripts)
+            self._diagnostic({**common, "type": "role_call_started", "ts": time.time(),
+                              "status": "running"})
+            status = "failed"
+            try:
+                result = super().complete(role_name, prompt, variables)
+                status = "completed"
+                return result
+            finally:
+                duration = time.monotonic() - started
+                self._diagnostic({**common, "type": "role_call_finished", "ts": time.time(),
+                                  "status": status, "duration_seconds": duration})
+                self._usage_row(common, before, started_ns, duration, status)
+        finally:
+            self.search_policy_guard.end_execution()
+
+
 def kernel_factory(service, *, search_policy_guard=None):
     guard = search_policy_guard if search_policy_guard is not None else getattr(service, "search_policy_guard", None)
     if guard is None:
         guard = SearchPolicyGuard()
     service.search_policy_guard = guard
-    backend = SandboxedVerifierBackend(cwd=service.state_dir, project_root=service.project_root,
-                                       runtime_inventory=service.seat_runtime,
-                                       search_policy_guard=guard)
+    backend_type = ClaudeVerifierBackend if BACKEND == "claude" else SandboxedVerifierBackend
+    backend = backend_type(cwd=service.state_dir, project_root=service.project_root,
+                           runtime_inventory=service.seat_runtime,
+                           search_policy_guard=guard)
     return _default_kernel(service, model=MODEL, backend=backend)
 
 
@@ -169,7 +301,8 @@ def create_service(args) -> Service:
         return kernel_factory(service, search_policy_guard=guard)
     service = Service(str(state), kernel_factory=guarded_kernel_factory, profile="cyber",
                    project_root=str(project), evaluator_spec=spec,
-                   final_destination="final_poc", seats="codex", model=MODEL,
+                   final_destination="final_poc",
+                   seats="sdk" if BACKEND == "claude" else "codex", model=MODEL,
                    effort=EFFORT, service_tier=SERVICE_TIER,
                    seat_runtime=runtime,
                    seat_capabilities=SeatCapabilities(read_retained_artifacts=True,
@@ -413,9 +546,11 @@ def main():
     import uvicorn
     # Worker threads share this process-local capture. No usage context or
     # credentials are exported into a verifier seat's shell environment.
-    with codex_usage_ledger(str(args.state_dir / "backend_usage.jsonl"), {
-            str(args.state_dir): {"profile_id": service.profile.id,
-                                 "task_sha256": service._profile_pin["task_sha256"]}}):
+    ledger = (contextlib.nullcontext() if BACKEND == "claude" else
+              codex_usage_ledger(str(args.state_dir / "backend_usage.jsonl"), {
+                  str(args.state_dir): {"profile_id": service.profile.id,
+                                       "task_sha256": service._profile_pin["task_sha256"]}}))
+    with ledger:
         uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning", access_log=False)
 
 

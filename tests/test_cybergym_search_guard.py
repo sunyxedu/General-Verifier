@@ -45,6 +45,27 @@ def test_prose_and_nonsearch_cli_items_do_not_latch(event):
     assert validate_policy_snapshot(guard.snapshot()) is False
 
 
+@pytest.mark.parametrize("event", [
+    {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "WebSearch", "input": {"query": "secret"}}]}},
+    {"type": "assistant", "message": {"content": [
+        {"type": "server_tool_use", "name": "WebFetch"}]}},
+    {"type": "result", "usage": {"server_tool_use": {"web_search_requests": 1}}},
+])
+def test_claude_structural_search_events_latch(event):
+    guard = SearchPolicyGuard()
+    guard.observe_solver_event(event)
+    assert validate_policy_snapshot(guard.snapshot()) is True
+    assert "secret" not in json.dumps(guard.snapshot())
+
+
+def test_claude_nonsearch_event_does_not_latch():
+    guard = SearchPolicyGuard()
+    guard.observe_solver_event({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Bash", "input": {"command": "echo WebSearch"}}]}})
+    assert validate_policy_snapshot(guard.snapshot()) is False
+
+
 @pytest.mark.parametrize("record", [None, [], {},
     {"phase": "exec_heartbeat", "event_type": "item.completed", "item_kind": "web_search"},
     {"phase": "cli_event", "event_type": "turn.completed", "item_kind": "web_search"},
