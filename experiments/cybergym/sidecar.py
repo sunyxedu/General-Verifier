@@ -25,6 +25,7 @@ import uuid
 
 from verifier.llm.agents import AgentBackend, ALL_AGENT_ROLES
 from verifier.llm.codex_backend import codex_usage_ledger
+from verifier.llm.schema import RoleTransportError
 from verifier.mcp_server import Service, _default_kernel, build_server
 from verifier.profiles.cyber.evaluator import EvaluatorSpec
 from verifier.profiles.cyber.backend import CyberCodexBackend
@@ -154,8 +155,14 @@ class ClaudeVerifierBackend(AgentBackend):
         self._diagnostic_failures = 0
 
     def _receipt(self, role, started, attempts, error, variables):
-        # The common SDK receipt includes claim text; use the private,
-        # metadata-only role diagnostics below for this evaluation.
+        # The common SDK receipt includes claim text; retain only typed,
+        # content-free attempt outcomes for diagnosis.
+        self._diagnostic({"type": "role_call_attempts", "role": role.name,
+                          "ts": time.time(), "attempts": len(attempts),
+                          "outcomes": [{"subtype": item.get("subtype"),
+                                        "api_error_status": item.get("api_error_status"),
+                                        "error_type": item.get("error_type")}
+                                       for item in attempts]})
         return None
 
     def _build_options(self, role, stderr_cb):
@@ -171,9 +178,9 @@ class ClaudeVerifierBackend(AgentBackend):
     def _observe_message(self, message):
         try:
             if isinstance(message, dict):
-                if message.get("stream_error") is True:
-                    self.search_policy_guard.observe_backend_phase(
-                        {"phase": "exec_returned", "reader_failed": True})
+                # A transient SDK stream break may be followed by a fresh,
+                # fully observed retry. Only a whole-call transport failure
+                # latches evidence incomplete in complete().
                 return
             for block in getattr(message, "content", None) or ():
                 if (type(block).__name__ in ("ToolUseBlock", "ServerToolUseBlock")
@@ -252,6 +259,11 @@ class ClaudeVerifierBackend(AgentBackend):
                 result = super().complete(role_name, prompt, variables)
                 status = "completed"
                 return result
+            except BaseException as error:
+                if isinstance(error, RoleTransportError):
+                    self.search_policy_guard.observe_backend_phase(
+                        {"phase": "exec_returned", "reader_failed": True})
+                raise
             finally:
                 duration = time.monotonic() - started
                 self._diagnostic({**common, "type": "role_call_finished", "ts": time.time(),

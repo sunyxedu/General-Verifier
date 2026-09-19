@@ -1,10 +1,12 @@
 """Claude comparator wiring; no model calls or benchmark-specific fixtures."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import pytest
 
 from experiments.cybergym.sidecar import ClaudeVerifierBackend
 from verifier.llm import provider
 from verifier.llm.agents import AgentBackend, AgentRole, ENUMERATE_ORACLES_AGENT, _ATTEMPT_SINK
+from verifier.llm.schema import RoleError, RoleTransportError
 
 
 def test_claude_verifier_disallows_hosted_search_after_role_expansion(monkeypatch, tmp_path):
@@ -18,10 +20,22 @@ def test_claude_verifier_disallows_hosted_search_after_role_expansion(monkeypatc
     assert {"WebSearch", "WebFetch"} <= set(options.disallowed_tools)
 
 
-def test_claude_verifier_marks_broken_stream_as_incomplete(tmp_path):
+def test_claude_verifier_keeps_transient_stream_break_recoverable(tmp_path):
     backend = ClaudeVerifierBackend(cwd=str(tmp_path))
     backend._observe_message({"stream_error": True, "observed_messages": 2})
-    assert backend.search_policy_guard.snapshot()["evidence_complete"] is False
+    assert backend.search_policy_guard.snapshot()["evidence_complete"] is True
+
+
+def test_claude_verifier_latches_only_whole_call_transport_failure(monkeypatch, tmp_path):
+    for failure, incomplete in ((RoleError("invalid output"), False),
+                                (RoleTransportError("connection lost"), True)):
+        backend = ClaudeVerifierBackend(cwd=str(tmp_path))
+        def fail(_self, _role_name, _prompt, _variables):
+            raise failure
+        monkeypatch.setattr(AgentBackend, "complete", fail)
+        with pytest.raises(RoleError):
+            backend.complete("oracles", "fixture", {})
+        assert backend.search_policy_guard.snapshot()["evidence_complete"] is (not incomplete)
 
 
 def test_concurrent_sdk_roles_share_loop_and_keep_separate_receipts(monkeypatch):

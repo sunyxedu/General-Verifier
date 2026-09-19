@@ -40,7 +40,7 @@ from .model_spans import (
     role_attempt, role_span, seat_acquired, seat_released,
     seat_wait_started,
 )
-from .schema import RoleError, validate, field_name, optional_key
+from .schema import RoleError, RoleTransportError, validate, field_name, optional_key
 from .oracle_execution import (
     ORACLE_EXECUTION_WIRE_SCHEMA,
     lower_oracle_execution_payload,
@@ -563,6 +563,7 @@ class AgentBackend:
             "api_error_status": getattr(result, "api_error_status", None),
             "stderr_tail": list(stderr_tail),
             "error": str(error)[:300] if error is not None else None,
+            "error_type": type(error).__name__ if error is not None else None,
         }
         self.transcripts.append(transcript)
         sink = _ATTEMPT_SINK.get(None)
@@ -588,6 +589,10 @@ class AgentBackend:
             # then failing also covers the non-transient case (e.g. auth).
             raise _TransientSDKError(f"{role.name}: {detail}")
         if error is not None:
+            if type(error).__name__ in ("ProcessError", "CLIConnectionError",
+                                        "CLINotFoundError", "CLIJSONDecodeError"):
+                raise RoleTransportError(
+                    f"{role.name}: sdk transport failure: {detail}") from error
             raise RoleError(f"{role.name}: sdk failure: {detail}") from error
         raise RoleError(f"{role.name}: no structured output ({detail})")
 
