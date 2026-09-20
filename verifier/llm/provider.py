@@ -20,6 +20,8 @@ Configuration (.env, or real environment variables. The real environment wins; s
   CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY, or the interactive login) for GV_PROVIDER=anthropic.
 """
 import os
+import subprocess
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -142,18 +144,34 @@ else:
     CLAUDE_ENV[KEY_ENV] = API_KEY
 
 
+def _keychain_login():
+    """Whether the interactive login lives in the macOS Keychain: the CLI
+    keeps its OAuth record there and no longer writes the file copy, so
+    a login without .credentials.json is still a login."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s",
+             "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(out)
+
+
 def validate_configuration():
     """Require credentials only when starting a provider-backed process."""
     if PROVIDER == "anthropic":
         if OAUTH_TOKEN or API_KEY:
             return
         credentials = os.path.join(CONFIG_DIR, ".credentials.json")
-        if not os.path.isfile(credentials):
-            raise RuntimeError(
-                "GV_PROVIDER=anthropic needs CLAUDE_CODE_OAUTH_TOKEN "
-                "(`claude setup-token`), ANTHROPIC_API_KEY, or a Claude "
-                f"Code login at {credentials}")
-        return
+        if os.path.isfile(credentials) or _keychain_login():
+            return
+        raise RuntimeError(
+            "GV_PROVIDER=anthropic needs CLAUDE_CODE_OAUTH_TOKEN "
+            "(`claude setup-token`), ANTHROPIC_API_KEY, or a Claude "
+            f"Code login (macOS Keychain or {credentials})")
     if PROVIDER == "custom" and not (MODEL and ANTHROPIC_BASE_URL and API_KEY):
         raise RuntimeError("GV_PROVIDER=custom needs GV_MODEL, "
                            "GV_ANTHROPIC_BASE_URL and GV_API_KEY")
