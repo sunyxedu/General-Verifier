@@ -19,6 +19,7 @@ Configuration (.env, or real environment variables. The real environment wins; s
   GV_ANTHROPIC_BASE_URL / GV_API_KEY / GV_LITELLM_MODEL = everything explicit, for GV_PROVIDER=custom.
   CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY, or the interactive login) for GV_PROVIDER=anthropic.
 """
+import json
 import os
 import subprocess
 import sys
@@ -145,19 +146,41 @@ else:
 
 
 def _keychain_login():
-    """Whether the interactive login lives in the macOS Keychain: the CLI
-    keeps its OAuth record there and no longer writes the file copy, so
+    """The interactive login's OAuth record from the macOS Keychain, or
+    None: the CLI keeps it there and no longer writes the file copy, so
     a login without .credentials.json is still a login."""
     if sys.platform != "darwin":
-        return False
+        return None
     try:
         out = subprocess.run(
             ["security", "find-generic-password", "-s",
              "Claude Code-credentials", "-w"],
             capture_output=True, text=True, timeout=10).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return bool(out)
+        return json.loads(out)["claudeAiOauth"] if out else None
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        return None
+
+
+def login_access_token():
+    """The login's current access token for a spawned `claude`, or None
+    when there is no login. A child process gets only the environment
+    we hand it, so it cannot consult the Keychain itself; the token is
+    read at spawn time (it rotates every few hours) and an expired one
+    is refreshed first through a trivial headless call of the CLI."""
+    import time
+    creds = _keychain_login()
+    if creds is None:
+        return None
+    if creds.get("expiresAt", 0) / 1000 <= time.time():
+        try:
+            subprocess.run(
+                ["claude", "-p", "Reply with exactly: OK", "--model", MODEL,
+                 "--output-format", "json"],
+                capture_output=True, text=True, timeout=180, cwd="/tmp")
+        except (OSError, subprocess.SubprocessError):
+            pass
+        creds = _keychain_login() or creds
+    return creds.get("accessToken")
 
 
 def validate_configuration():
@@ -166,7 +189,7 @@ def validate_configuration():
         if OAUTH_TOKEN or API_KEY:
             return
         credentials = os.path.join(CONFIG_DIR, ".credentials.json")
-        if os.path.isfile(credentials) or _keychain_login():
+        if os.path.isfile(credentials) or _keychain_login() is not None:
             return
         raise RuntimeError(
             "GV_PROVIDER=anthropic needs CLAUDE_CODE_OAUTH_TOKEN "
@@ -206,6 +229,14 @@ def claude_env(base=None):
     validate_configuration()
     env = without_verifier_venv(os.environ if base is None else base)
     env.update(CLAUDE_ENV)
+    if PROVIDER == "anthropic" and not (OAUTH_TOKEN or API_KEY):
+        # login mode: the child cannot reach the Keychain, so hand it the
+        # login's token explicitly (HOME too — the CLI resolves its own
+        # state through it)
+        env.setdefault("HOME", os.path.expanduser("~"))
+        token = login_access_token()
+        if token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     os.makedirs(CONFIG_DIR, exist_ok=True)
     env["CLAUDE_CONFIG_DIR"] = CONFIG_DIR
     return env
