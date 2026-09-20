@@ -1417,6 +1417,64 @@ def test_receipt_transport_error_is_not_suppressed_by_trace_recovery(
     assert not (directory / "private/telemetry-mirror-errors.jsonl").exists()
 
 
+@pytest.mark.parametrize(("terminal", "message"), [
+    ({"type": "result", "is_error": True, "api_error_status": 429,
+      "result": "private-provider-error"}, "provider rate limit"),
+    ({"type": "result", "is_error": True, "api_error_status": 503,
+      "result": "private-provider-error"}, "without a successful terminal result"),
+    (None, "without a successful terminal result"),
+])
+def test_claude_solver_error_stops_without_container_restart(
+        controller, selected, monkeypatch, terminal, message):
+    directory, _candidate, _receipt = selected
+    process, _calls = solver_process_fakes(
+        monkeypatch, controller, [None], exited=True)
+    monkeypatch.setattr(run, "BACKEND", "claude")
+    launches = []
+
+    def emit(*_args, **kwargs):
+        launches.append(True)
+        events = [{"type": "system", "subtype": "init",
+                   "session_id": "fixture-session"}]
+        if terminal is not None:
+            events.append(terminal)
+        kwargs["stdout"].write(
+            ("\n".join(json.dumps(event) for event in events) + "\n").encode())
+        kwargs["stdout"].flush()
+        return process
+
+    monkeypatch.setattr(run.subprocess, "Popen", emit)
+    with pytest.raises(RuntimeError, match=message) as error:
+        controller.run_solver(directory, directory / "workspace",
+                              {"sidecar": "fixture-sidecar"}, "fixture", {})
+    assert "private-provider-error" not in str(error.value)
+    assert len(launches) == 1
+    assert not (directory / "final-selection.json").exists()
+
+
+def test_claude_successful_terminal_result_can_resume(
+        controller, selected, monkeypatch):
+    directory, _candidate, receipt = selected
+    process, _calls = solver_process_fakes(
+        monkeypatch, controller, [None, receipt, receipt], exited=True)
+    monkeypatch.setattr(run, "BACKEND", "claude")
+    patch_mirror(monkeypatch, controller, lambda *_args: None)
+    launches = []
+
+    def emit(*_args, **kwargs):
+        launches.append(True)
+        kwargs["stdout"].write(
+            b'{"type":"system","subtype":"init","session_id":"fixture-session"}\n'
+            b'{"type":"result","is_error":false,"subtype":"success"}\n')
+        kwargs["stdout"].flush()
+        return process
+
+    monkeypatch.setattr(run.subprocess, "Popen", emit)
+    assert controller.run_solver(directory, directory / "workspace",
+                                 {"sidecar": "fixture-sidecar"}, "fixture", {}) == receipt
+    assert len(launches) == 2
+
+
 def test_safe_trace_copy_success_has_no_failure_diagnostics(controller, selected, monkeypatch):
     directory, _candidate, _receipt = selected
     calls = []

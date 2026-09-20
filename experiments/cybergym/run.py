@@ -1204,10 +1204,18 @@ class Evaluation:
                                            final=True, require_sealed=True)
                 atomic_json(directory / "final-selection.json", receipt)
                 return receipt
-            if (BACKEND == "claude" and last_result is not None
-                    and last_result.get("is_error") is True
-                    and re.search(r"401|authenticat", str(last_result.get("result")), re.I)):
-                raise RuntimeError("solver exited on an authentication error; refresh credentials")
+            if BACKEND == "claude":
+                # A terminal CLI error is not a completed solver turn.  In
+                # particular, resuming a rate-limited session immediately can
+                # launch an unbounded succession of failing containers.
+                if last_result is None or last_result.get("is_error") is not False:
+                    if (last_result is not None
+                            and re.search(r"401|authenticat", str(last_result.get("result")), re.I)):
+                        raise RuntimeError("solver exited on an authentication error; refresh credentials")
+                    if (last_result is not None
+                            and last_result.get("api_error_status") == 429):
+                        raise RuntimeError("solver exited on a provider rate limit; no automatic resume")
+                    raise RuntimeError("solver exited without a successful terminal result; no automatic resume")
             if not thread:
                 raise RuntimeError("solver exited without resumable thread; infrastructure error, no fresh-thread recovery")
             prompt = "The required final has not been certified and delivered. Continue this same task and thread using the recorded evidence and the active GV tools."
