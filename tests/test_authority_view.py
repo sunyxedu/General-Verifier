@@ -184,8 +184,22 @@ def test_partial_or_extended_baseline_directory_fails_closed(tmp_path):
     state = _state(tmp_path)
     (state / "baseline" / "extra.json").write_text("{}")
 
-    with pytest.raises(AuthorityViewUnavailable, match="exactly"):
+    with pytest.raises(AuthorityViewUnavailable, match="at most"):
         build_authority_compilation_view(state)
+
+
+def test_environment_fingerprint_beside_the_baseline_is_not_an_extension(
+        tmp_path):
+    """The baseline records the environment the task supplied alongside
+    the git state and manifest; the authority reads the latter two and
+    must not treat the fingerprint as a foreign file."""
+    state = _state(tmp_path)
+    (state / "baseline" / "environment.json").write_text(
+        json.dumps({"python": "3.12.1", "os": "linux"}))
+
+    context = build_authority_compilation_view(state).context()
+    assert context["baseline"]["status"] == "present"
+    assert context["baseline"]["git"]["head"] == "c" * 40
 
 
 def test_size_and_entry_caps_fail_closed(tmp_path, monkeypatch):

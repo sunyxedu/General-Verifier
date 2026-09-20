@@ -29,6 +29,11 @@ MAX_BASELINE_FILES = 20_000
 MAX_LOGICAL_PATH_BYTES = 4_096
 
 _GIT_FIELDS = frozenset({"head", "refs", "status"})
+# the pre-task baseline: git state and tree manifest (the authority),
+# plus the environment fingerprint the task supplied (recorded alongside,
+# not part of the minimal-change authority)
+_BASELINE_REQUIRED = frozenset({"git.json", "manifest.json"})
+_BASELINE_FILES = _BASELINE_REQUIRED | {"environment.json"}
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}")
 _SIZE_IDENTITY = re.compile(r"size:(0|[1-9][0-9]*)")
 
@@ -345,15 +350,16 @@ def _baseline(state_fd: int) -> Dict[str, Any]:
                 names = []
                 for entry in entries:
                     names.append(entry.name)
-                    if len(names) > 2:
+                    if len(names) > len(_BASELINE_FILES):
                         break
         except OSError as error:
             raise AuthorityViewUnavailable(
                 f"cannot enumerate baseline authority: {error}") from error
-        if set(names) != {"git.json", "manifest.json"} or len(names) != 2:
+        if (len(names) != len(set(names))
+                or not _BASELINE_REQUIRED <= set(names) <= _BASELINE_FILES):
             raise AuthorityViewUnavailable(
-                "baseline authority must contain exactly git.json and "
-                "manifest.json")
+                "baseline authority must contain git.json and manifest.json "
+                "and at most environment.json besides")
         git = _git(_strict_json(
             _read_regular_at(
                 baseline_fd, "git.json", MAX_BASELINE_JSON_BYTES),
