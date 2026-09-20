@@ -3954,6 +3954,13 @@ class AdapterRoutingDischarger:
     def supports_method_reuse(self, method) -> bool:
         return self.registry.supports_method_reuse(method)
 
+    def run_script(self, row, obligation, method, tag: str = ""):
+        """A method's EXECUTABLE FORM runs on the wrapped executor: the
+        router adds typed adapters, it does not take the script path
+        away. BindingGame probes for this method by name, so the router
+        must expose it for the fast path to exist at all."""
+        return self.fallback.run_script(row, obligation, method, tag=tag)
+
     def discharge_adapter_only(self, row, obligation, method):
         """Run only the typed fast path for an accepted-method cache hit.
 

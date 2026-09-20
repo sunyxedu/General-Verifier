@@ -28,6 +28,15 @@ _METHOD_FIELDS = {
     "bridges": [str],
 }
 
+# EXECUTABLE FORM: a custom method may carry the complete script the
+# executor runs verbatim (no agent seat; the script judger reads the
+# retained output). Optional: the agent executor carries out any method
+# without one. An adapter-bound method already names its executor, so it
+# never carries a script.
+_METHOD_OPTIONAL_FIELDS = {
+    "script": str,
+}
+
 _EXECUTION_SCHEMA = {
     "kind": ("adapter", "custom"),
     "custom_gap_reason": str,
@@ -42,24 +51,30 @@ _EXECUTION_SCHEMA = {
 # Model-facing contract. Every execution field is required so a partial
 # adapter binding cannot silently become a custom execution request.
 ORACLE_EXECUTION_WIRE_SCHEMA: Dict[str, Any] = {
-    "methods": [{**_METHOD_FIELDS, "execution": _EXECUTION_SCHEMA}],
+    "methods": [{
+        **_METHOD_FIELDS,
+        **{f"{key}?": kind for key, kind in _METHOD_OPTIONAL_FIELDS.items()},
+        "execution": _EXECUTION_SCHEMA,
+    }],
 }
 
 
 _TOP_KEYS = frozenset({"methods"})
 _METHOD_KEYS = frozenset({*_METHOD_FIELDS, "execution"})
+_METHOD_OPTIONAL_KEYS = frozenset(_METHOD_OPTIONAL_FIELDS)
 _EXECUTION_KEYS = frozenset(_EXECUTION_SCHEMA)
 _INPUT_KEYS = frozenset(_INPUT_SCHEMA)
 
 
 def _require_exact_keys(
     value: Dict[str, Any], expected: frozenset[str], path: str,
+    optional: frozenset[str] = frozenset(),
 ) -> None:
     actual = frozenset(value)
-    if actual == expected:
+    if expected <= actual <= expected | optional:
         return
     missing = sorted(expected - actual)
-    extra = sorted(actual - expected)
+    extra = sorted(actual - expected - optional)
     details = []
     if missing:
         details.append(f"missing={missing!r}")
@@ -105,7 +120,8 @@ def lower_oracle_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     methods = []
     for index, wire_method in enumerate(payload["methods"]):
         method_path = f"$.methods[{index}]"
-        _require_exact_keys(wire_method, _METHOD_KEYS, method_path)
+        _require_exact_keys(wire_method, _METHOD_KEYS, method_path,
+                            optional=_METHOD_OPTIONAL_KEYS)
         execution = wire_method["execution"]
         _require_exact_keys(
             execution, _EXECUTION_KEYS, f"{method_path}.execution",
@@ -127,7 +143,14 @@ def lower_oracle_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         lowered = {
             key: deepcopy(wire_method[key]) for key in _METHOD_FIELDS
         }
+        script = str(wire_method.get("script") or "")
         if kind == "adapter":
+            if script.strip():
+                raise RoleError(
+                    f"{method_path}.script: an adapter-bound method names "
+                    "its executor; the executable form is for custom "
+                    "execution only",
+                )
             if execution["custom_gap_reason"] != "":
                 raise RoleError(
                     f"{method_path}.execution.custom_gap_reason: adapter "
@@ -178,6 +201,8 @@ def lower_oracle_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                     f"{method_path}.execution: custom execution requires "
                     "empty adapter sentinels",
                 )
+            if script.strip():
+                lowered["script"] = script
         methods.append(lowered)
 
     return {"methods": methods}
@@ -194,6 +219,8 @@ def raise_oracle_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     methods = []
     for method in payload["methods"]:
         lifted = {key: deepcopy(method[key]) for key in _METHOD_FIELDS}
+        if str(method.get("script") or "").strip():
+            lifted["script"] = method["script"]
         adapter_keys = {
             "adapter", "adapter_version", "adapter_arguments", "adapter_inputs",
         }

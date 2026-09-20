@@ -105,6 +105,38 @@ def test_lowering_preserves_custom_method_and_strips_diagnostic_reason():
     assert lowered == {"methods": [_base_method()]}
 
 
+def test_lowering_carries_a_custom_method_executable_form():
+    """The oracle may hand a custom method its EXECUTABLE FORM: the wire
+    contract carries `script` as an optional method field and lowering
+    keeps it, so the executor runs it verbatim instead of seating an
+    agent."""
+    payload = _wire_payload(_custom_execution())
+    payload["methods"][0]["script"] = "#!/bin/bash\ngit -C /app status --short"
+    lowered = lower_oracle_execution_payload(payload)
+    assert lowered["methods"][0]["script"] == \
+        "#!/bin/bash\ngit -C /app status --short"
+    assert {k: v for k, v in lowered["methods"][0].items() if k != "script"} \
+        == _base_method()
+
+
+def test_lowering_drops_an_empty_script_and_rejects_one_on_an_adapter():
+    payload = _wire_payload(_custom_execution())
+    payload["methods"][0]["script"] = ""
+    assert lower_oracle_execution_payload(payload) == {"methods": [_base_method()]}
+
+    bound = _wire_payload(_adapter_execution())
+    bound["methods"][0]["script"] = "echo bound"
+    with pytest.raises(RoleError, match="executable form is for custom"):
+        lower_oracle_execution_payload(bound)
+
+
+def test_wire_schema_offers_the_executable_form():
+    json_schema = to_json_schema(ENUMERATE_ORACLES_AGENT.wire_schema)
+    method_schema = json_schema["properties"]["methods"]["items"]
+    assert "script" in method_schema["properties"]
+    assert "script" not in method_schema["required"]
+
+
 @pytest.mark.parametrize("missing", sorted(_EXECUTION_FIELDS))
 def test_lowering_rejects_every_incomplete_execution_envelope(missing: str):
     execution = _adapter_execution()

@@ -169,3 +169,32 @@ def test_ledger_method_is_freshly_oracle_judged_for_each_state(tmp_path):
         event["type"] == "method_cache_hit"
         for log in logs for event in log.replay()
     )
+
+
+def test_routing_discharger_keeps_the_executable_form_path(tmp_path):
+    """BindingGame probes the discharger for `run_script` by name; the
+    typed-adapter router must expose the wrapped executor's script
+    runner, or every executable-form method silently falls back to an
+    agent seat."""
+    from verifier.execution.adapters import (
+        AdapterRoutingDischarger, default_adapter_registry,
+    )
+    state = tmp_path / "state"
+    state.mkdir()
+    artifacts = ArtifactStore(str(state / "artifacts"))
+    log = EventLog(str(state / "events.jsonl"))
+
+    class _ScriptFallback(_Fallback):
+        def run_script(self, row, obligation, method, tag=""):
+            self.calls.append(("script", method.get("script"), tag))
+            return "ran"
+
+    fallback = _ScriptFallback(artifacts)
+    routing = AdapterRoutingDischarger(
+        fallback, default_adapter_registry(), artifacts, log, str(state),
+        live_world=False)
+    assert hasattr(routing, "run_script")
+    assert routing.run_script({}, object(), {"script": "echo hi"}, tag="t") \
+        == "ran"
+    assert fallback.calls == [("script", "echo hi", "t")]
+
