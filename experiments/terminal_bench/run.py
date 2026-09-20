@@ -53,6 +53,18 @@ from common import harbor_task_artifacts, turbo          # noqa: E402
 from verifier.llm import provider                        # noqa: E402
 
 DATASET = "terminal-bench/terminal-bench-2-1"
+# Every Claude Code arm (plain / rec / gv / turbo) runs headless under
+# `claude --print`: nobody is there to answer a question or approve a
+# plan, and a run that stops to ask ends with the task undone. The stock
+# agent does not say so, and the solver has been seen stopping at "Want
+# me to proceed?" on a merge conflict. One arm-agnostic system note fixes
+# the framing without touching any task's instruction.
+UNATTENDED_NOTE = (
+    "You are running unattended in a non-interactive session: no one can "
+    "answer questions, approve plans, or resolve choices for you. Make the "
+    "reasonable decisions yourself, carry the task through to completion, "
+    "and only stop when it is done."
+)
 JOBS_DIR = os.path.join(HERE, "results", "jobs")
 CODEX_AGENT = "codex_agent:TieredCodex"
 RUNTIME_SNAPSHOT_ROOT = "/gv-runtime-snapshot"
@@ -303,6 +315,8 @@ def main():
                 "--artifact", "/gv-state"]
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
 
+    if args.arm not in ("codex", "rec-codex"):
+        cmd += ["--ak", f"append_system_prompt={UNATTENDED_NOTE}"]
     print("[tb] " + " ".join(cmd), flush=True)
     if args.dry_run:
         return
