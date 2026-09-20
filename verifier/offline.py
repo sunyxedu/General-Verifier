@@ -35,6 +35,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional
 
@@ -203,11 +204,43 @@ def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
                 pass
 
 
+def settle_repository_stat_caches(root: str) -> List[str]:
+    """Bring every git index under ``root`` in line with the files it now
+    describes; returns the repositories touched.
+
+    A delivered world reaches the offline verifier as a copy: same bytes,
+    new inodes and mtimes. Its index still carries the stat data of the
+    originals, so the first read-only git command a check runs (status,
+    diff, log with a working-tree comparison) refreshes that cache and
+    rewrites .git/index as a side effect. The seal would then report the
+    check as a mutation of the world. Refreshing once, before sealing,
+    is part of materializing the copy faithfully: no tracked content,
+    ref, or object changes, only the cache that was already stale.
+    """
+    settled: List[str] = []
+    if not os.path.isdir(root):
+        return settled
+    for current, dirs, files in os.walk(root):
+        if ".git" not in dirs and ".git" not in files:
+            continue
+        dirs[:] = [d for d in dirs if d != ".git"]
+        try:
+            subprocess.run(
+                ["git", "-C", current, "update-index", "--refresh", "-q"],
+                capture_output=True, timeout=120,
+                env={**os.environ, "GIT_OPTIONAL_LOCKS": "1"})
+        except (OSError, subprocess.SubprocessError):
+            continue
+        settled.append(current)
+    return settled
+
+
 def write_immutable_input_anchor(state_dir: str) -> str:
     """Publish the trusted adapter anchor after all source inputs exist."""
     state = os.path.abspath(state_dir)
     if os.path.lexists(os.path.join(state, IMMUTABLE_INPUT_TAINT_FILE)):
         os.remove(os.path.join(state, IMMUTABLE_INPUT_TAINT_FILE))
+    settle_repository_stat_caches(os.path.join(state, "world"))
     seal = immutable_input_seal(state)
     _write_json_atomic(
         os.path.join(state, IMMUTABLE_INPUT_SEAL_FILE),

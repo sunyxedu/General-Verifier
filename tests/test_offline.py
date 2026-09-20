@@ -232,6 +232,33 @@ def test_trusted_adapter_anchor_rejects_later_input_tampering(tmp_path):
         offline.verify_immutable_input_anchor(state)
 
 
+def test_read_only_git_commands_do_not_disturb_the_seal(tmp_path):
+    """A copied repository's index is stale about the copy's stat data;
+    the first `git status`/`git diff` a check runs would rewrite it.
+    Sealing settles the cache first, so observing the world is not a
+    mutation of it."""
+    import subprocess
+    import time
+    state = state_dir(tmp_path)
+    repo = tmp_path / "gv" / "world" / "app" / "repo"
+    repo.mkdir(parents=True)
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(git + ["init", "-q"], check=True)
+    (repo / "a.txt").write_text("a\n")
+    subprocess.run(git + ["add", "a.txt"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "a"], check=True)
+    # the copy: same bytes, fresh stat data the index knows nothing about
+    later = time.time() + 5
+    os.utime(repo / "a.txt", (later, later))
+
+    seal = offline.write_immutable_input_anchor(state)
+    subprocess.run(git + ["status", "--short"], check=True, capture_output=True)
+    subprocess.run(git + ["diff", "--stat"], check=True, capture_output=True)
+    subprocess.run(git + ["diff", "HEAD"], check=True, capture_output=True)
+
+    assert offline.verify_immutable_input_anchor(state) == seal
+
+
 def test_sanitized_state_without_trusted_anchor_fails_closed(tmp_path):
     state = state_dir(tmp_path)
     (tmp_path / "gv" / ".sanitized").write_text("")
