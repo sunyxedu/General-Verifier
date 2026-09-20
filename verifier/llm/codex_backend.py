@@ -34,10 +34,12 @@ from __future__ import annotations
 import hashlib
 import errno
 import json
+import locale
 import math
 import os
 import posixpath
 import re
+import shlex
 import signal
 import stat
 import subprocess
@@ -50,9 +52,9 @@ import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Mapping, Optional
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 
-from .agents import ALL_AGENT_ROLES, to_json_schema
+from .agents import ALL_AGENT_ROLES, ExhaustedInfrastructureError, to_json_schema
 from .codex_service import (
     DEFAULT_SERVICE_TIER,
     SERVICE_TIERS,
@@ -60,6 +62,7 @@ from .codex_service import (
     service_tier_cli_args,
 )
 from .schema import RoleError, validate
+from .json_event_stream import JsonEventStream
 from .model_spans import model_call_span, model_span_capture
 from ..execution.config import offline_runtime_read_roots
 from ..execution.instruments import validated_image_info
@@ -501,7 +504,7 @@ def _strict_usage_event(raw: str) -> Mapping[str, Any]:
     return event
 
 
-class TransientBackendError(RoleError):
+class TransientBackendError(ExhaustedInfrastructureError):
     """Provider-side transient failure (capacity, rate limit, transport):
     the request never got a completed turn, so retrying with backoff is
     sound — nothing semantic was produced to second-guess."""
@@ -640,6 +643,7 @@ def _transient_failure_reason(
     deliberately narrow: an explicit error/turn.failed event whose message
     matches a known transient pattern, or an explicit provider/HTTP status in
     stderr. An unknown nonzero exit is not evidence of a provider outage."""
+    saw_completion = False
     messages = []
     for raw in _native_jsonl_lines(stdout or ""):
         raw = raw.strip()
@@ -651,12 +655,17 @@ def _transient_failure_reason(
             continue
         if not isinstance(event, dict):
             continue
-        if event.get("type") == "error":
+        if event.get("type") == "turn.completed":
+            saw_completion = True
+        elif event.get("type") == "error":
             messages.append(str(event.get("message") or ""))
         elif event.get("type") == "turn.failed":
             error = event.get("error")
             if isinstance(error, dict):
                 messages.append(str(error.get("message") or ""))
+    # Recovery inside one completed CLI turn is not a provider retry.
+    if saw_completion:
+        return ""
     stderr_text = _stream_text(stderr).lower()
     all_text = "\n".join(
         [message.lower() for message in messages] + [stderr_text])
@@ -962,6 +971,118 @@ def _stream_text(value: Any) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+_COMMAND_ITEM_LIMIT = 1024
+_COMMAND_COUNTER_LIMIT = 2 ** 31 - 1
+_COMMAND_TEXT_LIMIT = 1024 * 1024
+
+
+def _command_metadata(item: dict) -> dict:
+    """Body-free metadata; category describes direct tool invocation, not work.
+
+    For example ``gcc --version`` is a compiler invocation, not a compilation.
+    Shell wrappers/compound commands and arbitrary scripts remain ``other``.
+    """
+    result = {"command_metadata_available": True, "command_category": "other", "command_status": "unknown"}
+    status = item.get("status")
+    if isinstance(status, str) and status in {"in_progress", "completed", "failed"}:
+        result["command_status"] = status
+    code = item.get("exit_code")
+    if isinstance(code, int) and not isinstance(code, bool) and -(2 ** 31) <= code < 2 ** 31:
+        result["command_exit_code"] = code
+    for source, destination in (("command", "command_sha256"), ("aggregated_output", "command_output_utf8_bytes")):
+        value = item.get(source)
+        if not isinstance(value, str):
+            continue
+        if len(value) > _COMMAND_TEXT_LIMIT:
+            result["command_metadata_truncated"] = True
+            continue
+        try:
+            data = value.encode("utf-8", errors="strict")
+        except UnicodeError:
+            result["command_metadata_truncated"] = True
+            continue
+        if len(data) > _COMMAND_TEXT_LIMIT:
+            result["command_metadata_truncated"] = True
+            continue
+        result[destination] = hashlib.sha256(data).hexdigest() if source == "command" else len(data)
+        if source == "command" and not any(character in value for character in "\n\r;&|<>`$"):
+            try:
+                argv = shlex.split(value)
+            except ValueError:
+                argv = []
+            executable = os.path.basename(argv[0]) if argv and (
+                "/" not in argv[0] or os.path.dirname(argv[0]) in {"/usr/bin", "/bin"}) else ""
+            if executable in {"cc", "c++", "gcc", "g++", "clang", "clang++", "ld", "ld.lld", "ar", "llvm-ar"}:
+                result["command_category"] = "compiler"
+            elif executable in {"make", "cmake", "ninja", "meson", "autoconf"}:
+                result["command_category"] = "build"
+            elif executable in {"pytest", "ctest", "llvm-lit"} or (
+                    executable in {"python", "python3"} and argv[1:3] in (["-m", "pytest"], ["-m", "unittest"])):
+                result["command_category"] = "test"
+    return result
+
+
+class _CommandStats:
+    """Bounded counts of distinct completed items in one CLI-attempt prefix.
+
+    Equal fingerprints mean equal command bytes, not equal inputs or redundant
+    work. Retries/polling may be legitimate; these counts trigger no action.
+    Partial/truncated/saturated counts are not whole-history repeat counts.
+    """
+
+    def __init__(self):
+        self.seen = set()
+        self.fingerprints = {}
+        self.partial = False
+        self.saturated = False
+        self.truncated = False
+        self.counts = dict.fromkeys(("completed_items", "fingerprinted_items", "unique_fingerprints",
+            "repeated_fingerprint_items", "max_fingerprint_repetitions", "duplicate_completions",
+            "untracked_completions", "success_exits", "nonzero_exits", "unknown_exits"), 0)
+
+    def _increment(self, name):
+        if self.counts[name] >= _COMMAND_COUNTER_LIMIT:
+            self.partial = self.saturated = True
+        else:
+            self.counts[name] += 1
+
+    def completed(self, item_id, metadata):
+        if not isinstance(item_id, str) or not item_id or len(item_id) > 128:
+            self.partial = True
+            self._increment("untracked_completions")
+            return False
+        if item_id in self.seen:
+            self.partial = True  # Reused IDs/duplicate lifecycle cannot prove execution history.
+            self._increment("duplicate_completions")
+            return True
+        if len(self.seen) >= _COMMAND_ITEM_LIMIT:
+            self.partial = self.truncated = True
+            self._increment("untracked_completions")
+            return False
+        self.seen.add(item_id)
+        self._increment("completed_items")
+        code = metadata.get("command_exit_code")
+        self._increment("unknown_exits" if code is None else "success_exits" if code == 0 else "nonzero_exits")
+        digest = metadata.get("command_sha256")
+        if digest is None:
+            self.partial = True
+            self.truncated |= metadata.get("command_metadata_truncated") is True
+            return False
+        self._increment("fingerprinted_items")
+        repetitions = self.fingerprints.get(digest, 0)
+        self._increment("repeated_fingerprint_items" if repetitions else "unique_fingerprints")
+        if repetitions >= _COMMAND_COUNTER_LIMIT:
+            self.partial = self.saturated = True
+        self.fingerprints[digest] = min(repetitions + 1, _COMMAND_COUNTER_LIMIT)
+        self.counts["max_fingerprint_repetitions"] = max(self.counts["max_fingerprint_repetitions"], self.fingerprints[digest])
+        return False
+
+    def snapshot(self, complete=True):
+        return {"available": True, "scope": "cli_attempt_prefix", "item_limit": _COMMAND_ITEM_LIMIT,
+                "counter_limit": _COMMAND_COUNTER_LIMIT, "partial": self.partial or not complete,
+                "saturated": self.saturated, "truncated": self.truncated or not complete, **self.counts}
 
 
 def _execution_diagnostic_base() -> Dict[str, Any]:
@@ -1616,7 +1737,8 @@ class CodexBackend:
                  offline_shared_cache_dir: Optional[str] = None,
                  compact_inspection: bool = False,
                  judger_prefetch: bool = False,
-                 restricted_judger_cwd: Optional[str] = None):
+                 restricted_judger_cwd: Optional[str] = None,
+                 phase_observer: Optional[Callable[[Dict[str, Any]], None]] = None):
         if type(compact_inspection) is not bool:
             raise ValueError("compact_inspection must be a bool")
         if type(judger_prefetch) is not bool:
@@ -1640,6 +1762,13 @@ class CodexBackend:
         self.effort = effort
         self.service_tier = normalize_service_tier(service_tier)
         self.timeout = timeout
+        self.phase_observer = phase_observer
+        self.phase_heartbeat_seconds = 30.0
+        self._phase_lock = threading.Lock()
+        # A backend is shared by parallel seats. Correlate diagnostics by the
+        # opaque call ID, never by a mutable "currently running role" field.
+        self._phase_roles: Dict[str, str] = {}
+        self.search_roles = _SEARCH_ROLES
         # A run-scoped transport specification, not a task-dependent rule or
         # automatic artifact approval. Keep it in method-cache identity too.
         self._artifact_address_note = _ARTIFACT_ADDRESS_NOTE
@@ -1813,7 +1942,7 @@ class CodexBackend:
                 "operator-owned scope")
 
     def _search_enabled(self, role_name: str) -> bool:
-        return role_name in _SEARCH_ROLES
+        return role_name in self.search_roles
 
     def _requires_json(self) -> bool:
         return False
@@ -2037,6 +2166,14 @@ class CodexBackend:
                 f"offline state is not owned by this process: {state_dir}")
         return state_dir
 
+    def _execution_capture_dir(self, role_name, variables):
+        """Host-selected storage for CLI output and temporary attachments."""
+        return None
+
+    def _execution_command(self, role_name, variables, command):
+        """Host execution setup, after building the ordinary CLI command."""
+        return command
+
     def _execution_policy_args(self, role_name: str,
                                variables: Dict[str, Any]) -> list[str]:
         """Return the CLI boundary for this seat and evidence context."""
@@ -2229,6 +2366,10 @@ class CodexBackend:
             "-c", f"permissions.{_OFFLINE_PROFILE}.network.enabled=true",
             "-c", ("tools.web_search=true" if self._search_enabled(role_name)
                    else "tools.web_search=false"),
+            # --ignore-user-config also drops the operator's top-level
+            # setting; the legacy tools flag alone does not remove search.
+            *(() if self._search_enabled(role_name)
+              else ("-c", 'web_search="disabled"')),
             "-c", "features.skip_host_skill_discovery=true",
             "-c", "suppress_unstable_features_warning=true",
             "-c", "project_doc_max_bytes=0",
@@ -2245,6 +2386,228 @@ class CodexBackend:
     def _model_for(self, role_name: str) -> str:
         return self.model_overrides.get(role_name, self.model)
 
+    def _phase(self, call_id: str, attempt: int, phase: str, **metadata) -> None:
+        """Best-effort metadata only; observability must not change a verdict."""
+        if self.phase_observer is None:
+            return
+        record = {"type": "backend_phase", "ts": time.time(), "call_id": call_id,
+                  "attempt": attempt, "phase": phase, **metadata}
+        try:
+            with self._phase_lock:
+                record["role"] = self._phase_roles.get(call_id, "unknown")
+                self.phase_observer(record)
+        except Exception:
+            # Never echo callback exception strings: they can contain paths,
+            # credentials or a partially serialized record.
+            pass
+
+    def _run_observed_exec(self, cmd, execution_cwd, devnull, call_id, attempt):
+        """Consume both pipes live without logging their payloads.
+
+        JSON event names, counters and local elapsed intervals are observable;
+        server queue, inference and internal transport waits are NOT separated
+        by the CLI protocol and remain unknown. Polling below is a heartbeat,
+        not a role/task deadline. A configured non-None timeout keeps the
+        PR process-group cleanup path; cyber explicitly requests None.
+        """
+        if self.timeout is not None:
+            self._phase(call_id, attempt, "exec_dispatch", streaming=False,
+                        wait_category="unknown", child_pid=None)
+            process = _run_codex_process(cmd, cwd=execution_cwd, stdin=devnull,
+                                         timeout=self.timeout)
+            self._phase(call_id, attempt, "exec_returned", streaming=False,
+                        returncode=process.returncode, child_pid=None)
+            return process
+        began = time.monotonic()
+        self._phase(call_id, attempt, "exec_dispatch", streaming=True,
+                    wait_category="unknown", child_pid=None)
+        # Keep the PR's fd-bound cwd launcher and dedicated process group.
+        bound_cwd = (execution_cwd if isinstance(execution_cwd, _BoundExecutionDirectory) else None)
+        if bound_cwd is not None and os.name != "posix":
+            raise OSError(errno.ENOTSUP, "fd-bound Codex cwd requires a POSIX host")
+        launch_cmd, launch_cwd, launch_kwargs = cmd, execution_cwd, {}
+        if bound_cwd is not None:
+            launch_cmd = [
+                sys.executable, "-I", "-c",
+                "import os,sys;f=int(sys.argv[1]);os.fchdir(f);os.close(f);"
+                "os.execvp(sys.argv[2],sys.argv[2:])",
+                str(bound_cwd.descriptor), *cmd,
+            ]
+            launch_cwd = None
+            launch_kwargs["pass_fds"] = (bound_cwd.descriptor,)
+        try:
+            process = subprocess.Popen(
+                launch_cmd, cwd=launch_cwd, stdin=devnull,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=(os.name == "posix"), **launch_kwargs)
+        except OSError:
+            self._phase(call_id, attempt, "exec_spawn_failed", child_pid=None)
+            raise
+        try:
+            self._phase(call_id, attempt, "exec_spawned", child_pid=process.pid,
+                        wait_category="cli_startup_unknown")
+            buffers = {"stdout": [], "stderr": []}
+            counts = {"stdout_bytes": 0, "stderr_bytes": 0, "cli_events": 0,
+                      "unparsed_stdout_lines": 0, "active_tool_items": 0,
+                      "last_cli_event": None, "item_state_complete": True}
+            lock = threading.Lock()
+            active = {}
+            command_stats = _CommandStats()
+            failures = []
+            item_kinds = {"command_execution", "mcp_tool_call", "web_search", "file_change",
+                          "agent_message", "reasoning", "plan_update"}
+            tool_kinds = {"command_execution", "mcp_tool_call", "web_search"}
+
+            def wait_category(snapshot):
+                if snapshot["last_cli_event"] in ("turn.completed", "turn.failed"):
+                    return "cli_finalization_unknown"
+                if not snapshot["item_state_complete"]:
+                    return "cli_activity_unknown"
+                if snapshot["active_tool_items"]:
+                    return "cli_tool_item_active"
+                if snapshot["last_cli_event"] in (None, "thread.started"):
+                    return "cli_startup_unknown"
+                return "model_wait_unknown"
+
+            def line_event(event, strings_redacted=False):
+                if event is None:
+                    with lock:
+                        counts["unparsed_stdout_lines"] += 1
+                        counts["item_state_complete"] = False
+                    return
+                kind = event.get("type")
+                if not isinstance(kind, str) or kind not in {"thread.started", "turn.started", "turn.completed", "turn.failed",
+                                "item.started", "item.updated", "item.completed", "error"}:
+                    return
+                details = {"child_pid": process.pid, "event_type": kind}
+                if strings_redacted:
+                    details["metadata_string_values_redacted"] = True
+                with lock:
+                    counts["cli_events"] += 1
+                    counts["last_cli_event"] = kind
+                    if kind in ("turn.completed", "turn.failed"):
+                        active.clear()
+                        counts["active_tool_items"] = 0
+                    if kind.startswith("item."):
+                        item = event.get("item")
+                        if not isinstance(item, dict):
+                            return
+                        item_kind = item.get("type")
+                        if not isinstance(item_kind, str):
+                            item_kind = "other"
+                        details["item_kind"] = item_kind if item_kind in item_kinds else "other"
+                        # IDs are used locally for duration correlation, never logged.
+                        item_id = item.get("id")
+                        command_metadata = _command_metadata(item) if item_kind == "command_execution" else {}
+                        if isinstance(item_id, str) and len(item_id) <= 128:
+                            if kind == "item.started":
+                                active.setdefault(item_id, (time.monotonic(), item_kind in tool_kinds,
+                                                            command_metadata))
+                            elif kind == "item.completed":
+                                previous = active.pop(item_id, None)
+                                details["item_duration_seconds"] = (
+                                    time.monotonic() - previous[0] if previous else None)
+                                if previous and item_kind == "command_execution" and "command" not in item:
+                                    command_metadata.update({key: previous[2][key] for key in
+                                        ("command_sha256", "command_category") if key in previous[2]})
+                        if item_kind == "command_execution":
+                            details.update(command_metadata)
+                            if kind == "item.completed":
+                                details["command_duplicate_completion"] = command_stats.completed(item_id, command_metadata)
+                        counts["active_tool_items"] = sum(value[1] for value in active.values())
+                    details["active_tool_items"] = counts["active_tool_items"]
+                    details["wait_category"] = wait_category(counts)
+                    details["command_stats"] = command_stats.snapshot(counts["item_state_complete"])
+                self._phase(call_id, attempt, "cli_event", **details)
+
+            def drain(pipe, name):
+                events = JsonEventStream() if name == "stdout" else None
+                try:
+                    while True:
+                        chunk = os.read(pipe.fileno(), 65536)
+                        if not chunk:
+                            break
+                        buffers[name].append(chunk)
+                        with lock:
+                            counts[name + "_bytes"] += len(chunk)
+                        if events is not None:
+                            for event, redacted in events.feed(chunk):
+                                line_event(event, redacted)
+                    if events is not None:
+                        terminal = events.finish()
+                        if terminal is not None:
+                            line_event(*terminal)
+                except Exception:
+                    failures.append(name)
+                    # A failed reader must not leave a pipe full and stall the CLI.
+                    try:
+                        while os.read(pipe.fileno(), 65536):
+                            pass
+                    except OSError:
+                        pass
+                finally:
+                    pipe.close()
+
+            readers = [threading.Thread(target=drain, args=(process.stdout, "stdout"), daemon=True),
+                       threading.Thread(target=drain, args=(process.stderr, "stderr"), daemon=True)]
+            for reader in readers:
+                reader.start()
+            while True:
+                try:
+                    process.wait(timeout=self.phase_heartbeat_seconds)
+                    break
+                except subprocess.TimeoutExpired:
+                    with lock:
+                        snapshot = {**counts, "command_stats": command_stats.snapshot(counts["item_state_complete"])}
+                    self._phase(call_id, attempt, "exec_heartbeat", child_pid=process.pid,
+                                elapsed_seconds=time.monotonic() - began,
+                                wait_category=wait_category(snapshot), **snapshot)
+            self._phase(call_id, attempt, "exec_process_exited", child_pid=process.pid,
+                        returncode=process.returncode, elapsed_seconds=time.monotonic() - began)
+            # The CLI has exited: clean its owned same-group descendants, as
+            # the PR lifecycle requires. Escaped inherited pipes remain visible
+            # without inventing a role deadline or discarding unseen output.
+            if os.name == "posix" and hasattr(os, "killpg"):
+                _kill_process_group(process)
+            for reader in readers:
+                while reader.is_alive():
+                    reader.join(timeout=self.phase_heartbeat_seconds)
+                    if reader.is_alive():
+                        with lock:
+                            snapshot = {**counts, "command_stats": command_stats.snapshot(counts["item_state_complete"])}
+                        self._phase(call_id, attempt, "pipe_drain_heartbeat", child_pid=process.pid,
+                                    process_running=False, elapsed_seconds=time.monotonic() - began,
+                                    wait_category="pipe_drain_unknown", **snapshot)
+            with lock:
+                snapshot = {**counts, "command_stats": command_stats.snapshot(counts["item_state_complete"])}
+            self._phase(call_id, attempt, "exec_returned", child_pid=process.pid,
+                        returncode=process.returncode, elapsed_seconds=time.monotonic() - began,
+                        reader_failed=bool(failures), **snapshot)
+            if failures:
+                raise RoleError("codex exec output pipe could not be completely retained")
+            encoding = locale.getpreferredencoding(False)
+            return subprocess.CompletedProcess(
+                cmd, process.returncode,
+                b"".join(buffers["stdout"]).decode(encoding),
+                b"".join(buffers["stderr"]).decode(encoding))
+        except BaseException as error:
+            try:
+                setattr(error, "_gv_process_started", True)
+            except (AttributeError, TypeError):
+                pass
+            raise
+        finally:
+            if os.name == "posix" and hasattr(os, "killpg"):
+                _kill_process_group(process)
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
     def _image_packet_failed(self, artifact_digest: str) -> bool:
         with self._failed_image_packet_lock:
             return (self._image_packet_transport_disabled
@@ -2419,16 +2782,22 @@ class CodexBackend:
         # contract deliberately exposes ./task.md and ./baseline/ as read-only
         # authoritative inputs. Capability-limited subclasses may narrow cwd.
         execution_cwd = self._execution_cwd(role_name, variables)
-        out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
+        capture_dir = self._execution_capture_dir(role_name, variables)
+        out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False,
+                                         dir=capture_dir)
         out.close()
         image_paths = []
+        if self.phase_observer is not None:
+            with self._phase_lock:
+                self._phase_roles[call_id] = role_name
         call_succeeded = False
         try:
             for item in images:
                 suffix = (".jpg" if item.mime == "image/jpeg"
                           else "." + item.mime[6:])
                 handle = tempfile.NamedTemporaryFile(
-                    prefix="gv-evidence-image-", suffix=suffix, delete=False)
+                    prefix="gv-evidence-image-", suffix=suffix, delete=False,
+                    dir=capture_dir)
                 image_paths.append(handle.name)
                 try:
                     handle.write(item.data)
@@ -2439,7 +2808,7 @@ class CodexBackend:
                    "--skip-git-repo-check"]
             if self._search_enabled(role_name):
                 cmd.extend(["-c", "tools.web_search=true"])
-            if usage_target is not None or self._requires_json():
+            if usage_target is not None or self._requires_json() or self.phase_observer is not None:
                 cmd.append("--json")
             cmd.extend(service_tier_cli_args(self.service_tier))
             cmd.extend(policy_args)
@@ -2449,6 +2818,7 @@ class CodexBackend:
                 "-c", f"model_reasoning_effort={self.effort}",
                 "-o", out.name, "--", instruction,
             ])
+            cmd = self._execution_command(role_name, variables, cmd)
             completed_attempt = None
             for attempt in range(TRANSIENT_RETRIES + 1):
                 # Each attempt must produce its own final message. A failed
@@ -2461,9 +2831,13 @@ class CodexBackend:
                 try:
                     with open(os.devnull) as devnull:
                         # stdin MUST be closed: codex otherwise waits forever.
-                        proc = _run_codex_process(
-                            cmd, cwd=execution_cwd, stdin=devnull,
-                            timeout=self.timeout)
+                        if self.phase_observer is None:
+                            proc = _run_codex_process(
+                                cmd, cwd=execution_cwd, stdin=devnull,
+                                timeout=self.timeout)
+                        else:
+                            proc = self._run_observed_exec(
+                                cmd, execution_cwd, devnull, call_id, attempt)
                 except subprocess.TimeoutExpired as error:
                     finished_at_unix_ns = time.time_ns()
                     duration_ns = (time.monotonic_ns()
@@ -2543,6 +2917,8 @@ class CodexBackend:
                 reason = _transient_failure_reason(
                     stdout, proc.returncode, _stream_text(proc.stderr))
                 if reason:
+                    self._phase(call_id, attempt, "backend_transient_failure",
+                                returncode=proc.returncode)
                     exhausted = attempt >= TRANSIENT_RETRIES
                     _record_codex_attempt(
                         usage_target, base=attempt_base,
@@ -2563,10 +2939,16 @@ class CodexBackend:
                             f"through {TRANSIENT_RETRIES} retries: {reason}")
                     wait = TRANSIENT_BACKOFF_SECONDS[
                         min(attempt, len(TRANSIENT_BACKOFF_SECONDS) - 1)]
-                    print(f"[codex-backend] transient failure ({reason}); "
-                          f"retry {attempt + 1}/{TRANSIENT_RETRIES} "
-                          f"in {wait}s", file=sys.stderr, flush=True)
+                    self._phase(call_id, attempt, "backend_backoff_started",
+                                wait_seconds=wait, retry_number=attempt + 1,
+                                retry_limit=TRANSIENT_RETRIES)
+                    if self.phase_observer is None:
+                        print(f"[codex-backend] transient failure ({reason}); "
+                              f"retry {attempt + 1}/{TRANSIENT_RETRIES} "
+                              f"in {wait}s", file=sys.stderr, flush=True)
                     time.sleep(wait)
+                    self._phase(call_id, attempt, "backend_backoff_finished",
+                                wait_seconds=wait)
                     continue
                 if proc.returncode != 0:
                     _record_codex_attempt(
@@ -2745,8 +3127,24 @@ class CodexBackend:
                         raise RoleError("codex final output is missing or disagrees with its completed stream")
                     text = response_without_usage
                 if not text:
-                    text = (telemetry.last_message if telemetry is not None
-                            else completed_attempt["stdout"].strip())
+                    if telemetry is not None:
+                        text = telemetry.last_message
+                    elif self.phase_observer is not None:
+                        # Instrumentation forces JSONL, but an event envelope
+                        # is never a role response. This does not weaken any
+                        # stricter subclass stream policy validated above.
+                        for line in _native_jsonl_lines(completed_attempt["stdout"]):
+                            try:
+                                event = json.loads(line)
+                            except (ValueError, RecursionError):
+                                continue
+                            if isinstance(event, dict) and event.get("type") == "item.completed":
+                                item = event.get("item")
+                                if (isinstance(item, dict) and item.get("type") == "agent_message"
+                                        and isinstance(item.get("text"), str)):
+                                    text = item["text"].strip()
+                    else:
+                        text = completed_attempt["stdout"].strip()
                 if not text:
                     _record_codex_attempt(
                         usage_target, base=attempt_base,
@@ -2795,6 +3193,9 @@ class CodexBackend:
             call_succeeded = True
             return payload
         finally:
+            if self.phase_observer is not None:
+                with self._phase_lock:
+                    self._phase_roles.pop(call_id, None)
             if image_packet_digest is not None and not call_succeeded:
                 self._disable_failed_image_packet(image_packet_digest)
             for path in [out.name, *image_paths]:

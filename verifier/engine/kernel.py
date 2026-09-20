@@ -35,7 +35,7 @@ from ..execution.instruments import (
 from ..core.model import (
     Claim, Evidence, Obligation, basis_satisfies,
     BASIS_RECORD, BASIS_WORLD,
-    CLAIM_EFFECT, CLAIM_FINAL,
+    CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL, content_hash,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
     STRENGTH_DECISIVE, strength_rank, weakest_strength,
@@ -146,9 +146,12 @@ class Kernel:
         critic_rounds: Optional[int] = None,
         parallel_obligations: int = 1,
         parallel_claims: int = 1,
+        context_provider=None,
+        context_id_provider=None,
         contract_cache=None,
         contract_replay=None,
         record_boundary=None,
+        independent_root_provider=None,
         screener_role=None,
         critic_rounds_nonfinal: Optional[int] = None,
         speculative_discharge: bool = False,
@@ -232,6 +235,12 @@ class Kernel:
                     "binding game and kernel use different append-repair "
                     "protocols")
         self.memory = memory      # advisory stores; None -> static hints
+        self.context_provider = context_provider or (lambda role, claim: "")
+        self.context_id_provider = context_id_provider or (lambda claim: "")
+        if independent_root_provider is not None and not callable(independent_root_provider):
+            raise ValueError("independent root provider must be callable")
+        self._independent_root_provider = independent_root_provider
+        store.set_independent_root_provider(self.is_independent_root)
         self.contract_cache = contract_cache
         # Experimental adapter-isolation diagnostic only.  Ordinary online
         # and offline verification never inject this provider; it freezes a
@@ -248,6 +257,52 @@ class Kernel:
             validate_kernel(self)
         self.contract_replay = contract_replay
         store.on_trigger(self.verify)  # the single rule wires straight in
+
+    def independent_root_context(self, claim_id: str):
+        """Read and freeze host-only authority, never authority from claim text.
+
+        A registered assertion is an independent authorization endpoint, not
+        task completion. Revocation or descriptor mutation fails closed even
+        for settled claims and across store restarts.
+        """
+        if self.store.get(claim_id)["kind"] != CLAIM_ASSERTION:
+            return None
+        if self._independent_root_provider is None:
+            return None
+        try:
+            descriptor = self._independent_root_provider(claim_id)
+        except Exception:
+            raise ValueError("trusted independent root provider failed") from None
+        if descriptor is not None:
+            if (type(descriptor) is not dict
+                    or set(descriptor) != {"scope", "contract_locus"}
+                    or descriptor.get("scope") != "candidate_authorization"
+                    or not isinstance(descriptor.get("contract_locus"), str)
+                    or not descriptor["contract_locus"].strip()):
+                raise ValueError("invalid independent root descriptor")
+            descriptor = dict(descriptor)
+        self.store.pin_independent_root(claim_id, descriptor)
+        return descriptor
+
+    def is_independent_root(self, claim_id: str) -> bool:
+        return self.independent_root_context(claim_id) is not None
+
+    def _is_independent_claim(self, row: Dict) -> bool:
+        return row["kind"] == CLAIM_FINAL or self.is_independent_root(row["id"])
+
+    def verification_context_for(self, claim_id: str) -> str:
+        if claim_id == self.PRECOMPILE_ID:
+            # the final-contract precompile's synthetic row is not in the
+            # store; its contract is adopted only under the same task
+            # statement, and the real final carries its own context
+            return ""
+        context_id = self.context_id_provider(claim_id)
+        descriptor = self.independent_root_context(claim_id)
+        if descriptor is not None and not isinstance(context_id, str):
+            raise ValueError("independent root verification context must be a string")
+        return (content_hash({"context_id": context_id,
+                              "independent_root": descriptor})
+                if descriptor is not None else context_id)
 
     # locks and pools
     def _lock_for(self, table: Dict[str, threading.Lock],
@@ -279,6 +334,8 @@ class Kernel:
         `verify` verb and the certificate never take the screener's word."""
         with self._lock_for(self._claim_locks, claim_id):
             row = self.store.get(claim_id)
+            # Check registration before the settled-status fast path.
+            self.is_independent_root(claim_id)
             if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
                 return row["status"]
             if row.get("confident") and not force:
@@ -477,7 +534,7 @@ class Kernel:
         # obligations are the task contract, compiled and established
         # independently of the argument's health — a refuted intermediate
         # eliminates that line of support, not the deliverable's verdict.
-        refuted_deps = [] if row["kind"] == CLAIM_FINAL else [
+        refuted_deps = [] if self._is_independent_claim(row) else [
             p for p in self.store.parents(row["id"])
             if self.store.effective(p)["effective_status"] == STATUS_REFUTED
         ]
@@ -500,11 +557,12 @@ class Kernel:
         # already settles is assumed, not checked. A final is the task
         # contract and is always checked; an explicit request (force)
         # always checks.
-        screen = (self.screener_role is not None and not force
+        screen = (getattr(self, "screener_role", None) is not None
+                  and not force
                   and row["kind"] != CLAIM_FINAL
                   and row["status"] == STATUS_UNVERIFIED)
         compiled = None
-        if screen and self.speculative_discharge:
+        if screen and getattr(self, "speculative_discharge", False):
             # the compiler starts alongside the screener: on anything
             # below `high` its answer is ready when the screener returns;
             # on `high` the call is simply dropped (a spent seat, no
@@ -523,7 +581,8 @@ class Kernel:
 
         speculated: Dict[str, tuple] = {}
         speculate = None
-        if self.speculative_discharge and self.binder is not None:
+        if getattr(self, "speculative_discharge", False) \
+                and self.binder is not None:
             def speculate(unreviewed):
                 for entry in self._settle_obligations(row, unreviewed):
                     speculated[entry[0].id] = entry
@@ -758,6 +817,12 @@ class Kernel:
                         and src_eff["premise_refuted"] is None
                         and not src_eff["open_premises"])
                 )
+                if self.is_independent_root(row["id"]) and (
+                        self.verification_context_for(src["id"])
+                        != self.verification_context_for(row["id"])):
+                    # Equal prose cannot transfer authority between task
+                    # completion, ordinary premises and candidate qualification.
+                    transferable = False
                 if transferable and src_eff["effective_basis"] == BASIS_WORLD:
                     src_ev = self.store.evidence_for(src["id"])
                     stamp = next((e.get("world_epoch") for e in
@@ -800,7 +865,7 @@ class Kernel:
         for a final — its contract is compiled independently and it is
         exempt from the premise fold, so an assumption there would
         never be charged to anyone."""
-        if row["kind"] == CLAIM_FINAL:
+        if self._is_independent_claim(row):
             return set()
         return set(self.store.backward_slice(row["id"])[1:])
 
@@ -950,7 +1015,8 @@ class Kernel:
             self.log,
             self._obligation_compile_variables(row),
             enabled=(getattr(self.backend, "compact_inspection", False)
-                     is True),
+                     is True and not self._planner_inventory_only(row["id"])
+                     and not self.is_independent_root(row["id"])),
         )
 
     def _compile_obligation_payload(self, row: Dict, speculate=None,
@@ -1023,7 +1089,10 @@ class Kernel:
         # contract.  Exact obligation dedup/inheritance still happens after
         # compilation, so sound reuse remains available.
         task_context = authoritative_task_context(state)
-        independent_final = row["kind"] == CLAIM_FINAL
+        root_context = self.independent_root_context(row["id"])
+        independent_final = row["kind"] == CLAIM_FINAL or root_context is not None
+        if root_context is not None:
+            memory_hits = "[]"
         # graph context: EVERY premise (dep) is assumable — the claim's
         # verdict is conditional on its premises by definition, and the
         # read-time effective fold charges each premise's actual state
@@ -1062,17 +1131,29 @@ class Kernel:
         world_mode, world, _ = world_evidence_context(
             state, live_world=self.live_world)
         graph = (
-            [{"note": "withheld: harness final contract is compiled "
-                      "independently from authoritative task context"}]
+            [{"note": ("withheld: host authorization root is compiled independently"
+                       if root_context is not None
+                       else "withheld: harness final contract is compiled "
+                            "independently from authoritative task context")}]
             if independent_final
             else self.store.graph_snapshot(exclude=row["id"])
         )
         referent_context = (
-            {"withheld": "harness final contract is independent of the "
-                         "solver-derived dependency graph"}
+            {"withheld": ("host authorization root is independent of solver premises"
+                          if root_context is not None
+                          else "harness final contract is independent of the "
+                               "solver-derived dependency graph")}
             if independent_final
             else self._dependency_referent_context(row["id"])
         )
+        world_description = world_map(state, live_world=self.live_world)
+        if self._planner_inventory_only(row["id"]):
+            # The locator/address inventory is useful planning authority, but
+            # a manifest's free-form note may contain execution outcomes.
+            description = json.loads(world_description)
+            description.pop("note", None)
+            world_description = json.dumps(
+                description, ensure_ascii=False, sort_keys=True)
         return {
             "claim_text": row["text"],
             "claim_kind": row["kind"],
@@ -1080,13 +1161,14 @@ class Kernel:
             # non-final claim the task contract is owned by the final node,
             # so neither seat treats this claim as the last line of defense
             "contract_locus": (
-                prompts.CONTRACT_LOCUS_FINAL if row["kind"] == CLAIM_FINAL
-                else prompts.CONTRACT_LOCUS_NONFINAL),
+                root_context["contract_locus"] if root_context is not None
+                else (prompts.CONTRACT_LOCUS_FINAL if row["kind"] == CLAIM_FINAL
+                      else prompts.CONTRACT_LOCUS_NONFINAL)),
             "task_context": task_context,
             "ledger_path": self.log.record_path_for(row["id"]),
             "world_mode": world_mode,
             "world_path": world,
-            "world_map": world_map(state, live_world=self.live_world),
+            "world_map": world_description,
             "verified_deps": json.dumps(verified_deps, ensure_ascii=False),
             "pending_deps": json.dumps(pending_deps, ensure_ascii=False),
             "dependency_referent_context": json.dumps(
@@ -1094,6 +1176,8 @@ class Kernel:
             "graph": json.dumps(graph, ensure_ascii=False),
             "memory_hits": memory_hits,
             "critic_feedback": "",
+            **({"profile_context": self.context_provider("obligations", row["id"])}
+               if "{profile_context}" in self.obligations_role.template else {}),
         }
 
     def _authority_final_contract(self, row: Dict, state: str):
@@ -1106,6 +1190,15 @@ class Kernel:
         Oracle and all candidate verification run afterwards.
         """
         if row["kind"] != CLAIM_FINAL:
+            return False, None
+        if any("{profile_context}" in getattr(role, "template", "")
+               for role in (self.obligations_role, self.critic_role)):
+            # This authority-only protocol has no authenticated profile
+            # context slot. Neither omit a required binding nor smuggle
+            # candidate evidence into its task-only compilation/cache key.
+            self.log.append("contract_cache_bypass", {
+                "claim": row["id"],
+                "reason": "profile-bound compiler requires its existing context protocol"})
             return False, None
         if self.critic_role is None or self.critic_rounds < 1:
             self.log.append("contract_cache_bypass", {
@@ -1304,7 +1397,7 @@ class Kernel:
     def _materialize_obligations(self, row: Dict, payload, *, record=True):
         if payload is None:
             return None
-        independent_final = row["kind"] == CLAIM_FINAL
+        independent_final = self._is_independent_claim(row)
         obligations = [
             Obligation(row["id"], o["text"],
                        o.get("required_basis", BASIS_RECORD),
@@ -1320,7 +1413,8 @@ class Kernel:
                                      if row["kind"] == CLAIM_FINAL
                                      else str(o.get("task_bearing")
                                               or TASK_BEARING_UNCLEAR)),
-                       premise_scope=tuple(self._premises_in_force(row)))
+                       premise_scope=tuple(self._premises_in_force(row)),
+                       verification_context=self.verification_context_for(row["id"]))
             for o in payload["obligations"]
         ]
         if not independent_final:
@@ -1360,6 +1454,8 @@ class Kernel:
         event = {"claim": row["id"],
                  "obligations": [{"id": o.id, "text": o.text,
                                   "premise_scope": list(o.premise_scope),
+                                  **({"verification_context": o.verification_context}
+                                     if o.verification_context else {}),
                                   "required_basis": o.required_basis,
                                   "severity": o.severity,
                                   "clause": o.clause,
@@ -1394,10 +1490,9 @@ class Kernel:
         critic_role = critic_role or self.critic_role
         if critic_role is None:
             return payload
-        advisory = (row["kind"] != CLAIM_FINAL
-                    and self.critic_rounds_nonfinal is not None)
-        rounds = (self.critic_rounds_nonfinal if advisory
-                  else self.critic_rounds)
+        nonfinal_budget = getattr(self, "critic_rounds_nonfinal", None)
+        advisory = (row["kind"] != CLAIM_FINAL and nonfinal_budget is not None)
+        rounds = nonfinal_budget if advisory else self.critic_rounds
         if rounds <= 0:
             return payload
         # The compiler and critic receive the same inlined harness truth.
@@ -1438,9 +1533,12 @@ class Kernel:
                     "dependency_referent_context":
                         variables["dependency_referent_context"],
                     "game_history": json.dumps(history, ensure_ascii=False),
+                    **({"profile_context": self.context_provider("critic", row["id"])}
+                       if "{profile_context}" in critic_role.template else {}),
                     },
                     enabled=(getattr(backend, "compact_inspection", False)
-                             is True),
+                             is True and not self._planner_inventory_only(row["id"])
+                             and not self.is_independent_root(row["id"])),
                 )
                 verdict = critic_role.call(
                     backend,
@@ -1892,14 +1990,23 @@ class Kernel:
                 }
         return records
 
+    def _planner_inventory_only(self, claim_id: str) -> bool:
+        """Profile/context-bound planners may receive inventories, not bytes."""
+        if any("{profile_context}" in getattr(role, "template", "")
+               for role in (getattr(self, "obligations_role", None),
+                            getattr(self, "critic_role", None))):
+            return True
+        context_identity = getattr(self, "context_id_provider", None)
+        return bool(context_identity(claim_id)) if callable(context_identity) else False
+
     def _dependency_referent_context(self, claim_id: str) -> Dict:
         """A bounded transitive dependency topology for referent closure.
 
         Non-effect nodes carry their exact claim wording and parent edges.
-        Effect nodes additionally carry the correlated call/result pair, which
-        is where code-local aliases are often bound.  The explicit purpose
-        marker prevents identity context from masquerading as semantic
-        authority.
+        Default Effect nodes carry the correlated call/result pair, where
+        code-local aliases are often bound. Profile/context-bound planners
+        instead receive only authenticated Effect identities and locators.
+        The purpose marker keeps referent context separate from authority.
         """
         root_parents = sorted(self.store.parents(claim_id))
         queue, queued, included = list(root_parents), set(root_parents), []
@@ -1917,9 +2024,14 @@ class Kernel:
 
         rows = {cid: self.store.get(cid) for cid in included}
         parent_map = {cid: sorted(self.store.parents(cid)) for cid in included}
-        effect_records = self._effect_referent_records([
-            row for row in rows.values() if row["kind"] == CLAIM_EFFECT
-        ])
+        effect_rows = [row for row in rows.values() if row["kind"] == CLAIM_EFFECT]
+        if self._planner_inventory_only(claim_id):
+            # Planner authority is an inventory, not observations. Shell
+            # denies do not protect bytes already inlined in this field.
+            effect_records = self._effect_referent_metadata(
+                effect_rows, self.log.record_path_for(claim_id))
+        else:
+            effect_records = self._effect_referent_records(effect_rows)
         base_entries = {}
         for cid in included:
             row = rows[cid]
@@ -1968,6 +2080,38 @@ class Kernel:
             kept.pop()
             context = render(kept, budget_exhausted)
         return context
+
+    def _effect_referent_metadata(
+            self, rows: List[Dict], record_locator: str) -> Dict[str, Dict]:
+        """Authenticate Effect identities without inlining call/result content."""
+        records = {}
+        for row in rows:
+            metadata = {"content_withheld": True, "identity_available": False,
+                        "record_locator": record_locator}
+            try:
+                identity = json.loads(row["text"])
+                seq, digest = identity["event_seq"], identity["digest"]
+                if (isinstance(seq, bool) or not isinstance(seq, int) or seq < 1
+                        or not isinstance(digest, str) or len(digest) != 64
+                        or any(char not in "0123456789abcdef" for char in digest)):
+                    raise ValueError("invalid Effect identity")
+                event = self.log.get(seq)
+                if (event is None or event["type"] != "tool_result"
+                        or EventLog.event_digest(event) != digest):
+                    raise ValueError("Effect identity is not retained")
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    raise ValueError("invalid Effect payload shape")
+                tool = payload.get("tool")
+                if (not isinstance(tool, str) or len(tool) > 256
+                        or identity.get("tool") not in (None, tool)):
+                    raise ValueError("invalid Effect tool identity")
+                metadata.update(identity_available=True, effect_ref=f"effect:{seq}",
+                                event_seq=seq, event_digest=digest, tool=tool)
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                pass  # Identity failure reveals no payload or dynamic error.
+            records[row["id"]] = metadata
+        return records
 
     def _inherit(self, row: Dict, obligation: Obligation, src: Dict):
         """
@@ -2154,10 +2298,11 @@ class Kernel:
             in_force = self._premises_in_force(row)
             illegal = sorted(set(result.assumed_premises) - in_force)
             if illegal:
-                why = ("a completion claim's contract admits no assumed "
-                       "premises" if row["kind"] == CLAIM_FINAL
-                       else "assumed premises outside the claim's "
-                            "dependency closure")
+                why = ("a completion claim's contract admits no assumed premises"
+                       if row["kind"] == CLAIM_FINAL
+                       else ("an independent claim's contract admits no assumed premises"
+                             if self.is_independent_root(row["id"])
+                             else "assumed premises outside the claim's dependency closure"))
                 result = DischargeResult(
                     outcome=OUTCOME_FAILED,
                     witness=(f"{why}: {illegal} "

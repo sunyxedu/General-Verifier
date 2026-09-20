@@ -28,14 +28,14 @@ premises and any poisoning refuted premise disclosed for audit.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict
+from typing import Dict, Optional
 
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
 from ..llm.model_spans import submit_with_context
 from .kernel import Kernel
 from ..core.model import (
-    CLAIM_FINAL,
+    CLAIM_ASSERTION, CLAIM_FINAL, BASIS_RECORD, BASIS_WORLD, STRENGTHS,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED,
     STATUS_PARTIAL, STRENGTH_DECISIVE, strength_rank,
 )
@@ -55,6 +55,7 @@ def request_certificate(
     store: ClaimStore, kernel: Kernel, log: EventLog,
     artifacts: ArtifactStore, final_id: str,
     scope: str = CERTIFICATE_SCOPE_FULL,
+    *, profile_metadata: Optional[Dict] = None,
 ) -> Dict:
     if store.get(final_id)["kind"] != CLAIM_FINAL:
         raise ValueError("a certificate requires a final claim")
@@ -184,9 +185,109 @@ def request_certificate(
         "verdict_strength": verdict_strength,
         "slice": entries,
     }
+    if profile_metadata is not None:
+        certificate["profile_metadata"] = profile_metadata
     digest = artifacts.put(certificate)
     certificate["certificate_id"] = digest
     log.append("certificate", {"final": final_id, "verdict": verdict,
                                "verdict_strength": verdict_strength,
                                "digest": digest})
+    return certificate
+
+
+def request_independent_certificate(
+    store: ClaimStore, kernel: Kernel, log: EventLog,
+    artifacts: ArtifactStore, root_id: str,
+    *, profile_metadata: Optional[Dict] = None,
+) -> Dict:
+    """Certify only a host-registered independent authorization assertion.
+
+    This is not a task-completion certificate. The public final-certificate
+    API above remains unchanged; no caller metadata or assertion text can
+    grant independent-root authority. Supporting claims are exported without
+    scheduling their verification.
+    """
+    if store is not kernel.store or log is not kernel.log or artifacts is not kernel.artifacts:
+        raise ValueError("independent certificate requires the kernel's bound stores")
+    if store.get(root_id)["kind"] != CLAIM_ASSERTION:
+        raise ValueError("independent certificate requires a host assertion root")
+    descriptor = kernel.independent_root_context(root_id)
+    if descriptor is None:
+        raise ValueError("assertion is not a registered independent root")
+    log.append("verify_request", {"target": root_id, "cause": "independent_certificate",
+                                  "scope": "root", "root_scope": descriptor["scope"]})
+    kernel.verify(root_id)
+
+    entries = []
+    effective_memo = {}
+    for claim_id in store.backward_slice(root_id):
+        row = store.get(claim_id)
+        effective = store.effective(claim_id, effective_memo)
+        obligations = []
+        for node in store.obligation_children(claim_id):
+            obligations.append({
+                "id": node["id"], "text": node["text"],
+                "status": node["status"], "reason": node["reason"],
+                "basis": node["basis"], "strength": node["strength"],
+                "severity": node.get("severity", "must"),
+                "clause": node.get("clause", ""),
+                "refutable_by_absence": bool(node.get("refutable_by_absence", False)),
+                "evidence": store.evidence_for(node["id"]),
+                "premise_scope": sorted(store.parents(node["id"])),
+                "verification_context": store.obligation_verification_context(node["id"]),
+            })
+        entries.append({
+            "id": row["id"], "kind": row["kind"], "text": row["text"],
+            "deps": sorted(store.parents(claim_id)), "status": row["status"],
+            **{key: effective[key] for key in (
+                "effective_status", "effective_basis", "effective_strength",
+                "open_premises", "premise_refuted")},
+            "reason": row["reason"], "basis": row["basis"],
+            "strength": row["strength"], "evidence": store.evidence_for(claim_id),
+            "obligations": obligations,
+        })
+
+    # Recheck host authority and use the current effective read, not a local
+    # conditional verdict or solver-selected certificate metadata.
+    if kernel.independent_root_context(root_id) != descriptor:
+        raise ValueError("independent root registration changed")
+    effective = store.effective(root_id)
+    if effective["open_premises"] or effective["premise_refuted"] is not None:
+        raise ValueError("independent root has open or refuted premises")
+    root = next(entry for entry in entries if entry["id"] == root_id)
+    context = kernel.verification_context_for(root_id)
+    if any(node["premise_scope"] or node["verification_context"] != context
+           for node in root["obligations"]):
+        raise ValueError("independent root obligation scope mismatch")
+    verdict = {
+        STATUS_VERIFIED: "verified", STATUS_REFUTED: "refuted",
+        STATUS_PARTIAL: "partial",
+    }.get(effective["effective_status"], "unverified")
+    verdict_strength = None
+    if verdict == "verified":
+        verdict_strength = effective["effective_strength"] or STRENGTH_DECISIVE
+        if (effective["effective_basis"] not in (BASIS_WORLD, BASIS_RECORD)
+                or verdict_strength not in STRENGTHS):
+            verdict = "unverified"
+        elif strength_rank(verdict_strength) < strength_rank(STRENGTH_DECISIVE):
+            verdict = "supported"
+    certificate = {
+        "schema": "gv-independent-claim-root-v1", "root": root_id,
+        "root_scope": descriptor["scope"], "verdict": verdict,
+        "verdict_basis": effective["effective_basis"],
+        "verdict_strength": verdict_strength,
+        **{key: effective[key] for key in (
+            "effective_status", "effective_basis", "effective_strength",
+            "open_premises", "premise_refuted")},
+        "slice": entries,
+    }
+    if profile_metadata is not None:
+        certificate["profile_metadata"] = profile_metadata
+    digest = artifacts.put(certificate)
+    certificate["certificate_id"] = digest
+    log.append("independent_certificate", {
+        "root": root_id, "root_scope": descriptor["scope"], "scope": "root",
+        "verdict": verdict, "verdict_strength": verdict_strength,
+        "verdict_basis": effective["effective_basis"], "digest": digest,
+    })
     return certificate

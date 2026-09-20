@@ -55,10 +55,11 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from contextlib import nullcontext
 import threading
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ..llm.agents import (
     ENUMERATE_ORACLES_AGENT, JUDGER_AGENT, SCRIPT_JUDGER_AGENT,
@@ -100,6 +101,9 @@ from ..execution.config import (
     APPEND_ONLY_DELTA_PROTOCOL,
     append_only_deltas_enabled,
 )
+
+
+ORACLE_METHOD_PLAN_SCHEMA = "gv-oracle-method-plan-v1"
 
 
 def _method_strength(method: Dict[str, str]) -> str:
@@ -188,15 +192,19 @@ class BindingGame:
         memory=None,
         live_world: bool = True,
         judger_error_retries: int = 1,
+        context_provider=None,
         method_cache=None,
         typed_adapter_judger_packet: bool = False,
         sufficiency_role=None,
         packet_method_reuse: bool = False,
+        oracle_feedback_filter: Optional[Callable[[str], str]] = None,
     ):
         if type(typed_adapter_judger_packet) is not bool:
             raise ValueError("typed_adapter_judger_packet must be a bool")
         if type(packet_method_reuse) is not bool:
             raise ValueError("packet_method_reuse must be a bool")
+        if oracle_feedback_filter is not None and not callable(oracle_feedback_filter):
+            raise ValueError("oracle_feedback_filter must be callable or None")
         self.backend = backend
         # An operator's explicit reuse request also covers the packet
         # transports (prefetch, typed packet).  Default off: the packet
@@ -226,6 +234,7 @@ class BindingGame:
         self.registry = registry
         self.memory = memory  # advisory; feeds the oracle's registry slot
         self.live_world = live_world
+        self.context_provider = context_provider or (lambda role, claim: "")
         # Match the Kernel's run-scoped compiler identity. Environment
         # mutation cannot move accepted methods between experiment modes.
         self.append_only_deltas = append_only_deltas_enabled()
@@ -238,6 +247,9 @@ class BindingGame:
         # Default-off transport experiment. It keeps the same fresh Judger
         # seat and schema, but cannot share accepted methods while enabled.
         self.typed_adapter_judger_packet = typed_adapter_judger_packet
+        # Profile-owned compiler transport only.  The default keeps the
+        # established variables and truthful executor/Judger/event record.
+        self.oracle_feedback_filter = oracle_feedback_filter
         # method batches enumerated ahead of time (the final-contract
         # precompile), keyed by obligation node id: the first-pass
         # enumeration of a matching obligation is served from here
@@ -508,7 +520,7 @@ class BindingGame:
             return None
         state = os.path.dirname(os.path.abspath(self.log.path))
         catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
-        return build_method_cache_key(
+        key = build_method_cache_key(
             state_dir=state,
             row=row,
             obligation=obligation,
@@ -520,6 +532,14 @@ class BindingGame:
             append_only_deltas=self.append_only_deltas,
             append_only_delta_protocol=self.append_only_delta_protocol,
         )
+        if key is not None and obligation.verification_context:
+            # The profile's authenticated subject/permissions are outside
+            # the legacy task-only reuse key. Preserve their identity until
+            # a profile explicitly defines a reusable method contract.
+            return content_hash({"schema": "gv-profile-method-cache-key-v1",
+                                 "method_key": key,
+                                 "verification_context": obligation.verification_context})
+        return key
 
     def _run_cached_entries(
         self, row, obligation, entries, *, key, waited=False,
@@ -787,6 +807,9 @@ class BindingGame:
 
     def _run_uncached(self, row: Dict, obligation: Obligation) -> DischargeResult:
         attempts: List[Attempt] = []
+        # Local to this obligation, and absent from the persisted Attempt
+        # format. Default/plain evidence bytes retain their exact schema.
+        oracle_contracts: Dict[int, Dict] = {}
         try:
             methods = self._enumerate(row, obligation, oracle_round=0)
         except RoleError as err:
@@ -892,8 +915,15 @@ class BindingGame:
                             unavailable_reasons
                         )),
                         "exhausted_attempts": [
-                            _attempt_diagnostic(a) for a in attempts
+                            _attempt_diagnostic(
+                                a, include_declared_contract=(
+                                    self.oracle_feedback_filter is not None),
+                                declared_contract=oracle_contracts.get(id(a)))
+                            for a in attempts
                         ],
+                        **({"repair_context": {
+                            "fixed_evidence_boundary": not self.live_world}}
+                           if self.oracle_feedback_filter is not None else {}),
                         # parked, not rejected: these wait on a stronger
                         # tier's structural unavailability, so the repair
                         # must not re-list them
@@ -989,6 +1019,8 @@ class BindingGame:
                 continue
             seen_procedures.add(procedure)
             attempt = Attempt(method=method)
+            if self.oracle_feedback_filter is not None:
+                oracle_contracts[id(attempt)] = deepcopy(method)
             attempts.append(attempt)
 
             if method.get("script") and self.script_judger_role is not None \
@@ -1135,7 +1167,8 @@ class BindingGame:
                 strength, attempts, tier_listed)
             verdict = self._judge(
                 obligation, method, result, attempt,
-                degradation=degradation, method_attempt=method_attempt)
+                degradation=degradation, method_attempt=method_attempt,
+                row=row)
             if strength != STRENGTH_DECISIVE \
                     and verdict.get("degradation") == "unjustified":
                 # the third signature failed: the judger disputes that the
@@ -1226,7 +1259,7 @@ class BindingGame:
                 verdict = self._judge(
                     obligation, method, result, attempt,
                     redo=rounds, degradation=degradation,
-                    method_attempt=method_attempt)
+                    method_attempt=method_attempt, row=row)
                 if strength != STRENGTH_DECISIVE \
                         and verdict.get("degradation") == "unjustified":
                     degradation_disputed = True
@@ -1548,6 +1581,44 @@ class BindingGame:
         )
 
     # enumeration and advisory review
+    def _oracle_record_shape(self, claim_id: str) -> str:
+        """A filtered compiler's dialect inventory is claim-frozen only.
+
+        No live-ledger fallback or free-text projection exception enters a
+        compiler. Tool/key/profile names and counts remain useful for exact
+        adapter binding; source values are never part of this inventory.
+        """
+        unavailable = {"schema": "gv-record-shape-v1", "available": False,
+                       "reason": "frozen_record_inventory_unavailable"}
+        locator = self.log.record_path_for(claim_id)
+        if not self.log.is_record_path(locator):
+            return json.dumps(unavailable, sort_keys=True, separators=(",", ":"))
+        try:
+            shape = json.loads(record_shape_json(EventLog(locator)))
+            if not isinstance(shape, dict) or shape.get("available") is not True:
+                shape = unavailable
+            else:
+                shape.pop("reason", None)
+        except Exception:
+            shape = unavailable
+        return json.dumps(shape, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"))
+
+    def _compiler_world_map(self, state: str) -> str:
+        """Retain addressing metadata, not arbitrary captured-world notes."""
+        value = world_map(state, live_world=self.live_world)
+        if self.oracle_feedback_filter is None:
+            return value
+        try:
+            mapping = json.loads(value)
+            if not isinstance(mapping, dict):
+                raise ValueError("invalid addressing metadata")
+            mapping.pop("note", None)
+            return json.dumps(mapping, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            # Never recover a failed safe view by handing over its raw text.
+            return json.dumps({"mode": "unknown", "available": False},
+                              sort_keys=True)
     BOUNDARY_NOTES = 12
 
     def _note_boundary(self, row: Dict, obligation: Obligation,
@@ -1590,6 +1661,16 @@ class BindingGame:
         state = os.path.dirname(os.path.abspath(self.log.path))
         world_mode, world, manifest = world_evidence_context(
             state, live_world=self.live_world)
+        filtered_feedback = method_feedback
+        if self.oracle_feedback_filter is not None:
+            try:
+                filtered_feedback = self.oracle_feedback_filter(method_feedback)
+                if not isinstance(filtered_feedback, str):
+                    raise ValueError("feedback filter must return text")
+            except Exception:
+                # A broken filter fails the compiler call closed.  Exception
+                # messages can themselves contain an observation or secret.
+                raise RoleError("oracle feedback filtering failed") from None
         with model_scope(
                 stage=("oracle_repair" if oracle_round else
                        "oracle_enumerate"),
@@ -1607,26 +1688,48 @@ class BindingGame:
                 "features": _features(row),
                 "registry": registry,
                 "adapter_catalog": oracle_catalog,
-                "method_feedback": method_feedback,
+                "method_feedback": filtered_feedback,
                 "sibling_boundary": self._sibling_boundary(row),
                 "ledger_path": self.log.record_path_for(row["id"]),
-                "record_shape": record_shape_json(self.log),
+                "record_shape": (self._oracle_record_shape(row["id"])
+                                 if self.oracle_feedback_filter is not None
+                                 else record_shape_json(self.log)),
                 "artifact_root": os.path.abspath(self.artifacts.root),
                 "world_mode": world_mode,
                 "world_path": world,
                 "world_manifest": manifest,
-                "world_map": world_map(state, live_world=self.live_world),
+                "world_map": self._compiler_world_map(state),
+                **({"profile_context": self.context_provider("oracles", row["id"])}
+                   if "{profile_context}" in self.oracles_role.template else {}),
                 },
-                enabled=(getattr(self.backend, "compact_inspection", False)
+                enabled=(self.oracle_feedback_filter is None
+                         and getattr(self.backend, "compact_inspection", False)
                          is True),
             )
             payload = self.oracles_role.call(self.backend, variables)
         prepare = getattr(self.discharger, "prepare_method", lambda method: method)
         methods = [prepare(method) for method in payload["methods"]]
+        # Retain the complete prepared menu before execution can block or
+        # fail. This is an unexecuted plan, not discharge evidence, an
+        # accepted binding, or a Judger-approved result. The content-addressed
+        # store serializes it now, independently of later method mutation.
+        repair = method_feedback != "(none)"
+        plan_artifact_id = self.artifacts.put({
+            "schema": ORACLE_METHOD_PLAN_SCHEMA,
+            "instrument": "oracle-method-plan",
+            "execution_state": "unexecuted",
+            "claim": row["id"],
+            "obligation": obligation.id,
+            "required_basis": obligation.required_basis,
+            "repair": repair,
+            "methods": methods,
+        })
         event = {
             "claim": row["id"],
             "obligation": obligation.id,
-            "repair": method_feedback != "(none)",
+            "repair": repair,
+            "method_plan_artifact_id": plan_artifact_id,
+            "method_plan_schema": ORACLE_METHOD_PLAN_SCHEMA,
             "prewarm": prewarm,
             "methods": [{"procedure": m["procedure"][:80],
                          "level": m.get("level", ""),
@@ -1649,6 +1752,7 @@ class BindingGame:
                                   "to audit)",
                method_attempt: int = 0,
                independent_judger: bool = False,
+               row: Optional[Dict] = None,
                source: Optional[str] = None) -> Dict[str, str]:
         evidence = {
             "outcome": result.outcome,
@@ -1705,6 +1809,8 @@ class BindingGame:
             "world_manifest": manifest,
             "world_map": world_map(state, live_world=self.live_world),
             "evidence": json.dumps(evidence, ensure_ascii=False),
+            **({"profile_context": self.context_provider("judger", obligation.claim_id)}
+               if "{profile_context}" in self.judger_role.template else {}),
         }
         variables = bind_source_evidence_variables(
             self.log,
@@ -1760,6 +1866,19 @@ class BindingGame:
                     if call_variables is variables:
                         call_variables = dict(variables)
                     call_variables["_typed_adapter_judger_packet"] = typed_packet
+                if (row is not None and isinstance(result.instrument, str)
+                        and result.instrument.startswith("agent:")):
+                    replay = getattr(
+                        self.discharger, "judger_record_program_replay", None)
+                    if callable(replay):
+                        audit = replay(row, obligation, method)
+                        if audit is not None:
+                            if call_variables is variables:
+                                call_variables = dict(variables)
+                            call_variables["evidence"] = json.dumps(
+                                {**evidence,
+                                 "verifier_record_program_replay": audit},
+                                ensure_ascii=False)
                 with model_scope(
                         stage="judger", method_attempt=method_attempt,
                         redo=redo, judger_retry_index=call_no,
@@ -1903,13 +2022,15 @@ class BindingGame:
             "refutable_by_absence": obligation.refutable_by_absence,
             "task_context": authoritative_task_context(state),
             "world_mode": world_mode,
-            "world_map": world_map(state, live_world=self.live_world),
+            "world_map": self._compiler_world_map(state),
             "procedure": method.get("procedure", ""),
             "promised_artifact": method.get("artifact", ""),
             "basis": method.get("basis", ""),
             "declared_strength": _method_strength(method),
             "bridges": json.dumps(method.get("bridges", []),
                                   ensure_ascii=False),
+            **({"profile_context": self.context_provider("sufficiency", row["id"])}
+               if "{profile_context}" in self.sufficiency_role.template else {}),
         }
         try:
             with model_scope(stage="sufficiency_preaudit",
@@ -2010,7 +2131,8 @@ def _features(row: Dict) -> str:
     )
 
 
-def _attempt_diagnostic(attempt: Attempt) -> Dict:
+def _attempt_diagnostic(attempt: Attempt, *, include_declared_contract=False,
+                        declared_contract=None) -> Dict:
     """Bounded method diagnostics for the Oracle's single repair pass.
 
     Artifact contents and digests are deliberately absent: this feedback says
@@ -2045,4 +2167,10 @@ def _attempt_diagnostic(attempt: Attempt) -> Dict:
             for redo in attempt.redos
         ],
         "terminal_reason": attempt.rejected,
+        **({"declared_method": deepcopy(declared_contract),
+            "verifier_unavailable": bool(
+                (attempt.audit or {}).get("_infra")
+                or any((redo.get("audit") or {}).get("_infra")
+                       for redo in attempt.redos))}
+           if include_declared_contract else {}),
     }

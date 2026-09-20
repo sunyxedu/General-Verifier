@@ -10,6 +10,8 @@ import signal
 import shutil
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 import tomllib
 from types import SimpleNamespace
@@ -24,6 +26,421 @@ from verifier.llm.codex_backend import (
     service_tier_cli_args,
 )
 from verifier.llm.schema import RoleError
+from verifier.llm import codex_backend as cb
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_codex_invocation(monkeypatch):
+    """Fail before spawning a model CLI if a process mock is misplaced.
+
+    Local Python process-group fixtures remain real. Test-specific Codex
+    interceptors may replace this wrapper but call it only with Python.
+    """
+    original = subprocess.Popen
+
+    def guarded(cmd, *args, **kwargs):
+        if not isinstance(cmd, str) and any(
+                isinstance(part, str) and os.path.basename(part) == "codex" for part in cmd):
+            raise AssertionError("real Codex invocation is forbidden in this unit suite")
+        return original(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.Popen", guarded)
+
+
+def _observed_synthetic_backend(tmp_path, monkeypatch, program, observer):
+    """A real local Python child replaces Codex; never a model/API call."""
+    original = subprocess.Popen
+    commands = []
+
+    def synthetic(cmd, **kwargs):
+        commands.append(cmd)
+        assert "--json" in cmd
+        assert "timeout" not in kwargs
+        out = cmd[cmd.index("-o") + 1]
+        return original([sys.executable, "-u", "-c", program, out], **kwargs)
+
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.Popen", synthetic)
+    backend = CodexBackend(roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
+                           cwd=str(tmp_path), timeout=None, phase_observer=observer)
+    backend.phase_heartbeat_seconds = 0.02
+    return backend, commands
+
+
+def test_observed_exec_drains_both_large_pipes_and_redacts_payloads(tmp_path, monkeypatch):
+    records = []
+    secret = "synthetic-secret-never-log"
+    program = r'''
+import json,os,sys,time
+with open(sys.argv[1],"w") as f: json.dump({"ok":True},f)
+def emit(value): os.write(1,(json.dumps(value)+"\n").encode())
+emit({"type":"thread.started","thread_id":"synthetic-secret-never-log"})
+emit({"type":"turn.started"})
+emit({"type":"item.started","item":{"id":"synthetic-secret-never-log","type":"command_execution","command":"synthetic-secret-never-log"}})
+os.write(2,b"synthetic-secret-never-log"*130000)
+emit({"type":"item.completed","item":{"id":"synthetic-secret-never-log","type":"command_execution","aggregated_output":"synthetic-secret-never-log"*130000}})
+time.sleep(.07)
+emit({"type":"turn.completed","usage":{}})
+'''
+    backend, commands = _observed_synthetic_backend(tmp_path, monkeypatch, program, records.append)
+    assert backend.complete("critic", secret, {}) == {"ok": True}
+    assert len(commands) == 1
+    assert secret not in json.dumps(records)
+    returned = next(row for row in records if row["phase"] == "exec_returned")
+    assert returned["stdout_bytes"] > 3_000_000 and returned["stderr_bytes"] > 3_000_000
+    assert returned["reader_failed"] is False
+    assert any(row["phase"] == "exec_heartbeat" for row in records)
+    assert any(row.get("metadata_string_values_redacted") for row in records)
+    assert returned["active_tool_items"] == 0 and returned["item_state_complete"] is True
+    assert any(row.get("item_kind") == "command_execution" for row in records)
+    assert any(row["phase"] == "exec_process_exited" for row in records)
+    assert all("thread_id" not in row and "command" not in row and "message" not in row for row in records)
+    assert all(row["role"] == "critic" for row in records)
+    assert backend._phase_roles == {}
+
+
+@pytest.mark.parametrize("command,category", [("gcc -c source.c", "compiler"),
+    ("/usr/bin/clang++ -c source.cc", "compiler"), ("cmake -S . -B build", "build"),
+    ("ninja -C build", "build"), ("python3 -m pytest", "test"), ("ctest", "test"),
+    ("python3 script.py", "other"), ("bash -lc 'gcc source.c'", "other"),
+    ("cd work && make", "other"), ("./gcc", "other"), ("/state/work/gcc", "other"),
+    ("gcc source.c; ./test", "other"), ("echo gcc", "other")])
+def test_command_metadata_categories_are_conservative_and_body_free(command, category):
+    value = cb._command_metadata({"command": command, "status": "completed", "exit_code": 0,
+                                  "aggregated_output": "汉字"})
+    assert value["command_category"] == category
+    assert value["command_sha256"] == hashlib.sha256(command.encode()).hexdigest()
+    assert value["command_output_utf8_bytes"] == 6 and value["command_exit_code"] == 0
+    assert "command" not in value and "aggregated_output" not in value and "input_bytes" not in value
+
+
+def test_command_metadata_wrong_types_unknown_exit_and_truncation(monkeypatch):
+    value = cb._command_metadata({"command": ["private"], "exit_code": True,
+                                  "status": ["private"], "aggregated_output": b"private"})
+    assert value == {"command_metadata_available": True, "command_category": "other", "command_status": "unknown"}
+    monkeypatch.setattr(cb, "_COMMAND_TEXT_LIMIT", 3)
+    value = cb._command_metadata({"command": "汉字", "aggregated_output": "\ud800"})
+    assert "command_sha256" not in value and "command_output_utf8_bytes" not in value
+    assert value["command_metadata_truncated"] is True
+
+
+def test_command_stats_distinct_completions_repeat_unknown_exit_and_boundedness(monkeypatch):
+    stats = cb._CommandStats()
+    known = cb._command_metadata({"command": "gcc fixture.c", "exit_code": 0})
+    assert stats.completed("one", known) is False
+    assert stats.completed("one", known) is True
+    stats.completed("two", cb._command_metadata({"command": "gcc fixture.c", "status": "failed"}))
+    stats.completed("three", cb._command_metadata({"command": "make", "exit_code": 127}))
+    value = stats.snapshot()
+    assert value["completed_items"] == 3 and value["fingerprinted_items"] == 3
+    assert value["unique_fingerprints"] == 2 and value["repeated_fingerprint_items"] == 1
+    assert value["max_fingerprint_repetitions"] == 2 and value["duplicate_completions"] == 1
+    assert value["success_exits"] == value["unknown_exits"] == value["nonzero_exits"] == 1
+    monkeypatch.setattr(cb, "_COMMAND_ITEM_LIMIT", 1)
+    monkeypatch.setattr(cb, "_COMMAND_COUNTER_LIMIT", 1)
+    limited = cb._CommandStats()
+    limited.completed("one", known)
+    limited.completed("two", known)
+    limited.completed("three", known)
+    assert len(limited.seen) == len(limited.fingerprints) == 1
+    value = limited.snapshot()
+    assert value["partial"] and value["saturated"] and value["truncated"] and value["untracked_completions"] == 1
+    assert value["completed_items"] == 1 and value["repeated_fingerprint_items"] == 0
+
+
+def test_missing_command_anonymous_completion_and_failed_status_without_exit_are_unknown():
+    stats = cb._CommandStats()
+    metadata = cb._command_metadata({"status": "failed"})
+    stats.completed("known-id", metadata)
+    stats.completed(None, metadata)
+    value = stats.snapshot()
+    assert value["completed_items"] == 1 and value["untracked_completions"] == 1
+    assert value["unknown_exits"] == 1 and value["nonzero_exits"] == 0
+    assert value["fingerprinted_items"] == 0 and value["partial"]
+
+
+def test_observed_command_metadata_dedups_completed_lifecycle_and_preserves_ephemeral(tmp_path, monkeypatch):
+    records = []
+    program = r'''
+import json,os,sys
+with open(sys.argv[1],"w") as f: json.dump({"ok":True},f)
+def emit(event): os.write(1,(json.dumps(event)+"\n").encode())
+emit({"type":"thread.started","thread_id":"private-id"})
+emit({"type":"turn.started"})
+for i in range(2):
+ emit({"type":"item.started","item":{"type":"command_execution","id":str(i),"command":"gcc -c private-source.c"}})
+ event={"type":"item.completed","item":{"type":"command_execution","id":str(i),"status":"completed","exit_code":0,"aggregated_output":"private-output"}}
+ emit(event)
+ if i==0: emit(event)
+emit({"type":"turn.completed"})
+'''
+    backend, commands = _observed_synthetic_backend(tmp_path, monkeypatch, program, records.append)
+    assert backend.complete("critic", "private-prompt", {"world_mode": "captured"}) == {"ok": True}
+    assert "--ephemeral" in commands[0]
+    returned = next(row for row in records if row["phase"] == "exec_returned")
+    stats = returned["command_stats"]
+    assert stats["available"] and stats["scope"] == "cli_attempt_prefix"
+    assert stats["completed_items"] == 2 and stats["repeated_fingerprint_items"] == 1
+    assert stats["duplicate_completions"] == 1 and stats["partial"]
+    completed = [row for row in records if row.get("event_type") == "item.completed"]
+    assert all(row["command_output_utf8_bytes"] == 14 for row in completed)
+    assert all(row["command_category"] == "compiler" for row in completed
+               if not row["command_duplicate_completion"])
+    assert "command_sha256" not in next(row for row in completed if row["command_duplicate_completion"])
+    assert "private-" not in json.dumps(records)
+    assert all(not any(key in row for key in ("command", "aggregated_output", "input_bytes", "prompt_bytes", "thread_id", "item_id")) for row in records)
+
+
+def test_observed_exec_handles_chunked_utf8_and_no_output_file(tmp_path, monkeypatch):
+    records = []
+    program = r'''
+import json,os,sys,time
+value={"type":"item.completed","item":{"type":"agent_message","text":json.dumps({"ok":True,"note":"汉字"},ensure_ascii=False)}}
+raw=(json.dumps(value,ensure_ascii=False)+"\n").encode()
+for index in range(0,len(raw),3):
+ os.write(1,raw[index:index+3]);time.sleep(.001)
+'''
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, records.append)
+    assert backend.complete("critic", "synthetic prompt", {})["ok"] is True
+    assert any(row.get("item_kind") == "agent_message" for row in records)
+    assert "汉字" not in json.dumps(records, ensure_ascii=False)
+
+
+def test_observed_bad_json_is_only_a_metadata_gap_with_valid_final_file(tmp_path, monkeypatch):
+    records = []
+    program = r'''
+import json,os,sys
+with open(sys.argv[1],"w") as f: json.dump({"ok":True},f)
+os.write(1,b"not json\n{broken\n{\"type\":[]}\n{\"type\":\"item.started\",\"item\":{\"type\":[]}}\n")
+'''
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, records.append)
+    assert backend.complete("critic", "synthetic prompt", {}) == {"ok": True}
+    assert backend._phase_roles == {}
+    assert next(row for row in records if row["phase"] == "exec_returned")["unparsed_stdout_lines"] == 2
+
+
+def test_phase_roles_stay_bound_to_parallel_call_ids_and_are_cleaned(tmp_path, monkeypatch):
+    records = []
+    roles = {name: SimpleNamespace(system="", schema={"ok": bool})
+             for name in ("critic", "judger")}
+    backend = CodexBackend(roles=roles, cwd=str(tmp_path), timeout=None,
+                           phase_observer=records.append)
+    barrier = threading.Barrier(2)
+    expected = {}
+    expected_lock = threading.Lock()
+
+    def simultaneous(cmd, cwd, devnull, call_id, attempt):
+        name = "critic" if cmd[-1].startswith("critic fixture") else "judger"
+        with expected_lock:
+            expected[call_id] = name
+        barrier.wait(timeout=2)  # A fixture synchronization guard, not a role deadline.
+        backend._phase(call_id, attempt, "exec_dispatch")
+        backend._phase(call_id, attempt, "exec_returned")
+        with open(cmd[cmd.index("-o") + 1], "w") as output:
+            json.dump({"ok": True}, output)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backend, "_run_observed_exec", simultaneous)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = [pool.submit(backend.complete, name, name + " fixture", {})
+                   for name in roles]
+        assert [future.result() for future in pending] == [{"ok": True}, {"ok": True}]
+    assert len(expected) == 2 and len(records) == 4
+    assert all(record["role"] == expected[record["call_id"]] for record in records)
+    assert backend._phase_roles == {}
+
+
+def test_failed_observed_call_cleans_role_and_unknown_is_not_guessed(tmp_path, monkeypatch):
+    records = []
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, 'print("not a final response")',
+                                             records.append)
+    with pytest.raises(RoleError, match="produced no output"):
+        backend.complete("critic", "synthetic fixture", {})
+    assert backend._phase_roles == {}
+    assert all(record["role"] == "critic" for record in records)
+    backend._phase("unassociated", 0, "exec_dispatch")
+    assert records[-1]["role"] == "unknown"
+
+
+def test_observer_write_failure_cannot_change_verdict(tmp_path, monkeypatch):
+    def fail(record):
+        raise OSError("synthetic-private-path-or-credential-do-not-echo")
+
+    program = 'import json,sys; json.dump({"ok":True},open(sys.argv[1],"w")); print("{\\\"type\\\":\\\"turn.started\\\"}")'
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, fail)
+    assert backend.complete("critic", "synthetic prompt", {}) == {"ok": True}
+
+
+def test_exited_cli_with_inherited_open_pipe_has_visible_drain_wait(tmp_path, monkeypatch):
+    records=[]
+    program=r'''
+import json,subprocess,sys
+with open(sys.argv[1],"w") as f: json.dump({"ok":True},f)
+subprocess.Popen([sys.executable,"-c","import time;time.sleep(.12)"],start_new_session=True)
+'''
+    backend,_=_observed_synthetic_backend(tmp_path,monkeypatch,program,records.append)
+    assert backend.complete("critic","synthetic task",{}) == {"ok":True}
+    drain=[row for row in records if row["phase"]=="pipe_drain_heartbeat"]
+    assert drain and all(row["process_running"] is False for row in drain)
+    assert all(row["wait_category"]=="pipe_drain_unknown" for row in drain)
+    phases=[row["phase"] for row in records]
+    assert phases.index("exec_process_exited") < phases.index("pipe_drain_heartbeat") < phases.index("exec_returned")
+
+
+def test_observed_backend_retries_and_backoff_are_safe_metadata(tmp_path,monkeypatch,capsys):
+    records=[]
+    backend=CodexBackend(roles={"critic":SimpleNamespace(system="",schema={"ok":bool})},
+                         cwd=str(tmp_path),timeout=None,phase_observer=records.append)
+    calls=[]
+
+    def transient_then_success(cmd,cwd,devnull,call_id,attempt):
+        calls.append(attempt)
+        if attempt==0:
+            return SimpleNamespace(returncode=1,stderr="",stdout=(
+                '{"type":"thread.started","thread_id":"synthetic"}\n'
+                '{"type":"turn.failed","error":{"message":"at capacity synthetic-secret-do-not-log"}}\n'))
+        with open(cmd[cmd.index("-o")+1],"w") as f: json.dump({"ok":True},f)
+        return SimpleNamespace(returncode=0,stdout="",stderr="")
+
+    monkeypatch.setattr(backend,"_run_observed_exec",transient_then_success)
+    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep",lambda _:None)
+    assert backend.complete("critic","synthetic",{}) == {"ok":True}
+    assert calls==[0,1]
+    phases=[row["phase"] for row in records]
+    assert phases==["backend_transient_failure","backend_backoff_started","backend_backoff_finished"]
+    assert records[1]["wait_seconds"]==15 and records[1]["retry_number"]==1
+    assert "synthetic-secret-do-not-log" not in json.dumps(records)+capsys.readouterr().err
+
+
+def test_observed_thread_event_cannot_masquerade_as_final_answer(tmp_path, monkeypatch):
+    program = 'print(\'{"type":"thread.started","thread_id":"synthetic"}\')'
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, lambda _: None)
+    with pytest.raises(RoleError, match="produced no output"):
+        backend.complete("critic", "synthetic prompt", {})
+
+
+def test_observed_backend_keeps_atomic_role_wire_lowering(tmp_path, monkeypatch):
+    from verifier.llm.agents import AgentRole
+
+    program = 'import json,sys;json.dump({"wrapped":{"ok":True}},open(sys.argv[1],"w"))'
+    records = []
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, records.append)
+    role = AgentRole("critic", "synthetic fixture", {"ok": bool},
+                     wire_schema={"wrapped": {"ok": bool}},
+                     wire_lower=lambda payload: payload["wrapped"])
+    backend.roles = {"critic": role}
+    assert backend.uses_role_wire_schema is True
+    assert role.call(backend, {}) == {"ok": True}
+    assert records and all(record["role"] == "critic" for record in records)
+
+
+def test_observed_backend_preserves_stricter_attempt_stream_policy(tmp_path, monkeypatch):
+    program = 'import json,sys;json.dump({"ok":True},open(sys.argv[1],"w"));print("synthetic policy marker")'
+    backend, _ = _observed_synthetic_backend(tmp_path, monkeypatch, program, lambda _: None)
+    inspected = []
+
+    def reject(stdout):
+        inspected.append(stdout)
+        raise RoleError("synthetic stricter role policy rejection")
+
+    monkeypatch.setattr(backend, "_validate_attempt_stream", reject)
+    with pytest.raises(RoleError, match="stricter role policy rejection"):
+        backend.complete("critic", "synthetic fixture", {})
+    assert inspected == ["synthetic policy marker\n"]
+    assert backend._phase_roles == {}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX fd-bound launch contract")
+def test_observed_launch_uses_bound_cwd_fd_not_replaced_path(tmp_path):
+    from verifier.llm.codex_backend import _BoundExecutionDirectory
+
+    original = tmp_path / "bound"
+    original.mkdir()
+    descriptor = os.open(original, os.O_RDONLY | os.O_DIRECTORY)
+    moved = tmp_path / "moved"
+    records = []
+    backend = CodexBackend(cwd=str(tmp_path), timeout=None, phase_observer=records.append)
+    try:
+        cwd = _BoundExecutionDirectory(str(original), descriptor)
+        original.rename(moved)
+        original.mkdir()  # A distinct fixture directory at the old pathname.
+        with open(os.devnull) as devnull:
+            result = backend._run_observed_exec(
+                [sys.executable, "-I", "-c", "import os;print(os.getcwd())"],
+                cwd, devnull, "synthetic-bound-cwd", 0)
+        assert result.returncode == 0 and result.stdout.strip() == str(moved)
+        assert str(moved) not in json.dumps(records)
+        assert os.fstat(descriptor).st_ino == moved.stat().st_ino
+    finally:
+        os.close(descriptor)
+
+
+def test_completed_turn_is_not_retried_for_an_earlier_recovered_error(tmp_path, monkeypatch):
+    commands = []
+    backend = CodexBackend(roles={"critic":SimpleNamespace(system="",schema={"ok":bool})},cwd=str(tmp_path))
+
+    def recover(cmd, **kwargs):
+        commands.append(cmd)
+        with open(cmd[cmd.index("-o")+1],"w") as f: json.dump({"ok":True},f)
+        return SimpleNamespace(returncode=0,stderr="",stdout=(
+            '{"type":"thread.started","thread_id":"synthetic"}\n'
+            '{"type":"error","message":"at capacity"}\n'
+            '{"type":"turn.completed","usage":{}}\n'))
+
+    monkeypatch.setattr("verifier.llm.codex_backend._run_codex_process",recover)
+    assert backend.complete("critic","synthetic",{}) == {"ok":True}
+    assert len(commands) == 1
+
+
+def test_exhausted_codex_infrastructure_does_not_repeat_generation(tmp_path, monkeypatch):
+    from verifier.llm.agents import AgentRole
+    from verifier.llm.codex_backend import TRANSIENT_RETRIES, TransientBackendError
+    calls = []
+    role = AgentRole("critic", "{statement}", {"ok":bool})
+    backend = CodexBackend(roles={"critic":role},cwd=str(tmp_path))
+
+    def capacity(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1,stderr="",stdout=(
+            '{"type":"thread.started","thread_id":"synthetic"}\n'
+            '{"type":"turn.failed","error":{"message":"at capacity"}}\n'))
+
+    monkeypatch.setattr("verifier.llm.codex_backend._run_codex_process",capacity)
+    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep",lambda _:None)
+    with pytest.raises(TransientBackendError):
+        role.call(backend,{"statement":"synthetic original task"})
+    assert len(calls) == TRANSIENT_RETRIES+1
+    assert all("previous attempt failed" not in cmd[-1] for cmd in calls)
+
+
+def test_true_schema_generation_errors_still_retry_once():
+    from verifier.llm.agents import AgentRole
+    role = AgentRole("critic", "synthetic task", {"ok":bool})
+
+    class Backend:
+        def __init__(self): self.prompts=[]
+        def complete(self, name, prompt, variables):
+            self.prompts.append(prompt)
+            return {"ok":"wrong type"} if len(self.prompts)==1 else {"ok":True}
+
+    backend=Backend()
+    assert role.call(backend,{}) == {"ok":True}
+    assert len(backend.prompts)==2 and "previous attempt failed" in backend.prompts[1]
+
+
+def test_sdk_exhaustion_preserves_the_same_non_generation_contract(monkeypatch):
+    from verifier.llm.agents import AgentBackend, AgentRole, ExhaustedInfrastructureError, _TransientSDKError
+    role=AgentRole("critic","synthetic task",{"ok":bool})
+    backend=AgentBackend(roles={"critic":role})
+    backend.transient_delays=(0,0,0)
+    prompts=[]
+
+    async def fail(seat,prompt):
+        prompts.append(prompt)
+        raise _TransientSDKError("synthetic transient transport")
+
+    monkeypatch.setattr(backend,"_attempt",fail)
+    with pytest.raises(ExhaustedInfrastructureError): role.call(backend,{})
+    assert prompts == ["synthetic task"]*3
 
 
 PNG_A = base64.b64decode(
@@ -95,8 +512,11 @@ def _sleeper_tree_command(marker, parent_sleep):
         "child=subprocess.Popen([sys.executable,'-c',sys.argv[2]],"
         "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,"
         "stderr=subprocess.DEVNULL)\n"
-        "pathlib.Path(sys.argv[1]).write_text("
+        "marker=pathlib.Path(sys.argv[1])\n"
+        "pending=marker.with_name(marker.name+'.pending')\n"
+        "pending.write_text("
         "f'{os.getpid()} {child.pid}')\n"
+        "os.replace(pending,marker)\n"
         "time.sleep(float(sys.argv[3]))\n"
     )
     return [

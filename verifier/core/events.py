@@ -53,6 +53,7 @@ EVENT_TYPES = (
     "record_frozen",
     "status_change",
     "certificate",
+    "independent_certificate",
 
     # admission screening (online economy: a claim the record settles is
     # assumed, not checked)
@@ -98,6 +99,17 @@ EVENT_TYPES = (
     
     # memory (advisory)
     "memory_recorded",
+    # Host-owned profile/evidence metadata; never accepted from hook feeds.
+    "verification_profile",
+    "cyber_candidate_registered",
+    "cyber_observation_recorded",
+    "cyber_checkpoint",
+    "cyber_candidate_delivered",
+    "cyber_candidate_delivery_rolled_back",
+    "cyber_candidate_delivery_prepared",
+    "cyber_candidate_delivery_aborted",
+    "cyber_materialized",
+    "cyber_acceptance_certified",
 )
 
 
@@ -356,6 +368,8 @@ class EventLog:
         # never interleave into a gap or a duplicate that replay rejects
         self._lock = threading.Lock()
         self._seq = self._last_seq()
+        self._sync_expected_identity = None
+        self._sync_expected_path = None
         # claim id -> absolute path of the frozen record bound to that
         # claim's verification; every seat resolves its ledger through here
         self._records: Dict[str, str] = {}
@@ -390,8 +404,66 @@ class EventLog:
             with open(self.path, "ab") as f:
                 f.write(raw)
                 f.flush()
+                # A subsequent explicit sync must persist the inode to which
+                # this writer actually appended, not a same-name replacement.
+                self._sync_expected_identity = _file_identity(os.fstat(f.fileno()))
+                self._sync_expected_path = os.path.abspath(os.fspath(self.path))
             self._seq = next_seq
         return event
+
+    def sync(self) -> None:
+        """Durably sync this ledger and its parent without following aliases.
+
+        Append stays unchanged. A caller requiring a durable host intent must
+        explicitly sync after appending, before publishing its side effect.
+        """
+        with self._lock:
+            absolute = os.path.abspath(os.fspath(self.path))
+            if (self._sync_expected_path is not None
+                    and absolute != self._sync_expected_path):
+                raise SourceProjectionUnavailable("event ledger path changed before sync")
+            raw_parent = os.path.dirname(absolute)
+            parent = os.path.realpath(raw_parent)
+            name = os.path.basename(absolute)
+            parent_fd = file_fd = -1
+            try:
+                expected_parent = os.lstat(parent)
+                parent_fd = os.open(parent, _directory_flags())
+                opened_parent = os.fstat(parent_fd)
+                if (not stat.S_ISDIR(opened_parent.st_mode)
+                        or (opened_parent.st_dev, opened_parent.st_ino)
+                        != (expected_parent.st_dev, expected_parent.st_ino)):
+                    raise SourceProjectionUnavailable("event ledger parent changed before sync")
+                expected = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1
+                        or expected.st_uid != os.geteuid()):
+                    raise SourceProjectionUnavailable("event ledger sync requires an owned private regular file")
+                file_fd = os.open(name, _file_flags(), dir_fd=parent_fd)
+                opened = os.fstat(file_fd)
+                if (_file_identity(opened) != _file_identity(expected)
+                        or (self._sync_expected_identity is not None
+                            and _file_identity(opened) != self._sync_expected_identity)):
+                    raise SourceProjectionUnavailable("event ledger changed before sync")
+                os.fsync(file_fd)
+                os.fsync(parent_fd)
+                current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                current_parent = os.stat(parent, follow_symlinks=False)
+                if (_file_identity(os.fstat(file_fd)) != _file_identity(opened)
+                        or _file_identity(current) != _file_identity(opened)
+                        or os.path.realpath(raw_parent) != parent
+                        or not stat.S_ISDIR(current_parent.st_mode)
+                        or (current_parent.st_dev, current_parent.st_ino)
+                        != (opened_parent.st_dev, opened_parent.st_ino)):
+                    raise SourceProjectionUnavailable("event ledger or parent changed during sync")
+            except SourceProjectionUnavailable:
+                raise
+            except OSError:
+                raise SourceProjectionUnavailable("event ledger cannot be safely synced") from None
+            finally:
+                if file_fd >= 0:
+                    os.close(file_fd)
+                if parent_fd >= 0:
+                    os.close(parent_fd)
 
 
     def last_seq(self) -> int:
@@ -492,12 +564,19 @@ class EventLog:
             return path in set(self._records.values())
 
     def replay(self) -> Iterator[Dict[str, Any]]:
-        if not os.path.exists(self.path):
-            return
+        # Capture a fully published prefix under the writer's lock, then read
+        # without holding it across yields. Concurrent job/status readers must
+        # neither parse a half-written event nor chase a growing file forever.
+        with self._lock:
+            try:
+                stream = open(self.path, "rb")
+            except FileNotFoundError:
+                return
+            boundary = os.fstat(stream.fileno()).st_size
         expected = 0
-        with open(self.path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+        with stream:
+            while stream.tell() < boundary:
+                line = stream.readline(boundary - stream.tell()).strip()
                 if not line:
                     continue
                 event = json.loads(line)

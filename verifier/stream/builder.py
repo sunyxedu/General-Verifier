@@ -49,6 +49,15 @@ class Builder:
             raise TraceError(f"unknown claim reference: {ref}")
         return self.labels[ref]
 
+    def claim_from_commit(self, payload: dict) -> Claim:
+        return Claim(payload["kind"], payload["text"],
+                     tuple(self.resolve(r) for r in payload.get("deps", [])),
+                     self.resolve(payload["revises"]) if payload.get("revises") else None)
+
+    def require_available_label(self, label: str, claim_id: str) -> None:
+        if label in self.labels and self.labels[label] != claim_id:
+            raise TraceError(f"claim label {label!r} is already bound")
+
     # session_start / message / stop / most verifier-side events: no graph action
     # Obligation will be in the graph, but not handled here. It's handled by the kernel.
     def feed(self, event: dict) -> None:
@@ -66,21 +75,16 @@ class Builder:
             else:
                 tool, self._pending_tool = self._pending_tool, None
             claim = Claim(CLAIM_EFFECT, effect_text(event, tool))
+            self.require_available_label(f"effect:{event['seq']}", claim.id)
             # before add_claim: an on-commit trigger verifies inside it
             self.commit_seq.setdefault(claim.id, event["seq"])
             self.store.add_claim(claim)
             self.labels[f"effect:{event['seq']}"] = claim.id
         elif etype in ("commit", "extracted_commit"):
             payload = event["payload"]
-            deps = tuple(self.resolve(r) for r in payload.get("deps", []))
-            revises = payload.get("revises")
-            claim = Claim(
-                kind=payload["kind"],
-                text=payload["text"],
-                deps=deps,
-                revises=self.resolve(revises) if revises else None,
-            )
+            claim = self.claim_from_commit(payload)
             if "label" in payload:
+                self.require_available_label(payload["label"], claim.id)
                 self.labels[payload["label"]] = claim.id
             if payload["kind"] == "final":
                 self.finals.append(claim.id)

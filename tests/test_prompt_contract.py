@@ -59,7 +59,9 @@ def test_templates_render_exactly_the_variables_the_engine_supplies():
         "refutable_by_absence", "workdir", "toolchain_dir",
         "workspace_dir", "workspace_index", "world_map",
         "snapshot_per_file_cap", "snapshot_max_files",
-        "snapshot_max_total_chars", "redo_feedback", "adapter_method"}
+        "snapshot_max_total_chars", "snapshot_raw_per_file_bytes",
+        "snapshot_raw_max_total_bytes", "snapshot_image_per_file_bytes",
+        "snapshot_image_max_total_bytes", "redo_feedback", "adapter_method"}
     assert _vars(prompts.JUDGER_TEMPLATE) >= {
         "obligation_text", "severity", "clause", "refutable_by_absence",
         "procedure", "basis", "declared_strength", "bridges",

@@ -318,6 +318,7 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
                   compact_inspection: bool = False,
                   judger_prefetch: bool = False,
                   certificate_scope: str = CERTIFICATE_SCOPE_FULL,
+                  profile: str = "default",
                   ) -> Dict[str, Any]:
     """The full identity of a scoring run's judgment: the pipeline
     fingerprint plus the resolved run configuration, as plaintext fields
@@ -421,6 +422,10 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
             "endpoint_fingerprint": content_hash(provider.ANTHROPIC_BASE_URL),
             "text_only": provider.TEXT_ONLY,
         })
+    from .profiles import get_profile
+    selected_profile = get_profile(profile)
+    if selected_profile.name != "default":
+        fields["profile_id"] = selected_profile.id
     fields["config"] = content_hash(
         {"pipeline": pipeline_fingerprint(), **fields})[:16]
     return fields
@@ -431,10 +436,11 @@ def config_id(model: Optional[str] = None, seats: Optional[str] = None,
               critic_rounds: Optional[int] = None,
               service_tier: Optional[str] = None,
               compact_inspection: bool = False,
-              judger_prefetch: bool = False) -> str:
+              judger_prefetch: bool = False,
+              profile: str = "default") -> str:
     return config_fields(
         model, seats, effort, max_rounds, critic_rounds,
-        service_tier=service_tier,
+        service_tier=service_tier, profile=profile,
         compact_inspection=compact_inspection,
         judger_prefetch=judger_prefetch,
     )["config"]
@@ -559,7 +565,8 @@ def _apply_commits(log: EventLog, commits: List[Dict[str, Any]], *,
 
 def extract(state_dir: str, backend=None, model: Optional[str] = None,
             max_rounds: int = 3,
-            stamp: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            stamp: Optional[Dict[str, Any]] = None,
+            profile: str = "default") -> Dict[str, Any]:
     """
     Reconstruct extracted-commit events for the trace in `state_dir` and write
     the full events.jsonl. Retries feed back structural errors only.
@@ -567,10 +574,18 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
     fails. On success returns (and persists to extract.json) the meta;
     `stamp` (e.g. the caller's config id) is merged into it.
     """
+    from .llm.agents import ALL_AGENT_ROLES, AgentBackend
+    from .profiles import get_profile
+
+    selected_profile = get_profile(profile)
+    roles = selected_profile.apply_roles(ALL_AGENT_ROLES)
+    extractor_role = roles["extract"]
     if backend is None:
-        from .llm.agents import AgentBackend
-        backend = AgentBackend(cwd=state_dir, model=model)
-    from .llm.agents import EXTRACT_CLAIMS_AGENT
+        backend = AgentBackend(roles=roles, cwd=state_dir, model=model)
+    elif selected_profile.name != "default":
+        backend.roles = roles
+        if selected_profile.disable_external_search and hasattr(backend, "search_roles"):
+            backend.search_roles = frozenset()
 
     input_seal = ((stamp or {}).get("immutable_input_seal")
                   or immutable_input_seal(state_dir))
@@ -578,6 +593,11 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
     candidate = os.path.join(state_dir, "events.extract.jsonl")
     task = _read(os.path.join(state_dir, "task.md"))
     final_answer = _read(os.path.join(state_dir, "final.txt"))
+    profile_pins = [
+        event["payload"]
+        for event in EventLog(os.path.join(state_dir, "events.jsonl")).replay()
+        if event["type"] == "verification_profile"
+    ]
 
     feedback, last_error = "", None
     for round_no in range(1, max_rounds + 1):
@@ -587,6 +607,10 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             os.remove(candidate)
         log = EventLog(candidate)
         ingest_feed(feed, log)
+        # Retain host-owned identity after hooks so existing effect:<seq>
+        # anchors retain their original numbering across extraction resets.
+        for pin in profile_pins:
+            log.append("verification_profile", pin)
         append_final_response(log, final_answer)
         variables = {
             "task": task,
@@ -595,11 +619,17 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
             "ledger_path": os.path.abspath(candidate),
             "feedback": feedback,
         }
+        if "{profile_context}" in extractor_role.template:
+            variables["profile_context"] = canonical({
+                "profile": selected_profile.name,
+                "profile_id": selected_profile.id,
+                "certificate_scope": "task",
+            })
         try:
             with model_scope(
                     locus="candidate_extract", stage="extract",
                     round=round_no):
-                payload = EXTRACT_CLAIMS_AGENT.call(backend, variables)
+                payload = extractor_role.call(backend, variables)
         except RoleError as err:
             last_error = feedback = str(err)
             continue
@@ -844,7 +874,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
           compact_inspection: bool = False,
           judger_prefetch: bool = False,
           restricted_judger_cwd: Optional[str] = None,
-          certificate_scope: Optional[str] = None) -> Dict[str, Any]:
+          certificate_scope: Optional[str] = None,
+          profile: str = "default") -> Dict[str, Any]:
     """
     Extract (if not already done) + certify + fold into features.
     Always returns a feature dict (unscoreable on extraction failure)
@@ -896,7 +927,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             os.makedirs(path, exist_ok=True)
     cfg = config_fields(model=model, seats=seats, effort=effort,
                         max_rounds=max_rounds, critic_rounds=critic_rounds,
-                        service_tier=service_tier,
+                        service_tier=service_tier, profile=profile,
                         compact_inspection=compact_inspection,
                         judger_prefetch=judger_prefetch,
                         certificate_scope=certificate_scope)
@@ -907,6 +938,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         raise ValueError(
             "restricted_judger_cwd requires the built-in typed Codex "
             "Judger pipeline")
+    from .profiles import get_profile
+    selected_profile = get_profile(profile)
     critic_rounds = cfg["critic_rounds"]
     fingerprint = pipeline_fingerprint()
     extract_rounds = 0
@@ -931,19 +964,24 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     backend_was_injected = backend is not None
     if seats == "codex":
         from .llm.codex_backend import CodexBackend
+        backend_type = CodexBackend
+        if selected_profile.name == "cyber":
+            from .profiles.cyber.backend import CyberCodexBackend
+            backend_type = CyberCodexBackend
         if backend is None:
             # The extraction backend never runs a Judger.  Do not give that
             # earlier stage a handle to the operator-bound Judger-only
             # scratch directory; the Kernel backend below binds it when the
             # fresh independent Judger can actually be selected.
-            backend = CodexBackend(cwd=state_dir, model=model,
+            backend = backend_type(cwd=state_dir, model=model,
                                    effort=cfg["effort"],
                                    service_tier=cfg["service_tier"],
                                    compact_inspection=cfg["compact_inspection"],
                                    judger_prefetch=cfg["judger_prefetch"],
                                    offline_toolchain_dir=toolchain_dir,
                                    offline_shared_cache_dir=cache_dir,
-                                   restricted_judger_cwd=None)
+                                   restricted_judger_cwd=None,
+                                   **({"timeout": None} if selected_profile.name == "cyber" else {}))
         elif (isinstance(backend, CodexBackend)
               and backend.service_tier != cfg["service_tier"]):
             raise ValueError(
@@ -954,7 +992,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             if restricted_judger_cwd is not None else None)
         actual_restricted_cwd = (
             backend._revalidate_restricted_judger_cwd()
-            if type(backend) is CodexBackend else None)
+            if type(backend) is backend_type else None)
         # An injected backend is an operator authority and must still carry
         # the exact declared binding.  An internally-created extraction
         # backend is deliberately unbound; the built-in Kernel factory is
@@ -1004,11 +1042,12 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         return _write_score(state_dir, invalid)
 
     precompile = None
+    builtin_codex_kernel = seats == "codex" and kernel_factory is None
     if seats == "codex":
         if kernel_factory is None:
             # One kernel backend for the whole run: the concurrent final
             # contract precompile and the kernel must share its identity.
-            kernel_backend = CodexBackend(
+            kernel_backend = backend_type(
                 cwd=state_dir, model=model,
                 effort=cfg["effort"],
                 service_tier=cfg["service_tier"],
@@ -1016,7 +1055,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                 judger_prefetch=cfg["judger_prefetch"],
                 offline_toolchain_dir=toolchain_dir,
                 offline_shared_cache_dir=cache_dir,
-                restricted_judger_cwd=restricted_judger_cwd)
+                restricted_judger_cwd=restricted_judger_cwd,
+                **({"timeout": None} if selected_profile.name == "cyber" else {}))
 
             def kernel_factory(sc):
                 from .mcp_server import _default_kernel
@@ -1026,39 +1066,61 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                     parallel_obligations=parallel_obligations,
                     parallel_claims=parallel_claims)
 
-            from .execution.config import (
-                contract_cache_enabled, final_contract_precompile_enabled,
-            )
-            # With the process-local contract cache the thread compiles only
-            # for the task's first candidate (a key nobody has published or
-            # started); later candidates' kernels hit the published entry.
-            if (final_contract_precompile_enabled()
-                    and not _has_commits(
-                        os.path.join(state_dir, "events.jsonl"))):
-                from .engine.precompile import PrecompiledFinalContract
-                from .engine.kernel import compile_roles_for_backend
-                from .execution.config import (
-                    APPEND_ONLY_DELTA_PROTOCOL, append_only_deltas_enabled,
-                )
-                from .mcp_server import harness_roles
-                roles = harness_roles(state_dir)
-                compile_role, critic_role = compile_roles_for_backend(
-                    kernel_backend, roles["obligations"], roles["critic"])
-                deltas = append_only_deltas_enabled()
-                contract_cache = None
-                if contract_cache_enabled():
-                    from .engine.contract_cache import (
-                        default_compiled_final_contract_cache,
-                    )
-                    contract_cache = default_compiled_final_contract_cache()
-                # Started before extraction so the candidate-blind contract
-                # and the Extractor run side by side; adopted by the kernel
-                # only under an identical contract key.
-                precompile = PrecompiledFinalContract.start(
-                    state_dir, kernel_backend, compile_role, critic_role,
-                    critic_rounds, deltas,
-                    APPEND_ONLY_DELTA_PROTOCOL if deltas else None,
-                    contract_cache=contract_cache)
+    # Profile-aware compilation cannot use the authority-only precompile key
+    # until that key includes the controller's verification context.
+    if builtin_codex_kernel and selected_profile.name == "default":
+        from .execution.config import contract_cache_enabled, final_contract_precompile_enabled
+        if final_contract_precompile_enabled() and not _has_commits(
+                os.path.join(state_dir, "events.jsonl")):
+            from .engine.precompile import PrecompiledFinalContract
+            from .engine.kernel import compile_roles_for_backend
+            from .execution.config import APPEND_ONLY_DELTA_PROTOCOL, append_only_deltas_enabled
+            from .mcp_server import harness_roles
+            roles = harness_roles(state_dir)
+            compile_role, critic_role = compile_roles_for_backend(
+                kernel_backend, roles["obligations"], roles["critic"])
+            deltas = append_only_deltas_enabled()
+            contract_cache = None
+            if contract_cache_enabled():
+                from .engine.contract_cache import default_compiled_final_contract_cache
+                contract_cache = default_compiled_final_contract_cache()
+            precompile = PrecompiledFinalContract.start(
+                state_dir, kernel_backend, compile_role, critic_role,
+                critic_rounds, deltas,
+                APPEND_ONLY_DELTA_PROTOCOL if deltas else None,
+                contract_cache=contract_cache)
+
+    profile_service_args = {}
+    if selected_profile.name != "default":
+        profile_service_args = {
+            "profile": selected_profile,
+            "seats": cfg["seats"],
+            "effort": cfg["effort"] if seats == "codex" else None,
+            "service_tier": cfg["service_tier"] if seats == "codex" else None,
+        }
+    events_path = os.path.join(state_dir, "events.jsonl")
+    profile_pins = [
+        event["payload"] for event in EventLog(events_path).replay()
+        if event["type"] == "verification_profile"
+    ]
+    if selected_profile.name != "default" or profile_pins:
+        # Establish/validate the host identity before creating source commits.
+        # Lazy replay does not ask any agent to judge during this preflight.
+        from .mcp_server import Service
+        from .core.store import TRIGGER_LAZY
+        preflight = Service(
+            state_dir, kernel_factory=kernel_factory, model=model,
+            trigger=TRIGGER_LAZY, live_world=False,
+            critic_rounds=critic_rounds,
+            toolchain_dir=toolchain_dir, shared_cache_dir=cache_dir,
+            parallel_obligations=parallel_obligations,
+            parallel_claims=parallel_claims, **profile_service_args,
+        )
+        profile_pins = [
+            event["payload"] for event in preflight.log.replay()
+            if event["type"] == "verification_profile"
+        ]
+        preflight.store.db.close()
 
     def run_verification() -> Dict[str, Any]:
         nonlocal extract_rounds
@@ -1067,6 +1129,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         verification_path = os.path.join(state_dir, "verification.json")
         stamp = {"fingerprint": fingerprint, "config": cfg["config"],
                  "immutable_input_seal": immutable_seal}
+        if "profile_id" in cfg:
+            stamp["profile_id"] = cfg["profile_id"]
         meta = json.loads(
             _read(extraction_path) or "{}")
         if os.path.exists(extraction_path) and (
@@ -1083,6 +1147,10 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                 path = os.path.join(state_dir, name)
                 if os.path.exists(path):
                     os.remove(path)
+            if profile_pins:
+                reset_log = EventLog(events_path)
+                for pin in profile_pins:
+                    reset_log.append("verification_profile", pin)
             shutil.rmtree(os.path.join(state_dir, RECORD_DIRECTORY),
                           ignore_errors=True)
             meta = {}
@@ -1090,7 +1158,7 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             try:
                 meta = extract(state_dir, backend=backend, model=model,
                                max_rounds=max_rounds,
-                               stamp=stamp)
+                               stamp=stamp, profile=profile)
                 extract_rounds = meta["rounds"]
             except ExtractionError as err:
                 return dict(
@@ -1127,16 +1195,19 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
                      toolchain_dir=toolchain_dir,
                      shared_cache_dir=cache_dir,
                      parallel_obligations=parallel_obligations,
-                     parallel_claims=parallel_claims)
+                     parallel_claims=parallel_claims,
+                     **profile_service_args)
         if precompile is not None:
             sc.kernel.adopt_precompiled_final_contract(precompile)
         if not sc.builder.finals:
             return dict(_unscoreable(
                 "no final claim in trace", extract_rounds, fingerprint),
                 **cfg)
+        metadata = sc._certificate_metadata(sc.builder.finals[-1])
         cert = request_certificate(
             sc.store, sc.kernel, sc.log, sc.artifacts,
-            sc.builder.finals[-1], scope=cfg["certificate_scope"])
+            sc.builder.finals[-1], scope=cfg["certificate_scope"],
+            **({"profile_metadata": metadata} if metadata is not None else {}))
         features = dict(_features(cert, extract_rounds, fingerprint), **cfg)
         features.update(_final_contract_audit(sc.log, cert))
         features["execution"] = {

@@ -729,6 +729,10 @@ def _build_policy_args(
         "-c", f"permissions.{_OFFLINE_PROFILE}.network.enabled=true",
         "-c", ("tools.web_search=true" if _search_enabled(
             plan, backend, role_name) else "tools.web_search=false"),
+        # Match the native offline policy: ignored user config cannot
+        # provide the top-level setting that actually removes web search.
+        *(() if _search_enabled(plan, backend, role_name)
+          else ("-c", 'web_search="disabled"')),
         "-c", "features.skip_host_skill_discovery=true",
         "-c", "suppress_unstable_features_warning=true",
         "-c", "project_doc_max_bytes=0",

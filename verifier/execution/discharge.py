@@ -40,10 +40,17 @@ SNAPSHOT_MAX_FILES = 200
 SNAPSHOT_MAX_TOTAL_CHARS = 2_000_000
 SNAPSHOT_IMAGE_PER_FILE_BYTES = 20 * 1024 * 1024
 SNAPSHOT_IMAGE_MAX_TOTAL_BYTES = 40 * 1024 * 1024
+# Raw bodies live in byte blobs, independently of the inline text budget.
+# Keep their bounded transport capacity consistent with raster retention.
+SNAPSHOT_RAW_PER_FILE_BYTES = 20 * 1024 * 1024
+SNAPSHOT_RAW_MAX_TOTAL_BYTES = 40 * 1024 * 1024
 # Repair material is optional. Oversized or invalid retained artifacts simply
 # leave the executor on its existing context-free redo path.
 REPAIR_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
-SNAPSHOT_MAX_PREFERRED_PATHS = 32
+# Every file that fits the snapshot's file budget can be named for priority
+# retention. A smaller hint limit silently sends later certificate records
+# behind unrelated source trees, even when the certificate itself fits.
+SNAPSHOT_MAX_PREFERRED_PATHS = SNAPSHOT_MAX_FILES
 SNAPSHOT_MAX_PREFERRED_PATH_CHARS = 4096
 
 
@@ -139,6 +146,7 @@ class AgentDischarger:
                  live_world: bool = True,
                  store=None,
                  shared_cache_dir: Optional[str] = None,
+                 context_provider=None,
                  log: Optional[EventLog] = None):
         self.backend = backend
         self.log = log if type(log) is EventLog else None
@@ -149,6 +157,7 @@ class AgentDischarger:
                                  if shared_cache_dir else None)
         self.artifacts = artifacts
         self.role = role
+        self.context_provider = context_provider or (lambda role, claim: "")
         # ClaimStore (duck-typed, optional): lets each discharge see the
         # claim's premises and the prior settled evidence in its dependency
         # closure — the evidence-workspace index. Without it the executor
@@ -410,8 +419,14 @@ class AgentDischarger:
             "world_map": world_map(self.state_dir,
                                    live_world=self.live_world),
             "snapshot_per_file_cap": SNAPSHOT_PER_FILE_CAP,
+            **({"profile_context": self.context_provider("discharge", row["id"])}
+               if "{profile_context}" in self.role.template else {}),
             "snapshot_max_files": SNAPSHOT_MAX_FILES,
             "snapshot_max_total_chars": SNAPSHOT_MAX_TOTAL_CHARS,
+            "snapshot_raw_per_file_bytes": SNAPSHOT_RAW_PER_FILE_BYTES,
+            "snapshot_raw_max_total_bytes": SNAPSHOT_RAW_MAX_TOTAL_BYTES,
+            "snapshot_image_per_file_bytes": SNAPSHOT_IMAGE_PER_FILE_BYTES,
+            "snapshot_image_max_total_bytes": SNAPSHOT_IMAGE_MAX_TOTAL_BYTES,
         }
         if self.log is not None:
             variables = bind_source_evidence_variables(
@@ -689,8 +704,11 @@ def _snapshot_envelope(
     max_files: int = SNAPSHOT_MAX_FILES,
     max_total: int = SNAPSHOT_MAX_TOTAL_CHARS,
     preferred_paths: Iterable[str] = (),
+    *,
+    raw_per_file_bytes: int = SNAPSHOT_RAW_PER_FILE_BYTES,
+    raw_max_total_bytes: int = SNAPSHOT_RAW_MAX_TOTAL_BYTES,
 ) -> Dict[str, Any]:
-    """Capture text plus exact, content-addressed raster evidence.
+    """Capture text plus exact, content-addressed raster and opaque evidence.
 
     Binary retention is additive and mechanical.  Header validation controls
     only automatic model attachment: within the byte caps, even an ineligible
@@ -698,7 +716,8 @@ def _snapshot_envelope(
     that cannot be retained is recorded as incomplete so no downstream seat
     can mistake a partial body or its digest for semantic evidence.  The
     public ``_snapshot`` wrapper preserves the established text-only helper
-    contract.
+    contract. Non-raster bodies that would lose byte identity in that text
+    view get separate bounded raw-file locators, without image attachment.
     """
     # Preserve the established snapshot byte-for-byte, including its handling
     # of text symlinks, hardlinks, replacement decoding, and truncation. Raw
@@ -824,4 +843,92 @@ def _snapshot_envelope(
     result: Dict[str, Any] = {"files": files}
     if binary_files:
         result["binary_files"] = binary_files
+    raw_files = _snapshot_raw_files(
+        workdir, artifacts, files, excluded=binary_files,
+        per_file_cap=raw_per_file_bytes, max_total=raw_max_total_bytes)
+    if raw_files:
+        result["raw_files"] = raw_files
     return result
+
+
+def _snapshot_raw_files(workdir, artifacts, files, *, excluded,
+                        per_file_cap, max_total):
+    """Retain opaque bytes when the text view cannot preserve their identity.
+
+    Inherit the selected text paths, with independent raw-body byte caps.
+    References are evidence locators only, never automatic image attachments.
+    Preserve the legacy text view; it is not a lossless raw-byte snapshot.
+    """
+    if artifacts is None:
+        return {}
+    retained = {}
+    total = 0
+    for dirpath, dirnames, filenames, directory_fd in os.fwalk(
+            workdir, follow_symlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d not in SNAPSHOT_SKIP_DIRS)
+        for filename in sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, filename), workdir)
+            if rel not in files or rel in excluded:
+                continue
+            try:
+                expected = os.stat(filename, dir_fd=directory_fd,
+                                   follow_symlinks=False)
+                if not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1:
+                    continue
+                descriptor = os.open(
+                    filename, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_NONBLOCK", 0), dir_fd=directory_fd)
+                try:
+                    before = os.fstat(descriptor)
+                    identity = lambda s: (s.st_dev, s.st_ino, s.st_mode,
+                                          s.st_nlink, s.st_size,
+                                          s.st_mtime_ns, s.st_ctime_ns)
+                    if identity(before) != identity(expected):
+                        continue
+                    incomplete = {
+                        "schema": "gv-raw-file-blob-ref-v1", "complete": False,
+                        "byte_count": before.st_size,
+                        "reason": "snapshot raw-file capacity exceeded"}
+                    if before.st_size > per_file_cap:
+                        retained[rel] = incomplete
+                        continue
+                    chunks = []
+                    read_total = 0
+                    while True:
+                        block = os.read(descriptor, min(
+                            1024 * 1024, per_file_cap + 1 - read_total))
+                        if not block:
+                            break
+                        chunks.append(block)
+                        read_total += len(block)
+                        if read_total > per_file_cap:
+                            raise OSError("snapshot raw file exceeded its byte cap")
+                    raw = b"".join(chunks)
+                    after = os.fstat(descriptor)
+                    current = os.stat(filename, dir_fd=directory_fd,
+                                      follow_symlinks=False)
+                    if (identity(before) != identity(after)
+                            or identity(before) != identity(current)
+                            or len(raw) != before.st_size):
+                        continue
+                finally:
+                    os.close(descriptor)
+                if raw == files[rel].encode("utf-8") and b"\x00" not in raw:
+                    continue
+                if total + len(raw) > max_total:
+                    retained[rel] = incomplete
+                    continue
+                try:
+                    reference = artifacts.put_blob(raw)
+                except (OSError, TypeError, ValueError) as err:
+                    retained[rel] = {**incomplete,
+                        "reason": f"snapshot raw-file retention failed: {err}"}
+                else:
+                    retained[rel] = {
+                        "schema": "gv-raw-file-blob-ref-v1", "complete": True,
+                        **reference}
+                    total += len(raw)
+            except (OSError, UnicodeError, ValueError):
+                # Do not promote links or unstable reads into exact evidence.
+                continue
+    return retained

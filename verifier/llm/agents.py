@@ -26,6 +26,7 @@ be a hard boundary.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import contextlib
 import json
 import os
@@ -37,9 +38,9 @@ from typing import Any, Callable, Dict, List, Optional
 from . import prompts
 from .model_spans import (
     role_attempt, role_span, seat_acquired, seat_released,
-    seat_wait_started, submit_with_context,
+    seat_wait_started,
 )
-from .schema import RoleError, validate, field_name, optional_key
+from .schema import RoleError, RoleTransportError, validate, field_name, optional_key
 from .oracle_execution import (
     ORACLE_EXECUTION_WIRE_SCHEMA,
     lower_oracle_execution_payload,
@@ -57,8 +58,18 @@ def _sdk():
     import claude_agent_sdk
     return claude_agent_sdk
 
+# the SDK attempts of the seat call in progress (per call, propagated to
+# the worker thread with the context): the receipt sums exactly these
+_ATTEMPT_SINK: "contextvars.ContextVar[Optional[List[Dict[str, Any]]]]" = \
+    contextvars.ContextVar("gv_attempt_sink", default=None)
+
+
 class _TransientSDKError(RuntimeError):
     """Infrastructure failure worth backing off and retrying (internal)."""
+
+
+class ExhaustedInfrastructureError(RoleError):
+    """A backend exhausted its infrastructure retries, not a generation defect."""
 
 
 # Raster formats the CLI's Read tool renders as image content blocks. On a
@@ -353,11 +364,48 @@ class AgentRole:
                         validate(self.schema, payload)
                     return payload
                 except RoleError as err:
+                    if isinstance(err, ExhaustedInfrastructureError):
+                        # The backend already exhausted provider retries.
+                        # Do not double that budget or inject provider faults
+                        # into a semantic/schema-repair prompt.
+                        raise
                     last_error = err
                     retry_feedback = (
                         f"\n\n[previous attempt failed; fix it and retry] {err}"
                     )
             raise RoleError(f"{self.name}: failed twice: {last_error}")
+
+
+class _SharedSDKLoop:
+    """Keep concurrent SDK subprocesses under one Unix child watcher."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._loop = None
+        self._thread = None
+
+    def run(self, coroutine):
+        with self._lock:
+            if self._loop is None:
+                ready = threading.Event()
+
+                def serve():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    self._loop = loop
+                    ready.set()
+                    loop.run_forever()
+
+                self._thread = threading.Thread(target=serve, daemon=True,
+                                                name="gv-claude-sdk-loop")
+                self._thread.start()
+                ready.wait()
+        if threading.current_thread() is self._thread:
+            raise RuntimeError("synchronous SDK call from its own event-loop thread")
+        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
+
+
+_SHARED_SDK_LOOP = _SharedSDKLoop()
 
 
 class AgentBackend:
@@ -378,11 +426,13 @@ class AgentBackend:
         cwd: Optional[str] = None,
         model: Optional[str] = None,
         permission_mode: str = "bypassPermissions",
+        message_observer=None,
     ):
         self.roles = dict(roles) if roles is not None else dict(ALL_AGENT_ROLES)
         self.cwd = cwd
         self.model = model
         self.permission_mode = permission_mode
+        self.message_observer = message_observer
         self.uses_role_wire_schema = True
         self.transcripts: List[Dict[str, Any]] = []
 
@@ -404,8 +454,9 @@ class AgentBackend:
         """
         Backend entry point (same signature as FixtureBackend.complete).
 
-        Loop-safe sync wrapper: callable from plain sync code AND from code executing inside a running event loop (e.g. an MCP tool handler in the MCP server).
-        In the latter case the coroutine runs on a private loop in a worker thread, because asyncio.run would raise on a running loop.
+        SDK calls share one process-wide loop: asyncio's Unix child watcher is
+        process-global, and separate loops racing to reap concurrent CLI
+        subprocesses can orphan a role transport. Calls still run concurrently.
         """
         role = self.roles.get(role_name)
         if role is None:
@@ -413,21 +464,14 @@ class AgentBackend:
         started = time.time()
         attempts: List[Dict[str, Any]] = []   # this call's SDK attempts only
         error: Optional[str] = None
+        token = _ATTEMPT_SINK.set(attempts)
         try:
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                return asyncio.run(self.run(role, prompt, attempts))
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                return submit_with_context(
-                    pool, asyncio.run,
-                    self.run(role, prompt, attempts)).result()
+            return _SHARED_SDK_LOOP.run(self.run(role, prompt))
         except Exception as err:  # noqa: BLE001 - re-raised after the receipt
             error = str(err)[:300]
             raise
         finally:
+            _ATTEMPT_SINK.reset(token)
             self._receipt(role, started, attempts, error, variables)
 
     def _receipt(self, role: AgentRole, started: float,
@@ -466,8 +510,7 @@ class AgentBackend:
     # the order of minutes, and a seat lost to it costs a whole claim
     transient_delays = (0, 20, 60, 120, 240, 480)
 
-    async def run(self, role: AgentRole, prompt: str,
-                  attempts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    async def run(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
         """
         One role run with backoff on transient infrastructure failures.
         Immediate re-prompts against a rate limit are useless (the Role-level
@@ -479,14 +522,13 @@ class AgentBackend:
             if delay:
                 await asyncio.sleep(delay)
             try:
-                return await self._attempt(role, prompt, attempts)
+                return await self._attempt(role, prompt)
             except _TransientSDKError as err:
                 last = str(err)
-        raise RoleError(f"{role.name}: transient sdk failure persisted: {last}")
+        raise ExhaustedInfrastructureError(
+            f"{role.name}: transient sdk failure persisted: {last}")
 
-    async def _attempt(self, role: AgentRole, prompt: str,
-                       attempts: Optional[List[Dict[str, Any]]] = None
-                       ) -> Dict[str, Any]:
+    async def _attempt(self, role: AgentRole, prompt: str) -> Dict[str, Any]:
         stderr_tail: List[str] = []
 
         def keep_stderr(line: str) -> None:
@@ -498,12 +540,18 @@ class AgentBackend:
         sdk = _sdk()
         result = None
         error: Optional[Exception] = None
+        observed = 0
         try:
             async for message in sdk.query(prompt=prompt, options=options):
+                if self.message_observer is not None:
+                    self.message_observer(message)
+                observed += 1
                 if isinstance(message, sdk.ResultMessage):
                     result = message
         except Exception as err:  # noqa: BLE001 - classified below
             error = err
+            if self.message_observer is not None:
+                self.message_observer({"stream_error": True, "observed_messages": observed})
 
         transcript = {
             "role": role.name,
@@ -515,10 +563,12 @@ class AgentBackend:
             "api_error_status": getattr(result, "api_error_status", None),
             "stderr_tail": list(stderr_tail),
             "error": str(error)[:300] if error is not None else None,
+            "error_type": type(error).__name__ if error is not None else None,
         }
         self.transcripts.append(transcript)
-        if attempts is not None:
-            attempts.append(transcript)
+        sink = _ATTEMPT_SINK.get(None)
+        if sink is not None:
+            sink.append(transcript)
 
         if result is not None and result.structured_output is not None and result.subtype == "success":
             payload = result.structured_output
@@ -539,6 +589,10 @@ class AgentBackend:
             # then failing also covers the non-transient case (e.g. auth).
             raise _TransientSDKError(f"{role.name}: {detail}")
         if error is not None:
+            if type(error).__name__ in ("ProcessError", "CLIConnectionError",
+                                        "CLINotFoundError", "CLIJSONDecodeError"):
+                raise RoleTransportError(
+                    f"{role.name}: sdk transport failure: {detail}") from error
             raise RoleError(f"{role.name}: sdk failure: {detail}") from error
         raise RoleError(f"{role.name}: no structured output ({detail})")
 

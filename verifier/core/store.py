@@ -18,7 +18,7 @@ import threading
 from typing import Callable, Dict, List, Optional, Set
 
 from .model import (
-    Claim, CLAIM_EFFECT, CLAIM_FINAL, OBLIGATION_KINDS,
+    Claim, CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL, OBLIGATION_KINDS,
     BASIS_RECORD, BASIS_WORLD,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_REFUTED, STATUS_STALE, STATUS_PARTIAL,
     weakest_strength,
@@ -158,8 +158,39 @@ class ClaimStore:
             self.db.commit()
         self.trigger = trigger
         self._trigger_callbacks: List[TriggerCallback] = []
+        self._independent_root_provider = None
 
     # wiring
+    @_locked
+    def set_independent_root_provider(self, provider) -> None:
+        """Inject a trusted host predicate; no claim text can select it."""
+        if provider is not None and not callable(provider):
+            raise ValueError("independent root provider must be callable")
+        self._independent_root_provider = provider
+
+    @_locked
+    def pin_independent_root(self, claim_id: str, descriptor) -> None:
+        """Freeze the host's first registration, including explicit absence.
+
+        Persisting this pin prevents a restart from promoting an already
+        conditionally settled assertion, or changing its authorization scope.
+        """
+        row = self._row(claim_id)
+        if row["kind"] != CLAIM_ASSERTION:
+            raise ValueError("independent roots require an assertion")
+        key = "independent_root:" + claim_id
+        value = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
+        existing = self.db.execute(
+            "SELECT value FROM store_metadata WHERE key=?", (key,)).fetchone()
+        if existing is not None:
+            if existing[0] != value:
+                raise ValueError("independent root registration changed")
+            return
+        if descriptor is not None and row["status"] != STATUS_UNVERIFIED:
+            raise ValueError("cannot promote an already settled ordinary assertion")
+        self.db.execute("INSERT INTO store_metadata VALUES (?,?)", (key, value))
+        self.db.commit()
+
     def on_trigger(self, cb: TriggerCallback) -> None:
         """
         Register the kernel. 
@@ -438,7 +469,13 @@ class ClaimStore:
             "open_premises": [],
             "premise_refuted": None,
         }
-        if row["kind"] == CLAIM_FINAL:
+        independent_root = False
+        if (row["kind"] == CLAIM_ASSERTION
+                and self._independent_root_provider is not None):
+            independent_root = self._independent_root_provider(claim_id)
+            if type(independent_root) is not bool:
+                raise ValueError("independent root predicate must return a boolean")
+        if row["kind"] == CLAIM_FINAL or independent_root:
             memo[claim_id] = result
             return result
 
@@ -535,6 +572,12 @@ class ClaimStore:
         for pid in obligation.premise_scope:
             if not self._exists(pid):
                 raise UnknownDependency(f"premise {pid[:12]}… not in store")
+        key = "obligation_context:" + oid
+        context = obligation.verification_context
+        retained = self.db.execute(
+            "SELECT value FROM store_metadata WHERE key=?", (key,)).fetchone()
+        if retained is not None and retained[0] != context:
+            raise ValueError("obligation verification context changed")
         cur = self.db.execute("SELECT 1 FROM claims WHERE id=?", (oid,))
         if not cur.fetchone():
             self.db.execute(
@@ -556,10 +599,20 @@ class ClaimStore:
              1 if getattr(obligation, "refutable_by_absence", False) else 0,
              getattr(obligation, "task_bearing", "unclear") or "unclear"),
         )
+        self.db.execute(
+            "INSERT OR IGNORE INTO store_metadata VALUES (?,?)", (key, context))
         self.db.commit()
         return oid
 
     @_locked
+    def obligation_verification_context(self, obligation_id: str):
+        """Read the retained node context; legacy absence is not inferred."""
+        if self._row(obligation_id)["kind"] != OBLIGATION_KINDS:
+            raise ValueError("verification context requires an obligation node")
+        retained = self.db.execute(
+            "SELECT value FROM store_metadata WHERE key=?",
+            ("obligation_context:" + obligation_id,)).fetchone()
+        return retained[0] if retained is not None else None
     def remove_obligation_edge(self, claim_id: str, obligation_id: str) -> None:
         """Drop a claim's reliance on an obligation node it no longer
         compiles to (a speculative discharge the critic's repair

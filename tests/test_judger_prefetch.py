@@ -109,6 +109,31 @@ def _document(packet):
     return json.loads(rendered)
 
 
+@pytest.mark.parametrize("raw", [b"\xff\x00\r\nopaque", b"\x00" * 65_537])
+def test_raw_file_inventory_is_a_locator_without_image_attachment(
+        tmp_path, monkeypatch, raw):
+    _state, log, artifacts, _digest = _standard_fixture(
+        tmp_path, {"input.raw": "replacement text is not the raw body"})
+    reference = {"schema": "gv-raw-file-blob-ref-v1", "complete": True,
+                 **artifacts.put_blob(raw)}
+    digest = artifacts.put({"instrument": "agent:discharge", "reported": {},
+        "files": {"input.raw": "replacement text is not the raw body"},
+        "raw_files": {"input.raw": reference}})
+    monkeypatch.setattr(prefetch, "MAX_PREFETCH_RAW_BYTES", 1)
+    packet = prefetch.build_judger_evidence_packet(artifacts, log, BASIS_WORLD, digest)
+    assert packet is not None
+    inventory = _document(packet)["sources"]["artifact"]["inventory"]
+    assert inventory["raw_files"] == [{"logical_path": "input.raw", **reference}]
+    assert packet.image_attachments() == ()
+    assert "raw_image_attachments" not in _document(packet)
+
+    reference["store_relpath"] = "../outside.blob"
+    invalid = artifacts.put({"instrument": "agent:discharge", "reported": {},
+        "files": {}, "raw_files": {"input.raw": reference}})
+    assert prefetch.build_judger_evidence_packet(
+        artifacts, log, BASIS_WORLD, invalid) is None
+
+
 def _set_test_xattr(path):
     if not hasattr(os, "setxattr"):
         pytest.skip("os.setxattr is unavailable on this Python/platform")

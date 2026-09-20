@@ -2,7 +2,7 @@
 mounted in the CURRENT directory.
 
 Usage:
-  gv [claude args...]                   # via the ~/.local/bin/gv shim
+  gv [--cyber] [claude args...]         # via the ~/.local/bin/gv shim
   uv run python gv_tui.py [claude args...]
 
 Mounts the harness for the cwd and launches `claude` there on the provider
@@ -25,6 +25,7 @@ launch on a fresh CLAUDE_CONFIG_DIR shows the one-time onboarding (theme
 pick); that's expected.
 """
 import json
+import argparse
 import os
 import sys
 
@@ -35,6 +36,26 @@ from common import solver  # noqa: E402
 
 
 def main():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--cyber", action="store_true")
+    parser.add_argument("--verifier-model", default=None)
+    parser.add_argument("--verifier-seats", choices=("sdk", "codex"), default="sdk")
+    parser.add_argument("--verifier-effort", default=None)
+    parser.add_argument("--verifier-service-tier", choices=("standard", "fast"), default=None)
+    parser.add_argument("--cyber-final-destination", default=None)
+    parser.add_argument("--cyber-evaluator-command-json", default=None)
+    parser.add_argument("--cyber-evaluator-pin", action="append", default=None)
+    args, claude_args = parser.parse_known_args()
+    try:
+        evaluator_command = (json.loads(args.cyber_evaluator_command_json)
+                             if args.cyber_evaluator_command_json is not None else None)
+        config = solver.mcp_json(args.verifier_model,
+            profile="cyber" if args.cyber else "default", seats=args.verifier_seats,
+            effort=args.verifier_effort, service_tier=args.verifier_service_tier,
+            final_destination=args.cyber_final_destination,
+            evaluator_command=evaluator_command, evaluator_pins=args.cyber_evaluator_pin)
+    except ValueError as err:
+        parser.error(str(err))
     work = os.getcwd()
     if os.path.commonpath([os.path.realpath(work), ROOT]) == ROOT:
         sys.exit("gv must be run outside the General Verifier repo "
@@ -49,7 +70,7 @@ def main():
     mcp_path = os.path.join(state, "mcp.json")
     settings_path = os.path.join(state, "settings.json")
     with open(mcp_path, "w") as f:
-        json.dump(solver.mcp_json(), f)
+        json.dump(config, f)
     with open(settings_path, "w") as f:
         json.dump(solver.SETTINGS_JSON, f)
 
@@ -61,7 +82,7 @@ def main():
         "claude",
         "--mcp-config", mcp_path, "--strict-mcp-config",
         "--settings", settings_path,
-        *sys.argv[1:],
+        *claude_args,
     ], env)
 
 

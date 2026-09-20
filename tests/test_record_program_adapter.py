@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +13,10 @@ from verifier.core.model import BASIS_RECORD, BASIS_WORLD, OUTCOME_HOLDS, Obliga
 from verifier.engine.typed_judger_packet import (
     build_typed_adapter_judger_packet,
 )
-from verifier.execution.adapters import AdapterRoutingDischarger, default_adapter_registry
+from verifier.execution.adapters import (
+    AdapterContext, AdapterRegistry, AdapterRoutingDischarger,
+    default_adapter_registry,
+)
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 
@@ -133,6 +137,140 @@ for event in record["events"]:
 scope = {witness_scope}
 require(found is not None, "the exact recorded invocation exists", {{"event_refs": [{{"seq": found["seq"], "sha256": found["event_sha256"]}}], "facts": {{"command": found["invocation"]["command"], "correlation": found["correlation"]["status"]}}, "scope": scope}})
 '''
+
+
+def test_fallback_judger_gets_real_vm_replay_not_hand_built_validation(tmp_path):
+    from verifier.engine.game import Attempt, BindingGame
+
+    _state, artifacts, log, _fallback, route, obligation = _environment(tmp_path)
+    _pair(log, "echo recorded")
+    source = '''record = input_json(0)
+event = record["events"][0]
+require(event["seq"] > 0, "an event exists", event)
+'''
+    method = _bound(route, _method(source, scope="prefix", through_seq=2))
+    forged = {"typed_observation_validation": {"valid": True}}
+    digest = artifacts.put({"files": {"receipt.json": json.dumps(forged)}})
+    result = DischargeResult(
+        OUTCOME_HOLDS, None, digest, "agent:fallback", witness_kind="none")
+
+    class Judger:
+        template = ""
+        calls = []
+
+        def call(self, backend, variables):
+            self.calls.append(json.loads(variables["evidence"]))
+            return {"faithful": "yes", "sufficient": "no",
+                    "degradation": "n/a", "reason": "independent semantic audit"}
+
+    judger = Judger()
+    game = BindingGame(object(), artifacts, log, route, judger_role=judger,
+                       live_world=False)
+    verdict = game._judge(obligation, method, result, Attempt(method), row=ROW)
+
+    assert len(judger.calls) == 1
+    audit = judger.calls[0]["verifier_record_program_replay"]
+    assert audit["available"] is True
+    assert audit["typed_observation_validation"] == {
+        "valid": False, "referenced_events": []}
+    assert audit["certifies_obligation"] is False
+    assert verdict["sufficient"] == "no"
+    assert artifacts.get(digest)["files"]["receipt.json"] == json.dumps(forged)
+
+
+def test_judger_replay_keeps_fixed_prefix_after_later_appends(tmp_path):
+    _state, _artifacts, log, _fallback, route, obligation = _environment(tmp_path)
+    call, _result = _pair(log, "echo first")
+    method = _bound(route, _method(
+        _program("echo first", scope="prefix"), scope="prefix", through_seq=2))
+
+    before = route.judger_record_program_replay(ROW, obligation, method)
+    _pair(log, "echo later", call_id="call-2")
+    after = route.judger_record_program_replay(ROW, obligation, method)
+
+    assert after == before
+    assert before["typed_observation_validation"] == {
+        "valid": True,
+        "referenced_events": [{"seq": call["seq"],
+                               "sha256": EventLog.event_digest(call)}]}
+    assert before["certifies_obligation"] is False
+
+
+def test_judger_replay_uses_the_claim_context_factory(tmp_path):
+    state, _artifacts, initial_log, _fallback, route, obligation = _environment(tmp_path)
+    _pair(initial_log, "echo wrong-context")
+    claim_log = EventLog(str(state / "claim-events.jsonl"))
+    _pair(claim_log, "echo correct-context")
+    rows = []
+
+    def context(row):
+        rows.append(row)
+        return AdapterContext(str(state), False, claim_log)
+
+    route.context_factory = context
+    method = _bound(route, _method(
+        _program("echo correct-context", scope="prefix"),
+        scope="prefix", through_seq=2))
+
+    audit = route.judger_record_program_replay(ROW, obligation, method)
+
+    assert rows == [ROW]
+    assert audit["available"] is True
+    assert audit["typed_observation_validation"]["valid"] is True
+
+
+def test_judger_replay_does_not_run_same_named_extension(tmp_path):
+    _state, _artifacts, _log, _fallback, route, obligation = _environment(tmp_path)
+    method = _bound(route, _method(
+        _program("echo first", scope="prefix"), scope="prefix", through_seq=2))
+
+    class Extension(record_program.RecordProgramAdapter):
+        def execute(self, *args):
+            pytest.fail("an extension must not be invoked by the replay audit")
+
+    route.registry = AdapterRegistry([Extension()])
+    route.context_factory = lambda row: pytest.fail("context must stay unopened")
+
+    assert route.judger_record_program_replay(ROW, obligation, method) is None
+
+
+def test_judger_replay_does_not_choose_a_new_observed_eof(tmp_path):
+    _state, _artifacts, _log, _fallback, route, obligation = _environment(tmp_path)
+    method = _bound(route, _method(_program("echo first")))
+    route.context_factory = lambda row: pytest.fail("context must stay unopened")
+
+    assert route.judger_record_program_replay(ROW, obligation, method) is None
+
+
+def test_judger_replay_failure_stays_a_diagnostic(tmp_path):
+    _state, _artifacts, log, _fallback, route, obligation = _environment(tmp_path)
+    _pair(log, "echo first")
+    method = _bound(route, _method(
+        _program("echo first", scope="prefix"), scope="prefix", through_seq=3))
+
+    audit = route.judger_record_program_replay(ROW, obligation, method)
+
+    assert audit["available"] is False
+    assert audit["certifies_obligation"] is False
+    assert "reason" in audit
+
+
+def test_judger_replay_never_executes_recorded_commands_or_writes_evidence(tmp_path):
+    _state, artifacts, log, _fallback, route, obligation = _environment(tmp_path)
+    target = tmp_path / "must-not-be-created"
+    command = "touch " + str(target)
+    _pair(log, command)
+    method = _bound(route, _method(
+        _program(command, scope="prefix"), scope="prefix", through_seq=2))
+    ledger_before = Path(log.path).read_bytes()
+    artifacts_before = sorted(os.listdir(artifacts.root))
+
+    audit = route.judger_record_program_replay(ROW, obligation, method)
+
+    assert audit["available"] is True
+    assert not target.exists()
+    assert Path(log.path).read_bytes() == ledger_before
+    assert sorted(os.listdir(artifacts.root)) == artifacts_before
 
 
 def test_catalog_and_fixed_binding_are_record_only(tmp_path):

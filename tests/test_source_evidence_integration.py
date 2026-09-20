@@ -58,7 +58,7 @@ def _assert_bound(call, raw_ledger):
     assert variables["_source_evidence_view"].revalidate()
 
 
-def test_compiler_and_critic_use_fresh_lossless_transport(tmp_path):
+def test_compiler_and_critic_use_the_same_frozen_lossless_transport(tmp_path):
     log = EventLog(str(tmp_path / "events.jsonl"))
     log.append("message", {"text": "candidate source"})
     store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
@@ -69,18 +69,21 @@ def test_compiler_and_critic_use_fresh_lossless_transport(tmp_path):
         critic_role=CRITIC_AGENT, discharger=StubDischarger(),
     )
 
-    store.add_claim(Claim(CLAIM_ASSERTION, "the retained action exists"))
+    claim = Claim(CLAIM_ASSERTION, "the retained action exists")
+    store.add_claim(claim)
 
     compiler, critic = backend.calls[:2]
     assert compiler["role"] == "obligations"
     assert critic["role"] == "critic"
-    _assert_bound(compiler, Path(log.path))
-    _assert_bound(critic, Path(log.path))
+    prefix = Path(log.record_path_for(claim.id))
+    assert prefix != Path(log.path)
+    _assert_bound(compiler, prefix)
+    _assert_bound(critic, prefix)
     assert (compiler["variables"]["_source_evidence_view"].view_id
             == critic["variables"]["_source_evidence_view"].view_id)
 
 
-def test_critic_rebinds_after_source_changes_during_compiler_attempt(tmp_path):
+def test_live_source_changes_do_not_restart_frozen_compilation(tmp_path):
     log = EventLog(str(tmp_path / "events.jsonl"))
     log.append("message", {"text": "first"})
     calls = {"compiler": 0}
@@ -108,9 +111,11 @@ def test_critic_rebinds_after_source_changes_during_compiler_attempt(tmp_path):
                       if call["role"] == "obligations"]
     critic_call = next(call for call in backend.calls
                        if call["role"] == "critic")
-    assert len(compiler_calls) == 2
+    assert len(compiler_calls) == 1
     assert (compiler_calls[-1]["variables"]["_source_evidence_view"].view_id
             == critic_call["variables"]["_source_evidence_view"].view_id)
+    view = critic_call["variables"]["_source_evidence_view"]
+    assert b'"second"' not in b"\n".join(raw for _, raw in view._files)
 
 
 def test_oracle_and_fresh_judger_receive_the_same_source_protocol(tmp_path):

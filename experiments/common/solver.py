@@ -38,12 +38,42 @@ TOOLCHAIN = os.path.expanduser("~/.cache/gv-toolchain")
 DEFAULT_TIMEOUT = None
 
 
-def mcp_json(model: str | None = None) -> dict:
+def mcp_json(model: str | None = None, *, profile: str = "default",
+             seats: str = "sdk", effort: str | None = None,
+             service_tier: str | None = None,
+             final_destination: str | None = None,
+             evaluator_command: list[str] | None = None,
+             evaluator_pins: list[str] | None = None) -> dict:
+    if profile not in ("default", "cyber"):
+        raise ValueError("unknown verification profile")
+    if seats not in ("sdk", "codex"):
+        raise ValueError("unknown verifier seats")
+    if seats != "codex" and (effort is not None or service_tier is not None):
+        raise ValueError("effort and service_tier require Codex seats")
+    if profile != "cyber" and any(value is not None for value in
+            (final_destination, evaluator_command, evaluator_pins)):
+        raise ValueError("candidate configuration requires the cyber profile")
+    if evaluator_pins and evaluator_command is None:
+        raise ValueError("evaluator pins require an evaluator command")
     args = ["run", "--project", ROOT, "python", "-m",
             "verifier.mcp_server", "--state-dir", ".gv",
             "--toolchain-dir", TOOLCHAIN]
     if model:
         args += ["--model", model]
+    if profile == "cyber":
+        args += ["--cyber"]
+        if final_destination:
+            args += ["--cyber-final-destination", final_destination]
+        if evaluator_command is not None:
+            args += ["--cyber-evaluator-command-json", json.dumps(evaluator_command)]
+        for pin in evaluator_pins or []:
+            args += ["--cyber-evaluator-pin", pin]
+    if seats != "sdk":
+        args += ["--seats", seats]
+    if effort:
+        args += ["--effort", effort]
+    if service_tier:
+        args += ["--service-tier", service_tier]
     return {"mcpServers": {"gv": {"type": "stdio", "command": "uv",
                                   "args": args}}}
 
@@ -61,13 +91,21 @@ SETTINGS_JSON = {
 
 
 def mount_gv(work: str, model: str | None = None,
-             claude_md_extra: str = "") -> None:
+             claude_md_extra: str = "", *, profile: str = "default",
+             seats: str = "sdk", effort: str | None = None,
+             service_tier: str | None = None,
+             final_destination: str | None = None,
+             evaluator_command: list[str] | None = None,
+             evaluator_pins: list[str] | None = None) -> None:
     """Write .mcp.json / .claude/settings.json into `work`. The solver
     protocol is NOT copied here: the gv server serves it as MCP server
     instructions, so it arrives with the mount and cannot drift."""
+    config = mcp_json(model, profile=profile, seats=seats, effort=effort,
+                     service_tier=service_tier, final_destination=final_destination,
+                     evaluator_command=evaluator_command, evaluator_pins=evaluator_pins)
     os.makedirs(os.path.join(work, ".claude"), exist_ok=True)
     with open(os.path.join(work, ".mcp.json"), "w") as f:
-        json.dump(mcp_json(model), f)
+        json.dump(config, f)
     with open(os.path.join(work, ".claude", "settings.json"), "w") as f:
         json.dump(SETTINGS_JSON, f)
     if claude_md_extra:

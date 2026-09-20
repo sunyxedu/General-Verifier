@@ -242,6 +242,9 @@ class Obligation:
     # Set by the kernel, never by a model. Conditional checks may share a
     # verdict only within the same set of assumable premises. Finals use ().
     premise_scope: Tuple[str, ...] = ()
+    # Host-owned verification context (profile, subject and evidence epoch).
+    # Empty keeps the original identity exactly; models cannot set this field.
+    verification_context: str = ""
 
     def __post_init__(self):
         # basis_satisfies reads any unknown value as a low floor — an
@@ -256,6 +259,8 @@ class Obligation:
             object.__setattr__(self, "task_bearing", TASK_BEARING_UNCLEAR)
         object.__setattr__(self, "premise_scope",
                            tuple(sorted(set(self.premise_scope))))
+        if not isinstance(self.verification_context, str):
+            raise ValueError("verification_context must be a string")
 
     @property
     def id(self) -> str:
@@ -265,10 +270,13 @@ class Obligation:
         evidence histories, even when the statement and floor coincide.
         Versioning also prevents reuse of legacy unscoped nodes.
         """
-        return content_hash({"schema": "gv-obligation-v2", "text": self.text,
-                             "required": self.required_basis,
-                             "refutable_by_absence": self.refutable_by_absence,
-                             "premise_scope": self.premise_scope})
+        identity = {"schema": "gv-obligation-v2", "text": self.text,
+                    "required": self.required_basis,
+                    "refutable_by_absence": self.refutable_by_absence,
+                    "premise_scope": self.premise_scope}
+        if self.verification_context:
+            identity["verification_context"] = self.verification_context
+        return content_hash(identity)
 
 
 def basis_satisfies(achieved: Optional[str], required: str) -> bool:

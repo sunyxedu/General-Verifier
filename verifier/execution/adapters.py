@@ -486,6 +486,9 @@ def _same_open_file(before: os.stat_result, after: os.stat_result) -> bool:
 
 
 def _open_regular(resolved: ResolvedAddress):
+    protected = getattr(resolved, "open_regular", None)
+    if callable(protected):
+        return protected()
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -498,6 +501,21 @@ def _open_regular(resolved: ResolvedAddress):
         os.close(fd)
         raise AdapterNotApplicable("adapter requires a regular, non-symlink file")
     return fd, info
+
+
+def _lstat_address(resolved):
+    protected = getattr(resolved, "lstat", None)
+    return protected() if callable(protected) else os.lstat(resolved.host_path)
+
+
+def _address_lexists(resolved):
+    if not callable(getattr(resolved, "lstat", None)):
+        return os.path.lexists(resolved.host_path)
+    try:
+        _lstat_address(resolved)
+        return True
+    except FileNotFoundError:
+        return False
 
 
 class FileExistsAdapter(MethodAdapter):
@@ -521,7 +539,7 @@ class FileExistsAdapter(MethodAdapter):
         self.require_subject(invocation, address, WORLD_FILE_PROVENANCES)
         resolved = context.resolve(address)
         try:
-            info = os.lstat(resolved.host_path)
+            info = _lstat_address(resolved)
         except FileNotFoundError:
             observation = {"address": address, "exists": False,
                            "actual_kind": "absent",
@@ -578,7 +596,7 @@ class FileSha256Adapter(MethodAdapter):
         try:
             fd, info = _open_regular(resolved)
         except AdapterNotApplicable:
-            if not os.path.lexists(resolved.host_path):
+            if not _address_lexists(resolved):
                 observation = {"address": address, "exists": False,
                                "world_mode": resolved.mode}
                 if obligation.refutable_by_absence:
@@ -717,7 +735,7 @@ class JsonValueAdapter(MethodAdapter):
         try:
             data, identity = _read_bounded_file(resolved, self.max_bytes)
         except AdapterNotApplicable:
-            if not os.path.lexists(resolved.host_path):
+            if not _address_lexists(resolved):
                 observation = {"address": address, "exists": False,
                                "world_mode": resolved.mode}
                 if obligation.refutable_by_absence:
@@ -1223,7 +1241,7 @@ class JsonPredicateAdapter(MethodAdapter):
         try:
             data, identity = _read_bounded_file(resolved, self.max_bytes)
         except AdapterNotApplicable:
-            if not os.path.lexists(resolved.host_path):
+            if not _address_lexists(resolved):
                 observation = {"address": address, "exists": False,
                                "world_mode": resolved.mode}
                 if obligation.refutable_by_absence:
@@ -1402,7 +1420,7 @@ class TextValueAdapter(MethodAdapter):
         try:
             data, identity = _read_bounded_file(resolved, self.max_bytes)
         except AdapterNotApplicable:
-            if not os.path.lexists(resolved.host_path):
+            if not _address_lexists(resolved):
                 observation = {"address": address, "exists": False,
                                "world_mode": resolved.mode}
                 if obligation.refutable_by_absence:
@@ -2785,7 +2803,7 @@ class BrowserHtmlAdapter(MethodAdapter):
         try:
             data, identity = _read_bounded_file(resolved, self.max_bytes)
         except AdapterNotApplicable:
-            if not os.path.lexists(resolved.host_path) \
+            if not _address_lexists(resolved) \
                     and obligation.refutable_by_absence:
                 observation = {"address": address, "exists": False,
                                "world_mode": resolved.mode}
@@ -3270,6 +3288,57 @@ class AdapterRegistry:
             witness_kind=execution.witness_kind,
             inputs=invocation.inputs,
         )
+
+    def judger_record_program_replay(self, method, obligation, context_factory):
+        """Supply bounded, read-only replay data, never a semantic verdict.
+
+        Only the shipped pure record VM and an explicitly fixed prefix qualify.
+        An agent fallback may retain a hand-built receipt; its self-reported
+        normalization and validation must not substitute for the real VM.
+        Aggregate predicates with no event references remain valid candidates
+        for ordinary toolful judgment, even when typed validation is false.
+        """
+        from .record_program import RecordProgramAdapter
+
+        try:
+            invocation = AdapterInvocation.from_method(method)
+        except (AdapterNotApplicable, TypeError, ValueError):
+            return None
+        if (invocation is None
+                or (invocation.name, invocation.version) != ("record.program", 1)
+                or invocation.arguments.get("scope") != "prefix"):
+            return None
+        adapter = self._adapters.get((invocation.name, invocation.version))
+        # A same-named extension is not permission to replay arbitrary code.
+        if type(adapter) is not RecordProgramAdapter:
+            return None
+        try:
+            self._require_bound_inputs(method)
+            adapter.validate(invocation, method)
+            execution = adapter.execute(invocation, obligation, context_factory())
+            observed = execution.observation
+            return {
+                "schema": "gv-judger-record-program-replay-v1",
+                "origin": "verifier_read_only_replay",
+                "available": True,
+                "certifies_obligation": False,
+                "adapter": adapter.identity,
+                "source_sha256": observed["source_sha256"],
+                "record_scope": observed["record_scope"],
+                "projection": observed["projection"],
+                "typed_observation_validation": observed[
+                    "typed_observation_validation"],
+                "observation_sha256": content_hash(observed),
+                "assertion_count": len(observed["assertions"]),
+            }
+        except Exception as error:
+            return {
+                "schema": "gv-judger-record-program-replay-v1",
+                "origin": "verifier_read_only_replay",
+                "available": False,
+                "certifies_obligation": False,
+                "reason": str(error)[:512],
+            }
 
     def validate_evidence(
         self,
@@ -3885,13 +3954,23 @@ class AdapterRoutingDischarger:
 
     def __init__(self, fallback, registry: AdapterRegistry,
                  artifacts: ArtifactStore, log: EventLog,
-                 state_dir: str, live_world: bool = True):
+                 state_dir: str, live_world: bool = True, *, context_factory=None):
         self.fallback = fallback
         self.registry = registry
         self.artifacts = artifacts
         self.log = log
         self.context = AdapterContext(state_dir, live_world, log)
+        self.context_factory = context_factory
         self._oracle_catalog_lock = threading.Lock()
+
+    def _context_for(self, row):
+        # Deployments may narrow host operations to the same evidence boundary
+        # as their execution seat. No method or model output selects this hook.
+        return self.context_factory(row) if self.context_factory else self.context
+
+    def judger_record_program_replay(self, row, obligation, method):
+        return self.registry.judger_record_program_replay(
+            method, obligation, lambda: self._context_for(row))
 
     def adapter_catalog(self) -> str:
         return self.registry.catalog()
@@ -3964,7 +4043,7 @@ class AdapterRoutingDischarger:
         """
         try:
             result = self.registry.execute(
-                method, row, obligation, self.context, self.artifacts)
+                method, row, obligation, self._context_for(row), self.artifacts)
         except Exception as error:
             return None, str(error)
         if result is None:
@@ -4008,7 +4087,7 @@ class AdapterRoutingDischarger:
             return self.fallback.discharge(row, obligation, method, tag)
         try:
             result = self.registry.execute(
-                method, row, obligation, self.context, self.artifacts)
+                method, row, obligation, self._context_for(row), self.artifacts)
         except Exception as error:
             self._fallback_event(row, obligation, method, str(error))
             fallback_method = {**method, "adapter_fallback_reason": str(error)}

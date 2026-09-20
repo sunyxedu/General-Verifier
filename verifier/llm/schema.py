@@ -16,6 +16,10 @@ class RoleError(RuntimeError):
     pass
 
 
+class RoleTransportError(RoleError):
+    """The seat's CLI transport broke; some model actions may be unobserved."""
+
+
 # Minimal schema validation (no external deps).
 # schema: {"field": type} where type in {str, bool, int, float, list, dict},
 # {"field": [element_spec]} for a list (elements may be any spec, e.g. [str]

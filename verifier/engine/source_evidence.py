@@ -839,16 +839,21 @@ def bind_source_evidence_variables(
     if type(log) is not EventLog:
         return bound
     mixed_ledger = os.path.abspath(log.path)
-    if (bound.get("ledger_path") != mixed_ledger
-            and not log.is_record_path(bound.get("ledger_path"))):
+    locator = bound.get("ledger_path")
+    frozen = log.is_record_path(locator)
+    if locator != mixed_ledger and not frozen:
         # In particular, never replace the authority-only withheld boundary.
         return bound
     try:
-        view = build_source_evidence_view(log)
+        # Transport a frozen prefix, never the later live projection. The
+        # original locator must also survive runtime opt-out, stale-view and
+        # refresh fallback paths. Mixed/live callers keep their old semantics.
+        source_log = EventLog(locator) if frozen else log
+        view = build_source_evidence_view(source_log)
     except (OSError, ValueError, TypeError, UnicodeError, RecursionError,
             SourceEvidenceInvalid):
         return bound
-    bound["_mixed_ledger_path"] = mixed_ledger
+    bound["_mixed_ledger_path"] = os.path.abspath(source_log.path)
     bound["_source_evidence_view"] = view
     bound["ledger_path"] = view.manifest_path
     return bound
