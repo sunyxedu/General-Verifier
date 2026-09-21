@@ -1,0 +1,139 @@
+"""Harbor custom agent: Codex CLI with the full General Verifier mounted.
+
+The Codex counterpart of gv_agent.GVClaudeCode. Runs inside the task
+container exactly like the stock codex agent (same install, same headless
+`codex exec`), plus:
+
+  - the General Verifier codebase shipped to /opt/general-verifier and
+    uv-synced (gv_agent.install_payload)
+  - the gv MCP server registered in $CODEX_HOME/config.toml through
+    Harbor's own mechanism; its verifier seats run through the Codex CLI
+    on the same ChatGPT subscription (mcp_server --seats codex), from a
+    seats-only CODEX_HOME so a seat never loads the solver's MCP servers
+    or hooks
+  - Pre/PostToolUse hooks in $CODEX_HOME/hooks.json feeding
+    /gv-state/hook_feed.jsonl: Codex's hook payload carries the same
+    fields as Claude Code's, so the same hook scripts record the ledger
+  - the solver protocol installed as $CODEX_HOME/AGENTS.md, and a short
+    reminder appended to the task instruction
+
+Used via:
+  PYTHONPATH=experiments/terminal_bench harbor run \
+      -a gv_codex_agent:GVCodex -m gpt-5.6-luna ...
+"""
+import json
+import os
+import shlex
+from typing import override
+
+from harbor.environments.base import BaseEnvironment
+from harbor.models.agent.context import AgentContext
+from harbor.models.task.config import MCPServerConfig
+from harbor.models.trial.paths import EnvironmentPaths
+
+from codex_agent import TieredCodex
+from gv_agent import (GV_DEST, GV_ROOT, STATE_DIR, TOOLCHAIN, MCP_SERVER,
+                      WRAPPER_ENV_SKIP, install_payload)
+
+SEATS_HOME = "/tmp/codex-seats-home"
+
+GV_SUFFIX = (
+    "\n\nFollow the claim protocol in your AGENTS.md while you work: commit "
+    "your key intermediate conclusions as claims, commit a final claim "
+    "stating that the task above is complete, and request gv.certificate "
+    "on it before you finish."
+)
+
+
+class GVCodex(TieredCodex):
+    @staticmethod
+    @override
+    def name() -> str:
+        return "gv-codex"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Harbor writes stdio servers as `command = "<command> <args>"`;
+        # Codex reads `command` as the executable alone, so the wrapper
+        # takes no arguments and the trigger rides in as an env knob.
+        self.mcp_servers.append(MCPServerConfig(
+            name="gv", transport="stdio", command=MCP_SERVER, args=[]))
+
+    @override
+    async def install(self, environment: BaseEnvironment) -> None:
+        await super().install(environment)
+        await install_payload(self, environment)
+        model = (self.model_name or "gpt-5.6-luna").split("/")[-1]
+        effort = self._resolved_flags.get("reasoning_effort") or "medium"
+        knobs = "".join(
+            f"export {k}={shlex.quote(v)}\n"
+            for k, v in sorted(os.environ.items())
+            if k.startswith("GV_") and k not in WRAPPER_ENV_SKIP)
+        trigger = os.environ.get("GV_TRIGGER")
+        trigger_arg = f" --trigger {shlex.quote(trigger)}" if trigger else ""
+        wrapper = (
+            "#!/bin/sh\n"
+            'if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi\n'
+            'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"\n'
+            f"{knobs}"
+            # the seats' own CODEX_HOME: the solver's auth, none of its
+            # MCP servers or hooks (a seat loading the gv server would
+            # recurse into the verifier it serves)
+            f"mkdir -p {SEATS_HOME}\n"
+            f'if [ -e "$CODEX_HOME/auth.json" ]; then '
+            f'ln -sf "$(readlink -f "$CODEX_HOME/auth.json")" '
+            f"{SEATS_HOME}/auth.json; fi\n"
+            f"printf %s '' > {SEATS_HOME}/config.toml\n"
+            f"export CODEX_HOME={SEATS_HOME}\n"
+            f"exec uv run --project {GV_DEST} python -m verifier.mcp_server "
+            f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
+            f"--seats codex --model {shlex.quote(model)} "
+            f"--effort {shlex.quote(effort)}{trigger_arg}\n")
+        await self.exec_as_root(environment, command=(
+            f"printf %s {shlex.quote(wrapper)} > {MCP_SERVER} && "
+            f"chmod 755 {MCP_SERVER}"))
+
+    # -- per-run config ----------------------------------------------------
+    def _hooks_json(self) -> str:
+        hook = lambda script: {"type": "command", "timeout": 60,  # noqa: E731
+                               "command": (
+            f"GV_HOOK_FEED={STATE_DIR}/hook_feed.jsonl "
+            f"{GV_DEST}/.venv/bin/python {GV_DEST}/hooks/{script}")}
+        return json.dumps({"hooks": {
+            "PreToolUse": [{"hooks": [hook("pre_tool_use.py")]}],
+            "PostToolUse": [{"hooks": [hook("post_tool_use.py")]}],
+        }})
+
+    @override
+    def _build_register_mcp_servers_command(self) -> str | None:
+        """Harbor's setup step, extended: the hooks feature and file, and
+        the protocol as the global AGENTS.md, all inside the per-run
+        CODEX_HOME Harbor creates and removes."""
+        base = super()._build_register_mcp_servers_command() or ""
+        protocol = (GV_ROOT / "protocol" / "solver-protocol.md").read_text()
+        features = "\n[features]\nhooks = true\n"
+        return "\n".join(part for part in (
+            base,
+            f'printf %s {shlex.quote(features)} >> "$CODEX_HOME/config.toml"',
+            f'printf %s {shlex.quote(self._hooks_json())} > "$CODEX_HOME/hooks.json"',
+            f'printf %s {shlex.quote(protocol)} > "$CODEX_HOME/AGENTS.md"',
+        ) if part)
+
+    @override
+    def build_cli_flags(self) -> str:
+        # the hooks are ours, installed this run: no interactive trust
+        flags = super().build_cli_flags()
+        return (flags + " " if flags else "") + "--dangerously-bypass-hook-trust"
+
+    @override
+    async def run(self, instruction: str, environment: BaseEnvironment,
+                  context: AgentContext) -> None:
+        # harness ground truth for the verifier: verbatim task statement +
+        # pre-task snapshot of /app, both written before the solver acts
+        await self.exec_as_agent(environment, command=(
+            f"mkdir -p {STATE_DIR}; "
+            f"printf %s {shlex.quote(instruction)} > {STATE_DIR}/task.md; "
+            'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"; '
+            f"uv run --project {GV_DEST} python -m verifier.baseline "
+            f"/app {STATE_DIR}/baseline || true"))
+        await super().run(instruction + GV_SUFFIX, environment, context)

@@ -541,8 +541,22 @@ def main() -> None:
     ap.add_argument("--toolchain-dir", default=None)
     ap.add_argument("--trigger", default=TRIGGER_ON_COMMIT, choices=list(TRIGGERS),
                     help="when a claim is verified (default: at commit)")
+    ap.add_argument("--seats", default="sdk", choices=["sdk", "codex"],
+                    help="verifier seats: the Agent SDK on the configured "
+                    "provider (default) or the Codex CLI")
+    ap.add_argument("--effort", default="medium",
+                    help="codex seats' reasoning effort (default: medium)")
     args = ap.parse_args()
-    service = Service(args.state_dir, model=args.model,
+    kernel_factory = None
+    if args.seats == "codex":
+        from .llm.codex_backend import CodexBackend
+        backend = CodexBackend(cwd=args.state_dir, model=args.model,
+                               effort=args.effort)
+
+        def kernel_factory(sc):
+            return _default_kernel(sc, args.model, backend=backend)
+    service = Service(args.state_dir, kernel_factory=kernel_factory,
+                      model=args.model,
                       memory_dir=args.memory_dir,
                       toolchain_dir=args.toolchain_dir,
                       trigger=args.trigger)

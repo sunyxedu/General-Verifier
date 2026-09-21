@@ -136,7 +136,7 @@ def codex_service_agent_kwargs(service_tier):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True,
-                    choices=["plain", "gv", "turbo", "codex", "rec",
+                    choices=["plain", "gv", "gv-codex", "turbo", "codex", "rec",
                              "rec-codex"])
     ap.add_argument("--k", type=int, default=1, help="attempts per task")
     ap.add_argument("--candidates", type=int, default=3,
@@ -171,10 +171,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    if args.effort and args.arm not in ("codex", "rec-codex"):
-        ap.error("--effort is only valid for codex/rec-codex arms")
-    if args.service_tier and args.arm not in ("codex", "rec-codex"):
-        ap.error("--service-tier is only valid for codex/rec-codex arms")
+    CODEX_ARMS = ("codex", "rec-codex", "gv-codex")
+    if args.effort and args.arm not in CODEX_ARMS:
+        ap.error("--effort is only valid for codex arms")
+    if args.service_tier and args.arm not in CODEX_ARMS:
+        ap.error("--service-tier is only valid for codex arms")
     if args.artifact_root and args.arm not in ("rec", "rec-codex"):
         ap.error("--artifact-root is only valid for rec/rec-codex arms")
     tasks = read_tasks(args.tasks_file)
@@ -235,12 +236,12 @@ def main():
     # key (as ANTHROPIC_API_KEY — the endpoint accepts x-api-key) into the
     # container, and the endpoint maps claude-* aliases to deepseek-v4-flash
     # server-side, so `-m anthropic/sonnet` lands on DeepSeek too.
-    env = (dict(os.environ) if args.arm in ("codex", "rec-codex")
+    env = (dict(os.environ) if args.arm in CODEX_ARMS
            else provider.claude_env())
     claude_model = args.model or (f"anthropic/{provider.MODEL}"
                                   if provider.PROVIDER == "anthropic"
                                   else "anthropic/sonnet")
-    if args.arm not in ("codex", "rec-codex") and provider.PROVIDER == "anthropic":
+    if args.arm not in CODEX_ARMS and provider.PROVIDER == "anthropic":
         # first-party subscription auth: harbor forwards the OAuth token
         # into the container (CLAUDE_FORCE_OAUTH mirrors codex's auth
         # upload). Without a `claude setup-token` token the interactive
@@ -266,6 +267,19 @@ def main():
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
         # same subscription auth as rec-codex: harbor uploads ~/.codex/auth.json
         # into the container; an absent OPENAI_API_KEY otherwise becomes 401
+        env["CODEX_FORCE_AUTH_JSON"] = "1"
+        env.pop("OPENAI_API_KEY", None)
+    elif args.arm == "gv-codex":
+        # stock codex agent + the full General Verifier in the container;
+        # solver and verifier seats share the ChatGPT subscription auth
+        cmd += ["-a", "gv_codex_agent:GVCodex",
+                "-m", args.model or "gpt-5.6-luna",
+                "--agent-timeout-multiplier", "1000",
+                "--agent-setup-timeout-multiplier", "100",
+                "--artifact", "/gv-state"]
+        cmd += ["--ak", f"reasoning_effort={args.effort or 'medium'}"]
+        cmd += codex_service_agent_kwargs(service_tier)
+        env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
         env["CODEX_FORCE_AUTH_JSON"] = "1"
         env.pop("OPENAI_API_KEY", None)
     elif args.arm == "turbo":
@@ -319,7 +333,7 @@ def main():
                 "--artifact", "/gv-state"]
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
 
-    if args.arm not in ("codex", "rec-codex"):
+    if args.arm not in CODEX_ARMS:
         cmd += ["--ak", f"append_system_prompt={UNATTENDED_NOTE}"]
     print("[tb] " + " ".join(cmd), flush=True)
     if args.dry_run:

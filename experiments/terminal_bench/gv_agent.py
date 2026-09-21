@@ -101,6 +101,40 @@ def login_access_token(min_minutes_left: float = 75.0) -> str:
             time.sleep(min(60, left + 5))
 
 
+def make_tarball() -> str:
+    """The verifier payload shipped into a task container: the package,
+    the hooks, the solver protocol, and the project files uv syncs from."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".tgz", delete=False)
+    tmp.close()
+    cmd = ["tar", "czf", tmp.name]
+    for pat in TAR_EXCLUDES:
+        cmd += ["--exclude", pat]
+    cmd += ["-C", str(GV_ROOT)]
+    cmd += [m for m in TAR_MEMBERS if (GV_ROOT / m).exists()]
+    subprocess.run(cmd, check=True)
+    return tmp.name
+
+
+async def install_payload(agent, environment: BaseEnvironment) -> None:
+    """Ship the verifier into the container and uv-sync it: shared by every
+    GV agent family (the solver CLI differs, the verifier does not)."""
+    tarball = make_tarball()
+    await environment.upload_file(tarball, "/tmp/gv-src.tgz")
+    await agent.exec_as_root(environment, command=(
+        "set -e; "
+        f"rm -rf {GV_DEST} && mkdir -p {GV_DEST} && "
+        f"tar xzf /tmp/gv-src.tgz -C {GV_DEST} && rm /tmp/gv-src.tgz && "
+        f"mkdir -p {STATE_DIR} {TOOLCHAIN} && "
+        f"chmod -R 777 {GV_DEST} {STATE_DIR} {TOOLCHAIN}"))
+    # uv + a managed Python + the verifier's deps (mcp, claude-agent-sdk,
+    # openai). One-time per task container.
+    await agent.exec_as_agent(environment, command=(
+        'set -e; export PATH="$HOME/.local/bin:$PATH"; '
+        "command -v uv >/dev/null 2>&1 || "
+        "  (curl -LsSf https://astral.sh/uv/install.sh | sh); "
+        f"cd {GV_DEST} && uv sync"))
+
+
 def refresh_login_token() -> None:
     if os.environ.get("GV_OAUTH_FROM_LOGIN") == "1":
         os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = login_access_token()
@@ -141,36 +175,12 @@ class GVClaudeCode(ClaudeCode):
 
     # -- payload -----------------------------------------------------------
     def _make_tarball(self) -> str:
-        tmp = tempfile.NamedTemporaryFile(suffix=".tgz", delete=False)
-        tmp.close()
-        cmd = ["tar", "czf", tmp.name]
-        for pat in TAR_EXCLUDES:
-            cmd += ["--exclude", pat]
-        cmd += ["-C", str(GV_ROOT)]
-        cmd += [m for m in TAR_MEMBERS if (GV_ROOT / m).exists()]
-        subprocess.run(cmd, check=True)
-        return tmp.name
+        return make_tarball()
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
         await super().install(environment)
-
-        tarball = self._make_tarball()
-        await environment.upload_file(tarball, "/tmp/gv-src.tgz")
-        await self.exec_as_root(environment, command=(
-            "set -e; "
-            f"rm -rf {GV_DEST} && mkdir -p {GV_DEST} && "
-            f"tar xzf /tmp/gv-src.tgz -C {GV_DEST} && rm /tmp/gv-src.tgz && "
-            f"mkdir -p {STATE_DIR} {TOOLCHAIN} && "
-            f"chmod -R 777 {GV_DEST} {STATE_DIR} {TOOLCHAIN}"))
-
-        # uv + a managed Python + the verifier's deps (mcp, claude-agent-sdk,
-        # openai). One-time per task container.
-        await self.exec_as_agent(environment, command=(
-            'set -e; export PATH="$HOME/.local/bin:$PATH"; '
-            "command -v uv >/dev/null 2>&1 || "
-            "  (curl -LsSf https://astral.sh/uv/install.sh | sh); "
-            f"cd {GV_DEST} && uv sync"))
+        await install_payload(self, environment)
 
         # stable entry point for the MCP registration (claude spawns it with
         # the agent user's env, so the credential env / PATH are inherited).
