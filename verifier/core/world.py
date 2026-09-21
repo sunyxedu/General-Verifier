@@ -92,6 +92,15 @@ class WorldView:
                 "the delivered world is gone and was not captured: no "
                 "current-state check of any address is possible; only "
                 "retained records and verifier-owned computation remain")
+        # every seat and every script runs from a verifier scratch
+        # directory, never from a task address: a relative path or a bare
+        # `git` invocation there reads the verifier's own state, not the
+        # world, and a check written that way "finds" nothing
+        out["working_directory"] = (
+            "the checking process runs in a verifier scratch directory, "
+            "not at any task address; address every world location "
+            "absolutely, as the task states it (mapped as above when "
+            "captured), never relative to the working directory")
         if self.note:
             out["note"] = self.note
         return out
