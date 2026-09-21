@@ -124,7 +124,9 @@ def score_many(jobs, out_path, workers=4, model=None, max_rounds=3,
             try:
                 future.result()
             except Exception as err:            # noqa: BLE001 - reported
+                import traceback
                 say(f"[{tag}] FAILED: {type(err).__name__}: {err}")
+                say("".join(traceback.format_exception(err)).rstrip())
     stop.set()
     if board is not None:
         board.close()
