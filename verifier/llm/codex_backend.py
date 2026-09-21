@@ -527,12 +527,26 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             pass
 
 
-def _run_codex_process(cmd, *, cwd, stdin, timeout):
-    """Run one CLI attempt and clean its dedicated POSIX process group."""
+# A seat's instruction travels as the positional prompt when it fits a
+# single command-line argument on every host the seats run on (Linux caps
+# one argument at 128 KiB); a longer one — an authoritative task context
+# with a large baseline manifest, say — is fed through stdin instead, which
+# the CLI reads when the prompt is `-`. Same prompt, same seat, no size
+# cliff ("Argument list too long").
+ARGV_INSTRUCTION_LIMIT = 100_000
+
+
+def _run_codex_process(cmd, *, cwd, stdin, timeout, input_text=None):
+    """Run one CLI attempt and clean its dedicated POSIX process group.
+    With ``input_text`` the prompt is written to the process's stdin (the
+    command then names `-` as its prompt); otherwise stdin is the given
+    closed handle — codex waits forever on an open, silent stdin."""
     bound_cwd = (cwd if isinstance(cwd, _BoundExecutionDirectory) else None)
     if bound_cwd is not None and os.name != "posix":
         raise OSError(
             errno.ENOTSUP, "fd-bound Codex cwd requires a POSIX host")
+    if input_text is not None:
+        stdin = subprocess.PIPE
     run_kwargs = {
         "cwd": cwd,
         "stdin": stdin,
@@ -540,6 +554,9 @@ def _run_codex_process(cmd, *, cwd, stdin, timeout):
         "text": True,
         "timeout": timeout,
     }
+    if input_text is not None:
+        run_kwargs.pop("stdin")
+        run_kwargs["input"] = input_text
     if os.name != "posix" or not hasattr(os, "killpg"):
         return subprocess.run(cmd, **run_kwargs)
 
@@ -567,7 +584,8 @@ def _run_codex_process(cmd, *, cwd, stdin, timeout):
     try:
         try:
             try:
-                stdout, stderr = proc.communicate(timeout=timeout)
+                stdout, stderr = proc.communicate(input=input_text,
+                                                  timeout=timeout)
             except subprocess.TimeoutExpired as error:
                 _kill_process_group(proc)
                 stdout, stderr = proc.communicate()
@@ -2445,9 +2463,11 @@ class CodexBackend:
             cmd.extend(policy_args)
             for path in image_paths:
                 cmd.extend(["-i", path])
+            via_stdin = (len(instruction.encode("utf-8"))
+                         > ARGV_INSTRUCTION_LIMIT)
             cmd.extend([
                 "-c", f"model_reasoning_effort={self.effort}",
-                "-o", out.name, "--", instruction,
+                "-o", out.name, "--", "-" if via_stdin else instruction,
             ])
             completed_attempt = None
             for attempt in range(TRANSIENT_RETRIES + 1):
@@ -2463,7 +2483,9 @@ class CodexBackend:
                         # stdin MUST be closed: codex otherwise waits forever.
                         proc = _run_codex_process(
                             cmd, cwd=execution_cwd, stdin=devnull,
-                            timeout=self.timeout)
+                            timeout=self.timeout,
+                            **({"input_text": instruction} if via_stdin
+                               else {}))
                 except subprocess.TimeoutExpired as error:
                     finished_at_unix_ns = time.time_ns()
                     duration_ns = (time.monotonic_ns()

@@ -1310,3 +1310,31 @@ def test_spoofed_image_extension_fails_closed(tmp_path):
     with pytest.raises(RoleError, match="spoofed captured image"):
         CodexBackend(cwd=str(tmp_path))._captured_images(
             "discharge", variables)
+
+
+def test_a_long_instruction_travels_through_stdin(tmp_path, monkeypatch):
+    """A prompt longer than one command-line argument may hold is fed to
+    codex on stdin (prompt `-`), so a large authoritative task context
+    never dies of "Argument list too long"; a short one stays positional."""
+    from verifier.llm import codex_backend as cb
+    role = SimpleNamespace(system="", schema={"ok": bool})
+    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path),
+                           model="gpt-5.6-luna")
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append((cmd, kwargs.get("input_text")))
+        with open(cmd[cmd.index("-o") + 1], "w", encoding="utf-8") as handle:
+            json.dump({"ok": True}, handle)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(cb, "_run_codex_process", fake_run)
+    long_prompt = "x" * (cb.ARGV_INSTRUCTION_LIMIT + 10)
+    assert backend.complete("critic", long_prompt, {}) == {"ok": True}
+    cmd, fed = seen[-1]
+    assert cmd[-2:] == ["--", "-"]
+    assert fed is not None and long_prompt in fed
+
+    assert backend.complete("critic", "short prompt", {}) == {"ok": True}
+    cmd, fed = seen[-1]
+    assert cmd[-2] == "--" and "short prompt" in cmd[-1] and fed is None
