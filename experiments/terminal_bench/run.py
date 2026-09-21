@@ -264,6 +264,10 @@ def main():
             cmd += ["--ak", f"reasoning_effort={args.effort}"]
         cmd += codex_service_agent_kwargs(service_tier)
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
+        # same subscription auth as rec-codex: harbor uploads ~/.codex/auth.json
+        # into the container; an absent OPENAI_API_KEY otherwise becomes 401
+        env["CODEX_FORCE_AUTH_JSON"] = "1"
+        env.pop("OPENAI_API_KEY", None)
     elif args.arm == "turbo":
         # stock claude-code agent; every model call goes through the
         # host-side TurboAgent proxy (harbor forwards ANTHROPIC_BASE_URL
