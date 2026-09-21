@@ -94,10 +94,13 @@ class GVCodex(TieredCodex):
             f'[ -e {SEATS_HOME}/config.toml ] || printf %s "" > {SEATS_HOME}/config.toml\n'
             f'export HOME="${{HOME:-/root}}"\n'
             f"export CODEX_HOME={SEATS_HOME}\n"
+            # the server's stderr is otherwise lost with the per-run
+            # CODEX_HOME; keep it beside the ledger for diagnosis
             f"exec uv run --project {GV_DEST} python -m verifier.mcp_server "
             f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
             f"--seats codex --model {shlex.quote(model)} "
-            f"--effort {shlex.quote(effort)}{trigger_arg}\n")
+            f"--effort {shlex.quote(effort)}{trigger_arg} "
+            f"2>>{STATE_DIR}/mcp_server.stderr\n")
         await self.exec_as_root(environment, command=(
             f"printf %s {shlex.quote(wrapper)} > {MCP_SERVER} && "
             f"chmod 755 {MCP_SERVER}"))
