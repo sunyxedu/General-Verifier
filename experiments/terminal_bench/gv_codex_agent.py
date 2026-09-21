@@ -31,11 +31,17 @@ from harbor.models.agent.context import AgentContext
 from harbor.models.task.config import MCPServerConfig
 from harbor.models.trial.paths import EnvironmentPaths
 
+from harbor.agents.installed.codex import Codex
+
 from codex_agent import TieredCodex
 from gv_agent import (GV_DEST, GV_ROOT, STATE_DIR, TOOLCHAIN, MCP_SERVER,
                       WRAPPER_ENV_SKIP, install_payload)
 
 SEATS_HOME = "/tmp/codex-seats-home"
+# where Harbor stages the uploaded subscription auth for the run; the
+# wrapper reads it by this fixed path because Codex starts MCP servers
+# with a minimal environment (no CODEX_HOME)
+AUTH_JSON = (Codex._REMOTE_CODEX_SECRETS_DIR / "auth.json").as_posix()
 
 GV_SUFFIX = (
     "\n\nFollow the claim protocol in your AGENTS.md while you work: commit "
@@ -80,10 +86,13 @@ class GVCodex(TieredCodex):
             # MCP servers or hooks (a seat loading the gv server would
             # recurse into the verifier it serves)
             f"mkdir -p {SEATS_HOME}\n"
-            f'if [ -e "$CODEX_HOME/auth.json" ]; then '
-            f'ln -sf "$(readlink -f "$CODEX_HOME/auth.json")" '
+            f'if [ -e {AUTH_JSON} ]; then ln -sf {AUTH_JSON} '
+            f"{SEATS_HOME}/auth.json; "
+            f'elif [ -n "$CODEX_HOME" ] && [ -e "$CODEX_HOME/auth.json" ]; '
+            f'then ln -sf "$(readlink -f "$CODEX_HOME/auth.json")" '
             f"{SEATS_HOME}/auth.json; fi\n"
-            f"printf %s '' > {SEATS_HOME}/config.toml\n"
+            f'[ -e {SEATS_HOME}/config.toml ] || printf %s "" > {SEATS_HOME}/config.toml\n'
+            f'export HOME="${{HOME:-/root}}"\n'
             f"export CODEX_HOME={SEATS_HOME}\n"
             f"exec uv run --project {GV_DEST} python -m verifier.mcp_server "
             f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
