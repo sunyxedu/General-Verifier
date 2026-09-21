@@ -194,3 +194,22 @@ def test_store_migration_adds_basis_column(tmp_path):
 
     store = ClaimStore(path)
     assert store.get("x")["basis"] is None
+
+
+def test_an_effect_is_named_by_either_sequence_of_its_call_result_pair(tmp_path):
+    """The record shows two numbered lines per effect; a reader citing the
+    call's number means the same effect as one citing the result's."""
+    from verifier.core.events import EventLog
+    from verifier.core.store import ClaimStore
+    from verifier.stream.builder import Builder, TraceError
+    import pytest
+    log = EventLog(str(tmp_path / "events.jsonl"))
+    store = ClaimStore(str(tmp_path / "claims.sqlite"))
+    b = Builder(log, store)
+    call = log.append("tool_call", {"tool": "exec", "tool_use_id": "c1", "input": "ls"})
+    result = log.append("tool_result", {"tool": "exec", "tool_use_id": "c1", "excerpt": "a.txt"})
+    b.feed(call); b.feed(result)
+    assert b.resolve(f"effect:{call['seq']}") == b.resolve(f"effect:{result['seq']}")
+    with pytest.raises(TraceError):
+        b.resolve(f"effect:{result['seq'] + 1}")
+
