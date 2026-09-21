@@ -120,9 +120,16 @@ class GVCodex(TieredCodex):
         CODEX_HOME Harbor creates and removes."""
         base = super()._build_register_mcp_servers_command() or ""
         protocol = (GV_ROOT / "protocol" / "solver-protocol.md").read_text()
+        # a commit returns only once the claim is verified, which takes
+        # minutes; Codex's default tool call timeout (300s) would turn every
+        # verification into an error the solver never sees the result of.
+        # These keys extend Harbor's [mcp_servers.gv] table, so they must
+        # follow it directly.
+        timeouts = "tool_timeout_sec = 14400\nstartup_timeout_sec = 300\n"
         features = "\n[features]\nhooks = true\n"
         return "\n".join(part for part in (
             base,
+            f'printf %s {shlex.quote(timeouts)} >> "$CODEX_HOME/config.toml"',
             f'printf %s {shlex.quote(features)} >> "$CODEX_HOME/config.toml"',
             f'printf %s {shlex.quote(self._hooks_json())} > "$CODEX_HOME/hooks.json"',
             f'printf %s {shlex.quote(protocol)} > "$CODEX_HOME/AGENTS.md"',
