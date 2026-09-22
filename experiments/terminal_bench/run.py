@@ -241,7 +241,15 @@ def main():
     claude_model = args.model or (f"anthropic/{provider.MODEL}"
                                   if provider.PROVIDER == "anthropic"
                                   else "anthropic/sonnet")
-    if args.arm not in CODEX_ARMS and provider.PROVIDER == "anthropic":
+    if (args.arm not in CODEX_ARMS and provider.PROVIDER == "anthropic"
+            and provider.API_KEY):
+        # first-party API key: harbor forwards ANTHROPIC_API_KEY into the
+        # container; the verifier's direct seats and its CLI seats both
+        # run on it, and no subscription window applies
+        env["ANTHROPIC_API_KEY"] = provider.API_KEY
+        env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+        print("[tb] first-party API key auth", flush=True)
+    elif args.arm not in CODEX_ARMS and provider.PROVIDER == "anthropic":
         # first-party subscription auth: harbor forwards the OAuth token
         # into the container (CLAUDE_FORCE_OAUTH mirrors codex's auth
         # upload). Without a `claude setup-token` token the interactive

@@ -367,7 +367,10 @@ def _default_kernel(sc: Service, model, backend=None,
     roles = harness_roles(sc.state_dir)
     obligations = roles["obligations"]
     if backend is None:
-        backend = AgentBackend(roles=roles, cwd=sc.state_dir, model=model)
+        # the agent backend, with the tool-free roles seated on a direct
+        # model call when the configuration carries an API key
+        from .llm.direct_backend import build_backend
+        backend = build_backend(roles, cwd=sc.state_dir, model=model)
     else:
         # an injected backend (e.g. CodexBackend) still needs the
         # harness-swapped role registry — same double-registration rule
