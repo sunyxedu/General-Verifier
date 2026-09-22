@@ -135,6 +135,20 @@ async def install_payload(agent, environment: BaseEnvironment) -> None:
         f"cd {GV_DEST} && uv sync"))
 
 
+async def release_state_for_collection(agent, environment: BaseEnvironment) -> None:
+    """Make /gv-state collectable once the run is over. The verifier seals
+    its evidence pages read-only (0400 files in 0500 directories) while it
+    works; `docker cp` on the host creates each directory with that mode
+    first and then cannot write the files into it, so the pulled state
+    silently lost every sealed page. The seal has done its work by now:
+    the pulled copy is analysis material, not live evidence."""
+    try:
+        await agent.exec_as_root(environment, command=(
+            f"chmod -R u+rwX {STATE_DIR} 2>/dev/null || true"))
+    except Exception:  # noqa: BLE001 - collection is best-effort anyway
+        pass
+
+
 def refresh_login_token() -> None:
     if os.environ.get("GV_OAUTH_FROM_LOGIN") == "1":
         os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = login_access_token()
@@ -280,7 +294,10 @@ class GVClaudeCode(ClaudeCode):
             'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"; '
             f"uv run --project {GV_DEST} python -m verifier.baseline "
             f"/app {STATE_DIR}/baseline || true"))
-        await super().run(instruction + GV_SUFFIX, environment, context)
+        try:
+            await super().run(instruction + GV_SUFFIX, environment, context)
+        finally:
+            await release_state_for_collection(self, environment)
 
 
 class RecClaudeCode(GVClaudeCode):
@@ -318,4 +335,7 @@ class RecClaudeCode(GVClaudeCode):
             f"uv run --project {GV_DEST} python -m verifier.baseline "
             f"/app {STATE_DIR}/baseline || true"))
         # grandparent run: plain instruction, no protocol, no suffix
-        await ClaudeCode.run(self, instruction, environment, context)
+        try:
+            await ClaudeCode.run(self, instruction, environment, context)
+        finally:
+            await release_state_for_collection(self, environment)

@@ -36,7 +36,7 @@ from harbor.agents.installed.codex import Codex
 from codex_agent import TieredCodex
 from gv_agent import (GV_DEST, GV_ROOT, STATE_DIR, TOOLCHAIN, MCP_SERVER,
                       WRAPPER_ENV_SKIP, credential_exports, install_payload,
-                      stage_credentials)
+                      release_state_for_collection, stage_credentials)
 
 SEATS_HOME = "/tmp/codex-seats-home"
 # where Harbor stages the uploaded subscription auth for the run; the
@@ -158,4 +158,7 @@ class GVCodex(TieredCodex):
             'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"; '
             f"uv run --project {GV_DEST} python -m verifier.baseline "
             f"/app {STATE_DIR}/baseline || true"))
-        await super().run(instruction + GV_SUFFIX, environment, context)
+        try:
+            await super().run(instruction + GV_SUFFIX, environment, context)
+        finally:
+            await release_state_for_collection(self, environment)
