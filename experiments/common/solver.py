@@ -211,23 +211,101 @@ NO_WEB_CODEX_FLAGS = [
 ]
 
 
+def codex_hooks_json() -> dict:
+    """Pre/Post tool-use recording plus the certificate goal, in the payload
+    contract Codex shares with Claude Code."""
+    hook = lambda script: {"type": "command", "timeout": 60,   # noqa: E731
+                           "command": (f'GV_HOOK_FEED=.gv/hook_feed.jsonl '
+                                       f'python3 "{ROOT}/hooks/{script}"')}
+    return {"hooks": {
+        "PreToolUse": [{"hooks": [hook("pre_tool_use.py")]}],
+        "PostToolUse": [{"hooks": [hook("post_tool_use.py")]}],
+        "Stop": [{"hooks": [{"type": "command", "timeout": 60, "command": (
+            f'GV_STATE_DIR=.gv python3 "{ROOT}/hooks/stop.py"')}]}],
+    }}
+
+
+def mount_gv_codex(work: str, model: str | None = None, *,
+                   effort: str = "high", service_tier: str = "standard",
+                   seat_search: bool = True, web: bool = True) -> str:
+    """Mount the General Verifier for a Codex solver and return the
+    run-scoped CODEX_HOME.
+
+    A private CODEX_HOME is the isolation `--ignore-user-config` gives the
+    stock arms: none of the user's plugins, connectors or MCP servers reach
+    the solver, while the config we write (the gv server, the hooks feature,
+    the protocol as AGENTS.md) still loads. The real login is symlinked in.
+    """
+    home = os.path.join(work, ".codex-home")
+    os.makedirs(home, exist_ok=True)
+    auth = os.path.expanduser("~/.codex/auth.json")
+    link = os.path.join(home, "auth.json")
+    if os.path.exists(auth) and not os.path.exists(link):
+        os.symlink(os.path.realpath(auth), link)
+    args = ["run", "--project", ROOT, "python", "-m", "verifier.mcp_server",
+            "--state-dir", ".gv", "--toolchain-dir", TOOLCHAIN,
+            "--seats", "codex", "--effort", effort,
+            "--service-tier", service_tier,
+            "--seat-search", "on" if seat_search else "off"]
+    if model:
+        args += ["--model", model]
+    # TOML binds a bare key to the table that precedes it, so every
+    # top-level setting has to be written before the first table header.
+    top = []
+    tables = []
+    if not web:
+        # the solver's channels only: the gv server is spawned by Codex
+        # itself, so the verifier's seats keep the network they need
+        top += ['web_search = "disabled"', 'approval_policy = "never"']
+        tables += ["[sandbox_workspace_write]", "network_access = false", ""]
+    config = top + ["", "[mcp_servers.gv]", 'command = "uv"',
+                    "args = " + json.dumps(args),
+                    # a commit returns only once the claim is checked, which
+                    # takes minutes; Codex's 300 s default would abort every
+                    # verification
+                    "tool_timeout_sec = 14400",
+                    "startup_timeout_sec = 300",
+                    "", "[features]", "hooks = true", ""] + tables
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write("\n".join(config))
+    with open(os.path.join(home, "hooks.json"), "w") as f:
+        json.dump(codex_hooks_json(), f)
+    protocol = os.path.join(ROOT, "protocol", "solver-protocol.md")
+    with open(protocol, encoding="utf-8") as src, \
+            open(os.path.join(home, "AGENTS.md"), "w") as dst:
+        dst.write(src.read())
+    return home
+
+
 def run_codex(work: str, prompt: str, model: str | None = None,
-              timeout: int | None = DEFAULT_TIMEOUT, web: bool = True):
+              timeout: int | None = DEFAULT_TIMEOUT, web: bool = True,
+              codex_home: str | None = None):
     """Headless Codex CLI. Returns (stdout, seconds).
 
     `web=False` cuts every network channel (see NO_WEB_CODEX_FLAGS) — for
     benchmarks whose answers are published online: on an early FrontierMath
     run the solver fetched the benchmark paper and the epoch-research
     solution repo mid-task."""
-    access = (NO_WEB_CODEX_FLAGS if not web
-              else ["--dangerously-bypass-approvals-and-sandbox"])
+    if codex_home:
+        # the run-scoped home already carries the access policy (and the gv
+        # mount); --ignore-user-config here would discard it
+        access = (["--sandbox", "workspace-write",
+                   "--disable", "enable_mcp_apps"] if not web
+                  else ["--dangerously-bypass-approvals-and-sandbox"])
+        access.append("--dangerously-bypass-hook-trust")
+    else:
+        access = (NO_WEB_CODEX_FLAGS if not web
+                  else ["--dangerously-bypass-approvals-and-sandbox"])
     cmd = ["codex", "exec", *access, "--skip-git-repo-check", prompt]
     if model:
         cmd[2:2] = ["-m", model]
+    env = None
+    if codex_home:
+        env = dict(os.environ, CODEX_HOME=os.path.abspath(codex_home))
     t0 = time.time()
     try:
         proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True,
-                              timeout=timeout or None)
+                              timeout=timeout or None, env=env)
         out = proc.stdout
     except subprocess.TimeoutExpired:
         out = "<timeout>"

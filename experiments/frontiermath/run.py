@@ -8,6 +8,10 @@ Arms — every arm is ONE prompt to a solver; only the attached harness
 differs:
   --arm gv       Claude Code + full General Verifier mounted (MCP server +
                  hooks + solver protocol)
+  --arm gv-codex Codex CLI + the same General Verifier, mounted through a
+                 run-scoped CODEX_HOME (gv MCP server, hooks, protocol as
+                 AGENTS.md). Use for a codex-family solver such as
+                 gpt-5.6-luna.
   --arm turbo    Claude Code + TurboAgent, the official LLM-as-a-Verifier
                  Claude Code plugin, as shipped (proxy fans out candidates
                  per model call, logprob verifier picks; needs
@@ -71,7 +75,7 @@ finish. Report the verdict verbatim.
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True,
-                    choices=["gv", "turbo", "plain", "codex", "rec"])
+                    choices=["gv", "gv-codex", "turbo", "plain", "codex", "rec"])
     ap.add_argument("--n", type=int, default=1, help="samples per problem")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--timeout", type=int, default=0,
@@ -84,6 +88,11 @@ def main():
                     help="samples run concurrently (default 1 = serial); "
                     "codex rollout capture pairs by workdir cwd, so "
                     "parallel codex runs cannot cross-capture")
+    ap.add_argument("--seat-effort", default="high",
+                    help="the verifier seats' reasoning effort (gv-codex)")
+    ap.add_argument("--seat-tier", default="standard",
+                    choices=["standard", "fast"],
+                    help="the verifier seats' service tier (gv-codex)")
     ap.add_argument("--web", action="store_true",
                     help="allow solver web access (default OFF: the sample "
                     "problems' answers are published — a codex solver was "
@@ -110,7 +119,7 @@ def main():
     # means "the Codex CLI's default model", and the effective name is
     # recorded so results rows never claim a codex run used sonnet
     codex_model, effective_model = None, args.model
-    if args.arm == "codex":
+    if args.arm in ("codex", "gv-codex"):
         from verifier.llm.codex_backend import DEFAULT_MODEL
         codex_model = None if args.model == "sonnet" else args.model
         effective_model = codex_model or DEFAULT_MODEL
@@ -145,6 +154,27 @@ def main():
                                              timeout=args.timeout,
                                              web=args.web)
             solver.record_final(work, out)
+        elif args.arm == "gv-codex":
+            # Same system as the gv arm, driven by a codex-family solver:
+            # the harness is mounted through a run-scoped CODEX_HOME, and
+            # the task statement is the contract the final claim is
+            # adjudicated against.
+            from verifier import baseline
+            task = prompt
+            prompt += GV_SUFFIX
+            state = os.path.join(work, ".gv")
+            os.makedirs(state, exist_ok=True)
+            with open(os.path.join(state, "task.md"), "w") as f:
+                f.write(task)
+            baseline.snapshot(work, os.path.join(state, "baseline"))
+            home = solver.mount_gv_codex(
+                work, model=codex_model, effort=args.seat_effort,
+                service_tier=args.seat_tier,
+                # this benchmark publishes its problems with their answers
+                seat_search=args.web, web=args.web)
+            out, seconds = solver.run_codex(work, prompt, model=codex_model,
+                                            timeout=args.timeout,
+                                            web=args.web, codex_home=home)
         elif args.arm == "codex":
             # Ground truth + rollout capture so a codex trace scores through
             # the same offline ORM path as `rec`: codex has no recording
@@ -192,7 +222,7 @@ def main():
                "solved": matches(answer, p), "seconds": seconds,
                "workdir": work, "transcript_file": transcript_file,
                "output_tail": out[-300:]}
-        if args.arm == "gv":
+        if args.arm in ("gv", "gv-codex"):
             gvo = solver.gv_outcome(work)
             # prefer the certified final claim's answer when present
             claim_answer = parse_final(gvo["final_text"] or "")
@@ -221,7 +251,7 @@ def main():
             raise
         extra = (f" verdict={rec.get('verdict')}"
                  f" refuted={rec.get('refuted_claims')}"
-                 if args.arm == "gv" else "")
+                 if args.arm in ("gv", "gv-codex") else "")
         bar.advance(job, 1.0 if rec["solved"] else 0.0)
         bar.log(f"[fm:{args.arm} {i}/{len(todo)}] {p['id']}#{s} "
                 f"answer={str(rec['answer'])[:40]} solved={rec['solved']}"

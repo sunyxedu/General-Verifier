@@ -552,6 +552,9 @@ def main() -> None:
     ap.add_argument("--service-tier", default="standard",
                     choices=["standard", "fast"],
                     help="codex seats' service tier (default: standard)")
+    ap.add_argument("--seat-search", default="on", choices=["on", "off"],
+                    help="the seats' web_search knowledge channel; turn it "
+                         "off for a benchmark whose answers are published")
     args = ap.parse_args()
     kernel_factory = None
     if args.seats == "codex":
@@ -559,7 +562,8 @@ def main() -> None:
         from .llm.direct_backend import build_backend
         codex = CodexBackend(cwd=args.state_dir, model=args.model,
                              effort=args.effort,
-                             service_tier=args.service_tier)
+                             service_tier=args.service_tier,
+                             seat_search=args.seat_search == "on")
         backend = build_backend(harness_roles(args.state_dir),
                                 cwd=args.state_dir, model=args.model,
                                 agent=codex)

@@ -1634,6 +1634,7 @@ class CodexBackend:
                  offline_shared_cache_dir: Optional[str] = None,
                  compact_inspection: bool = False,
                  judger_prefetch: bool = False,
+                 seat_search: bool = True,
                  restricted_judger_cwd: Optional[str] = None):
         if type(compact_inspection) is not bool:
             raise ValueError("compact_inspection must be a bool")
@@ -1656,6 +1657,11 @@ class CodexBackend:
             if role_name.strip() and role_model.strip():
                 self.model_overrides[role_name.strip()] = role_model.strip()
         self.effort = effort
+        # The knowledge channel is a property of the RUN, not of the task: a
+        # benchmark whose problems and answers are published cannot let any
+        # seat reach them, so the whole set closes at once rather than per
+        # role. Part of the config identity, like every other seat setting.
+        self.seat_search = bool(seat_search)
         self.service_tier = normalize_service_tier(service_tier)
         self.timeout = timeout
         # A run-scoped transport specification, not a task-dependent rule or
@@ -1831,7 +1837,7 @@ class CodexBackend:
                 "operator-owned scope")
 
     def _search_enabled(self, role_name: str) -> bool:
-        return role_name in _SEARCH_ROLES
+        return self.seat_search and role_name in _SEARCH_ROLES
 
     def _requires_json(self) -> bool:
         return False
@@ -2416,6 +2422,7 @@ class CodexBackend:
             "model": role_model,
             "effort": self.effort,
             "service_tier": self.service_tier,
+            "seat_search": self._search_enabled(role_name),
             "compact_inspection": self.compact_inspection,
             "judger_prefetch": self.judger_prefetch,
             "judger_prefetch_protocol": self._judger_prefetch_protocol,
