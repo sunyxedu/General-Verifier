@@ -74,6 +74,24 @@ them manufactures a phantom evidence gap. Conversely, "the selected rows"
 is not a referent until the selection event and its qualifiers are
 inlined, and no later method may pick which selection was meant.
 
+**Strength / proportionality.** A secret-extraction task: the candidate
+recovered the key by running the supplied binary and wrote it to the named
+file with a shell `echo`, so the file ended in a newline. The oracle chose
+a "decisive" method that rebuilt the binary's semantics from scratch (a
+proof-producing parser, an instruction emulator, a coverage certificate)
+and added a ban on "newline removal" the obligation never stated; the
+executor spent 23 minutes building that toolchain, the judger 13 more
+auditing it, and the check refuted a correct delivery on the trailing
+byte. The task's own reference solution wrote the file the same way and
+its grader strips whitespace. Two rules came out of it, both in the
+prompts as principles: a method inherits the obligation's comparison level
+and adds no strictness of its own, and what a supplied program computes is
+decided by running it — reconstruction is the fallback when execution
+cannot be made faithful. The compiler reads a deliverable under the
+standard conventions of the kind the task names (a text file's line
+terminator, a value's canonical spelling are renderings) unless the task
+fixes the byte-level form.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,

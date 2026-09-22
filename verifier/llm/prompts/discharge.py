@@ -146,7 +146,10 @@ DISCHARGE_SYSTEM = (
     "rendering — most values admit several canonical renderings. Refuting "
     "on the absence of YOUR rendering refutes formatting, not substance: "
     "parse both sides and compare components. Same value, different "
-    "rendering = the condition HOLDS.\n"
+    "rendering = the condition HOLDS. The standard form conventions of "
+    "the artifact's kind are renderings too — the line terminator that "
+    "ends a text file, the canonical spelling of a value; they refute "
+    "only an obligation that itself fixes byte-level identity.\n"
 )
 
 DISCHARGE_TEMPLATE = (

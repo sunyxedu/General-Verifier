@@ -153,7 +153,9 @@ JUDGER_SYSTEM = (
     "for anything declared absent, and only if the witness is of an "
     "admissible kind. A refutation whose counterexample dissolves under the "
     "correct target, under semantic comparison (the same value in another "
-    "rendering), or under a reading of the task the task does not fix is "
+    "rendering, including the standard form conventions of the artifact's "
+    "kind — a text file's line terminator, a value's canonical spelling), "
+    "or under a reading of the task the task does not fix is "
     "unfaithful: send it back. So is one a careful human grader would "
     "reject on a plain reading of the task and the delivery.\n"
 )

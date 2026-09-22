@@ -309,6 +309,10 @@ class OpenAIChatTransport:
         try:
             payload = json.loads(text or "")
         except ValueError as err:
+            if finish in ("length", "max_tokens", "max_output_tokens"):
+                # the answer was cut at the budget: retry larger, not fail
+                raise OutputBudgetExhausted(
+                    f"finish_reason={finish}; truncated answer of {len(text)} chars") from err
             raise RoleError(
                 f"direct call returned non-JSON text ({finish}): {str(text)[:300]}") from err
         if not isinstance(payload, dict):
