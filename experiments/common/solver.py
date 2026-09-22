@@ -241,7 +241,11 @@ def mount_gv_codex(work: str, model: str | None = None, *,
     the solver, while the config we write (the gv server, the hooks feature,
     the protocol as AGENTS.md) still loads. The real login is symlinked in.
     """
-    home = os.path.join(work, ".codex-home")
+    # Outside the workdir: the workdir is the delivered world the verifier
+    # snapshots and preserves, and Codex's own housekeeping (sqlite WAL
+    # files, session logs) churns throughout the run — inside the world it
+    # made every honest check look like it had altered the delivery.
+    home = os.path.abspath(work).rstrip(os.sep) + ".codex-home"
     os.makedirs(home, exist_ok=True)
     auth = os.path.expanduser("~/.codex/auth.json")
     link = os.path.join(home, "auth.json")
