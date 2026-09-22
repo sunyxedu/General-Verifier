@@ -76,6 +76,7 @@ class GVCodex(TieredCodex):
         # (GV_SEAT_EFFORT), never inherited from the solver under test,
         # whose per-call latency the verification loop cannot absorb
         effort = os.environ.get("GV_SEAT_EFFORT") or "high"
+        tier = os.environ.get("GV_SEAT_SERVICE_TIER") or "standard"
         knobs = "".join(
             f"export {k}={shlex.quote(v)}\n"
             for k, v in sorted(os.environ.items())
@@ -105,7 +106,8 @@ class GVCodex(TieredCodex):
             f"exec uv run --project {GV_DEST} python -m verifier.mcp_server "
             f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
             f"--seats codex --model {shlex.quote(model)} "
-            f"--effort {shlex.quote(effort)}{trigger_arg} "
+            f"--effort {shlex.quote(effort)} "
+            f"--service-tier {shlex.quote(tier)}{trigger_arg} "
             f"2>>{STATE_DIR}/mcp_server.stderr\n")
         await self.exec_as_root(environment, command=(
             f"printf %s {shlex.quote(wrapper)} > {MCP_SERVER} && "

@@ -549,15 +549,17 @@ def main() -> None:
                     "provider (default) or the Codex CLI")
     ap.add_argument("--effort", default="medium",
                     help="codex seats' reasoning effort (default: medium)")
+    ap.add_argument("--service-tier", default="standard",
+                    choices=["standard", "fast"],
+                    help="codex seats' service tier (default: standard)")
     args = ap.parse_args()
     kernel_factory = None
     if args.seats == "codex":
         from .llm.codex_backend import CodexBackend
         from .llm.direct_backend import build_backend
         codex = CodexBackend(cwd=args.state_dir, model=args.model,
-                             effort=args.effort)
-        # tool-free roles still go direct when a transport is configured;
-        # the Codex CLI keeps every role with a palette
+                             effort=args.effort,
+                             service_tier=args.service_tier)
         backend = build_backend(harness_roles(args.state_dir),
                                 cwd=args.state_dir, model=args.model,
                                 agent=codex)

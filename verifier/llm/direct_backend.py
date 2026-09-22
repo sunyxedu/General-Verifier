@@ -467,8 +467,12 @@ def direct_seat_roles(environ: Optional[Dict[str, str]] = None) -> Set[str]:
     """Which roles run as direct model calls: GV_DIRECT_SEATS unset or
     ``default`` → the tool-free set; ``0``/``off`` → none; otherwise a
     comma-separated list of role names."""
-    env = os.environ if environ is None else environ
-    raw = (env.get(DIRECT_SEATS_ENV) or "default").strip().lower()
+    if environ is None:
+        from . import provider
+        configured = provider.cfg(DIRECT_SEATS_ENV)
+    else:
+        configured = environ.get(DIRECT_SEATS_ENV)
+    raw = (configured or "default").strip().lower()
     if raw in ("0", "off", "none", ""):
         return set()
     if raw in ("1", "default", "on"):
@@ -480,35 +484,38 @@ def direct_transport(environ: Optional[Dict[str, str]] = None):
     """The direct transport the configuration supports, or None when the
     only credential is a subscription login (which no raw API accepts)."""
     from . import provider
-    env = os.environ if environ is None else environ
-    choice = (env.get(DIRECT_PROVIDER_ENV) or "").strip().lower()
+    # The provider and its API key may be configured in the shipped .env.
+    # An injected mapping stays self-contained for tests and callers that
+    # intentionally supply a complete environment.
+    setting = (provider.cfg if environ is None else environ.get)
+    choice = (setting(DIRECT_PROVIDER_ENV) or "").strip().lower()
     if choice == "openrouter" or (not choice and provider.PROVIDER == "openrouter"):
-        key = env.get("OPENROUTER_API_KEY") or (
+        key = setting("OPENROUTER_API_KEY") or (
             provider.API_KEY if provider.PROVIDER == "openrouter" else None)
         if not key:
             return None
         return OpenAIChatTransport(
-            key, env.get(DIRECT_MODEL_ENV) or "openai/gpt-5.6-luna",
-            base_url=env.get("OPENROUTER_BASE_URL"),
-            reasoning_effort=env.get("GV_DIRECT_EFFORT") or None,
+            key, setting(DIRECT_MODEL_ENV) or "openai/gpt-5.6-luna",
+            base_url=setting("OPENROUTER_BASE_URL"),
+            reasoning_effort=setting("GV_DIRECT_EFFORT") or None,
             extra_headers={"HTTP-Referer": "https://github.com/hemlix/general-verifier",
                            "X-Title": "General Verifier"})
     if choice == "openai" or (not choice and provider.PROVIDER not in
                               ("anthropic", "deepseek", "custom")
-                              and env.get("OPENAI_API_KEY")):
-        key = env.get("OPENAI_API_KEY")
+                              and setting("OPENAI_API_KEY")):
+        key = setting("OPENAI_API_KEY")
         if not key:
             return None
         return OpenAIResponsesTransport(
-            key, env.get(DIRECT_MODEL_ENV) or "gpt-5.6-luna",
-            base_url=env.get("OPENAI_BASE_URL"),
-            reasoning_effort=env.get("GV_DIRECT_EFFORT") or None)
+            key, setting(DIRECT_MODEL_ENV) or "gpt-5.6-luna",
+            base_url=setting("OPENAI_BASE_URL"),
+            reasoning_effort=setting("GV_DIRECT_EFFORT") or None)
     if provider.PROVIDER in ("anthropic", "deepseek", "custom", "openrouter"):
         if not provider.API_KEY:
             return None   # login-only: no raw API behind an OAuth token
         auth = "authorization" if provider.PROVIDER == "openrouter" else "x-api-key"
         return AnthropicMessagesTransport(
-            provider.API_KEY, env.get(DIRECT_MODEL_ENV) or str(provider.MODEL),
+            provider.API_KEY, setting(DIRECT_MODEL_ENV) or str(provider.MODEL),
             base_url=provider.ANTHROPIC_BASE_URL, auth_header=auth)
     return None
 
