@@ -248,3 +248,25 @@ def test_environment_record_names_the_task_path_not_the_verifier_venv(tmp_path, 
     assert rec["path"] == str(fake_bin)
     assert rec["interpreters"]["python"] == str(py)
     assert "python" in rec["executables"]
+
+
+def test_world_view_names_the_task_root_for_bare_file_addresses(tmp_path):
+    """A task that says "the file chess_board.png" addresses it relative to
+    its working root; the world description must say what that root is
+    (and where it lives when captured), or a seat resolves the bare name
+    against its own state directory and reports the file absent."""
+    import json as _json
+    from verifier.core.world import load_world_view
+    state = tmp_path / "gv"; (state / "baseline").mkdir(parents=True)
+    (state / "baseline" / "manifest.json").write_text(_json.dumps(
+        {"root": "/app", "files": {}}))
+    live = load_world_view(str(state), live_world=True).describe()
+    assert live["task_root"] == "/app"
+    assert "bare file name" in live["relative_addresses"]
+    (state / "world" / "app").mkdir(parents=True)
+    (state / "world_manifest.json").write_text(_json.dumps(
+        {"captured_roots": ["/app"]}))
+    captured = load_world_view(str(state), live_world=False).describe()
+    assert captured["task_root"] == "/app"
+    assert str(state / "world" / "app") in captured["relative_addresses"]
+

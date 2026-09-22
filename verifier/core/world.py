@@ -47,6 +47,9 @@ class WorldView:
     artifacts: Tuple[Dict[str, str], ...] = ()   # explicit address map
     manifest_path: str = ""
     note: str = ""
+    # the task's working root as the pre-task baseline recorded it: a bare
+    # file name in the task statement is an address relative to it
+    task_root: str = ""
 
     def resolve(self, address: str) -> Optional[str]:
         """Host location of a task address, or None when the address is
@@ -70,6 +73,17 @@ class WorldView:
             "scheme": self.scheme,
             "captured_roots": list(self.captured_roots),
         }
+        if self.task_root:
+            host = (self.resolve(self.task_root) or self.task_root
+                    if self.mode == MODE_CAPTURED else self.task_root)
+            out["task_root"] = self.task_root
+            out["relative_addresses"] = (
+                "a task address given without a directory (a bare file "
+                f"name) lives under the task root {self.task_root}"
+                + (f", which is {host} on this host" if host != self.task_root
+                   else "")
+                + "; the verifier's own state directory is never a task "
+                "address")
         if self.mode == MODE_CAPTURED:
             out["host_root"] = self.host_root
             if self.scheme == SCHEME_FILESYSTEM:
@@ -109,13 +123,27 @@ class WorldView:
         return json.dumps(self.describe(), ensure_ascii=False, sort_keys=True)
 
 
+def _task_root(state: str) -> str:
+    """The delivered root the pre-task baseline recorded (the task's
+    working directory), as a task address; "" when no baseline exists."""
+    try:
+        with open(os.path.join(state, "baseline", "manifest.json"),
+                  encoding="utf-8") as handle:
+            root = json.load(handle).get("root") or ""
+    except (OSError, ValueError):
+        return ""
+    return str(root) if root else ""
+
+
 def load_world_view(state_dir: Optional[str],
                     live_world: bool = True) -> WorldView:
     """Build the view for a verifier state dir. A ``world/`` directory
     beside the ledger means captured; its manifest (when present) names
     the scheme and captured addresses. Otherwise live or unavailable."""
+    task_root = ""
     if state_dir:
         state = os.path.abspath(state_dir)
+        task_root = _task_root(state)
         world = os.path.join(state, "world")
         if os.path.isdir(world):
             manifest_path = os.path.join(state, "world_manifest.json")
@@ -141,8 +169,10 @@ def load_world_view(state_dir: Optional[str],
                 manifest_path=(manifest_path
                                if os.path.exists(manifest_path) else ""),
                 note=str(manifest.get("note") or ""),
+                task_root=task_root,
             )
-    return WorldView(mode=MODE_LIVE if live_world else MODE_UNAVAILABLE)
+    return WorldView(mode=MODE_LIVE if live_world else MODE_UNAVAILABLE,
+                     task_root=task_root)
 
 
 # WORLD EPOCH — a world-basis verdict is about the world as it was when
