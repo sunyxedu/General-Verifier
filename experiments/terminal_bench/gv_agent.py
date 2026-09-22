@@ -272,6 +272,12 @@ class GVClaudeCode(ClaudeCode):
                                 "hooks": [hook("pre_tool_use.py")]}],
                 "PostToolUse": [{"matcher": "*",
                                  "hooks": [hook("post_tool_use.py")]}],
+                # the certificate is a goal: the solver may not finish
+                # before the final claim is certified (hooks/stop.py)
+                "Stop": [{"hooks": [{"type": "command", "timeout": 60,
+                                     "command": (
+                    f"GV_STATE_DIR={STATE_DIR} "
+                    f"{GV_DEST}/.venv/bin/python {GV_DEST}/hooks/stop.py")}]}],
             }})
 
     @override
