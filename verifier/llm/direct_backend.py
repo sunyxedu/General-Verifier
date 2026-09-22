@@ -34,7 +34,7 @@ from .model_spans import model_call_span
 from .schema import RoleError
 
 DIRECT_SEATS_ENV = "GV_DIRECT_SEATS"
-DIRECT_PROVIDER_ENV = "GV_DIRECT_PROVIDER"     # anthropic | openai
+DIRECT_PROVIDER_ENV = "GV_DIRECT_PROVIDER"     # anthropic | openai | openrouter
 DIRECT_MODEL_ENV = "GV_DIRECT_MODEL"
 
 # the roles that need no tool: their prompt carries every input they may
@@ -63,6 +63,52 @@ EMIT_TOOL = "emit"
 
 class TransientTransportError(RuntimeError):
     """A status worth waiting out (rate limit, overload, gateway)."""
+
+
+def strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """The OpenAI-style strict JSON schema for a role schema: every
+    property required, an optional one made nullable. The role's optional
+    keys come back as null and are stripped again by
+    :func:`strip_optional_nulls`, so the payload downstream is exactly what
+    the role contract describes."""
+    if not isinstance(schema, dict):
+        return schema
+    out = dict(schema)
+    if out.get("type") == "object" and isinstance(out.get("properties"), dict):
+        required = set(out.get("required") or [])
+        props = {}
+        for key, sub in out["properties"].items():
+            sub = strict_schema(sub)
+            if key not in required:
+                sub = {"anyOf": [sub, {"type": "null"}]}
+            props[key] = sub
+        out["properties"] = props
+        out["required"] = list(out["properties"])
+        out["additionalProperties"] = False
+    if out.get("type") == "array" and isinstance(out.get("items"), dict):
+        out["items"] = strict_schema(out["items"])
+    return out
+
+
+def strip_optional_nulls(payload: Any, schema: Dict[str, Any]) -> Any:
+    """Remove the nulls a strict-mode answer carries for the role schema's
+    optional keys (recursively), leaving present values untouched."""
+    if not isinstance(schema, dict):
+        return payload
+    if (schema.get("type") == "object" and isinstance(payload, dict)
+            and isinstance(schema.get("properties"), dict)):
+        required = set(schema.get("required") or [])
+        out = {}
+        for key, value in payload.items():
+            sub = schema["properties"].get(key)
+            if value is None and sub is not None and key not in required:
+                continue
+            out[key] = strip_optional_nulls(value, sub) if sub else value
+        return out
+    if (schema.get("type") == "array" and isinstance(payload, list)
+            and isinstance(schema.get("items"), dict)):
+        return [strip_optional_nulls(item, schema["items"]) for item in payload]
+    return payload
 
 
 class AnthropicMessagesTransport:
@@ -152,7 +198,7 @@ class OpenAIResponsesTransport:
             "input": prompt,
             "max_output_tokens": max_tokens,
             "text": {"format": {"type": "json_schema", "name": EMIT_TOOL,
-                                "schema": schema, "strict": True}},
+                                "schema": strict_schema(schema), "strict": True}},
         }
         if self.reasoning_effort:
             body["reasoning"] = {"effort": self.reasoning_effort}
@@ -185,7 +231,73 @@ class OpenAIResponsesTransport:
                 f"direct call returned non-JSON text: {str(text)[:300]}") from err
         if not isinstance(payload, dict):
             raise RoleError("direct call returned a non-object answer")
-        return payload, dict(data.get("usage") or {})
+        return strip_optional_nulls(payload, schema), dict(data.get("usage") or {})
+
+
+class OpenAIChatTransport:
+    """One strict JSON-schema completion per request against
+    /v1/chat/completions — the OpenAI-compatible surface OpenRouter and
+    most gateways expose."""
+
+    def __init__(self, api_key: str, model: str,
+                 base_url: Optional[str] = None, timeout: float = 900.0,
+                 reasoning_effort: Optional[str] = None,
+                 extra_headers: Optional[Dict[str, str]] = None):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = (base_url or "https://openrouter.ai/api").rstrip("/")
+        self.timeout = timeout
+        self.reasoning_effort = reasoning_effort
+        self.extra_headers = dict(extra_headers or {})
+        self.name = f"openai-chat@{self.base_url}"
+
+    def complete(self, *, system: str, prompt: str, schema: Dict[str, Any],
+                 model: Optional[str] = None,
+                 max_tokens: int = DEFAULT_MAX_TOKENS,
+                 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        import httpx
+        body: Dict[str, Any] = {
+            "model": model or self.model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": EMIT_TOOL, "schema": strict_schema(schema),
+                "strict": True}},
+        }
+        if self.reasoning_effort:
+            body["reasoning"] = {"effort": self.reasoning_effort}
+        headers = {"authorization": f"Bearer {self.api_key}",
+                   "content-type": "application/json", **self.extra_headers}
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(f"{self.base_url}/v1/chat/completions",
+                                   headers=headers, json=body)
+        if response.status_code in TRANSIENT_STATUSES:
+            raise TransientTransportError(
+                f"HTTP {response.status_code}: {response.text[:300]}")
+        if response.status_code != 200:
+            raise RoleError(
+                f"direct call failed: HTTP {response.status_code}: "
+                f"{response.text[:500]}")
+        data = response.json()
+        if data.get("error"):
+            raise RoleError(f"direct call failed: {json.dumps(data['error'])[:500]}")
+        choices = data.get("choices") or []
+        if not choices:
+            raise RoleError("direct call returned no choices")
+        message = choices[0].get("message") or {}
+        text = message.get("content")
+        if isinstance(text, list):   # some gateways return content parts
+            text = "".join(part.get("text", "") for part in text
+                           if isinstance(part, dict))
+        try:
+            payload = json.loads(text or "")
+        except ValueError as err:
+            raise RoleError(
+                f"direct call returned non-JSON text: {str(text)[:300]}") from err
+        if not isinstance(payload, dict):
+            raise RoleError("direct call returned a non-object answer")
+        return strip_optional_nulls(payload, schema), dict(data.get("usage") or {})
 
 
 class DirectBackend:
@@ -338,6 +450,17 @@ def direct_transport(environ: Optional[Dict[str, str]] = None):
     from . import provider
     env = os.environ if environ is None else environ
     choice = (env.get(DIRECT_PROVIDER_ENV) or "").strip().lower()
+    if choice == "openrouter" or (not choice and provider.PROVIDER == "openrouter"):
+        key = env.get("OPENROUTER_API_KEY") or (
+            provider.API_KEY if provider.PROVIDER == "openrouter" else None)
+        if not key:
+            return None
+        return OpenAIChatTransport(
+            key, env.get(DIRECT_MODEL_ENV) or "openai/gpt-5.6-luna",
+            base_url=env.get("OPENROUTER_BASE_URL"),
+            reasoning_effort=env.get("GV_DIRECT_EFFORT") or None,
+            extra_headers={"HTTP-Referer": "https://github.com/hemlix/general-verifier",
+                           "X-Title": "General Verifier"})
     if choice == "openai" or (not choice and provider.PROVIDER not in
                               ("anthropic", "deepseek", "custom")
                               and env.get("OPENAI_API_KEY")):

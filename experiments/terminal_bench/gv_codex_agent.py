@@ -35,7 +35,8 @@ from harbor.agents.installed.codex import Codex
 
 from codex_agent import TieredCodex
 from gv_agent import (GV_DEST, GV_ROOT, STATE_DIR, TOOLCHAIN, MCP_SERVER,
-                      WRAPPER_ENV_SKIP, install_payload)
+                      WRAPPER_ENV_SKIP, credential_exports, install_payload,
+                      stage_credentials)
 
 SEATS_HOME = "/tmp/codex-seats-home"
 # where Harbor stages the uploaded subscription auth for the run; the
@@ -82,6 +83,7 @@ class GVCodex(TieredCodex):
             'if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi\n'
             'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"\n'
             f"{knobs}"
+            f"{credential_exports()}"
             # the seats' own CODEX_HOME: the solver's auth, none of its
             # MCP servers or hooks (a seat loading the gv server would
             # recurse into the verifier it serves)
@@ -147,6 +149,7 @@ class GVCodex(TieredCodex):
     @override
     async def run(self, instruction: str, environment: BaseEnvironment,
                   context: AgentContext) -> None:
+        await stage_credentials(self, environment)
         # harness ground truth for the verifier: verbatim task statement +
         # pre-task snapshot of /app, both written before the solver acts
         await self.exec_as_agent(environment, command=(

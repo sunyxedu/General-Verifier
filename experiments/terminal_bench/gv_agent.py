@@ -142,6 +142,32 @@ def refresh_login_token() -> None:
 
 TOKEN_FILE = ".gv-oauth-token"
 KEY_FILE = ".gv-api-key"
+OPENROUTER_KEY_FILE = ".gv-openrouter-key"
+
+# a credential the in-container verifier seats need, staged as a file
+# the wrapper reads (the solver CLI never hands its env to MCP servers)
+CREDENTIAL_FILES = {"CLAUDE_CODE_OAUTH_TOKEN": TOKEN_FILE,
+                    "ANTHROPIC_API_KEY": KEY_FILE,
+                    "OPENROUTER_API_KEY": OPENROUTER_KEY_FILE}
+
+
+def credential_exports() -> str:
+    """Wrapper lines exporting each staged credential file into the seat
+    environment."""
+    return "".join(
+        f'if [ -f "$HOME/{path}" ]; then export {name}="$(cat "$HOME/{path}")"; fi\n'
+        for name, path in CREDENTIAL_FILES.items())
+
+
+async def stage_credentials(agent, environment: BaseEnvironment) -> None:
+    """Write every credential the seats need from the host env into the
+    agent user's home, mode 600, outside any pulled artifact root."""
+    for name, path in CREDENTIAL_FILES.items():
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            await agent.exec_as_agent(environment, command=(
+                f'umask 077; printf %s "$GV_CRED" > "$HOME/{path}"'),
+                env={"GV_CRED": value})
 # host GV_* variables are forwarded into the in-container MCP server's
 # environment (verifier knobs such as GV_SCREENER, GV_PARALLEL_OBLIGATIONS,
 # GV_MAX_CONCURRENT_SEATS); these name host-side paths or launcher state
@@ -200,10 +226,7 @@ class GVClaudeCode(ClaudeCode):
             f"{knobs}"
             # the CLI does not hand its own credential env to MCP servers;
             # the trial stages the token in a file the wrapper reads
-            f'if [ -f "$HOME/{TOKEN_FILE}" ]; then '
-            f'export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/{TOKEN_FILE}")"; fi\n'
-            f'if [ -f "$HOME/{KEY_FILE}" ]; then '
-            f'export ANTHROPIC_API_KEY="$(cat "$HOME/{KEY_FILE}")"; fi\n'
+            f"{credential_exports()}"
             f"exec uv run --project {GV_DEST} python -m verifier.mcp_server "
             f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
             f'--model {model} "$@"\n')
@@ -214,16 +237,7 @@ class GVClaudeCode(ClaudeCode):
     async def _stage_token(self, environment: BaseEnvironment) -> None:
         """Stage the verifier seats' credential where the MCP wrapper reads
         it (outside /gv-state, which is pulled as an artifact)."""
-        token = (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or "").strip()
-        if token:
-            await self.exec_as_agent(environment, command=(
-                f'umask 077; printf %s "$GV_TOKEN" > "$HOME/{TOKEN_FILE}"'),
-                env={"GV_TOKEN": token})
-        key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
-        if key:
-            await self.exec_as_agent(environment, command=(
-                f'umask 077; printf %s "$GV_KEY" > "$HOME/{KEY_FILE}"'),
-                env={"GV_KEY": key})
+        await stage_credentials(self, environment)
 
     # -- per-run config ----------------------------------------------------
     def _settings_json(self) -> str:

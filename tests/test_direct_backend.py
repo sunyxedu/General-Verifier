@@ -126,6 +126,52 @@ def test_login_only_credentials_offer_no_direct_transport(monkeypatch):
     assert transport.model == "claude-sonnet-5"
 
 
+def test_openai_chat_transport_asks_for_strict_json_and_parses_it(monkeypatch):
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": json.dumps({"ok": True})}}], "usage": {"prompt_tokens": 4}})
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
+        transport=httpx.MockTransport(handler), **kw))
+    transport = db.OpenAIChatTransport("or-key", "openai/gpt-5.6-luna",
+                                       base_url="https://router.test/api",
+                                       reasoning_effort="medium")
+    payload, usage = transport.complete(system="s", prompt="p",
+                                        schema={"type": "object"})
+    assert payload == {"ok": True} and usage["prompt_tokens"] == 4
+    assert seen["auth"] == "Bearer or-key"
+    assert seen["body"]["response_format"]["json_schema"]["strict"] is True
+    assert seen["body"]["reasoning"] == {"effort": "medium"}
+    assert seen["body"]["messages"][0] == {"role": "system", "content": "s"}
+
+
+def test_openrouter_direct_transport_from_env():
+    transport = db.direct_transport({"GV_DIRECT_PROVIDER": "openrouter",
+                                     "OPENROUTER_API_KEY": "k",
+                                     "GV_DIRECT_MODEL": "openai/gpt-5.6-luna"})
+    assert isinstance(transport, db.OpenAIChatTransport)
+    assert transport.model == "openai/gpt-5.6-luna"
+    assert db.direct_transport({"GV_DIRECT_PROVIDER": "openrouter"}) is None
+
+
+def test_strict_schema_round_trips_optional_keys():
+    from verifier.llm.agents import to_json_schema
+    role = ALL_AGENT_ROLES["oracles"]
+    schema = to_json_schema(role.wire_schema or role.schema)
+    strict = db.strict_schema(schema)
+    method = strict["properties"]["methods"]["items"]
+    assert "script" in method["required"]
+    assert {"type": "null"} in method["properties"]["script"]["anyOf"]
+    payload = {"methods": [{"procedure": "p", "script": None}]}
+    assert db.strip_optional_nulls(payload, schema) == {"methods": [{"procedure": "p"}]}
+    kept = {"methods": [{"procedure": "p", "script": "echo"}]}
+    assert db.strip_optional_nulls(kept, schema) == kept
+
+
 def _variables(role: AgentRole):
     import re
     return set(re.findall(r"{(\w+)}", role.template))
