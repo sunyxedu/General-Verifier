@@ -41,7 +41,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
+for _path in (os.path.dirname(HERE), os.path.dirname(os.path.dirname(HERE))):
+    if _path not in sys.path:            # experiments/, then the repo root
+        sys.path.insert(0, _path)
 
 from common import progress                              # noqa: E402
 from common import results as res                        # noqa: E402

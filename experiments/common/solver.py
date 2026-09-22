@@ -44,8 +44,13 @@ def mcp_json(model: str | None = None) -> dict:
             "--toolchain-dir", TOOLCHAIN]
     if model:
         args += ["--model", model]
+    # `uv run --project` picks the environment but leaves the project off
+    # sys.path, and the server is started from the solver's workdir, so the
+    # package has to be pointed at explicitly or `-m verifier.mcp_server`
+    # fails to import.
     return {"mcpServers": {"gv": {"type": "stdio", "command": "uv",
-                                  "args": args}}}
+                                  "args": args,
+                                  "env": {"PYTHONPATH": ROOT}}}}
 
 
 SETTINGS_JSON = {
@@ -260,6 +265,9 @@ def mount_gv_codex(work: str, model: str | None = None, *,
         tables += ["[sandbox_workspace_write]", "network_access = false", ""]
     config = top + ["", "[mcp_servers.gv]", 'command = "uv"',
                     "args = " + json.dumps(args),
+                    # see mcp_json: --project does not put the repo on the
+                    # path, and the server starts in the solver's workdir
+                    "env = { PYTHONPATH = " + json.dumps(ROOT) + " }",
                     # a commit returns only once the claim is checked, which
                     # takes minutes; Codex's 300 s default would abort every
                     # verification
