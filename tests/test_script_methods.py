@@ -323,3 +323,50 @@ def test_a_read_only_script_leaves_no_world_changes(tmp_path):
     result = game.run(ROW, Obligation("c1", "keep.txt says as delivered",
                                       required_basis="world"))
     assert result.outcome == "holds"
+
+
+def test_a_relative_state_dir_still_finds_the_script(tmp_path, monkeypatch):
+    """The script is launched with cwd=workdir; a relative workdir_base must
+    not make the script's own path resolve against that new cwd (the
+    host-side mounts pass --state-dir .gv)."""
+    monkeypatch.chdir(tmp_path)
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    backend = FixtureBackend({"oracles": {"methods": [script_method("echo three")]},
+                              "script_judger": reader("holds")})
+    real = AgentDischarger(backend, artifacts, workdir_base=".gv/work",
+                           state_dir=".gv")
+    game = BindingGame(backend, artifacts, log, AgentStub(real))
+    result = game.run(ROW, Obligation("c1", "three lines", required_basis="world"))
+    assert result.outcome == "holds"
+    seen = backend.calls[1]["variables"]
+    assert seen["exit_code"] == 0 and seen["stdout"].strip() == "three"
+
+
+def test_a_shebang_interpreter_missing_from_the_task_path_comes_from_the_toolchain(tmp_path, monkeypatch):
+    """A verification script is the verifier's instrument: when the task
+    environment lacks the interpreter its shebang names, the verifier's
+    toolchain supplies it; the script's commands still run under the
+    task's PATH."""
+    toolchain = tmp_path / "toolchain"
+    (toolchain / "bin").mkdir(parents=True)
+    interp = toolchain / "bin" / "gvtestinterp"
+    interp.write_text("#!/bin/sh\necho interpreted-by-toolchain \"$1\"\n")
+    interp.chmod(0o755)
+    empty = tmp_path / "emptypath"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    script = "#!/usr/bin/env gvtestinterp\nignored body\n"
+    backend = FixtureBackend({"oracles": {"methods": [script_method(script)]},
+                              "script_judger": reader("holds")})
+    real = AgentDischarger(backend, artifacts,
+                           workdir_base=os.path.join(tmp_path, "work"),
+                           state_dir=str(tmp_path), toolchain_dir=str(toolchain))
+    game = BindingGame(backend, artifacts, log, AgentStub(real))
+    result = game.run(ROW, Obligation("c1", "three lines", required_basis="world"))
+    assert result.outcome == "holds"
+    seen = backend.calls[1]["variables"]
+    assert seen["exit_code"] == 0
+    assert seen["stdout"].startswith("interpreted-by-toolchain")

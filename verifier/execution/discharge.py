@@ -15,7 +15,7 @@ import re
 import stat
 import tempfile
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
 from ..llm.prompts.discharge import DISCHARGE_REPAIR_CONTEXT
@@ -476,7 +476,10 @@ class AgentDischarger:
         import time as _time
         root, before = self._world_before()
         subdir = obligation.id[:12] + (f"-{tag}" if tag else "") + "-script"
-        workdir = os.path.join(self.workdir_base, subdir)
+        # absolute: the script is launched with cwd=workdir, and a relative
+        # state dir would otherwise resolve the script's own path against
+        # that new cwd (a doubled path, exit 2, on every method)
+        workdir = os.path.abspath(os.path.join(self.workdir_base, subdir))
         os.makedirs(workdir, exist_ok=True)
         os.makedirs(self.toolchain_dir, exist_ok=True)
         os.makedirs(self.workspace_dir, exist_ok=True)
@@ -498,6 +501,12 @@ class AgentDischarger:
         os.chmod(path, 0o755)
         from ..llm.provider import without_verifier_venv
         env = without_verifier_venv(os.environ)
+        # The script is the verifier's instrument, so its interpreter may
+        # come from the verifier's own toolchain when the task environment
+        # lacks it; the commands the script runs still see the task's PATH,
+        # so a check of the deliverable's runnability is unaffected.
+        interpreter = _resolve_interpreter(interpreter, env.get("PATH", ""),
+                                           self.toolchain_dir)
         env.update({
             "GV_WORKDIR": workdir,
             "GV_TOOLCHAIN": self.toolchain_dir,
@@ -825,3 +834,35 @@ def _snapshot_envelope(
     if binary_files:
         result["binary_files"] = binary_files
     return result
+
+
+def _resolve_interpreter(interpreter: List[str], task_path: str,
+                         toolchain_dir: str) -> List[str]:
+    """The shebang's program, found on the task's PATH when it is there,
+    else in the verifier's toolchain (its own interpreter's directory and
+    the toolchain's bin directories); unchanged when found nowhere, so the
+    launch fails on record exactly as the shebang asked."""
+    import shutil
+    import sys
+    if not interpreter:
+        return interpreter
+    head, rest = interpreter[0], interpreter[1:]
+    if os.path.basename(head) == "env" and rest:
+        program, rest = rest[0], rest[1:]
+    else:
+        program = head
+    if os.path.isabs(program) and os.access(program, os.X_OK):
+        return interpreter
+    found = shutil.which(os.path.basename(program), path=task_path)
+    if found:
+        return interpreter
+    candidates = [os.path.dirname(sys.executable)]
+    if toolchain_dir and os.path.isdir(toolchain_dir):
+        candidates.append(os.path.join(toolchain_dir, "bin"))
+        for entry in sorted(os.listdir(toolchain_dir)):
+            candidates.append(os.path.join(toolchain_dir, entry, "bin"))
+    for directory in candidates:
+        candidate = os.path.join(directory, os.path.basename(program))
+        if os.access(candidate, os.X_OK):
+            return [candidate, *rest]
+    return interpreter
