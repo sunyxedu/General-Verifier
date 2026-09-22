@@ -71,7 +71,11 @@ class GVCodex(TieredCodex):
         await super().install(environment)
         await install_payload(self, environment)
         model = (self.model_name or "gpt-5.6-luna").split("/")[-1]
-        effort = self._resolved_flags.get("reasoning_effort") or "max"
+        # the verifier's own seats are infrastructure, not the subject of
+        # the comparison: their effort is set once for the system
+        # (GV_SEAT_EFFORT), never inherited from the solver under test,
+        # whose per-call latency the verification loop cannot absorb
+        effort = os.environ.get("GV_SEAT_EFFORT") or "high"
         knobs = "".join(
             f"export {k}={shlex.quote(v)}\n"
             for k, v in sorted(os.environ.items())
