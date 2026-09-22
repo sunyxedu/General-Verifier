@@ -285,7 +285,7 @@ def main():
                 "--agent-timeout-multiplier", "1000",
                 "--agent-setup-timeout-multiplier", "100",
                 "--artifact", "/gv-state"]
-        cmd += ["--ak", f"reasoning_effort={args.effort or 'medium'}"]
+        cmd += ["--ak", f"reasoning_effort={args.effort or 'max'}"]
         cmd += codex_service_agent_kwargs(service_tier)
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
         env["CODEX_FORCE_AUTH_JSON"] = "1"

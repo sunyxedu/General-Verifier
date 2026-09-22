@@ -71,7 +71,7 @@ class GVCodex(TieredCodex):
         await super().install(environment)
         await install_payload(self, environment)
         model = (self.model_name or "gpt-5.6-luna").split("/")[-1]
-        effort = self._resolved_flags.get("reasoning_effort") or "medium"
+        effort = self._resolved_flags.get("reasoning_effort") or "max"
         knobs = "".join(
             f"export {k}={shlex.quote(v)}\n"
             for k, v in sorted(os.environ.items())
