@@ -25,6 +25,19 @@ def test_final_without_certificate_blocks():
     assert reason and "no certificate was requested" in reason
 
 
+def test_requested_certificate_without_a_verdict_is_named_as_such():
+    events = [_ev(1, "commit", {"kind": "final", "label": "F"}),
+              _ev(2, "verify_request", {"target": "c1", "cause": "mcp"})]
+    reason = stop.assess(events, "partial")
+    assert reason and "returned no verdict" in reason
+    assert "no certificate was requested" not in reason
+    # a request that predates the latest final does not count for it
+    events = [_ev(1, "commit", {"kind": "final", "label": "F"}),
+              _ev(2, "verify_request", {"target": "c1", "cause": "mcp"}),
+              _ev(3, "commit", {"kind": "final", "label": "F2"})]
+    assert "no certificate was requested" in stop.assess(events, "partial")
+
+
 def test_certificate_at_or_above_goal_allows_the_stop():
     events = [_ev(1, "commit", {"kind": "final", "label": "F"}),
               _ev(2, "certificate", {"final": "c1", "verdict": "partial"})]

@@ -122,6 +122,8 @@ def main():
     ap.add_argument("--n", type=int, default=1, help="samples per instance")
     ap.add_argument("--model", default="sonnet", help="claude model for "
                     "plain/gv/turbo; ignored for codex")
+    ap.add_argument("--effort", default="max",
+                    help="the solver's reasoning effort (codex arm)")
     ap.add_argument("--timeout", type=int, default=0,
                     help="per-task seconds; 0 = no timeout (default)")
     ap.add_argument("--candidates", type=int, default=3,
@@ -166,7 +168,8 @@ def main():
             solver.record_final(work, out)
         elif args.arm == "codex":
             out, seconds = solver.run_codex(work, prompt,
-                                            timeout=args.timeout)
+                                            timeout=args.timeout,
+                                            effort=args.effort)
         else:  # plain / turbo — same stock solver, ± the proxy
             out, seconds = solver.run_claude(work, prompt, model=args.model,
                                              timeout=args.timeout,

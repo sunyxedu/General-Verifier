@@ -75,7 +75,7 @@ class GVCodex(TieredCodex):
         # the comparison: their effort is set once for the system
         # (GV_SEAT_EFFORT), never inherited from the solver under test,
         # whose per-call latency the verification loop cannot absorb
-        effort = os.environ.get("GV_SEAT_EFFORT") or "high"
+        effort = os.environ.get("GV_SEAT_EFFORT") or "max"
         tier = os.environ.get("GV_SEAT_SERVICE_TIER") or "standard"
         knobs = "".join(
             f"export {k}={shlex.quote(v)}\n"

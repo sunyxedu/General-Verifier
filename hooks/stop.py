@@ -60,6 +60,21 @@ def assess(events: List[Dict[str, Any]], goal: str) -> Optional[str]:
                 "finishing.")
     final_id = finals[-1].get("claim") or (finals[-1].get("payload") or {}).get("claim")
     if not certs:
+        # A request that produced no verdict (the verifier errored or did
+        # not finish) is not the solver's omission: telling it to request a
+        # certificate it already requested sends it chasing a step it has
+        # taken, so name the state it is actually in.
+        last_final_seq = finals[-1].get("seq") or 0
+        requested = any(
+            e.get("type") == "verify_request"
+            and (e.get("seq") or 0) > last_final_seq for e in events)
+        if requested:
+            return ("GOAL NOT MET: the certificate for the final claim was "
+                    "requested but the verifier returned no verdict (its "
+                    "reply carried an error or the check did not finish). "
+                    "Read that reply; if it names a defect in the delivery "
+                    "or the claim, fix it and commit a corrected final, then "
+                    "request gv.certificate again.")
         return ("GOAL NOT MET: the final claim was committed but no "
                 "certificate was requested. Request gv.certificate on the "
                 "final claim; if the verifier reports obligations that do "

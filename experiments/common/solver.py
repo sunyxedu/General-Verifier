@@ -273,6 +273,12 @@ def mount_gv_codex(work: str, model: str | None = None, *,
                     # verification
                     "tool_timeout_sec = 14400",
                     "startup_timeout_sec = 300",
+                    # under a sandbox Codex asks approval for every MCP tool
+                    # call, and headless exec can only answer with the
+                    # approval policy; `never` therefore rejected every gv
+                    # call outright. The gv tools are the protocol itself,
+                    # so they are pre-approved for the run.
+                    'default_tools_approval_mode = "approve"',
                     "", "[features]", "hooks = true", ""] + tables
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write("\n".join(config))
@@ -287,7 +293,7 @@ def mount_gv_codex(work: str, model: str | None = None, *,
 
 def run_codex(work: str, prompt: str, model: str | None = None,
               timeout: int | None = DEFAULT_TIMEOUT, web: bool = True,
-              codex_home: str | None = None):
+              codex_home: str | None = None, effort: str | None = None):
     """Headless Codex CLI. Returns (stdout, seconds).
 
     `web=False` cuts every network channel (see NO_WEB_CODEX_FLAGS) — for
@@ -305,6 +311,8 @@ def run_codex(work: str, prompt: str, model: str | None = None,
         access = (NO_WEB_CODEX_FLAGS if not web
                   else ["--dangerously-bypass-approvals-and-sandbox"])
     cmd = ["codex", "exec", *access, "--skip-git-repo-check", prompt]
+    if effort:
+        cmd[2:2] = ["-c", f"model_reasoning_effort={effort}"]
     if model:
         cmd[2:2] = ["-m", model]
     env = None

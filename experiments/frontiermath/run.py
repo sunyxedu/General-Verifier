@@ -90,7 +90,9 @@ def main():
                     help="samples run concurrently (default 1 = serial); "
                     "codex rollout capture pairs by workdir cwd, so "
                     "parallel codex runs cannot cross-capture")
-    ap.add_argument("--seat-effort", default="high",
+    ap.add_argument("--effort", default="max",
+                    help="the solver's reasoning effort (codex arms)")
+    ap.add_argument("--seat-effort", default="max",
                     help="the verifier seats' reasoning effort (gv-codex)")
     ap.add_argument("--seat-tier", default="standard",
                     choices=["standard", "fast"],
@@ -176,7 +178,8 @@ def main():
                 seat_search=args.web, web=args.web)
             out, seconds = solver.run_codex(work, prompt, model=codex_model,
                                             timeout=args.timeout,
-                                            web=args.web, codex_home=home)
+                                            web=args.web, codex_home=home,
+                                            effort=args.effort)
         elif args.arm == "codex":
             # Ground truth + rollout capture so a codex trace scores through
             # the same offline ORM path as `rec`: codex has no recording
@@ -197,7 +200,7 @@ def main():
             since = _time.time()
             out, seconds = solver.run_codex(work, prompt, model=codex_model,
                                             timeout=args.timeout,
-                                            web=args.web)
+                                            web=args.web, effort=args.effort)
             rollout = solver.rollout_for(work, since=since - 5)
             if rollout is None:
                 bar.log(f"[fm:codex] WARNING {p['id']}#{s}: no rollout with "
