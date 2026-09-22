@@ -92,6 +92,18 @@ standard conventions of the kind the task names (a text file's line
 terminator, a value's canonical spelling are renderings) unless the task
 fixes the byte-level form.
 
+**Modality / the snapshot invariant.** Across every retained run, the
+critic's objection in 127 of 196 compile rounds was the same: the
+compiler had promoted the pre-task snapshot into a MUST that nothing
+outside the delivery may change, and the task said no such thing. The
+invariant never caught a real defect and once refuted a correct delivery
+(an unrelated file the solver touched while fixing a document). The
+pre-task snapshot still compiles to an obligation — collateral change is
+worth recording — but at the modality the task's words support: MUST
+only where preservation or a bounded change scope is an acceptance
+condition, otherwise SHOULD, folded as a contrary signal. The critic is
+told the same, so the two seats stop spending rounds on it.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,
