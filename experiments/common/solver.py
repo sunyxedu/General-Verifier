@@ -283,6 +283,12 @@ def mount_gv_codex(work: str, model: str | None = None, *,
                     # call outright. The gv tools are the protocol itself,
                     # so they are pre-approved for the run.
                     'default_tools_approval_mode = "approve"',
+                    # the protocol is that a commit returns only once the
+                    # claim is checked; Codex otherwise keeps issuing tool
+                    # calls in parallel with a pending MCP call, so the
+                    # solver edits the world mid-check and the check is
+                    # blamed for the change
+                    "supports_parallel_tool_calls = false",
                     "", "[features]", "hooks = true", ""] + tables
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write("\n".join(config))

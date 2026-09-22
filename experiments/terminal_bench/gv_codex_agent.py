@@ -142,7 +142,14 @@ class GVCodex(TieredCodex):
         # verification into an error the solver never sees the result of.
         # These keys extend Harbor's [mcp_servers.gv] table, so they must
         # follow it directly.
-        timeouts = "tool_timeout_sec = 14400\nstartup_timeout_sec = 300\n"
+        # A commit returns only once the claim is checked, and the solver
+        # must wait for it: with parallel tool calls Codex keeps editing
+        # the world while the check runs and the check is blamed for the
+        # change. The approval mode is what lets a sandboxed headless run
+        # call the tools at all.
+        timeouts = ("tool_timeout_sec = 14400\nstartup_timeout_sec = 300\n"
+                    "supports_parallel_tool_calls = false\n"
+                    'default_tools_approval_mode = "approve"\n')
         features = "\n[features]\nhooks = true\n"
         return "\n".join(part for part in (
             base,
