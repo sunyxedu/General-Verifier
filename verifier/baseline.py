@@ -18,6 +18,7 @@ CLI (used inside task containers): python -m verifier.baseline ROOT OUT
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -108,9 +109,16 @@ def environment_fingerprint() -> dict:
     PATH can import. A deliverable is accepted as delivered, so whatever
     the solver adds here for its own session is not part of the delivery;
     the delta against this record tells the seats what was added."""
+    # the task's PATH, not ours: this runs under the verifier's own venv,
+    # which must not appear in a record of what the task supplied
+    try:
+        from .llm.provider import without_verifier_venv
+        task_path = without_verifier_venv(dict(os.environ)).get("PATH", "")
+    except Exception:  # noqa: BLE001 - the record degrades, never fails
+        task_path = os.environ.get("PATH", "")
     seen = set()
     executables = set()
-    for d in os.environ.get("PATH", "").split(os.pathsep):
+    for d in task_path.split(os.pathsep):
         if not d or d in seen or not os.path.isdir(d):
             continue
         seen.add(d)
@@ -122,23 +130,31 @@ def environment_fingerprint() -> dict:
         except OSError:
             continue
     pythons = {}
+    env = {**os.environ, "PATH": task_path}
     for interp in ("python", "python3"):
         if interp not in executables:
             continue
         try:
             proc = subprocess.run(
-                [interp, "-c", "import json,sys;"
+                [shutil.which(interp, path=task_path) or interp,
+                 "-c", "import json,sys;"
                  "from importlib import metadata;"
                  "print(json.dumps({'executable': sys.executable,"
                  "'version': sys.version.split()[0],"
                  "'packages': sorted({d.metadata['Name'].lower() "
                  "for d in metadata.distributions() if d.metadata['Name']})}))"],
-                capture_output=True, text=True, timeout=60)
+                capture_output=True, text=True, timeout=60, env=env)
             if proc.returncode == 0:
                 pythons[interp] = json.loads(proc.stdout)
         except (OSError, ValueError, subprocess.SubprocessError):
             continue
-    return {"executables": sorted(executables), "pythons": pythons}
+    # the invocation environment a check must reproduce: the task's PATH
+    # verbatim and where its interpreters resolve on it
+    interpreters = {name: shutil.which(name, path=task_path)
+                    for name in ("python", "python3", "node", "bash", "sh")
+                    if shutil.which(name, path=task_path)}
+    return {"executables": sorted(executables), "pythons": pythons,
+            "path": task_path, "interpreters": interpreters}
 
 
 def environment_delta(baseline_dir: str) -> dict:

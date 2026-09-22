@@ -230,3 +230,21 @@ def test_two_event_logs_on_one_file_never_reuse_a_sequence_number(tmp_path):
     seqs = [e["seq"] for e in EventLog(path).replay()]
     assert seqs == [1, 2, 3, 4]
 
+
+
+def test_environment_record_names_the_task_path_not_the_verifier_venv(tmp_path, monkeypatch):
+    """The baseline environment is taken from inside the verifier's venv;
+    the record must describe the task's PATH (venv removed) and where the
+    task's interpreters resolve on it, so a runnability check reproduces
+    the task's invocation rather than one of its own."""
+    import os as _os
+    from verifier import baseline
+    from verifier.llm import provider
+    fake_bin = tmp_path / "taskbin"; fake_bin.mkdir()
+    py = fake_bin / "python"; py.write_text("#!/bin/sh\nexit 1\n"); py.chmod(0o755)
+    venv_bin = _os.path.join(provider.ROOT, ".venv", "bin")
+    monkeypatch.setenv("PATH", venv_bin + _os.pathsep + str(fake_bin))
+    rec = baseline.environment_fingerprint()
+    assert rec["path"] == str(fake_bin)
+    assert rec["interpreters"]["python"] == str(py)
+    assert "python" in rec["executables"]

@@ -443,6 +443,20 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
     if os.path.isdir(baseline):
         from ..baseline import environment_delta
         try:
+            with open(os.path.join(baseline, "environment.json"),
+                      encoding="utf-8") as handle:
+                recorded = json.load(handle)
+        except (OSError, ValueError):
+            recorded = {}
+        if recorded.get("path"):
+            # the task environment's standard invocation: a check that
+            # runs the delivered program does so on THIS path, not on a
+            # path of its own choosing
+            context["environment_invocation"] = {
+                "PATH": recorded["path"],
+                "interpreters": recorded.get("interpreters") or {},
+            }
+        try:
             delta = environment_delta(baseline)
         except Exception:  # noqa: BLE001 - context, never a verdict
             delta = {}
