@@ -172,6 +172,19 @@ def test_strict_schema_round_trips_optional_keys():
     assert db.strip_optional_nulls(kept, schema) == kept
 
 
+def test_build_backend_wraps_an_injected_agent_backend(monkeypatch):
+    env = {"GV_DIRECT_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "k"}
+    codex_like = FixtureBackend({"discharge": {"outcome": "holds"}})
+    codex_like.roles = dict(ALL_AGENT_ROLES)
+    backend = db.build_backend(dict(ALL_AGENT_ROLES), cwd=None, model="m",
+                               environ=env, agent=codex_like)
+    assert isinstance(backend, db.RoutingBackend) and backend.agent is codex_like
+    assert backend.routes_direct("critic") and not backend.routes_direct("discharge")
+    plain = db.build_backend(dict(ALL_AGENT_ROLES), cwd=None, model="m",
+                             environ={"GV_DIRECT_SEATS": "off"}, agent=codex_like)
+    assert plain is codex_like
+
+
 def _variables(role: AgentRole):
     import re
     return set(re.findall(r"{(\w+)}", role.template))

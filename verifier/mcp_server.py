@@ -553,8 +553,14 @@ def main() -> None:
     kernel_factory = None
     if args.seats == "codex":
         from .llm.codex_backend import CodexBackend
-        backend = CodexBackend(cwd=args.state_dir, model=args.model,
-                               effort=args.effort)
+        from .llm.direct_backend import build_backend
+        codex = CodexBackend(cwd=args.state_dir, model=args.model,
+                             effort=args.effort)
+        # tool-free roles still go direct when a transport is configured;
+        # the Codex CLI keeps every role with a palette
+        backend = build_backend(harness_roles(args.state_dir),
+                                cwd=args.state_dir, model=args.model,
+                                agent=codex)
 
         def kernel_factory(sc):
             return _default_kernel(sc, args.model, backend=backend)

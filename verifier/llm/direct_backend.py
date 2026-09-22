@@ -482,10 +482,13 @@ def direct_transport(environ: Optional[Dict[str, str]] = None):
 
 
 def build_backend(roles: Dict[str, AgentRole], cwd: Optional[str],
-                  model: Optional[str], environ: Optional[Dict[str, str]] = None):
-    """The kernel's default backend: the agent backend, with the tool-free
-    roles seated on a direct transport when one is configured."""
-    agent = AgentBackend(roles=roles, cwd=cwd, model=model)
+                  model: Optional[str], environ: Optional[Dict[str, str]] = None,
+                  agent=None):
+    """The kernel's backend: ``agent`` (default: the Agent SDK backend;
+    an injected Codex backend works the same) with the tool-free roles
+    seated on a direct transport when one is configured."""
+    if agent is None:
+        agent = AgentBackend(roles=roles, cwd=cwd, model=model)
     direct_roles = direct_seat_roles(environ)
     if not direct_roles:
         return agent
