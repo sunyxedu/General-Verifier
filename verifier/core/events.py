@@ -341,6 +341,41 @@ def _strict_events(raw: bytes) -> Tuple[Dict[str, Any], ...]:
     return tuple(events)
 
 
+def _lock_file(f) -> None:
+    try:
+        import fcntl
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+    except (ImportError, OSError):
+        pass   # no advisory locks here: the thread lock still guards one process
+
+
+def _unlock_file(f) -> None:
+    try:
+        import fcntl
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except (ImportError, OSError):
+        pass
+
+
+def _tail_seq(f) -> int:
+    """The seq of the last complete record in an open append-mode file
+    (0 when empty): reads only the tail, so allocation stays cheap."""
+    f.seek(0, os.SEEK_END)
+    size = f.tell()
+    if size == 0:
+        return 0
+    window = min(size, 65536)
+    f.seek(size - window)
+    chunk = f.read(window)
+    lines = [ln for ln in chunk.split(b"\n") if ln.strip()]
+    for ln in reversed(lines):
+        try:
+            return int(json.loads(ln.decode("utf-8"))["seq"])
+        except (ValueError, KeyError, TypeError):
+            continue   # a torn or foreign line; look one record further back
+    return 0
+
+
 class EventLog:
     """
     Append-only JSONL. Every event gets a monotonically increasing seq.
@@ -379,17 +414,30 @@ class EventLog:
             raise ValueError("event payload must be an object")
         _validate_event_payload(payload)
         with self._lock:
-            next_seq = self._seq + 1
-            event = {"seq": next_seq, "ts": time.time(), "type": type,
-                     "payload": payload}
-            # Encode before changing the in-memory sequence or touching the
-            # file. Invalid Unicode/NaN can never create a permanent gap.
-            raw = (json.dumps(
-                event, ensure_ascii=False, sort_keys=True, allow_nan=False,
-            ) + "\n").encode("utf-8", errors="strict")
-            with open(self.path, "ab") as f:
-                f.write(raw)
-                f.flush()
+            # The sequence is allocated from the FILE, under an exclusive
+            # file lock, not from this instance's memory alone: a second
+            # EventLog on the same path (another thread's own instance, a
+            # helper process) would otherwise hand out the same number
+            # again, and replay rejects the whole ledger as corrupted.
+            with open(self.path, "a+b") as f:
+                _lock_file(f)
+                try:
+                    last = max(self._seq, _tail_seq(f))
+                    next_seq = last + 1
+                    event = {"seq": next_seq, "ts": time.time(), "type": type,
+                             "payload": payload}
+                    # Encode before changing the in-memory sequence or
+                    # touching the file. Invalid Unicode/NaN can never
+                    # create a permanent gap.
+                    raw = (json.dumps(
+                        event, ensure_ascii=False, sort_keys=True,
+                        allow_nan=False,
+                    ) + "\n").encode("utf-8", errors="strict")
+                    f.seek(0, os.SEEK_END)
+                    f.write(raw)
+                    f.flush()
+                finally:
+                    _unlock_file(f)
             self._seq = next_seq
         return event
 

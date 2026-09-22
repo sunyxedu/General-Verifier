@@ -213,3 +213,20 @@ def test_an_effect_is_named_by_either_sequence_of_its_call_result_pair(tmp_path)
     with pytest.raises(TraceError):
         b.resolve(f"effect:{result['seq'] + 1}")
 
+
+def test_two_event_logs_on_one_file_never_reuse_a_sequence_number(tmp_path):
+    """Sequence numbers come from the file, under a lock: a second EventLog
+    on the same path (another thread's instance, a helper process) cannot
+    hand out a number the first already used, so replay never sees a
+    duplicate."""
+    from verifier.core.events import EventLog
+    path = str(tmp_path / "events.jsonl")
+    a = EventLog(path)
+    b = EventLog(path)          # both start believing the ledger is empty
+    a.append("message", {"role": "assistant", "text": "one"})
+    b.append("message", {"role": "assistant", "text": "two"})
+    a.append("message", {"role": "assistant", "text": "three"})
+    b.append("message", {"role": "assistant", "text": "four"})
+    seqs = [e["seq"] for e in EventLog(path).replay()]
+    assert seqs == [1, 2, 3, 4]
+
