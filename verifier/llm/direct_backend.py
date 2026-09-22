@@ -57,12 +57,17 @@ DIRECT_NOTE = (
 
 TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 TRANSIENT_DELAYS = (0, 20, 60, 120, 240)
-DEFAULT_MAX_TOKENS = 16000
+DEFAULT_MAX_TOKENS = 32000
 EMIT_TOOL = "emit"
 
 
 class TransientTransportError(RuntimeError):
     """A status worth waiting out (rate limit, overload, gateway)."""
+
+
+class OutputBudgetExhausted(RuntimeError):
+    """The model spent the whole output budget before answering (long
+    reasoning at high effort); one retry with a larger budget is due."""
 
 
 def strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -285,16 +290,27 @@ class OpenAIChatTransport:
         choices = data.get("choices") or []
         if not choices:
             raise RoleError("direct call returned no choices")
-        message = choices[0].get("message") or {}
+        choice = choices[0]
+        message = choice.get("message") or {}
         text = message.get("content")
         if isinstance(text, list):   # some gateways return content parts
             text = "".join(part.get("text", "") for part in text
                            if isinstance(part, dict))
+        finish = choice.get("finish_reason") or choice.get("native_finish_reason")
+        if not text:
+            # an exhausted output budget (reasoning ate it) is worth one more
+            # attempt with a larger budget; anything else is the model's
+            # failure to answer, reported with what it did return
+            detail = (f"finish_reason={finish}; refusal={str(message.get('refusal'))[:200]}; "
+                      f"reasoning_chars={len(message.get('reasoning') or '')}")
+            if finish in ("length", "max_tokens", "max_output_tokens"):
+                raise OutputBudgetExhausted(detail)
+            raise RoleError(f"direct call returned no answer text ({detail})")
         try:
             payload = json.loads(text or "")
         except ValueError as err:
             raise RoleError(
-                f"direct call returned non-JSON text: {str(text)[:300]}") from err
+                f"direct call returned non-JSON text ({finish}): {str(text)[:300]}") from err
         if not isinstance(payload, dict):
             raise RoleError("direct call returned a non-object answer")
         return strip_optional_nulls(payload, schema), dict(data.get("usage") or {})
@@ -341,13 +357,25 @@ class DirectBackend:
               schema: Dict[str, Any], model: Optional[str],
               attempts: List[Dict[str, Any]]) -> Dict[str, Any]:
         last: Optional[str] = None
+        max_tokens = DEFAULT_MAX_TOKENS
         for delay in TRANSIENT_DELAYS:
             if delay:
                 time.sleep(delay)
             attempt_started = time.time()
             try:
                 payload, usage = self.transport.complete(
-                    system=system, prompt=prompt, schema=schema, model=model)
+                    system=system, prompt=prompt, schema=schema, model=model,
+                    max_tokens=max_tokens)
+            except OutputBudgetExhausted as err:
+                last = str(err)
+                attempts.append({"role": role.name, "seconds": round(
+                    time.time() - attempt_started, 3), "error": last,
+                    "max_tokens": max_tokens})
+                if max_tokens >= 4 * DEFAULT_MAX_TOKENS:
+                    raise RoleError(f"{role.name}: output budget exhausted "
+                                    f"at {max_tokens} tokens: {last}")
+                max_tokens *= 2
+                continue
             except TransientTransportError as err:
                 last = str(err)
                 attempts.append({"role": role.name, "seconds": round(

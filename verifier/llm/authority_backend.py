@@ -218,7 +218,17 @@ def authority_compilation_backend(backend, obligations_role, critic_role):
             identity["fixture_scope"] = _FIXTURE_SCOPES[backend]
         yield AuthorityBackendSession(backend, *roles, identity)
         return
-    if type(backend) not in (CodexBackend, AgentBackend):
+    # a routing backend seats the compiler and critic on its direct
+    # transport; the authority-only session runs on that transport alone
+    # (a single model call sees only its prompt: nothing to inspect)
+    from .direct_backend import DirectBackend, RoutingBackend
+    if type(backend) is RoutingBackend:
+        if not (backend.routes_direct(obligations_role.name)
+                and backend.routes_direct(critic_role.name)):
+            backend = backend.agent
+        else:
+            backend = backend.direct
+    if type(backend) not in (CodexBackend, AgentBackend, DirectBackend):
         raise AuthorityBackendUnavailable("unsupported authority-only backend")
     if type(backend) is CodexBackend and getattr(
             CodexBackend, "AUTHORITY_HOOKS_VERSION", None) != 1:
@@ -254,6 +264,9 @@ def authority_compilation_backend(backend, obligations_role, critic_role):
             isolated._judger_prefetch_protocol = backend._judger_prefetch_protocol
             isolated._authority_scratch = scratch
             identity["policy"] = authority_policy_args("/AUTHORITY_SCRATCH")
+        elif type(backend) is DirectBackend:
+            isolated = DirectBackend(backend.transport, roles=registry,
+                                     cwd=scratch, model=backend.model)
         else:
             isolated = AgentBackend(
                 roles=registry, cwd=scratch, model=backend.model,

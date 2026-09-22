@@ -185,6 +185,41 @@ def test_build_backend_wraps_an_injected_agent_backend(monkeypatch):
     assert plain is codex_like
 
 
+def test_empty_answer_with_exhausted_budget_retries_with_a_larger_budget(monkeypatch):
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content); calls.append(body["max_tokens"])
+        if len(calls) == 1:
+            return httpx.Response(200, json={"choices": [{"finish_reason": "length",
+                "message": {"content": None, "reasoning": "x" * 50}}]})
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop",
+            "message": {"content": json.dumps({"confidence": "low", "grounds": "g", "reason": "r"})}}],
+            "usage": {}})
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
+        transport=httpx.MockTransport(handler), **kw))
+    transport = db.OpenAIChatTransport("k", "m", base_url="https://x.test")
+    direct = db.DirectBackend(transport)
+    role = ALL_AGENT_ROLES["screener"]
+    out = role.call(direct, {name: "" for name in _variables(role)})
+    assert out["confidence"] == "low"
+    assert calls == [db.DEFAULT_MAX_TOKENS, 2 * db.DEFAULT_MAX_TOKENS]
+
+
+def test_authority_compilation_runs_on_the_direct_transport_of_a_routing_backend(tmp_path):
+    from verifier.llm.authority_backend import authority_compilation_backend
+    transport = FakeTransport([])
+    direct = db.DirectBackend(transport, cwd=str(tmp_path))
+    agent = FixtureBackend({}); agent.roles = dict(ALL_AGENT_ROLES)
+    routing = db.RoutingBackend(direct, agent, db.DEFAULT_DIRECT_ROLES)
+    with authority_compilation_backend(routing, ALL_AGENT_ROLES["obligations"],
+                                       ALL_AGENT_ROLES["critic"]) as session:
+        assert isinstance(session.backend, db.DirectBackend)
+        assert session.backend.transport is transport
+        assert session.obligations_role.tools == [] and "obligations" in session.backend.roles
+
+
 def _variables(role: AgentRole):
     import re
     return set(re.findall(r"{(\w+)}", role.template))
