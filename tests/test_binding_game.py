@@ -659,6 +659,8 @@ def test_judger_sees_world_and_manifest_when_present(tmp_path):
     assert judger_vars["artifact_root"] == os.path.join(str(tmp_path), "art")
     seen = json.loads(judger_vars["task_context"])
     assert (seen["path"], seen["text"]) == (str(task), "Count every item.")
+    assert judger_vars["snapshot_per_file_cap"] == 65_536
+    assert "workspace_dir" in judger_vars
 
 
 def test_judger_world_vars_empty_when_absent(tmp_path):

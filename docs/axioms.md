@@ -121,6 +121,17 @@ had created files in a scratch directory the task invited it to work in:
 the invariant now covers the recorded entries, and an empty record
 yields none.
 
+**Witness / the snapshot is not the file.** A machine-checked regex
+proof: the executor's certificate was 80 KB; the artifact keeps file
+snapshots cut at 64 KB; the judger read the snapshot, found invalid JSON
+at the cut, and sent a correct check back as unfaithful. In the same run
+a second obligation was sent back because the printed Z3 proof object
+contained the printer's "..." elisions, although the checker itself had
+run to unsat inside the retained procedure. The judger now receives the
+snapshot cap and the workspace as data, reads a cut snapshot from its
+original, and treats replayability as the ability to rerun the retained
+procedure rather than to re-read a printed proof.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,
