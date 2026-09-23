@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 from typing import Any, Dict, List, Optional
 
 from verifier.core.model import CLAIM_KINDS
@@ -178,6 +179,10 @@ class Service:
 
         self._feed = Tail(os.path.join(state_dir, HOOK_FEED),
                           self._ingest_hook_event, raw=True)
+        # verbs run concurrently (build_server), and the feed's tail keeps
+        # one read offset: two drains at once would ingest the same lines
+        # twice. Only the drain is serialized; verification is not.
+        self._drain_lock = threading.Lock()
         # a restarted server rebuilds its view from its own ledger
         for event in self.log.replay():
             self.builder.feed(event)
@@ -205,7 +210,8 @@ class Service:
         self.builder.feed(event)
 
     def drain_hooks(self) -> int:
-        return self._feed.poll()
+        with self._drain_lock:
+            return self._feed.poll()
 
     # MCP verbs
     def commit(self, label: str, kind: str, text: str,
@@ -521,40 +527,51 @@ def _solver_protocol() -> str:
 
 
 def build_server(service: Service):
+    import anyio
     from mcp.server.fastmcp import FastMCP
 
     server = FastMCP("gv", instructions=_solver_protocol())
 
+    async def off_loop(verb, *args) -> str:
+        # Every verb runs in a worker thread, never on the server's event
+        # loop. FastMCP runs a synchronous tool on the loop itself, so a
+        # commit whose checks took minutes froze the whole server: a status
+        # query, the final's own commit, and the certificate request all
+        # waited behind it (a final queued up to five hours behind earlier
+        # claims' checks). Each commit still returns only once ITS checks
+        # are done; different claims' checks now proceed side by side (the
+        # store and kernel already verify claims concurrently).
+        return await anyio.to_thread.run_sync(
+            lambda: json.dumps(verb(*args), ensure_ascii=False))
+
     @server.tool()
-    def commit(label: str, kind: CLAIM_KINDS, text: str, deps: List[str],
-               revises: str = "") -> str:
+    async def commit(label: str, kind: CLAIM_KINDS, text: str,
+                     deps: List[str], revises: str = "") -> str:
         """Commit a claim (kind: assertion|effect|final). deps is a list of
         labels of already-committed claims (including effect:<seq>). The claim
         is VERIFIED BEFORE THIS RETURNS, so the call blocks for as long as its
         checks take; the result carries the resulting status, and on anything
         but `verified` the obligation that failed plus its counterexample."""
-        return json.dumps(
-            service.commit(label, kind, text, deps,
-                           revises or None),
-            ensure_ascii=False)
+        return await off_loop(service.commit, label, kind, text, deps,
+                              revises or None)
 
     @server.tool()
-    def verify(label: str) -> str:
+    async def verify(label: str) -> str:
         """Run the full independent check on a committed claim now (also
         for a claim that commit admitted as `confident`); returns its
         status."""
-        return json.dumps(service.verify(label), ensure_ascii=False)
+        return await off_loop(service.verify, label)
 
     @server.tool()
-    def certificate(final_label: str) -> str:
+    async def certificate(final_label: str) -> str:
         """Certify a final claim: settle the dependency closure, freeze the
         certificate, and return the verdict plus a slice summary."""
-        return json.dumps(service.certificate(final_label), ensure_ascii=False)
+        return await off_loop(service.certificate, final_label)
 
     @server.tool()
-    def status(label: str = "") -> str:
+    async def status(label: str = "") -> str:
         """Query the status of one label or of all labels."""
-        return json.dumps(service.status(label or None), ensure_ascii=False)
+        return await off_loop(service.status, label or None)
 
     return server
 
