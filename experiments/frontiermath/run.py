@@ -51,7 +51,9 @@ from common import solver                                # noqa: E402
 from common import turbo                                 # noqa: E402
 from check import matches, parse_final                   # noqa: E402
 
-WORKROOT = "/tmp/gv-frontiermath"      # outside the repo (see common.solver)
+# outside the repo (see common.solver) and outside /tmp: a reboot wipes
+# /tmp, and with it every in-flight trial's ledger and evidence
+WORKROOT = os.path.expanduser("~/.cache/gv-experiments/frontiermath-work")
 
 ANSWER_SPEC = {
     "integer": "The answer is a single (possibly very large) integer.",

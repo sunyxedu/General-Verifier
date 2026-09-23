@@ -43,7 +43,9 @@ from common import solver                               # noqa: E402
 from common import turbo                                # noqa: E402
 
 CACHE = os.path.expanduser("~/.cache/gv-experiments/swebench_pro")
-WORKROOT = "/tmp/gv-swebench"          # outside the repo (see common.solver)
+# outside the repo (see common.solver) and outside /tmp: a reboot wipes
+# /tmp, and with it every in-flight trial's ledger and evidence
+WORKROOT = os.path.expanduser("~/.cache/gv-experiments/swebench-work")
 GV_EXTRA_EXCLUDES = [".gv/", ".claude/", ".mcp.json", "CLAUDE.md"]
 
 BASE_PROMPT = """\
