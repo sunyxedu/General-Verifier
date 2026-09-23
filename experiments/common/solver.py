@@ -345,21 +345,49 @@ def gv_outcome(work: str):
     All None/0 when the solver never engaged the harness.
     """
     state = os.path.join(work, ".gv")
-    out = {"final_text": None, "verdict": None, "refuted_claims": 0,
+    out = {"final_text": None, "verdict": None, "final_id": None,
+           "certificate": None, "finals": 0, "refuted_claims": 0,
            "events": 0}
+    # The final that counts is the one the latest certificate covers, else
+    # the last one committed. `LIMIT 1` returned the FIRST final, which for
+    # a solver the verifier talked out of a wrong answer is exactly the
+    # refuted one — and a correct run was scored wrong.
+    final_ids, cert_final, cert_verdict = [], None, None
+    ev = os.path.join(state, "events.jsonl")
+    if os.path.exists(ev):
+        for line in open(ev, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            out["events"] += 1
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            p = e.get("payload") or {}
+            if e.get("type") == "commit" and p.get("kind") == "final" \
+                    and p.get("claim"):
+                final_ids.append(p["claim"])
+            elif e.get("type") == "certificate":
+                cert_final, cert_verdict = p.get("final"), p.get("verdict")
+    out["finals"] = len(dict.fromkeys(final_ids))
+    out["certificate"] = cert_verdict
+    chosen = cert_final or (final_ids[-1] if final_ids else None)
     db_path = os.path.join(state, "claims.sqlite")
     if os.path.exists(db_path):
         db = sqlite3.connect(db_path)
-        row = db.execute(
-            "SELECT text, status FROM claims WHERE kind='final' LIMIT 1"
-        ).fetchone()
+        row = None
+        if chosen:
+            row = db.execute("SELECT id, text, status FROM claims WHERE id=?",
+                             (chosen,)).fetchone()
+        if row is None:     # no ledger: the most recently stored final
+            row = db.execute("SELECT id, text, status FROM claims "
+                             "WHERE kind='final' ORDER BY rowid DESC LIMIT 1"
+                             ).fetchone()
         if row:
-            out["final_text"], out["verdict"] = row
+            out["final_id"], out["final_text"], out["verdict"] = row
         (out["refuted_claims"],) = db.execute(
             "SELECT COUNT(*) FROM claims WHERE status='refuted' "
             "AND kind != 'obligation'").fetchone()
         db.close()
-    ev = os.path.join(state, "events.jsonl")
-    if os.path.exists(ev):
-        out["events"] = sum(1 for line in open(ev) if line.strip())
     return out

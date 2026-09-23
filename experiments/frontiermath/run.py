@@ -76,6 +76,19 @@ finish. Report the verdict verbatim.
 """
 
 
+def final_claim_answer(final_text):
+    """The answer a final claim states: its FINAL ANSWER line, else its
+    closing 'The answer is X.' sentence."""
+    if not final_text:
+        return None
+    found = parse_final(final_text)
+    if found is not None:
+        return found
+    import re
+    m = re.findall(r"answer is\s*([^.]+)\.?\s*$", final_text, re.IGNORECASE)
+    return m[-1].strip() if m else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True,
@@ -232,16 +245,19 @@ def main():
                "output_tail": out[-300:]}
         if args.arm in ("gv", "gv-codex"):
             gvo = solver.gv_outcome(work)
-            # prefer the certified final claim's answer when present
-            claim_answer = parse_final(gvo["final_text"] or "")
-            if claim_answer is None and gvo["final_text"]:
-                import re
-                m = re.findall(r"answer is\s*([^.]+)\.?\s*$",
-                               gvo["final_text"], re.IGNORECASE)
-                claim_answer = m[-1].strip() if m else None
-            if claim_answer is not None:
+            claim_answer = final_claim_answer(gvo["final_text"])
+            # The benchmark grades the REPLY: its FINAL ANSWER line is the
+            # answer of record. The final claim's answer is only a fallback
+            # for a reply that states none; it used to override the reply,
+            # and with the wrong final picked a correct run scored wrong.
+            rec["reply_answer"] = answer
+            rec["claim_answer"] = claim_answer
+            if answer is None and claim_answer is not None:
                 rec["answer"] = claim_answer
                 rec["solved"] = matches(claim_answer, p)
+                rec["answer_source"] = "final claim (reply had none)"
+            else:
+                rec["answer_source"] = "reply"
             rec.update({k: v for k, v in gvo.items() if k != "final_text"})
             rec["final_text"] = (gvo["final_text"] or "")[:200]
         with append_lock:
