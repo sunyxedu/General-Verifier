@@ -115,6 +115,25 @@ def _residue(store, claim_id: str) -> Dict[str, Any]:
     return {"obligations": []}
 
 
+def _refutation_brief(store, claim_id: str, cap: int = 320) -> str:
+    """The failing obligation of a refuted claim and its counterexample,
+    bounded. A client may abandon the pending call that carried the full
+    residue (codex hands control back to the model while an MCP call is in
+    flight), so the status map says why a claim was refuted, not only that
+    it was; gv.status(label) still returns the whole residue."""
+    for o in store.obligation_children(claim_id):
+        if o["status"] != "refuted":
+            continue
+        ev = store.evidence_for(o["id"])
+        witness = (str(ev[-1].get("witness"))
+                   if ev and ev[-1].get("witness") else "")
+        text = o["text"][:160]
+        return (f"{text} -- counterexample: {witness}" if witness
+                else text)[:cap]
+    residue = _residue(store, claim_id)
+    return str(residue.get("error") or "ask gv.status for this label")[:cap]
+
+
 HOOK_FEED = "hook_feed.jsonl"
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 
@@ -314,8 +333,12 @@ class Service:
         out = {}
         for label, cid in self.builder.labels.items():
             row = self.store.get(cid)
-            out[label] = (f"{row['status']} (confident)"
-                          if row.get("confident") else row["status"])
+            if row.get("confident"):
+                out[label] = f"{row['status']} (confident)"
+            elif row["status"] == "refuted" and row["kind"] != "effect":
+                out[label] = "refuted: " + _refutation_brief(self.store, cid)
+            else:
+                out[label] = row["status"]
         return out
 
 def _parallel_default(name: str, fallback: int) -> int:
