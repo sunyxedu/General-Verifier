@@ -432,6 +432,7 @@ class RoutingBackend:
         self.agent = agent
         self.direct_roles: Set[str] = set(direct_roles)
         self.uses_role_wire_schema = True
+        self.direct_fallbacks: List[Dict[str, Any]] = []
 
     @property
     def roles(self) -> Dict[str, AgentRole]:
@@ -448,7 +449,19 @@ class RoutingBackend:
     def complete(self, role_name: str, prompt: str,
                  variables: Dict[str, Any]) -> Any:
         if self.routes_direct(role_name):
-            return self.direct.complete(role_name, prompt, variables)
+            try:
+                return self.direct.complete(role_name, prompt, variables)
+            except RoleError as err:
+                # The direct transport is an accelerator, not the seat of
+                # record: when it cannot answer (billing, auth, an outage,
+                # an answer the schema rejects) the role still exists on
+                # the agent backend, which is where it ran before direct
+                # seats existed. Failing the claim here turned a provider
+                # incident into an instant verifier failure on every claim.
+                self.direct_fallbacks.append({
+                    "role": role_name, "error": str(err)[:300],
+                    "at": time.time()})
+                return self.agent.complete(role_name, prompt, variables)
         return self.agent.complete(role_name, prompt, variables)
 
     def allows_lazy_oracle_catalog(self, role_name: str,
