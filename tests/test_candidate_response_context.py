@@ -26,3 +26,12 @@ def test_offline_state_points_at_the_delivered_reply(tmp_path):
 
 def test_no_task_statement_means_no_context(tmp_path):
     assert authoritative_task_context(str(tmp_path)) == "(none supplied)"
+
+
+def test_the_statement_is_marked_as_supplied_data_not_a_world_file(tmp_path):
+    (tmp_path / "task.md").write_text("Compute the value.\n")
+    ctx = json.loads(authoritative_task_context(str(tmp_path)))
+    assert ctx["text"] == "Compute the value.\n"
+    note = ctx["statement_note"]
+    assert "not an artifact of the delivered world" in note
+    assert "never write a copy" in note

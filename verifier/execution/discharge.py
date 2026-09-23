@@ -507,6 +507,19 @@ class AgentDischarger:
         # so a check of the deliverable's runnability is unaffected.
         interpreter = _resolve_interpreter(interpreter, env.get("PATH", ""),
                                            self.toolchain_dir)
+        # The same holds for an interpreter the script's body invokes by
+        # name: the verifier's own instrument directories are reachable
+        # AFTER the task's, so the task's programs always win when the task
+        # has them (a check that the delivery runs where it will be graded
+        # sees exactly the task's environment) and the verifier's fill only
+        # the gaps. Without them a check written in a language the task
+        # image lacks failed to launch and was recorded unobtainable.
+        instrument_dirs = [d for d in _instrument_dirs(self.toolchain_dir)
+                           if d not in env.get("PATH", "").split(os.pathsep)]
+        if instrument_dirs:
+            env["PATH"] = os.pathsep.join(
+                [part for part in (env.get("PATH", ""),) if part]
+                + instrument_dirs)
         env.update({
             "GV_WORKDIR": workdir,
             "GV_TOOLCHAIN": self.toolchain_dir,
@@ -554,6 +567,8 @@ class AgentDischarger:
             "timed_out": timed_out,
             "launch_error": launch_error,
             "seconds": seconds,
+            # directories appended after the task's own PATH
+            "instrument_path": instrument_dirs,
             "stdout": stdout, "stdout_truncated": out_trunc,
             "stderr": stderr, "stderr_truncated": err_trunc,
             "files": _snapshot(workdir),
@@ -836,6 +851,24 @@ def _snapshot_envelope(
     return result
 
 
+def _instrument_dirs(toolchain_dir: str) -> List[str]:
+    """The verifier's own instrument directories, in preference order: the
+    interpreter the verifier runs under, then the shared toolchain's bin
+    directories."""
+    import sys
+    dirs = [os.path.dirname(os.path.abspath(sys.executable))]
+    if toolchain_dir and os.path.isdir(toolchain_dir):
+        dirs.append(os.path.join(toolchain_dir, "bin"))
+        for entry in sorted(os.listdir(toolchain_dir)):
+            dirs.append(os.path.join(toolchain_dir, entry, "bin"))
+    seen, out = set(), []
+    for d in dirs:
+        if d not in seen and os.path.isdir(d):
+            seen.add(d)
+            out.append(d)
+    return out
+
+
 def _resolve_interpreter(interpreter: List[str], task_path: str,
                          toolchain_dir: str) -> List[str]:
     """The shebang's program, found on the task's PATH when it is there,
@@ -856,12 +889,7 @@ def _resolve_interpreter(interpreter: List[str], task_path: str,
     found = shutil.which(os.path.basename(program), path=task_path)
     if found:
         return interpreter
-    candidates = [os.path.dirname(sys.executable)]
-    if toolchain_dir and os.path.isdir(toolchain_dir):
-        candidates.append(os.path.join(toolchain_dir, "bin"))
-        for entry in sorted(os.listdir(toolchain_dir)):
-            candidates.append(os.path.join(toolchain_dir, entry, "bin"))
-    for directory in candidates:
+    for directory in _instrument_dirs(toolchain_dir):
         candidate = os.path.join(directory, os.path.basename(program))
         if os.access(candidate, os.X_OK):
             return [candidate, *rest]

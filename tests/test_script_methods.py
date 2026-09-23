@@ -370,3 +370,55 @@ def test_a_shebang_interpreter_missing_from_the_task_path_comes_from_the_toolcha
     seen = backend.calls[1]["variables"]
     assert seen["exit_code"] == 0
     assert seen["stdout"].startswith("interpreted-by-toolchain")
+
+
+def test_an_interpreter_the_script_body_calls_comes_from_the_toolchain_when_the_task_lacks_it(tmp_path, monkeypatch):
+    """A check whose body invokes an interpreter by name (not via its
+    shebang) must still launch when the task environment lacks it: the
+    verifier's instrument directories are reachable after the task's."""
+    toolchain = tmp_path / "toolchain"
+    (toolchain / "bin").mkdir(parents=True)
+    tool = toolchain / "bin" / "gvtesttool"
+    tool.write_text("#!/bin/sh\necho from-toolchain\n")
+    tool.chmod(0o755)
+    empty = tmp_path / "taskpath"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", f"{empty}:/usr/bin:/bin")
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    backend = FixtureBackend({"oracles": {"methods": [script_method("gvtesttool")]},
+                              "script_judger": reader("holds")})
+    real = AgentDischarger(backend, artifacts,
+                           workdir_base=os.path.join(tmp_path, "work"),
+                           state_dir=str(tmp_path), toolchain_dir=str(toolchain))
+    game = BindingGame(backend, artifacts, log, AgentStub(real))
+    result = game.run(ROW, Obligation("c1", "three lines", required_basis="world"))
+    assert result.outcome == "holds"
+    seen = backend.calls[1]["variables"]
+    assert seen["exit_code"] == 0 and seen["stdout"].strip() == "from-toolchain"
+
+
+def test_the_task_environment_wins_over_the_verifier_toolchain(tmp_path, monkeypatch):
+    """When the task has the program, the script sees the task's copy: a
+    check of the delivery's runnability must not be answered by ours."""
+    toolchain = tmp_path / "toolchain"
+    (toolchain / "bin").mkdir(parents=True)
+    ours = toolchain / "bin" / "gvtesttool"
+    ours.write_text("#!/bin/sh\necho from-toolchain\n")
+    ours.chmod(0o755)
+    taskbin = tmp_path / "taskbin"
+    taskbin.mkdir()
+    theirs = taskbin / "gvtesttool"
+    theirs.write_text("#!/bin/sh\necho from-task\n")
+    theirs.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{taskbin}:/usr/bin:/bin")
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    backend = FixtureBackend({"oracles": {"methods": [script_method("gvtesttool")]},
+                              "script_judger": reader("holds")})
+    real = AgentDischarger(backend, artifacts,
+                           workdir_base=os.path.join(tmp_path, "work"),
+                           state_dir=str(tmp_path), toolchain_dir=str(toolchain))
+    game = BindingGame(backend, artifacts, log, AgentStub(real))
+    game.run(ROW, Obligation("c1", "three lines", required_basis="world"))
+    assert backend.calls[1]["variables"]["stdout"].strip() == "from-task"

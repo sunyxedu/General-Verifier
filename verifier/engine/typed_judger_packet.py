@@ -357,7 +357,8 @@ def _task_context_document(raw: str, state_dir: str) -> dict:
     # the authority is the task statement; the harness may add facts about
     # the run beside it (the candidate response, the recorded environment),
     # which are context for the seats and never part of the statement
-    harness_facts = {"candidate_response", "environment_invocation",
+    harness_facts = {"candidate_response", "statement_note",
+                     "environment_invocation",
                      "environment_changes_since_task_start",
                      "environment_note"}
     if (not isinstance(value, dict)

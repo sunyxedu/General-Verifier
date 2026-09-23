@@ -438,7 +438,19 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
         return "(none supplied)"
     with open(task, encoding="utf-8") as handle:
         text = handle.read()
-    context = {"path": os.path.abspath(task), "text": text}
+    context = {"path": os.path.abspath(task), "text": text,
+               # An executor that met the statement's path inside the
+               # verifier's state went looking for the statement at a world
+               # address, declared the authority absent there, and then
+               # wrote a copy into the delivery. The text is supplied here
+               # in full; the path is only its identity.
+               "statement_note": (
+                   "The text above is the complete authoritative task "
+                   "statement, supplied by the harness; the path is its "
+                   "identity, not a location to read. It is the authority "
+                   "wherever the task is referenced. It is not an artifact "
+                   "of the delivered world: never look for it there, and "
+                   "never write a copy of it anywhere.")}
     # The candidate response is a fact about the harness, supplied as data
     # so every seat reads the same one. Offline the solver's reply is on
     # disk (final.txt) and is the carrier of a response-borne answer.
