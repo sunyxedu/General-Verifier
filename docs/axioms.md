@@ -213,6 +213,21 @@ into the working directory and running it there is the whole technique.
 Requiring isolation machinery only makes a method unrunnable where the
 machinery is absent.
 
+**Referent / the repository is somewhere, and someone owns it.** A task
+asked to recover lost commits "in my personal site". The repository was one
+directory below the task root, so the pre-task baseline — which only asked
+whether the root itself was a repository — recorded nothing, the
+obligations spoke of "the repository", and six checks in a row ran their
+commands at the task root and were told it is not a repository. On another
+task the repository was owned by the task's own service user while the
+verifier's instruments ran as root, and the version-control tool refused
+every inspection as "dubious ownership". Neither is a prompt problem. The
+baseline now records every repository under the root and the world
+description lists them, with the note that the root is not assumed to be
+one; and the verifier's own process environment, which its seats and
+scripts inherit and the solver's processes do not, lets its instruments
+read a repository whoever owns it.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,

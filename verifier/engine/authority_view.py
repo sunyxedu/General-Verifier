@@ -33,7 +33,8 @@ _GIT_FIELDS = frozenset({"head", "refs", "status"})
 # plus the environment fingerprint the task supplied (recorded alongside,
 # not part of the minimal-change authority)
 _BASELINE_REQUIRED = frozenset({"git.json", "manifest.json"})
-_BASELINE_FILES = _BASELINE_REQUIRED | {"environment.json"}
+_BASELINE_FILES = _BASELINE_REQUIRED | {"environment.json",
+                                        "repositories.json"}
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}")
 _SIZE_IDENTITY = re.compile(r"size:(0|[1-9][0-9]*)")
 
@@ -359,7 +360,7 @@ def _baseline(state_fd: int) -> Dict[str, Any]:
                 or not _BASELINE_REQUIRED <= set(names) <= _BASELINE_FILES):
             raise AuthorityViewUnavailable(
                 "baseline authority must contain git.json and manifest.json "
-                "and at most environment.json besides")
+                "and at most environment.json and repositories.json besides")
         git = _git(_strict_json(
             _read_regular_at(
                 baseline_fd, "git.json", MAX_BASELINE_JSON_BYTES),

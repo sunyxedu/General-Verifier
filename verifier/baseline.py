@@ -10,6 +10,10 @@ does not name still match their baseline sha256".
 Contents:
   git.json       rev-parse HEAD / for-each-ref / status --porcelain
                  (absent keys mean the root is not a git worktree)
+  repositories.json
+                 every repository found under the root (relative path ->
+                 the same three fields), so a repository one directory
+                 down is as visible as one at the root
   manifest.json  relative path -> sha256 (files above the size cap record
                  "size:<bytes>" instead of a hash)
 
@@ -26,30 +30,64 @@ SKIP_DIRS = {".git", ".gv", "__pycache__", "node_modules", ".venv"}
 HASH_CAP = 64 * 1024 * 1024   # hash files up to 64 MB; record size beyond
 
 
-def snapshot(root: str, out_dir: str) -> dict:
-    root = os.path.abspath(root)
-    os.makedirs(out_dir, exist_ok=True)
+# git refuses to read a repository owned by another OS user; the baseline
+# (and the verifier's instruments) must read the task's repositories
+# whoever owns them
+GIT_ANY_OWNER = ["-c", "safe.directory=*"]
+MAX_REPOSITORIES = 32
 
+
+def _git_state(path: str) -> dict:
     git = {}
-    for name, cmd in (("head", ["git", "rev-parse", "HEAD"]),
-                      ("refs", ["git", "for-each-ref"]),
-                      ("status", ["git", "status", "--porcelain"])):
+    for name, args in (("head", ["rev-parse", "HEAD"]),
+                       ("refs", ["for-each-ref"]),
+                       ("status", ["status", "--porcelain"])):
         try:
-            proc = subprocess.run(cmd, cwd=root, capture_output=True,
-                                  text=True)
+            proc = subprocess.run(["git", *GIT_ANY_OWNER, *args], cwd=path,
+                                  capture_output=True, text=True)
             if proc.returncode == 0:
                 git[name] = proc.stdout.strip()
         except OSError:
             pass
+    return git
+
+
+def repositories(root: str) -> dict:
+    """Every repository under root (its own worktree included), by path
+    relative to root ('.' for root itself). A checkout that is not at the
+    task root was invisible to the baseline, and every check of 'the
+    repository' guessed the root and found none."""
+    found = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        if ".git" in dirnames or ".git" in filenames:
+            rel = os.path.relpath(dirpath, root)
+            state = _git_state(dirpath)
+            if state:
+                found[rel] = state
+            if len(found) >= MAX_REPOSITORIES:
+                break
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+    return found
+
+
+def snapshot(root: str, out_dir: str) -> dict:
+    root = os.path.abspath(root)
+    os.makedirs(out_dir, exist_ok=True)
+
+    git = _git_state(root)
     with open(os.path.join(out_dir, "git.json"), "w") as f:
         json.dump(git, f, indent=1)
+    repos = repositories(root)
+    with open(os.path.join(out_dir, "repositories.json"), "w") as f:
+        json.dump(repos, f, indent=1)
 
     manifest = tree_manifest(root)
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump({"root": root, "files": manifest}, f, indent=1)
     with open(os.path.join(out_dir, "environment.json"), "w") as f:
         json.dump(environment_fingerprint(), f, indent=1)
-    return {"git": git, "file_count": len(manifest)}
+    return {"git": git, "repositories": sorted(repos),
+            "file_count": len(manifest)}
 
 
 def tree_manifest(root: str) -> dict:

@@ -536,7 +536,22 @@ def build_server(service: Service):
     return server
 
 
+def _instruments_read_any_repository(environ=os.environ) -> None:
+    """Git refuses to read a repository owned by another OS user, and the
+    verifier's seats and scripts run as whichever user the harness gives
+    them, so every inspection of a task repository owned by the task's own
+    service user failed with 'dubious ownership'. The override lives in the
+    verifier's own process environment, which its instruments inherit and
+    the solver's processes do not."""
+    if environ.get("GIT_CONFIG_COUNT"):
+        return
+    environ["GIT_CONFIG_COUNT"] = "1"
+    environ["GIT_CONFIG_KEY_0"] = "safe.directory"
+    environ["GIT_CONFIG_VALUE_0"] = "*"
+
+
 def main() -> None:
+    _instruments_read_any_repository()
     ap = argparse.ArgumentParser()
     ap.add_argument("--state-dir", required=True)
     ap.add_argument("--model", default=None)
