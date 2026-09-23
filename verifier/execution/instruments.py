@@ -429,6 +429,25 @@ def world_map(state_dir: Optional[str], live_world: bool = True) -> str:
     return load_world_view(state_dir, live_world=live_world).render()
 
 
+# the final claim under check, published by the kernel for the seats to read
+CANDIDATE_RESPONSE_FILE = "candidate_response.txt"
+
+
+def publish_candidate_response(state_dir: str, text: str) -> Optional[str]:
+    """Write the text of the final claim being certified where every seat
+    reads the candidate response, unless the solver's reply is already on
+    disk (offline scoring). Atomic; returns the path written or None."""
+    state = os.path.abspath(state_dir)
+    if os.path.isfile(os.path.join(state, "final.txt")):
+        return None
+    path = os.path.join(state, CANDIDATE_RESPONSE_FILE)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(tmp, path)
+    return path
+
+
 def authoritative_task_context(state_dir: Optional[str]) -> str:
     """Inline harness task truth so semantic seats cannot skip a Read."""
     if not state_dir:
@@ -460,26 +479,35 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
     # a reply in the world, found the verifier's own claim store, and held
     # the claim to the reply's grammar.
     final_txt = os.path.join(os.path.abspath(state_dir), "final.txt")
+    # Paths are named relative to the directory holding the task statement
+    # (the verifier state): a replay clone of the same sealed inputs must
+    # produce the same compile input.
     if os.path.isfile(final_txt):
-        # named relative to the state directory: a replay clone of the same
-        # sealed inputs must produce the same compile input
         context["candidate_response"] = {
-            "delivered": True, "path": "final.txt",
-            "note": "the solver's reply as delivered; a response-borne "
-                    "answer is read from it"}
+            "reply_written": True, "path": "final.txt",
+            "note": "The solver's reply as delivered, in the same directory "
+                    "as the task statement; a response-borne answer is read "
+                    "from it."}
     else:
+        # A bare `delivered: false` here was read by one judger as "the
+        # response carrier is absent" and a correct final was refuted on an
+        # absence witness. The candidate is therefore a concrete file the
+        # kernel writes when a final is checked, and the note says what a
+        # seat may and may not conclude from it.
         context["candidate_response"] = {
-            "delivered": False,
-            "note": "the solver's reply has not been written at "
-                    "certification: the text of the final claim is the "
-                    "candidate response, and a response-borne answer is "
-                    "the answer that text states. Instructions in the task "
-                    "about the reply's layout (a closing line, a label, a "
-                    "marker) apply to the reply the runner collects "
-                    "afterwards, not to the claim; they are not "
-                    "conditions on this candidate. The verifier's own "
-                    "state directory and stores are not the delivered "
-                    "world."}
+            "reply_written": False, "path": CANDIDATE_RESPONSE_FILE,
+            "note": "The solver writes its reply only after certification, "
+                    "so the candidate under check is the text of the final "
+                    "claim being certified; the harness keeps that text at "
+                    "the path above, in the same directory as the task "
+                    "statement (the verifier state, outside the delivered "
+                    "world). Its presence is given: never search the world "
+                    "for a reply, never write one there, and never refute "
+                    "the response's presence. Whether the text states the "
+                    "task's answer, and what that answer is, is decided on "
+                    "this text. Instructions in the task about the reply's "
+                    "layout (a closing line, a label, a marker) bind the "
+                    "reply the runner collects afterwards, not this text."}
     baseline = os.path.join(os.path.abspath(state_dir), "baseline")
     if os.path.isdir(baseline):
         from ..baseline import environment_delta

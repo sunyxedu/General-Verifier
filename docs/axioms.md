@@ -156,6 +156,16 @@ existence check was sent back because the file had been labelled
 task-given rather than delivered in the subject role; a label that no
 independence gate reads is now corrected in the reason, not redone.
 
+**Witness / "not yet written" is not "absent".** The task context told
+every seat that the solver's reply had not been written at certification
+(`delivered: false`) and that the final claim's text was the candidate. A
+judger read the flag alone: it scanned the world for a reply, found none,
+and countersigned an absence refutation of "the candidate response is
+present" against a correct final. The candidate is now a concrete file the
+kernel writes whenever a final is checked, named in the context with a
+note that its presence is given, that no reply is to be sought in or
+written to the world, and that what the answer is is decided on that text.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,

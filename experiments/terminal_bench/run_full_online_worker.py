@@ -56,6 +56,8 @@ _RUNTIME_STATE_TOP_LEVEL = frozenset({
     "claims.sqlite-shm", "claims.sqlite-wal",
     # frozen per-claim ledger prefixes published during verification
     "record",
+    # the final claim under check, published for the seats to read
+    "candidate_response.txt",
 })
 _ARTIFACT_CAP = 32 * 1024 * 1024
 _EVENT_CAP = 64 * 1024 * 1024

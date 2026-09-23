@@ -113,7 +113,7 @@ def test_packet_binds_complete_inputs_and_replays_without_old_judgment(tmp_path)
     context = json.loads(document["task_context"])
     assert context["path"] == str(state / "task.md")
     assert context["text"] == "The delivered marker must exist."
-    assert context["candidate_response"]["delivered"] is False
+    assert context["candidate_response"]["reply_written"] is False
     assert document["obligation"]["id"] == obligation.id
     assert document["method_ir"] == method
     assert document["adapter_contract"]["identity"] == "filesystem.exists@1"

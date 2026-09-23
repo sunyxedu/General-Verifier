@@ -290,9 +290,28 @@ class Kernel:
                 if row["kind"] == CLAIM_EFFECT:
                     self._verify_effect(row)
                 else:
+                    if row["kind"] == CLAIM_FINAL:
+                        self._publish_candidate_response(row)
                     self._freeze_record(row)
                     self._verify_assertion(row, force=force)
             return self.store.status(claim_id)
+
+    def _publish_candidate_response(self, row: Dict) -> None:
+        """The final claim under check is the candidate response until the
+        solver writes its reply; the seats read it at a fixed path in the
+        state (see authoritative_task_context)."""
+        from ..execution.instruments import publish_candidate_response
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        try:
+            path = publish_candidate_response(state, row["text"])
+        except OSError as error:
+            self.log.append("candidate_response_published",
+                            {"claim": row["id"], "error": str(error)[:200]})
+            return
+        if path:
+            self.log.append("candidate_response_published",
+                            {"claim": row["id"],
+                             "file": os.path.basename(path)})
 
     def _freeze_record(self, row: Dict) -> None:
         """Bind an immutable ledger prefix to this claim's verification.

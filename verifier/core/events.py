@@ -51,6 +51,7 @@ EVENT_TYPES = (
     # scheduling
     "verify_request",
     "record_frozen",
+    "candidate_response_published",
     "status_change",
     "certificate",
 
