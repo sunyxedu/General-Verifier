@@ -912,10 +912,8 @@ def test_critic_gets_the_task_statement_when_the_harness_wrote_one(tmp_path):
     compiler_context = json.loads(backend.calls[0]["variables"]["task_context"])
     critic_context = json.loads(backend.calls[1]["variables"]["task_context"])
     assert compiler_context == critic_context
-    assert compiler_context == {
-        "path": str(tmp_path / "task.md"),
-        "text": task_text,
-    }
+    assert compiler_context["path"] == str(tmp_path / "task.md")
+    assert compiler_context["text"] == task_text
 
 
 @pytest.mark.parametrize("task_supplied", [False, True])

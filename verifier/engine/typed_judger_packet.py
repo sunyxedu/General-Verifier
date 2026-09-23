@@ -354,7 +354,15 @@ def _same_result(left: DischargeResult, right_document: Mapping[str, Any]) -> bo
 def _task_context_document(raw: str, state_dir: str) -> dict:
     value = _strict_json(raw)
     expected_path = os.path.join(os.path.abspath(state_dir), "task.md")
-    if (not isinstance(value, dict) or set(value) != {"path", "text"}
+    # the authority is the task statement; the harness may add facts about
+    # the run beside it (the candidate response, the recorded environment),
+    # which are context for the seats and never part of the statement
+    harness_facts = {"candidate_response", "environment_invocation",
+                     "environment_changes_since_task_start",
+                     "environment_note"}
+    if (not isinstance(value, dict)
+            or not {"path", "text"} <= set(value)
+            or not set(value) <= {"path", "text"} | harness_facts
             or value.get("path") != expected_path
             or not isinstance(value.get("text"), str)):
         raise ValueError("typed-adapter task authority is invalid")

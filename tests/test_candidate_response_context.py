@@ -21,7 +21,7 @@ def test_offline_state_points_at_the_delivered_reply(tmp_path):
     ctx = json.loads(authoritative_task_context(str(tmp_path)))
     cr = ctx["candidate_response"]
     assert cr["delivered"] is True
-    assert cr["path"] == os.path.join(str(tmp_path), "final.txt")
+    assert cr["path"] == "final.txt"
 
 
 def test_no_task_statement_means_no_context(tmp_path):

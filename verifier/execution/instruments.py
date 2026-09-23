@@ -449,8 +449,10 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
     # the claim to the reply's grammar.
     final_txt = os.path.join(os.path.abspath(state_dir), "final.txt")
     if os.path.isfile(final_txt):
+        # named relative to the state directory: a replay clone of the same
+        # sealed inputs must produce the same compile input
         context["candidate_response"] = {
-            "delivered": True, "path": final_txt,
+            "delivered": True, "path": "final.txt",
             "note": "the solver's reply as delivered; a response-borne "
                     "answer is read from it"}
     else:

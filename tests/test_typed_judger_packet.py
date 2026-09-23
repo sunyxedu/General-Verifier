@@ -109,10 +109,11 @@ def test_packet_binds_complete_inputs_and_replays_without_old_judgment(tmp_path)
     assert type(packet) is packet_module.TypedAdapterJudgerPacket
     document = json.loads(packet.render())
     assert document["schema"] == packet_module.TYPED_JUDGER_PACKET_PROTOCOL
-    assert document["task_context"] == json.dumps({
-        "path": str(state / "task.md"),
-        "text": "The delivered marker must exist.",
-    }, ensure_ascii=False)
+    # the statement is the authority; the harness may add run facts beside it
+    context = json.loads(document["task_context"])
+    assert context["path"] == str(state / "task.md")
+    assert context["text"] == "The delivered marker must exist."
+    assert context["candidate_response"]["delivered"] is False
     assert document["obligation"]["id"] == obligation.id
     assert document["method_ir"] == method
     assert document["adapter_contract"]["identity"] == "filesystem.exists@1"
