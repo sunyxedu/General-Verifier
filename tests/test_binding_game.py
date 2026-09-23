@@ -931,3 +931,37 @@ def test_pure_failures_with_no_audited_gap_stay_failed(tmp_path):
     result = g.run(ROW, Obligation("c1", "past state was X", "world"))
 
     assert result.outcome == "failed"
+
+
+def test_inputs_a_sibling_read_are_reported_as_reachable(tmp_path):
+    """A boundary report carrying only absences let one check call an
+    address unobtainable while another had just read it."""
+    import json as _json
+    from verifier.core.model import Obligation
+    from verifier.execution.discharge import DischargeResult
+
+    seen = []
+
+    def oracle(variables):
+        seen.append(variables["sibling_boundary"])
+        return ORACLE
+
+    class _D:
+        def discharge(self, row, obligation, method=None, tag=""):
+            return DischargeResult(
+                witness_kind="execution", outcome="holds", witness=None,
+                artifact="", instrument="stub", basis="world",
+                inputs=[{"ref": "candidate_response.txt",
+                         "provenance": "verifier", "role": "input"}])
+
+    g, backend = game(tmp_path,
+                      {"oracles": oracle,
+                       "judger": {"sufficient": "yes", "faithful": "yes",
+                                  "degradation": "n/a", "reason": "ok"}},
+                      discharger=_D())
+    g.run(ROW, Obligation("c1", "first check", required_basis="world"))
+    g.run(ROW, Obligation("c1", "second check", required_basis="world"))
+
+    assert seen[0] == "[]"
+    later = _json.loads(seen[-1])
+    assert "candidate_response.txt" in later["already_read"]

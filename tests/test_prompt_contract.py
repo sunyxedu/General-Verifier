@@ -451,3 +451,10 @@ def test_the_executor_writes_its_own_computation():
     executor = prompts.DISCHARGE_SYSTEM
     assert "A DELIVERED PROGRAM IS NOT YOUR INSTRUMENT" in executor
     assert "WRITE THE COMPUTATION" in executor
+
+
+def test_the_boundary_report_carries_reachable_inputs_too():
+    oracle = prompts.ORACLES_TEMPLATE
+    assert "already_read" in oracle and "no method may call them unobtainable" in oracle
+    executor = prompts.DISCHARGE_SYSTEM
+    assert "AN ADDRESS A SIBLING READ IS REACHABLE" in executor

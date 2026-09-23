@@ -191,6 +191,17 @@ must stay run-independent (a replay clone of the same sealed inputs has to
 hash the same), so the name stays relative and the context now says what to
 resolve it against, and that no world mapping applies to it.
 
+**Strength / a sibling read it, so it is reachable.** On a final whose
+answer had to be compared against an independently computed value, one
+check failed to open the candidate text after a single attempt and reported
+the obligation unobtainable — capping an otherwise correct certificate at
+partial — while two sibling checks on the same claim had just read that
+same text in full. The boundary report the seats share carried only what
+was found ABSENT, so nothing told the failing check that the address was
+live. It now carries both halves: `unavailable`, which a method must avoid
+relying on, and `already_read`, which a method may rely on and no method
+may call unobtainable.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,

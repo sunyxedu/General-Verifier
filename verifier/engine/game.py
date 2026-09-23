@@ -247,6 +247,7 @@ class BindingGame:
         # this one too, so the oracle is told before it lists a method
         # that needs it
         self._boundary: Dict[str, List[str]] = {}
+        self._reached: Dict[str, List[str]] = {}
         # prewarms in flight: a commit that needs a batch being enumerated
         # right now waits for that one enumeration instead of starting a
         # second, and never waits for the others
@@ -1067,6 +1068,7 @@ class BindingGame:
                 )
             attempt.discharge_artifact = result.artifact
             attempt.discharge_outcome = result.outcome
+            self._note_reached(row, result)
 
             if result.outcome == OUTCOME_UNOBTAINABLE:
                 detail = str(result.witness or
@@ -1557,10 +1559,35 @@ class BindingGame:
             notes.append(f"[{obligation.text[:80]}] {str(detail)[:300]}")
             del notes[:-self.BOUNDARY_NOTES]
 
+    def _note_reached(self, row: Dict, result) -> None:
+        """The inputs a sibling check actually consumed. A boundary report
+        carried only absences, so one check could call an address
+        unobtainable while another had just read it — the second finding is
+        the one that settles whether the address is reachable."""
+        refs = []
+        for item in getattr(result, "inputs", None) or ():
+            if not isinstance(item, dict):
+                continue
+            ref = str(item.get("ref") or "").strip()
+            if ref and len(ref) <= 200:
+                refs.append(ref)
+        if not refs:
+            return
+        with self._cache_lock:
+            reached = self._reached.setdefault(row["id"], [])
+            for ref in refs:
+                if ref not in reached:
+                    reached.append(ref)
+            del reached[:-self.BOUNDARY_NOTES]
+
     def _sibling_boundary(self, row: Dict) -> str:
         with self._cache_lock:
             notes = list(self._boundary.get(row["id"], ()))
-        return json.dumps(notes, ensure_ascii=False) if notes else "[]"
+            reached = list(self._reached.get(row["id"], ()))
+        if not notes and not reached:
+            return "[]"
+        return json.dumps({"unavailable": notes, "already_read": reached},
+                          ensure_ascii=False)
 
     def _enumerate(
         self,
