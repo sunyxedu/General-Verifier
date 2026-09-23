@@ -33,6 +33,12 @@ from .agents import ALL_AGENT_ROLES, AgentBackend, AgentRole, to_json_schema
 from .model_spans import model_call_span
 from .schema import RoleError
 
+try:                                    # the transports' HTTP client
+    import httpx as _httpx
+    _CONNECTION_ERRORS: Tuple[type, ...] = (_httpx.TransportError,)
+except ImportError:                     # pragma: no cover - httpx is a dependency
+    _CONNECTION_ERRORS = ()
+
 DIRECT_SEATS_ENV = "GV_DIRECT_SEATS"
 DIRECT_PROVIDER_ENV = "GV_DIRECT_PROVIDER"     # anthropic | openai | openrouter
 DIRECT_MODEL_ENV = "GV_DIRECT_MODEL"
@@ -56,6 +62,11 @@ DIRECT_NOTE = (
 )
 
 TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
+# The provider refusing for want of credit is an account state the operator
+# fixes by topping up, not a verdict on the call: wait it out on the SAME
+# provider (the direct seats are never silently moved to another backend).
+BILLING_STATUSES = {402}
+BILLING_DELAYS = (60, 120, 300, 600, 600, 600, 600, 600)
 TRANSIENT_DELAYS = (0, 20, 60, 120, 240)
 DEFAULT_MAX_TOKENS = 32000
 EMIT_TOOL = "emit"
@@ -63,6 +74,11 @@ EMIT_TOOL = "emit"
 
 class TransientTransportError(RuntimeError):
     """A status worth waiting out (rate limit, overload, gateway)."""
+
+
+class AwaitingCredit(TransientTransportError):
+    """The provider refused for want of credit; waited out on a longer
+    schedule than an overload, on the same provider."""
 
 
 class OutputBudgetExhausted(RuntimeError):
@@ -159,6 +175,9 @@ class AnthropicMessagesTransport:
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(f"{self.base_url}/v1/messages",
                                    headers=self._headers(), json=body)
+        if response.status_code in BILLING_STATUSES:
+            raise AwaitingCredit(
+                f"HTTP {response.status_code}: {response.text[:300]}")
         if response.status_code in TRANSIENT_STATUSES:
             raise TransientTransportError(
                 f"HTTP {response.status_code}: {response.text[:300]}")
@@ -213,6 +232,9 @@ class OpenAIResponsesTransport:
                 headers={"authorization": f"Bearer {self.api_key}",
                          "content-type": "application/json"},
                 json=body)
+        if response.status_code in BILLING_STATUSES:
+            raise AwaitingCredit(
+                f"HTTP {response.status_code}: {response.text[:300]}")
         if response.status_code in TRANSIENT_STATUSES:
             raise TransientTransportError(
                 f"HTTP {response.status_code}: {response.text[:300]}")
@@ -277,6 +299,9 @@ class OpenAIChatTransport:
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(f"{self.base_url}/v1/chat/completions",
                                    headers=headers, json=body)
+        if response.status_code in BILLING_STATUSES:
+            raise AwaitingCredit(
+                f"HTTP {response.status_code}: {response.text[:300]}")
         if response.status_code in TRANSIENT_STATUSES:
             raise TransientTransportError(
                 f"HTTP {response.status_code}: {response.text[:300]}")
@@ -362,14 +387,18 @@ class DirectBackend:
               attempts: List[Dict[str, Any]]) -> Dict[str, Any]:
         last: Optional[str] = None
         max_tokens = DEFAULT_MAX_TOKENS
-        for delay in TRANSIENT_DELAYS:
-            if delay:
-                time.sleep(delay)
+        transient_waits = iter(TRANSIENT_DELAYS[1:])
+        billing_waits = iter(BILLING_DELAYS)
+        while True:
             attempt_started = time.time()
             try:
-                payload, usage = self.transport.complete(
-                    system=system, prompt=prompt, schema=schema, model=model,
-                    max_tokens=max_tokens)
+                try:
+                    payload, usage = self.transport.complete(
+                        system=system, prompt=prompt, schema=schema,
+                        model=model, max_tokens=max_tokens)
+                except _CONNECTION_ERRORS as err:
+                    raise TransientTransportError(
+                        f"connection: {type(err).__name__}: {err}") from err
             except OutputBudgetExhausted as err:
                 last = str(err)
                 attempts.append({"role": role.name, "seconds": round(
@@ -380,16 +409,31 @@ class DirectBackend:
                                     f"at {max_tokens} tokens: {last}")
                 max_tokens *= 2
                 continue
+            except AwaitingCredit as err:
+                last = str(err)
+                attempts.append({"role": role.name, "seconds": round(
+                    time.time() - attempt_started, 3), "error": last,
+                    "awaiting_credit": True})
+                delay = next(billing_waits, None)
+                if delay is None:
+                    raise RoleError(f"{role.name}: provider credit still "
+                                    f"exhausted after waiting: {last}")
+                time.sleep(delay)
+                continue
             except TransientTransportError as err:
                 last = str(err)
                 attempts.append({"role": role.name, "seconds": round(
                     time.time() - attempt_started, 3), "error": last})
+                delay = next(transient_waits, None)
+                if delay is None:
+                    raise RoleError(f"{role.name}: transient transport "
+                                    f"failure persisted: {last}")
+                time.sleep(delay)
                 continue
             attempts.append({"role": role.name, "seconds": round(
                 time.time() - attempt_started, 3), "usage": usage})
             self.transcripts.append({"role": role.name, "usage": usage})
             return payload
-        raise RoleError(f"{role.name}: transient transport failure persisted: {last}")
 
     def _receipt(self, role: AgentRole, started: float,
                  attempts: List[Dict[str, Any]], error: Optional[str],
@@ -432,7 +476,6 @@ class RoutingBackend:
         self.agent = agent
         self.direct_roles: Set[str] = set(direct_roles)
         self.uses_role_wire_schema = True
-        self.direct_fallbacks: List[Dict[str, Any]] = []
 
     @property
     def roles(self) -> Dict[str, AgentRole]:
@@ -449,19 +492,11 @@ class RoutingBackend:
     def complete(self, role_name: str, prompt: str,
                  variables: Dict[str, Any]) -> Any:
         if self.routes_direct(role_name):
-            try:
-                return self.direct.complete(role_name, prompt, variables)
-            except RoleError as err:
-                # The direct transport is an accelerator, not the seat of
-                # record: when it cannot answer (billing, auth, an outage,
-                # an answer the schema rejects) the role still exists on
-                # the agent backend, which is where it ran before direct
-                # seats existed. Failing the claim here turned a provider
-                # incident into an instant verifier failure on every claim.
-                self.direct_fallbacks.append({
-                    "role": role_name, "error": str(err)[:300],
-                    "at": time.time()})
-                return self.agent.complete(role_name, prompt, variables)
+            # A direct seat runs on the direct provider only — never
+            # silently on the agent backend, which is a different model
+            # call with a different cost and latency profile. Outages and
+            # exhausted credit are waited out inside the direct call.
+            return self.direct.complete(role_name, prompt, variables)
         return self.agent.complete(role_name, prompt, variables)
 
     def allows_lazy_oracle_catalog(self, role_name: str,
