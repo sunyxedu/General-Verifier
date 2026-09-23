@@ -202,6 +202,17 @@ live. It now carries both halves: `unavailable`, which a method must avoid
 relying on, and `already_read`, which a method may rely on and no method
 may call unobtainable.
 
+**Witness / a copy is the isolation.** Checking what a delivered program
+does to its inputs, the oracle repeatedly required the subject to run
+inside a private mount namespace. The image had neither of the tools it
+named, so four methods in a row failed to launch, and a fifth ran the
+program in place and was rejected for modifying the delivery. The engine
+already compares the delivered world before and after every run, which is
+the guarantee those namespaces were meant to provide; copying the subject
+into the working directory and running it there is the whole technique.
+Requiring isolation machinery only makes a method unrunnable where the
+machinery is absent.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,

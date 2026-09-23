@@ -458,3 +458,10 @@ def test_the_boundary_report_carries_reachable_inputs_too():
     assert "already_read" in oracle and "no method may call them unobtainable" in oracle
     executor = prompts.DISCHARGE_SYSTEM
     assert "AN ADDRESS A SIBLING READ IS REACHABLE" in executor
+
+
+def test_a_copy_is_all_the_isolation_a_check_needs():
+    assert "the copy is all the isolation a method needs" in prompts.ORACLES_SYSTEM
+    assert "Never require process, namespace, or container isolation" \
+        in prompts.ORACLES_SYSTEM
+    assert "do not reach for isolation machinery" in prompts.DISCHARGE_SYSTEM
