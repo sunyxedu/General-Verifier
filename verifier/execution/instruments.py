@@ -545,8 +545,13 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
             context["environment_note"] = (
                 "the task's environment is the one recorded at task start; "
                 "executables and packages listed here were added by the "
-                "solver during its session and are not part of the "
-                "delivered environment")
+                "solver during its session. A delivery runs with what the "
+                "task supplied: one that needs an addition to run needs "
+                "something the task did not supply, unless the addition "
+                "serves what the task itself asked the solver to install, "
+                "build, or set up. The additions are still present, so a "
+                "check may run one as an instrument; that it was added "
+                "never makes it unavailable")
     return json.dumps(context, ensure_ascii=False)
 
 
