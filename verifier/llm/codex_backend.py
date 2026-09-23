@@ -59,7 +59,7 @@ from .codex_service import (
     normalize_service_tier,
     service_tier_cli_args,
 )
-from .schema import RoleError, SeatTimeout, validate
+from .schema import RoleError, SeatScratchExceeded, SeatTimeout, validate
 from .model_spans import model_call_span, model_span_capture
 from ..execution.config import offline_runtime_read_roots
 from ..execution.instruments import validated_image_info
@@ -536,7 +536,8 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 ARGV_INSTRUCTION_LIMIT = 100_000
 
 
-def _run_codex_process(cmd, *, cwd, stdin, timeout, input_text=None):
+def _run_codex_process(cmd, *, cwd, stdin, timeout, input_text=None,
+                       watch_dir=None, watch_cap=0):
     """Run one CLI attempt and clean its dedicated POSIX process group.
     With ``input_text`` the prompt is written to the process's stdin (the
     command then names `-` as its prompt); otherwise stdin is the given
@@ -581,11 +582,20 @@ def _run_codex_process(cmd, *, cwd, stdin, timeout, input_text=None):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, start_new_session=True, **launch_kwargs,
     )
+    from ..execution.scratch_budget import ScratchWatch
+    watch = ScratchWatch(watch_dir, watch_cap, lambda: _kill_process_group(proc))
     try:
         try:
             try:
-                stdout, stderr = proc.communicate(input=input_text,
-                                                  timeout=timeout)
+                with watch:
+                    stdout, stderr = proc.communicate(input=input_text,
+                                                      timeout=timeout)
+                if watch.exceeded:
+                    raise SeatScratchExceeded(
+                        f"the check's scratch directory outgrew its "
+                        f"{watch_cap >> 30} GB budget and the check was stopped "
+                        f"(copy only what the check exercises; never a whole "
+                        f"filesystem or a device file)")
             except subprocess.TimeoutExpired as error:
                 _kill_process_group(proc)
                 stdout, stderr = proc.communicate()
@@ -2304,6 +2314,17 @@ class CodexBackend:
         finally:
             self._receipt(role_name, role_model, started, error, variables)
 
+    @staticmethod
+    def _scratch_watch(role_name: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+        """The executor's working directory and its size budget while it
+        runs (scratch_budget); other seats write no scratch of their own."""
+        from ..execution.scratch_budget import scratch_cap_bytes
+        workdir = variables.get("workdir") if role_name == "discharge" else None
+        cap = scratch_cap_bytes()
+        if not workdir or not cap:
+            return {}
+        return {"watch_dir": str(workdir), "watch_cap": cap}
+
     def _receipt(self, role_name: str, model: str, started: float,
                  error: Optional[str], variables: Dict[str, Any]) -> None:
         """One row per codex seat call in <state>/role_calls.jsonl, beside the
@@ -2521,7 +2542,8 @@ class CodexBackend:
                             cmd, cwd=execution_cwd, stdin=devnull,
                             timeout=self.timeout,
                             **({"input_text": instruction} if via_stdin
-                               else {}))
+                               else {}),
+                            **self._scratch_watch(role_name, variables))
                 except subprocess.TimeoutExpired as error:
                     finished_at_unix_ns = time.time_ns()
                     duration_ns = (time.monotonic_ns()

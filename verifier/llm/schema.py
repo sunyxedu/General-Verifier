@@ -22,6 +22,11 @@ class SeatTimeout(RoleError):
     the same budget again, so the role's retry does not repeat the call."""
 
 
+class SeatScratchExceeded(SeatTimeout):
+    """A seat's scratch directory outgrew its size budget while it ran; the
+    seat was stopped. A budget, like time: not retried with the same prompt."""
+
+
 # Minimal schema validation (no external deps).
 # schema: {"field": type} where type in {str, bool, int, float, list, dict},
 # {"field": [element_spec]} for a list (elements may be any spec, e.g. [str]

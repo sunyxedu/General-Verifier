@@ -542,17 +542,38 @@ class AgentDischarger:
         started = _time.time()
         exit_code: Optional[int] = None
         out, err, timed_out, launch_error = "", "", False, ""
+        from .scratch_budget import ScratchWatch, scratch_cap_bytes
+        import signal as _signal
+
+        def _stop(proc):
+            try:
+                os.killpg(proc.pid, _signal.SIGKILL)
+            except OSError:
+                pass
+
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 [*interpreter, path], cwd=workdir, env=env,
-                capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
-            exit_code = proc.returncode
-            out = proc.stdout.decode("utf-8", errors="replace")
-            err = proc.stderr.decode("utf-8", errors="replace")
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            out = (exc.stdout or b"").decode("utf-8", errors="replace")
-            err = (exc.stderr or b"").decode("utf-8", errors="replace")
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL, start_new_session=True)
+            scratch = ScratchWatch(workdir, scratch_cap_bytes(),
+                                   lambda: _stop(proc))
+            try:
+                with scratch:
+                    raw_out, raw_err = proc.communicate(timeout=timeout)
+                exit_code = proc.returncode
+            except subprocess.TimeoutExpired:
+                _stop(proc)
+                raw_out, raw_err = proc.communicate()
+                timed_out = True
+            out = raw_out.decode("utf-8", errors="replace")
+            err = raw_err.decode("utf-8", errors="replace")
+            if scratch.exceeded:
+                launch_error = (
+                    "the script's scratch directory outgrew its "
+                    f"{scratch_cap_bytes() >> 30} GB budget and the script was "
+                    "stopped (copy only what the check exercises; never a "
+                    "whole filesystem or a device file)")
         except OSError as exc:
             launch_error = str(exc)
         seconds = round(_time.time() - started, 3)
