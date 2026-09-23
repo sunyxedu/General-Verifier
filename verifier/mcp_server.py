@@ -183,6 +183,16 @@ class Service:
         # one read offset: two drains at once would ingest the same lines
         # twice. Only the drain is serialized; verification is not.
         self._drain_lock = threading.Lock()
+        # online, an intermediate claim's commit returns once the claim is
+        # recorded and its checks run in the background, so the solver keeps
+        # working instead of waiting on every check; a refutation reaches it
+        # in the `news` of its next call (and in gv.status). A final's commit
+        # still waits for its checks, and the certificate waits for every
+        # check in its slice. GV_BACKGROUND_CHECKS=0 restores blocking commits.
+        self.background_checks = (
+            live_world and os.environ.get("GV_BACKGROUND_CHECKS", "1") != "0")
+        self._reported: set = set()     # refuted claims the solver was told of
+        self._news_lock = threading.Lock()
         # a restarted server rebuilds its view from its own ledger
         for event in self.log.replay():
             self.builder.feed(event)
@@ -222,11 +232,27 @@ class Service:
         if revises:
             payload["revises"] = revises
         failure = None
+        background = self.background_checks and kind not in ("final", "effect")
+        deferred: List[str] = []
+        if revises:
+            barrier = getattr(self.kernel, "settle_barrier", None)
+            try:
+                replaced = self.builder.resolve(revises)
+            except TraceError:
+                replaced = None      # the feed below reports the bad reference
+            if replaced and barrier is not None:
+                barrier(replaced)
         try:
             event = self.log.append("commit", payload)
-            # under the on-commit rule this is where verification happens: the
-            # call returns only once the claim has been checked
-            self.builder.feed(event)
+            if background:
+                # recorded and wired now (later commits may cite its label at
+                # once); the checks its commit triggers run in the background
+                with self.store.deferred_triggers() as deferred:
+                    self.builder.feed(event)
+            else:
+                # under the on-commit rule this is where verification
+                # happens: the call returns only once the claim is checked
+                self.builder.feed(event)
         except VERB_ERRORS as err:
             failure = str(err)
         if label not in self.builder.labels:
@@ -246,6 +272,16 @@ class Service:
                                   "recent results are listed last")
             return result
         claim_id = self.builder.labels[label]
+        if background and deferred and failure is None:
+            self._check_in_background(claim_id, deferred)
+            row = self.store.get(claim_id)
+            return self._with_news({
+                "claim_id": claim_id, "status": row["status"], "checking": True,
+                "note": ("recorded; its check runs in the background while you "
+                         "keep working. gv.status(label) shows the verdict, and "
+                         "a refutation arrives in the `news` of your next gv "
+                         "call. Build on it only as far as you would build on "
+                         "an unchecked conclusion.")})
         row = self.store.get(claim_id)
         status = row["status"]
         result = {"claim_id": claim_id, "status": status}
@@ -259,11 +295,50 @@ class Service:
             # for the full check with `verify` if it wants one)
             result["confident"] = True
             result["confidence_reason"] = row.get("confidence_reason")
-            return result
+            return self._with_news(result)
         if kind != "effect" and status != "verified":
             # the verdict lands on the commit call now, so its residue must too
             result.update(_residue(self.store, claim_id))
-        return result
+            self._mark_reported(claim_id, status)
+        return self._with_news(result)
+
+    def _check_in_background(self, claim_id: str, deferred: List[str]) -> None:
+        def run():
+            try:
+                self.store.fire(deferred)
+            except Exception as err:  # noqa: BLE001 - never takes the server down
+                try:
+                    self.log.append("background_check_failed",
+                                    {"claim": claim_id, "error": str(err)[:500]})
+                except Exception:  # noqa: BLE001
+                    pass
+        threading.Thread(target=run, name=f"gv-check-{claim_id[:8]}",
+                         daemon=True).start()
+
+    def _mark_reported(self, claim_id: str, status: str) -> None:
+        if status == "refuted":
+            with self._news_lock:
+                self._reported.add(claim_id)
+
+    def _news(self) -> list:
+        """Refutations the solver has not been told of yet: a check that
+        finished in the background after the commit call returned."""
+        out = []
+        with self._news_lock:
+            for label, cid in list(self.builder.labels.items()):
+                if label.startswith("effect:") or cid in self._reported:
+                    continue
+                row = self.store.get(cid)
+                if row["kind"] == "effect" or row["status"] != "refuted":
+                    continue
+                self._reported.add(cid)
+                out.append({"label": label, "status": "refuted",
+                            "why": _refutation_brief(self.store, cid)})
+        return out
+
+    def _with_news(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        news = self._news()
+        return dict(result, news=news) if news else result
 
     def verify(self, label: str) -> Dict[str, Any]:
         self.drain_hooks()
@@ -282,7 +357,8 @@ class Service:
             # it on `refuted` left the solver with nothing to act on but the
             # claim's wording — the mechanism behind claim-shopping.
             result.update(_residue(self.store, claim_id))
-        return result
+            self._mark_reported(claim_id, status)
+        return self._with_news(result)
 
     def certificate(self, final_label: str) -> Dict[str, Any]:
         self.drain_hooks()
@@ -315,11 +391,13 @@ class Service:
                             entry["error"] = ev["error"]
                             break
             slice_summary.append(entry)
-        return {
+            if e["status"] == "refuted":
+                self._mark_reported(e["id"], "refuted")
+        return self._with_news({
             "verdict": cert["verdict"],
             "certificate_id": cert["certificate_id"],
             "slice": slice_summary,
-        }
+        })
 
     def status(self, label: Optional[str] = None) -> Dict[str, Any]:
         self.drain_hooks()
@@ -335,7 +413,8 @@ class Service:
                 result["confidence_reason"] = row.get("confidence_reason")
             elif row["status"] != "verified":
                 result.update(_residue(self.store, claim_id))
-            return result
+                self._mark_reported(claim_id, row["status"])
+            return self._with_news(result)
         out = {}
         for label, cid in self.builder.labels.items():
             row = self.store.get(cid)
@@ -343,6 +422,7 @@ class Service:
                 out[label] = f"{row['status']} (confident)"
             elif row["status"] == "refuted" and row["kind"] != "effect":
                 out[label] = "refuted: " + _refutation_brief(self.store, cid)
+                self._mark_reported(cid, "refuted")
             else:
                 out[label] = row["status"]
         return out
@@ -548,10 +628,14 @@ def build_server(service: Service):
     async def commit(label: str, kind: CLAIM_KINDS, text: str,
                      deps: List[str], revises: str = "") -> str:
         """Commit a claim (kind: assertion|effect|final). deps is a list of
-        labels of already-committed claims (including effect:<seq>). The claim
-        is VERIFIED BEFORE THIS RETURNS, so the call blocks for as long as its
-        checks take; the result carries the resulting status, and on anything
-        but `verified` the obligation that failed plus its counterexample."""
+        labels of already-committed claims (including effect:<seq>). An
+        assertion's commit returns once the claim is recorded (`checking`:
+        its checks run in the background while you work; gv.status(label)
+        shows the verdict, and a refutation arrives in the `news` of your
+        next gv call). A final is VERIFIED BEFORE ITS COMMIT RETURNS: the
+        call blocks for as long as its checks take, and the result carries
+        the status and, on anything but `verified`, the obligation that
+        failed plus its counterexample."""
         return await off_loop(service.commit, label, kind, text, deps,
                               revises or None)
 

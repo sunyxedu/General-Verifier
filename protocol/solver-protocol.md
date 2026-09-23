@@ -7,8 +7,8 @@ read verdicts; it contains no knowledge about your task.
 
 ## What deserves to enter the claim graph
 
-Every `commit` blocks until the verifier has dealt with the claim, so the graph should
-hold **load-bearing conclusions, not a diary**. Decide per claim, from the task itself:
+Every `commit` starts an independent check, so the graph should hold **load-bearing
+conclusions, not a diary**. Decide per claim, from the task itself:
 
 - **Commit** a conclusion when later work depends on it AND its being wrong would be
   expensive to discover late — a diagnosis of the root cause, a reading of what the task
@@ -52,9 +52,14 @@ hold **load-bearing conclusions, not a diary**. Decide per claim, from the task 
   in the verifier's ledger, so such claims verify against the record even after the world
   has legitimately moved on. Present-tense claims about past observations are the single
   most common cause of refuted-but-honest claims.
-- You do **not** need to prove it yourself. Verification is the verifier's job, and it
-  happens **at commit**: `gv.commit` returns only once the claim has been dealt with.
-  Expect the call to take a while; that wait is the check running.
+- You do **not** need to prove it yourself. Verification is the verifier's job. An
+  `assertion`'s `gv.commit` returns as soon as the claim is recorded (`checking: true`);
+  its check runs in the background while you keep working. `gv.status(label)` shows the
+  verdict, and when a background check refutes a claim, the refutation — the failing
+  obligation and its counterexample — arrives in the `news` field of your next `gv` call.
+  Read `news` whenever it appears, and rely on a claim still being checked only as far as
+  you would on any unchecked conclusion. A `final`'s commit waits for its check, and
+  `gv.certificate` waits for every check in its slice.
 
 ## Reading a commit result
 
@@ -64,7 +69,8 @@ hold **load-bearing conclusions, not a diary**. Decide per claim, from the task 
   already show — and **admitted it without spending a check**. Build on it as you would
   on a verified claim; the certificate lists it as `confident`, not `verified`. If you
   want the full independent check anyway, call `gv.verify(label)`.
-- Any other status comes back with the obligation that failed and its counterexample (or,
+- Any other status — on a final's commit, in `gv.status`, or in `news` — comes with the
+  obligation that failed and its counterexample (or,
   if the claim rests on something already refuted, the fail-closed reason), plus
   `still_holding`: the conditions of the same contract that were established. A fix for
   the failing condition must keep every one of those true — trading one requirement for

@@ -259,6 +259,15 @@ class Kernel:
                 lock = table[key] = threading.Lock()
             return lock
 
+    def settle_barrier(self, claim_id: str) -> None:
+        """Return once no check of this claim is in flight. A revision waits
+        here for the check of the version it replaces: that check settles
+        what it will, the revision then invalidates it, and the new version
+        is checked afresh (online commits return before their checks, so a
+        revision can otherwise race the check it supersedes)."""
+        with self._lock_for(self._claim_locks, claim_id):
+            return
+
     def _obligation_pool(self) -> Optional[ThreadPoolExecutor]:
         if self.parallel_obligations <= 1:
             return None

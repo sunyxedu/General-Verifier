@@ -3,6 +3,14 @@ import json
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def blocking_commits(monkeypatch):
+    """These tests read each verdict off the commit call itself (the final's
+    path, and every claim's with GV_BACKGROUND_CHECKS=0); the background
+    path's revision race is covered in tests/test_background_checks.py."""
+    monkeypatch.setenv("GV_BACKGROUND_CHECKS", "0")
+
 from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL
 from verifier.core.store import ClaimStore, TRIGGER_LAZY, TRIGGER_ON_COMMIT
 from verifier.engine.certificate import request_certificate

@@ -99,6 +99,9 @@ EVENT_TYPES = (
     "method_moved",
     # a task-start identity the compiler quoted inexactly, restored
     "obligation_identity_restored",
+    # an intermediate claim's background check raised (online commits
+    # return before their checks; a crash there must not pass silently)
+    "background_check_failed",
 
     # search support
     "dedup_hit",

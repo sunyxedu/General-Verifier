@@ -21,6 +21,15 @@ from verifier.llm.schema import FixtureBackend
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def blocking_commits(monkeypatch):
+    """These tests pin the blocking commit: the verdict and its residue come
+    back on the commit call itself. That is the final's path, and every
+    claim's path with GV_BACKGROUND_CHECKS=0; an intermediate claim's online
+    commit returns early instead (tests/test_background_checks.py)."""
+    monkeypatch.setenv("GV_BACKGROUND_CHECKS", "0")
+
+
 # one obligation per claim, derived from its text: obligation nodes are
 # content-addressed, so a fixture that emits the same text for every claim
 # would make every claim share (and inherit) one verdict

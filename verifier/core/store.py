@@ -14,6 +14,7 @@ from __future__ import annotations
 import functools
 import json
 import sqlite3
+import contextlib
 import threading
 from typing import Callable, Dict, List, Optional, Set
 
@@ -158,8 +159,30 @@ class ClaimStore:
             self.db.commit()
         self.trigger = trigger
         self._trigger_callbacks: List[TriggerCallback] = []
+        self._deferral = threading.local()
 
     # wiring
+    @contextlib.contextmanager
+    def deferred_triggers(self):
+        """Claims this thread adds inside the block are recorded and wired
+        as usual, but the checks their commit would trigger are queued in
+        the yielded list instead of run; the caller runs them with fire(),
+        typically in another thread (an online commit that returns before
+        its checks are done)."""
+        queue: List[str] = []
+        previous = getattr(self._deferral, "queue", None)
+        self._deferral.queue = queue
+        try:
+            yield queue
+        finally:
+            self._deferral.queue = previous
+
+    def fire(self, claim_ids) -> None:
+        """Run the trigger callbacks for claims whose triggers were deferred."""
+        for claim_id in claim_ids:
+            for cb in self._trigger_callbacks:
+                cb(claim_id)
+
     def on_trigger(self, cb: TriggerCallback) -> None:
         """
         Register the kernel. 
@@ -204,6 +227,10 @@ class ClaimStore:
             fired.append(claim.id)
         if self.trigger == TRIGGER_LAZY:
             fired = []
+        deferred = getattr(self._deferral, "queue", None)
+        if deferred is not None:
+            deferred.extend(fired)
+            return claim.id
         # callbacks run with the lock RELEASED (the wrapper's RLock is
         # re-entrant, so releasing here is explicit): verification must not
         # hold the store lock while it waits on seats or on other threads
