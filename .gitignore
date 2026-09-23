@@ -26,3 +26,4 @@ experiments/frontiermath/_raw/
 # without a trailing slash match links as well as directories.
 experiments/vendor
 experiments/*/results
+.venv
