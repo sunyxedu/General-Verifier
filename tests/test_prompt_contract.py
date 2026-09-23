@@ -445,3 +445,9 @@ def test_methods_rest_on_instruments_that_exist_and_construct_their_inputs():
     assert "no supplied sample is owed" in oracle
     executor = prompts.DISCHARGE_SYSTEM
     assert "INPUTS YOU NEED, YOU CONSTRUCT" in executor
+
+
+def test_the_executor_writes_its_own_computation():
+    executor = prompts.DISCHARGE_SYSTEM
+    assert "A DELIVERED PROGRAM IS NOT YOUR INSTRUMENT" in executor
+    assert "WRITE THE COMPUTATION" in executor
