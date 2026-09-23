@@ -420,3 +420,18 @@ def test_compiler_and_critic_freeze_past_report_intension():
     assert "not another reporter" in critic
     assert "downstream evidence availability" in critic
     assert "adding accuracy or an external property" in critic
+
+
+def test_every_seat_that_sees_the_clause_is_told_it_is_provenance_not_scope():
+    for name in ("JUDGER_TEMPLATE", "SCRIPT_JUDGER_TEMPLATE",
+                 "DISCHARGE_TEMPLATE", "ORACLES_TEMPLATE",
+                 "SUFFICIENCY_TEMPLATE"):
+        text = getattr(prompts, name)
+        assert "{clause}" in text, name
+        assert "decided by those siblings, never here" in text, name
+
+
+def test_subject_role_label_corrections_do_not_force_a_redo():
+    judger = prompts.JUDGER_SYSTEM
+    assert "delivered source in the authority role" in judger
+    assert "do not send the run back for it" in judger

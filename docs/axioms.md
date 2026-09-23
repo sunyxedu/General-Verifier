@@ -141,6 +141,21 @@ reading ever listed. A decisive method that must first build its own
 certificate is only as available as that construction; the oracle now
 lists the honest weaker-tier method beside it in the same batch.
 
+**Necessity / the clause is provenance, not scope.** A task sentence
+("the file contains a pattern that compiles, whose one group is a date,
+protected from adjacency") was compiled, correctly, into five obligations,
+each carrying that sentence as its controlling clause. The judger then
+read the clause as the obligation's scope: an exact existence check on the
+file was declared insufficient because it "never reads the content", and a
+group-count check because it "never decides the date language" — both of
+them sibling obligations. One claim about a one-line file took two hours of
+redo cycles. Every seat that sees the clause is now told what it is for:
+modality and the meaning of terms; what the clause says beyond the
+obligation's own text is the siblings' business. In the same run a correct
+existence check was sent back because the file had been labelled
+task-given rather than delivered in the subject role; a label that no
+independence gate reads is now corrected in the reason, not redone.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,
