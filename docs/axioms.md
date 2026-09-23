@@ -132,6 +132,15 @@ snapshot cap and the workspace as data, reads a cut snapshot from its
 original, and treats replayability as the ability to rerun the retained
 procedure rather than to re-read a printed proof.
 
+**Strength / a constructed certificate is an input.** A research-level
+inequality over all functions in a class: the oracle's only method was a
+kernel-checked formal proof. The executor could not construct it (the
+proof is the research), the repair pass proposed a second assistant, then
+a third, and after an hour the claim ended unverified with no weaker-tier
+reading ever listed. A decisive method that must first build its own
+certificate is only as available as that construction; the oracle now
+lists the honest weaker-tier method beside it in the same batch.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,
