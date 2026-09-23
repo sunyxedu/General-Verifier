@@ -166,6 +166,21 @@ kernel writes whenever a final is checked, named in the context with a
 note that its presence is given, that no reply is to be sought in or
 written to the world, and that what the answer is is decided on that text.
 
+**Strength / an instrument is something that exists.** Across a batch of
+Terminal-Bench tasks the oracle's decisive methods named instruments that
+have no realization: "an independently sound, proof-producing whole-program
+verifier", "a certificate-emitting universal timed verifier", "an
+independent execution-monitor trace and coverage manifest". Every one was
+honestly reported unobtainable at discharge, and one task spent an hour on
+eleven such rejections with no claim settled. The same runs refused to test
+a delivered program because the task shipped no sample input ("use the
+exact designated input; do not substitute"), turning an ordinary behaviour
+check into a boundary gap. Two rules followed: an instrument must be a
+program, library or procedure a reader could obtain and run, never a
+capability that would have to be built for the check; and when no
+particular input is fixed, the check constructs its inputs from the task's
+wording — that construction is the check, and no supplied sample is owed.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,

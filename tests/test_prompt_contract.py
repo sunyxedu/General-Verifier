@@ -435,3 +435,13 @@ def test_subject_role_label_corrections_do_not_force_a_redo():
     judger = prompts.JUDGER_SYSTEM
     assert "delivered source in the authority role" in judger
     assert "do not send the run back for it" in judger
+
+
+def test_methods_rest_on_instruments_that_exist_and_construct_their_inputs():
+    oracle = prompts.ORACLES_SYSTEM
+    assert "INSTRUMENT IS SOMETHING THAT EXISTS" in oracle
+    assert "never a capability that would have to be built" in oracle
+    assert "INPUTS A CHECK NEEDS, IT CONSTRUCTS" in oracle
+    assert "no supplied sample is owed" in oracle
+    executor = prompts.DISCHARGE_SYSTEM
+    assert "INPUTS YOU NEED, YOU CONSTRUCT" in executor
