@@ -19,3 +19,10 @@ experiments/frontiermath/_raw/
 
 # Generated technical report site
 /_site/
+
+# Symlinks with these names (e.g. from a staging worktree) must never be
+# tracked: a tracked symlink at a path where the real, ignored directory
+# lives makes a checkout replace — and delete — that directory. Patterns
+# without a trailing slash match links as well as directories.
+experiments/vendor
+experiments/*/results
