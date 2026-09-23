@@ -93,6 +93,10 @@ EVENT_TYPES = (
     "adapter_discharge",
     "adapter_fallback",
     "discharge",
+    # the delivered world changed during a check while the solver was
+    # running a tool that may change it: not charged to the check
+    "world_moved_during_check",
+    "method_moved",
 
     # search support
     "dedup_hit",

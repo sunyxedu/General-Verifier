@@ -29,6 +29,7 @@ from ..core.model import (
 )
 from ..core.events import EventLog
 from ..engine.source_evidence import bind_source_evidence_variables
+from .world_watch import WorldWatch, close_watch, watch_world
 from ..llm.schema import RoleError
 
 
@@ -90,6 +91,11 @@ class DischargeResult:
     # check is an observation: one that alters the delivered world is a
     # defect the binding game rejects, whatever it reported.
     world_changes: dict = field(default_factory=dict)
+    # changes to the delivered world during the check that the record
+    # cannot charge to it: the solver was running a world-mutating tool
+    # when they happened (world_watch). The check observed a world that
+    # moved under it, so its outcome is about no single state.
+    world_moved: dict = field(default_factory=dict)
 
 
 # a mechanically executed method: the exact script that ran and what it
@@ -111,6 +117,7 @@ class ScriptRun:
     timed_out: bool
     launch_error: str            # "" unless bash itself could not start
     seconds: float
+    world_moved: dict = field(default_factory=dict)   # see DischargeResult
 
 
 def _bounded(text: str, cap: int = SCRIPT_OUTPUT_CAP):
@@ -245,28 +252,26 @@ class AgentDischarger:
                 break
         return {"premises": premises, "prior_evidence": prior}
 
-    def _world_before(self):
-        """Fingerprint the delivered world before a check runs (live
-        world with a baseline only; the captured world is immutable)."""
-        from ..baseline import delivered_root, tree_manifest
-        if not self.live_world:
-            return None, None
-        root = delivered_root(self.state_dir)
-        if not root:
-            return None, None
-        try:
-            return root, tree_manifest(root)
-        except OSError:
-            return None, None
+    def _watch_world(self) -> WorldWatch:
+        """Open a check's window on the delivered world (live world with a
+        baseline only; the captured world is immutable)."""
+        return watch_world(self.state_dir, self.live_world)
 
-    def _world_changes(self, root, before) -> dict:
-        from ..baseline import manifest_delta, tree_manifest
-        if root is None:
-            return {}
-        try:
-            return manifest_delta(before, tree_manifest(root))
-        except OSError:
-            return {}
+    def _world_changes(self, watch: WorldWatch):
+        """(charged, moved): what the check changed in the delivered
+        world, and what changed while the solver was running a tool that
+        may change it (world_watch)."""
+        charged, moved = close_watch(watch, self.state_dir)
+        if moved and self.log is not None:
+            try:
+                self.log.append("world_moved_during_check", {
+                    "changes": {k: v for k, v in moved.items()
+                                if k.endswith("_count")},
+                    "solver_tools": moved.get("solver_tools", []),
+                    "charged": bool(charged)})
+            except Exception:  # noqa: BLE001 - an audit note, never a verdict
+                pass
+        return charged, moved
 
     def discharge(self, row: Dict, obligation: Obligation,
                   method: Optional[Dict[str, str]] = None,
@@ -338,7 +343,7 @@ class AgentDischarger:
     def _discharge(self, row: Dict, obligation: Obligation,
                    method=None, tag="", *,
                    previous_artifact=None) -> DischargeResult:
-        root, before = self._world_before()
+        watch = self._watch_world()
         subdir = obligation.id[:12] + (f"-{tag}" if tag else "")
         workdir = os.path.join(self.workdir_base, subdir)
         os.makedirs(workdir, exist_ok=True)
@@ -432,7 +437,7 @@ class AgentDischarger:
             return DischargeResult(OUTCOME_FAILED, str(err), digest,
                                    self.instrument)
 
-        changes = self._world_changes(root, before)
+        changes, moved = self._world_changes(watch)
         snapshot = _snapshot_envelope(
             workdir, self.artifacts,
             preferred_paths=_reported_artifact_paths(payload, workdir))
@@ -440,6 +445,7 @@ class AgentDischarger:
             "instrument": self.instrument,
             "reported": payload,
             "world_changes": changes,
+            **({"world_moved": moved} if moved else {}),
             **snapshot,
         })
         self._maybe_cleanup(workdir)
@@ -452,6 +458,7 @@ class AgentDischarger:
             witness_kind=payload.get("witness_kind"),
             inputs=tuple(payload.get("inputs") or ()),
             world_changes=changes,
+            world_moved=moved,
         )
 
     @staticmethod
@@ -474,7 +481,7 @@ class AgentDischarger:
         a failed run on record, never a verdict."""
         import subprocess
         import time as _time
-        root, before = self._world_before()
+        watch = self._watch_world()
         subdir = obligation.id[:12] + (f"-{tag}" if tag else "") + "-script"
         # absolute: the script is launched with cwd=workdir, and a relative
         # state dir would otherwise resolve the script's own path against
@@ -557,10 +564,11 @@ class AgentDischarger:
             f.write(err)
         stdout, out_trunc = _bounded(out)
         stderr, err_trunc = _bounded(err)
-        changes = self._world_changes(root, before)
+        changes, moved = self._world_changes(watch)
         digest = self.artifacts.put({
             "instrument": "script",
             "world_changes": changes,
+            **({"world_moved": moved} if moved else {}),
             "obligation": obligation.text,
             "script": script,
             "exit_code": exit_code,
@@ -575,6 +583,7 @@ class AgentDischarger:
         })
         self._maybe_cleanup(workdir)
         return ScriptRun(artifact=digest, world_changes=changes,
+                         world_moved=moved,
                          script=script, exit_code=exit_code,
                          stdout=stdout, stderr=stderr,
                          stdout_truncated=out_trunc,

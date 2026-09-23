@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 
 
 def main() -> None:
@@ -39,6 +40,10 @@ def main() -> None:
                 "excerpt": canonical[:excerpt_chars],
                 "session": data.get("session_id"),
                 "agent": data.get("agent_id"),
+                # wall-clock time of the call (pre) or its completion
+                # (post): which world changes fell inside a solver tool
+                # run, and which inside nothing the solver was running
+                "ts": time.time(),
             },
         },
         ensure_ascii=False,

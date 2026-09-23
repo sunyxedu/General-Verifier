@@ -486,6 +486,9 @@ class Kernel:
 
     # assertion / final
     def _verify_assertion(self, row: Dict, force: bool = False) -> None:
+        # the epoch this verification began in; the claim's verdict is
+        # stamped with it (see _discharge), never with a later one
+        claim_epoch = self._current_epoch()
         # Local verdicts are CONDITIONAL: a claim is verified/refuted
         # assuming its premises (deps) are true, and the read-time
         # effective fold (store.effective) charges the premise chain's
@@ -592,7 +595,7 @@ class Kernel:
         # the fold's own rows stay the last word on the claim
         self.store.record_evidence(
             row["id"], {"outcome": "epoch",
-                        "world_epoch": self._current_epoch()})
+                        "world_epoch": claim_epoch})
         self._settle(row["id"], outcomes, bases, strengths, severities)
         refutation = next((r for r in settled if r[1] == OUTCOME_REFUTED
                            and r[0].severity == SEVERITY_MUST), None)
@@ -2061,6 +2064,11 @@ class Kernel:
         """
 
         oid = obligation.id
+        # the epoch the check began in: world-basis evidence is about the
+        # world as the check found it, so a verdict won while the solver's
+        # actions were being recorded must not read as current for the
+        # later epoch (reuse compares this stamp to the epoch of the day)
+        started_epoch = self._current_epoch()
         with model_scope(obligation_id=oid):
             if self.binder is not None:
                 result = self.binder.run(row, obligation)
@@ -2201,7 +2209,7 @@ class Kernel:
             "instrument": result.instrument,
             "outcome": result.outcome,
             "basis": result.basis,
-            "world_epoch": self._current_epoch(),
+            "world_epoch": started_epoch,
             "strength": result.strength,
             "bridges": list(result.bridges),
             "assumed_premises": list(result.assumed_premises),

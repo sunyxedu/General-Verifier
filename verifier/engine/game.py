@@ -128,6 +128,10 @@ class Attempt:
                                             # audit} per redo round
     briefing: str = ""                      # prior attempts' judged gaps,
                                             # as handed to this executor
+    moved: bool = False                     # the delivered world changed
+                                            # under the check (the solver
+                                            # was working): it says nothing
+                                            # about the method
 
     def __post_init__(self):
         if self.redos is None:
@@ -137,6 +141,20 @@ class Attempt:
 BRIEFING_MAX_ATTEMPTS = 3
 BRIEFING_PROCEDURE_CHARS = 240
 BRIEFING_REASON_CHARS = 600
+# a method whose check ran while the solver changed the delivered world is
+# run again this many times before it is set aside: the method was not at
+# fault, and the solver is often done by the time its turn comes again
+MOVED_RETRIES = 1
+
+
+def moved_reason(moved: Dict) -> str:
+    counts = ", ".join(f"{k[:-len('_count')]} {v}" for k, v in moved.items()
+                       if k.endswith("_count"))
+    tools = ", ".join(moved.get("solver_tools") or []) or "unknown"
+    return ("the delivered world changed during the check while the solver "
+            f"was running world-mutating tools ({tools}; {counts or 'changes'}"
+            "): the check observed no single state and settles nothing; "
+            "this says nothing about the method")
 
 
 def prior_attempt_briefing(attempts: List["Attempt"]) -> str:
@@ -152,7 +170,8 @@ def prior_attempt_briefing(attempts: List["Attempt"]) -> str:
     amend the bound procedure and the fresh Judger audits as before.
     """
     lines = []
-    for index, attempt in enumerate(attempts[-BRIEFING_MAX_ATTEMPTS:], 1):
+    judged = [a for a in attempts if not a.moved]
+    for index, attempt in enumerate(judged[-BRIEFING_MAX_ATTEMPTS:], 1):
         reason = attempt.rejected or ""
         if attempt.redos and attempt.redos[-1].get("reason"):
             reason = reason or ""
@@ -863,9 +882,15 @@ class BindingGame:
         # "everything that ran held" (partial) while it stands
         failed_seen = False
         repair_used = False
+        moved_runs: Dict[str, int] = {}
         method_index = 0
+
+        def judged_attempts():
+            return any(not a.moved for a in attempts)
+
         while (method_index < len(methods) or deferred
-               or ((attempts or initial_empty) and not repair_used)):
+               or ((judged_attempts() or initial_empty)
+                   and not repair_used)):
             if method_index >= len(methods):
                 ready = [m for m in deferred
                          if not self._blocking(m, tier_listed,
@@ -877,7 +902,8 @@ class BindingGame:
                     ready.sort(key=_tier_order)
                     methods.extend(ready)
                     continue
-                if not ((attempts or initial_empty) and not repair_used):
+                if not ((judged_attempts() or initial_empty)
+                        and not repair_used):
                     break
                 # Hand an exhausted batch — including an offline initial empty
                 # batch — back to the Oracle exactly once.  A different method
@@ -894,6 +920,7 @@ class BindingGame:
                         )),
                         "exhausted_attempts": [
                             _attempt_diagnostic(a) for a in attempts
+                            if not a.moved
                         ],
                         # parked, not rejected: these wait on a stronger
                         # tier's structural unavailability, so the repair
@@ -1003,6 +1030,11 @@ class BindingGame:
                     row, obligation, method, attempt, attempts, tier_listed)
                 if settled is not None:
                     return settled
+                if attempt.moved:
+                    self._requeue_moved(row, obligation, method, methods,
+                                        method_index, seen_procedures,
+                                        moved_runs, reason=attempt.rejected)
+                    continue
                 outcome = attempt.discharge_outcome
                 detail = str(attempt.rejected or "")
                 audit = attempt.audit or {}
@@ -1069,6 +1101,19 @@ class BindingGame:
             attempt.discharge_artifact = result.artifact
             attempt.discharge_outcome = result.outcome
             self._note_reached(row, result)
+
+            if result.world_moved and not result.world_changes:
+                # the solver changed the delivered world while this check
+                # ran: whatever it reported is about no single state, and
+                # nothing about the method follows (a change the record
+                # charges to the check itself stays a structural defect,
+                # judged below)
+                attempt.moved = True
+                attempt.rejected = moved_reason(result.world_moved)
+                self._requeue_moved(row, obligation, method, methods,
+                                    method_index, seen_procedures,
+                                    moved_runs, reason=attempt.rejected)
+                continue
 
             if result.outcome == OUTCOME_UNOBTAINABLE:
                 detail = str(result.witness or
@@ -1191,6 +1236,10 @@ class BindingGame:
                 result = self._redo(
                     row, obligation, method, verdict, attempt, rounds,
                     method_attempt=method_attempt)
+                if result.world_moved and not result.world_changes:
+                    reason = (f"{moved_reason(result.world_moved)} "
+                              f"(redo {rounds})")
+                    break
                 if result.outcome == OUTCOME_UNOBTAINABLE:
                     detail = str(result.witness or
                                  "required instrument or evidence unavailable")
@@ -1278,6 +1327,10 @@ class BindingGame:
             + "; ".join(dict.fromkeys(unavailable_reasons))
             if unavailable_only else "all candidate methods rejected"
         )
+        if attempts and not judged_attempts() and not unavailable_only:
+            reason = ("the delivered world changed during every check of "
+                      "this obligation while the solver was running tools "
+                      "that change it; nothing settled")
         if deferred:
             reason += (f"; {len(deferred)} weaker-tier method(s) stayed "
                        "deferred behind a stronger tier never audited "
@@ -1309,6 +1362,11 @@ class BindingGame:
             attempt.discharge_outcome = OUTCOME_FAILED
             self._reject(row, obligation, method, reason)
             attempt.rejected = reason
+            return None
+        if run.world_moved and not run.world_changes:
+            attempt.moved = True
+            attempt.discharge_outcome = OUTCOME_FAILED
+            attempt.rejected = moved_reason(run.world_moved)
             return None
         if run.world_changes:
             reason = self._structural_defect(
@@ -1529,7 +1587,8 @@ class BindingGame:
         if strength == STRENGTH_DECISIVE:
             return "(none — decisive method, no degradation to audit)"
         stronger = [a for a in attempts
-                    if strength_rank(_method_strength(a.method))
+                    if not a.moved
+                    and strength_rank(_method_strength(a.method))
                     > strength_rank(strength)]
         return json.dumps(
             {
@@ -1968,6 +2027,28 @@ class BindingGame:
             "method_rejected",
             {"claim": row["id"], "obligation": obligation.id,
              "procedure": method["procedure"][:80], "reason": reason},
+        )
+
+    def _requeue_moved(self, row, obligation, method, methods,
+                       method_index, seen_procedures, moved_runs,
+                       reason: str = "") -> None:
+        """A check the solver's own work moved the world under: logged
+        apart from rejections, and the method runs again (once) after the
+        rest of its tier, keeping the tail's strictness order."""
+        procedure = method["procedure"]
+        runs = moved_runs.get(procedure, 0) + 1
+        moved_runs[procedure] = runs
+        requeued = runs <= MOVED_RETRIES
+        if requeued:
+            seen_procedures.discard(procedure)
+            methods.append(method)
+            methods[method_index:] = sorted(methods[method_index:],
+                                            key=_tier_order)
+        self.log.append(
+            "method_moved",
+            {"claim": row["id"], "obligation": obligation.id,
+             "procedure": procedure[:80], "run": runs,
+             "requeued": requeued, "reason": reason[:600]},
         )
 
     def _record(self, obligation, attempts, bound) -> str:
