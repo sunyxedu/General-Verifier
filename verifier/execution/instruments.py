@@ -439,6 +439,33 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
     with open(task, encoding="utf-8") as handle:
         text = handle.read()
     context = {"path": os.path.abspath(task), "text": text}
+    # The candidate response is a fact about the harness, supplied as data
+    # so every seat reads the same one. Offline the solver's reply is on
+    # disk (final.txt) and is the carrier of a response-borne answer.
+    # Online the solver is certified BEFORE it writes its reply, so the
+    # final claim's text is the candidate response; without this every
+    # seat that read the task's reply-layout instruction went looking for
+    # a reply in the world, found the verifier's own claim store, and held
+    # the claim to the reply's grammar.
+    final_txt = os.path.join(os.path.abspath(state_dir), "final.txt")
+    if os.path.isfile(final_txt):
+        context["candidate_response"] = {
+            "delivered": True, "path": final_txt,
+            "note": "the solver's reply as delivered; a response-borne "
+                    "answer is read from it"}
+    else:
+        context["candidate_response"] = {
+            "delivered": False,
+            "note": "the solver's reply has not been written at "
+                    "certification: the text of the final claim is the "
+                    "candidate response, and a response-borne answer is "
+                    "the answer that text states. Instructions in the task "
+                    "about the reply's layout (a closing line, a label, a "
+                    "marker) apply to the reply the runner collects "
+                    "afterwards, not to the claim; they are not "
+                    "conditions on this candidate. The verifier's own "
+                    "state directory and stores are not the delivered "
+                    "world."}
     baseline = os.path.join(os.path.abspath(state_dir), "baseline")
     if os.path.isdir(baseline):
         from ..baseline import environment_delta
