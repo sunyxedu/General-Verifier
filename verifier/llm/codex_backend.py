@@ -2290,12 +2290,41 @@ class CodexBackend:
         role_model = self._model_for(role_name)
         usage_target = _usage_target(self.cwd)
         call_id = uuid.uuid4().hex
-        with model_call_span(
-                call_id, role=role_name, model=role_model):
-            return self._complete(
-                role_name, prompt, variables,
-                role=role, role_model=role_model,
-                usage_target=usage_target, call_id=call_id)
+        started, error = time.time(), None
+        try:
+            with model_call_span(
+                    call_id, role=role_name, model=role_model):
+                return self._complete(
+                    role_name, prompt, variables,
+                    role=role, role_model=role_model,
+                    usage_target=usage_target, call_id=call_id)
+        except BaseException as err:  # re-raised after the receipt
+            error = str(err)[:300] or type(err).__name__
+            raise
+        finally:
+            self._receipt(role_name, role_model, started, error, variables)
+
+    def _receipt(self, role_name: str, model: str, started: float,
+                 error: Optional[str], variables: Dict[str, Any]) -> None:
+        """One row per codex seat call in <state>/role_calls.jsonl, beside the
+        direct seats' rows: which seat, how long, on which claim and
+        obligation. The oracle, executor and judger runs were otherwise
+        untimed, so a latency breakdown could only infer them from ledger
+        gaps. Telemetry only; never read by any seat."""
+        if not self.cwd:
+            return
+        finished = time.time()
+        row = {"role": role_name, "backend": "codex", "model": model,
+               "started": started, "finished": finished,
+               "seconds": round(finished - started, 3), "error": error,
+               "claim_text": str(variables.get("claim_text", ""))[:120],
+               "obligation_text": str(variables.get("obligation_text", ""))[:160]}
+        try:
+            with open(os.path.join(self.cwd, "role_calls.jsonl"), "a",
+                      encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        except OSError:
+            pass
 
     def _complete(self, role_name: str, prompt: str,
                   variables: Dict[str, Any], *, role, role_model: str,
