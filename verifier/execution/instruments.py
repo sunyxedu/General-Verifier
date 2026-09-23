@@ -479,12 +479,15 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
     # a reply in the world, found the verifier's own claim store, and held
     # the claim to the reply's grammar.
     final_txt = os.path.join(os.path.abspath(state_dir), "final.txt")
-    # Paths are named relative to the directory holding the task statement
-    # (the verifier state): a replay clone of the same sealed inputs must
-    # produce the same compile input.
+    # The name is relative to the directory holding the task statement, and
+    # the note says so: an absolute path would make the compile input
+    # run-specific, and a bare name alone was resolved against the task
+    # world, sending a check to look for the candidate inside the delivery.
     if os.path.isfile(final_txt):
         context["candidate_response"] = {
             "reply_written": True, "path": "final.txt",
+            "resolve_against": "the directory containing the task statement "
+                               "named by this context's `path` field",
             "note": "The solver's reply as delivered, in the same directory "
                     "as the task statement; a response-borne answer is read "
                     "from it."}
@@ -496,12 +499,17 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
         # seat may and may not conclude from it.
         context["candidate_response"] = {
             "reply_written": False, "path": CANDIDATE_RESPONSE_FILE,
+            "resolve_against": "the directory containing the task statement "
+                               "named by this context's `path` field",
             "note": "The solver writes its reply only after certification, "
                     "so the candidate under check is the text of the final "
-                    "claim being certified; the harness keeps that text at "
-                    "the path above, in the same directory as the task "
-                    "statement (the verifier state, outside the delivered "
-                    "world). Its presence is given: never search the world "
+                    "claim being certified; the harness keeps that text in "
+                    "the file named above, beside the task statement in the "
+                    "verifier state, outside the delivered world. Resolve "
+                    "that name against the statement's own directory, never "
+                    "against the task world: it is not a task address and no "
+                    "world mapping applies to it. Its presence is given: "
+                    "never search the world "
                     "for a reply, never write one there, and never refute "
                     "the response's presence. Whether the text states the "
                     "task's answer, and what that answer is, is decided on "

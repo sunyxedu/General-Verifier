@@ -12,6 +12,8 @@ def test_online_state_names_the_final_claim_as_the_candidate_response(tmp_path):
     cr = ctx["candidate_response"]
     assert cr["reply_written"] is False
     assert cr["path"] == "candidate_response.txt"
+    assert "directory containing the task statement" in cr["resolve_against"]
+    assert "never against the task world" in cr["note"]
     assert "final claim" in cr["note"]
     assert "never refute the response's presence" in cr["note"]
     assert "never write one there" in cr["note"]

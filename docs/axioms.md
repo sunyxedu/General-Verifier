@@ -181,6 +181,16 @@ capability that would have to be built for the check; and when no
 particular input is fixed, the check constructs its inputs from the task's
 wording — that construction is the check, and no supplied sample is owed.
 
+**Referent / a bare name is a task address.** The harness published the
+final claim under check as `candidate_response.txt` in the verifier state
+and named it in the task context by that bare name. The world description
+tells every seat that a bare name resolves against the task root, so the
+check opened the delivery's own directory, found nothing, and reported the
+candidate unreadable — twice, on a correct extraction. The compile input
+must stay run-independent (a replay clone of the same sealed inputs has to
+hash the same), so the name stays relative and the context now says what to
+resolve it against, and that no world mapping applies to it.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,
