@@ -59,7 +59,7 @@ from .codex_service import (
     normalize_service_tier,
     service_tier_cli_args,
 )
-from .schema import RoleError, validate
+from .schema import RoleError, SeatTimeout, validate
 from .model_spans import model_call_span, model_span_capture
 from ..execution.config import offline_runtime_read_roots
 from ..execution.instruments import validated_image_info
@@ -2544,7 +2544,7 @@ class CodexBackend:
                         error_kind="timeout",
                         error="Codex CLI exceeded the configured timeout",
                     )
-                    raise RoleError(
+                    raise SeatTimeout(
                         f"{role_name}: codex exec timed out after "
                         f"{self.timeout}s") from error
                 except OSError as error:

@@ -16,6 +16,12 @@ class RoleError(RuntimeError):
     pass
 
 
+class SeatTimeout(RoleError):
+    """A seat exhausted its time budget. Not a malformed answer that
+    feedback can fix and not a transient fault: the same prompt would spend
+    the same budget again, so the role's retry does not repeat the call."""
+
+
 # Minimal schema validation (no external deps).
 # schema: {"field": type} where type in {str, bool, int, float, list, dict},
 # {"field": [element_spec]} for a list (elements may be any spec, e.g. [str]

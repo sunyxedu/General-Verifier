@@ -39,7 +39,7 @@ from .model_spans import (
     role_attempt, role_span, seat_acquired, seat_released,
     seat_wait_started, submit_with_context,
 )
-from .schema import RoleError, validate, field_name, optional_key
+from .schema import RoleError, SeatTimeout, validate, field_name, optional_key
 from .oracle_execution import (
     ORACLE_EXECUTION_WIRE_SCHEMA,
     lower_oracle_execution_payload,
@@ -352,6 +352,11 @@ class AgentRole:
                             payload = self.wire_lower(payload)
                         validate(self.schema, payload)
                     return payload
+                except SeatTimeout:
+                    # a spent time budget is not something the retry's
+                    # feedback can fix: rerunning the same prompt spends it
+                    # again (a 30-minute executor timeout became an hour)
+                    raise
                 except RoleError as err:
                     last_error = err
                     retry_feedback = (
