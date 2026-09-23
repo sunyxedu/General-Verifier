@@ -55,6 +55,7 @@ from .contract_cache import (
 )
 from .source_evidence import bind_source_evidence_variables
 from ..core.world import world_epoch
+from .quoted_identities import recorded_identities, restore
 
 # attack rounds on a decomposition before the claim fails closed: each round
 # is one critic attempt; an `insufficient` verdict sends the decomposition
@@ -955,8 +956,9 @@ class Kernel:
             # fresh pre-execution graph; recomputing them after dependencies
             # begin to settle would make a valid replay schedule-dependent.
             entry = self.contract_replay.lookup(row["id"])
+            # a sealed replay reproduces the recorded texts exactly
             obligations = self._materialize_obligations(
-                row, entry.payload, record=False)
+                row, entry.payload, record=False, repair=False)
             self.contract_replay.validate_materialized(entry, obligations)
             self._record_compiled_obligations(row, obligations)
             return obligations
@@ -1323,9 +1325,43 @@ class Kernel:
             "graph": "[]", "memory_hits": "[]", "critic_feedback": "",
         }
 
-    def _materialize_obligations(self, row: Dict, payload, *, record=True):
+    def _recorded_identities(self):
+        ids = getattr(self, "_recorded_ids", None)
+        if ids is None:
+            state = os.path.dirname(os.path.abspath(self.log.path))
+            ids = recorded_identities(state)
+            self._recorded_ids = ids
+        return ids
+
+    def _restore_quoted_identities(self, row: Dict, payload, record: bool):
+        """Near copies of task-start identities in the compiled texts are
+        restored to the recorded values (quoted_identities)."""
+        identities = self._recorded_identities()
+        if not identities:
+            return payload
+        items = []
+        repairs = []
+        for o in payload["obligations"]:
+            text, restored = restore(o["text"], identities)
+            if restored:
+                repairs.append({"before": o["text"][:400],
+                                "restored": [{"copied": c, "recorded": r}
+                                             for c, r in restored]})
+                o = dict(o, text=text)
+            items.append(o)
+        if not repairs:
+            return payload
+        if record:
+            self.log.append("obligation_identity_restored",
+                            {"claim": row["id"], "repairs": repairs})
+        return dict(payload, obligations=items)
+
+    def _materialize_obligations(self, row: Dict, payload, *, record=True,
+                                 repair=True):
         if payload is None:
             return None
+        if repair:
+            payload = self._restore_quoted_identities(row, payload, record)
         independent_final = row["kind"] == CLAIM_FINAL
         obligations = [
             Obligation(row["id"], o["text"],

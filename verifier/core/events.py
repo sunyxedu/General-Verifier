@@ -97,6 +97,8 @@ EVENT_TYPES = (
     # running a tool that may change it: not charged to the check
     "world_moved_during_check",
     "method_moved",
+    # a task-start identity the compiler quoted inexactly, restored
+    "obligation_identity_restored",
 
     # search support
     "dedup_hit",
