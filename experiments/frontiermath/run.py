@@ -84,7 +84,7 @@ def main():
                     help="per-problem seconds; 0 = no timeout (default)")
     ap.add_argument("--candidates", type=int, default=3,
                     help="turbo: parallel candidates per model call")
-    ap.add_argument("--pid", default=None,
+    ap.add_argument("--pid", action="append", default=None,
                     help="run only this problem id (e.g. fm-bmo-optimization)")
     ap.add_argument("--workers", type=int, default=1,
                     help="samples run concurrently (default 1 = serial); "
@@ -114,7 +114,8 @@ def main():
     todo = [(p, s) for s in range(args.n) for p in problems
             if (p["id"], s) not in done]
     if args.pid:
-        todo = [(p, s) for p, s in todo if p["id"] == args.pid]
+        wanted = set(args.pid)          # repeatable: --pid a --pid b
+        todo = [(p, s) for p, s in todo if p["id"] in wanted]
     print(f"[fm:{args.arm}] {len(todo)} runs ({len(done)} recorded), "
           f"web={'ON' if args.web else 'off'}", flush=True)
     bar = progress.Board(len(todo))
