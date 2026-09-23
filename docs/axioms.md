@@ -104,6 +104,23 @@ only where preservation or a bounded change scope is an acceptance
 condition, otherwise SHOULD, folded as a contrary signal. The critic is
 told the same, so the two seats stop spending rounds on it.
 
+**Referent / the carrier before the reply exists.** A mathematics task
+asked for a reply ending in a labelled answer line. Under the online
+protocol the solver commits its final claim ("The answer is N.") and is
+certified before it writes that reply, so at check time the only
+candidate is the claim. The verifier opened its own claim store as "the
+delivered response", applied the reply's line grammar to the claim's
+text, and refuted a correct answer for lacking the label; the
+correctness check, which recomputed N independently and matched, was
+sent back for having parsed "The answer is" instead of the label. Both
+seats now carry the harness fact: when no reply is delivered yet, the
+claim's stated answer is the response's answer, layout instructions for
+the reply are runner interface, and the verifier's stores are not the
+world. The same run refuted the snapshot invariant because the solver
+had created files in a scratch directory the task invited it to work in:
+the invariant now covers the recorded entries, and an empty record
+yields none.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,
