@@ -514,8 +514,8 @@ def authoritative_task_context(state_dir: Optional[str]) -> str:
                     "the response's presence. Whether the text states the "
                     "task's answer, and what that answer is, is decided on "
                     "this text. Instructions in the task about the reply's "
-                    "layout (a closing line, a label, a marker) bind the "
-                    "reply the runner collects afterwards, not this text."}
+                    "layout bind the reply the runner collects afterwards, "
+                    "not this text."}
     baseline = os.path.join(os.path.abspath(state_dir), "baseline")
     if os.path.isdir(baseline):
         from ..baseline import environment_delta

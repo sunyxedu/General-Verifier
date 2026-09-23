@@ -30,6 +30,12 @@ BANNED = (
     "not positively designated", "family_role",
     "version string", "trailing newline", "unit test", "sanitizer",
     "call path", "hugging",
+    # paraphrases of 2026-09-23's triggering cases: a rule that only reads
+    # right with one of these is a worked example (docs/axioms.md), and a
+    # reworded example still is one
+    "line terminator", "closing line", "invites work", "disassembl",
+    "emulat", "namespace", "container", "printer",
+    "proof framework", "analyzer",
 )
 
 SURFACES = {

@@ -228,6 +228,24 @@ one; and the verifier's own process environment, which its seats and
 scripts inherit and the solver's processes do not, lets its instruments
 read a repository whoever owns it.
 
+**Audit of 2026-09-22/23.** Seventeen prompt rules were written in a day,
+each from one or two traces. An audit found the principles general but the
+wording not: several rules carried their triggering case as the example,
+reworded just enough to pass the banned-word test ("the line terminator
+that ends a text file" for a trailing newline, "a closing line, a label, a
+marker" for one benchmark's answer line, "disassembly, emulation" for a
+reverse-engineering task, "namespace, container" for two sandbox tools, "a
+printer abbreviated" for one solver's proof output). One clause matched a
+single benchmark's prompt wording ("a task that invites work in the
+directory"), and one rule overstated its reach ("constructing inputs IS the
+check", which contradicted the rule that a search finding no counterexample
+leaves a universal undecided). The examples were removed from the prompts
+(the narratives above keep them), the paraphrases joined the banned list,
+the benchmark-shaped clause was deleted, and the input rule now removes the
+missing-sample excuse while leaving what built inputs decide to the
+strength ladder. The rules are then frozen for a run on tasks none of them
+was derived from.
+
 ## How to keep the prompts general
 
 * `tests/test_prompt_generality.py` bans concrete nouns (tools, formats,

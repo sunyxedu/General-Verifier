@@ -437,19 +437,24 @@ def test_subject_role_label_corrections_do_not_force_a_redo():
     assert "do not send the run back for it" in judger
 
 
-def test_methods_rest_on_instruments_that_exist_and_construct_their_inputs():
+def test_methods_rest_on_instruments_that_exist_and_may_build_inputs():
     oracle = prompts.ORACLES_SYSTEM
     assert "INSTRUMENT IS SOMETHING THAT EXISTS" in oracle
     assert "never a capability that would have to be built" in oracle
-    assert "INPUTS A CHECK NEEDS, IT CONSTRUCTS" in oracle
-    assert "no supplied sample is owed" in oracle
+    assert "A CHECK MAY BUILD ITS OWN INPUTS" in oracle
+    # built inputs remove the missing-sample excuse; they do not make a
+    # passing set decisive for a universal
+    assert "fixed by the STRENGTH LADDER, not by having built" in oracle
+    assert "for a universal it is at most bounded" in oracle
     executor = prompts.DISCHARGE_SYSTEM
-    assert "INPUTS YOU NEED, YOU CONSTRUCT" in executor
+    assert "INPUTS YOU MAY BUILD" in executor
+    assert "at the strength the method declared, never more" in executor
 
 
-def test_the_executor_writes_its_own_computation():
+def test_the_executor_tells_a_subject_program_from_an_instrument():
     executor = prompts.DISCHARGE_SYSTEM
-    assert "A DELIVERED PROGRAM IS NOT YOUR INSTRUMENT" in executor
+    assert "SUBJECT OR INSTRUMENT" in executor
+    assert "it is the subject" in executor
     assert "WRITE THE COMPUTATION" in executor
 
 
@@ -462,6 +467,5 @@ def test_the_boundary_report_carries_reachable_inputs_too():
 
 def test_a_copy_is_all_the_isolation_a_check_needs():
     assert "the copy is all the isolation a method needs" in prompts.ORACLES_SYSTEM
-    assert "Never require process, namespace, or container isolation" \
-        in prompts.ORACLES_SYSTEM
+    assert "Never require isolation machinery of any kind" in prompts.ORACLES_SYSTEM
     assert "do not reach for isolation machinery" in prompts.DISCHARGE_SYSTEM
