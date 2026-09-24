@@ -157,6 +157,10 @@ def main():
     ap.add_argument("--tasks-file", default=os.path.join(HERE, "tasks.txt"),
                     help="newline-delimited task list (default: tasks.txt)")
     ap.add_argument("--n-concurrent", type=int, default=2)
+    ap.add_argument("--jobs-dir", default=JOBS_DIR,
+                    help="where Harbor writes job directories (default: "
+                         "results/jobs); the Docker daemon bind-mounts trial "
+                         "directories from here, so it must be reachable by it")
     ap.add_argument("--max-retries", type=int, default=None,
                     help="Harbor retry count for failed trials")
     ap.add_argument("--artifact-root", action="append", default=None,
@@ -223,7 +227,7 @@ def main():
                 )
         print(f"[tb] collected artifact union: {', '.join(artifact_roots)}", flush=True)
 
-    cmd = ["harbor", "run", "-d", args.dataset, "-o", JOBS_DIR,
+    cmd = ["harbor", "run", "-d", args.dataset, "-o", args.jobs_dir,
            "--job-name", job, "-k", str(args.k),
            "-n", str(args.n_concurrent)]
     if args.max_retries is not None:
@@ -346,7 +350,7 @@ def main():
     print("[tb] " + " ".join(cmd), flush=True)
     if args.dry_run:
         return
-    os.makedirs(JOBS_DIR, exist_ok=True)
+    os.makedirs(args.jobs_dir, exist_ok=True)
     if args.arm == "turbo":
         turbo.check_keys()
         turbo_dir = os.path.join(HERE, "results", "turbo")
