@@ -186,6 +186,8 @@ def test_build_backend_wraps_an_injected_agent_backend(monkeypatch):
 
 
 def test_empty_answer_with_exhausted_budget_retries_with_a_larger_budget(monkeypatch):
+    # a start below the ceiling (a model with a higher one) still retries
+    monkeypatch.setattr(db, "DEFAULT_MAX_TOKENS", db.MAX_OUTPUT_TOKENS // 4)
     calls = []
 
     def handler(request):
@@ -208,6 +210,7 @@ def test_empty_answer_with_exhausted_budget_retries_with_a_larger_budget(monkeyp
 
 
 def test_a_role_that_outgrew_the_budget_starts_at_the_budget_it_needed(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "DEFAULT_MAX_TOKENS", db.MAX_OUTPUT_TOKENS // 4)
     calls = []
     answer = {"choices": [{"finish_reason": "stop",
         "message": {"content": json.dumps({"confidence": "low", "grounds": "g", "reason": "r"})}}],
@@ -235,6 +238,24 @@ def test_a_role_that_outgrew_the_budget_starts_at_the_budget_it_needed(monkeypat
     # the truncated attempt was billed: its usage is on the receipt
     assert receipts[0]["usage"][0] == {"completion_tokens": 32000}
     assert receipts[1]["attempts"] == 1
+
+
+def test_a_call_starts_at_the_model_ceiling_and_a_truncation_there_is_final(monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content)["max_tokens"])
+        return httpx.Response(200, json={"choices": [{"finish_reason": "length",
+            "message": {"content": None}}]})
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
+        transport=httpx.MockTransport(handler), **kw))
+    direct = db.DirectBackend(db.OpenAIChatTransport("k", "m", base_url="https://x.test"))
+    role = ALL_AGENT_ROLES["screener"]
+    with pytest.raises(RoleError, match="output budget exhausted"):
+        role.call(direct, {name: "" for name in _variables(role)})
+    # never a smaller first attempt; the role's own retry asks at the ceiling too
+    assert calls and set(calls) == {db.MAX_OUTPUT_TOKENS}
 
 
 def test_authority_compilation_runs_on_the_direct_transport_of_a_routing_backend(tmp_path):

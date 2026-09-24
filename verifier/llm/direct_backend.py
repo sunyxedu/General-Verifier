@@ -73,11 +73,12 @@ TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 BILLING_STATUSES = {402}
 BILLING_DELAYS = (60, 120, 300, 600, 600, 600, 600, 600)
 TRANSIENT_DELAYS = (0, 20, 60, 120, 240)
-# the output budget a direct call starts with. Reasoning counts against it,
-# and at max effort obligation compilation alone spends 35-50k tokens: a
-# smaller start pays a whole truncated attempt before the retry
-DEFAULT_MAX_TOKENS = 64000
-MAX_OUTPUT_TOKENS = 128000   # the most a retry asks for
+# the output budget a direct call starts with: the model's own ceiling
+# (GPT-5.6 Luna on OpenRouter, max_completion_tokens 128000). Reasoning
+# counts against it, and a smaller start paid a whole truncated attempt
+# before its retry; the budget is only a cap, billing is by tokens used
+MAX_OUTPUT_TOKENS = 128000   # the most any call asks for
+DEFAULT_MAX_TOKENS = MAX_OUTPUT_TOKENS
 EMIT_TOOL = "emit"
 
 
