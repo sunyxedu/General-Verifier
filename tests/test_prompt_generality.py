@@ -129,11 +129,13 @@ def test_prompt_corpus_stays_bounded():
 def test_prompts_carry_no_examples():
     """A prompt states principles only. An example — however generic it
     looks — narrows a rule to the case it came from and invites the seat
-    to pattern-match on it; the solver protocol is held to the same line."""
+    to pattern-match on it; the solver protocol and the compact addenda
+    are held to the same line."""
     marker = re.compile(r"\b(e\.g\.|for example|for instance|such as)",
                         re.IGNORECASE)
     protocol = (ROOT / "protocol" / "solver-protocol.md").read_text()
+    surfaces = {**SURFACES, **COMPACT_SURFACES, "PROTOCOL": protocol}
     offenders = {name: marker.findall(text)
-                 for name, text in {**SURFACES, "PROTOCOL": protocol}.items()
+                 for name, text in surfaces.items()
                  if marker.search(text)}
     assert not offenders, offenders
