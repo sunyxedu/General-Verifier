@@ -90,8 +90,8 @@ AXIOM_SUFFICIENCY = (
 )
 
 AXIOM_WITNESS = (
-    "WITNESS. A refutation is made of a positive, retained, replayable "
-    "observation obtained inside the obligation's own domain: an EXECUTION "
+    "WITNESS. A refutation is a positive, retained, replayable "
+    "observation inside the obligation's own domain: an EXECUTION "
     "whose recorded output contradicts the obligation, a WORLD STATE whose "
     "recorded content contradicts it, or two RECORDS that contradict each "
     "other. ABSENCE — nothing found, nothing printed, nothing captured, "
@@ -103,8 +103,9 @@ AXIOM_WITNESS = (
     "behavior, or a reading the statement does not fix is not a "
     "counterexample; where several readings survive, the negative must "
     "hold under every one. Where a definition and the task's words naming "
-    "it conflict, both are readings, and a witness that would refute every "
-    "possible answer alike refutes its reading, not the answer. A value "
+    "it conflict, both are readings. A witness that would refute every "
+    "answer alike — under one reading, or by editing the subject "
+    "or reaching into its private state — refutes nothing. A value "
     "quoted from a record is a copy: a mismatch refutes only when the copy "
     "is well-formed and matches its record. A careful reader who would "
     "plainly accept the work marks an over-demand. Anything below this standard is an "
@@ -113,18 +114,19 @@ AXIOM_WITNESS = (
 )
 
 AXIOM_TIME = (
-    "TIME. Every proposition is indexed to a time and an evidence basis and "
-    "is decided at that index. A condition about the CURRENT or FINAL state "
+    "TIME. Every proposition is indexed to a time and an evidence basis, "
+    "and decided at that index. A condition about the CURRENT or FINAL state "
     "is checked against the delivered world (world basis). A condition "
-    "about a PAST ACTION or REPORT is checked against the retained record "
-    "of that action (record basis): never by replaying the action, never by "
-    "inspecting a world that may have moved on; it establishes that the "
-    "action or report occurred, never that its content is true. A "
-    "condition about the ACTUAL PAST WORLD needs evidence captured at, or "
-    "immutably bound to, that time. Completing an action may legitimately "
-    "consume or transform the object it acted on; the object's later "
-    "absence refutes nothing about the action or its effect at its own "
-    "time. Record basis never upgrades to world basis by inheritance, "
+    "about a PAST ACTION or REPORT is checked against its retained record "
+    "(record basis), never by replaying it or inspecting a world that may "
+    "have moved on; it establishes that the action or report occurred, not "
+    "that its content is true. A condition about the ACTUAL PAST WORLD "
+    "needs evidence captured at that time, such as a retained tool result "
+    "whose recorded command itself examined the condition and whose "
+    "complete output shows it; printed text, summaries, and truncated "
+    "output stay record. An action may legitimately consume or transform "
+    "its object; the object's later absence refutes nothing about the "
+    "action or its effect at its time. Record basis never upgrades to world basis by inheritance, "
     "reuse, or restatement, and evidence below an obligation's floor "
     "settles it in neither direction.\n"
 )

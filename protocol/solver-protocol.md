@@ -53,14 +53,17 @@ conclusions, not a diary**. Decide per claim, from the task itself:
   verifier's checks running the same programs.
 - A claim's statement must be **self-contained and checkable**: write "for all 1≤n≤100,
   6 divides n³−n", not "the property above holds".
-- **Give every claim a temporal index.** A claim about the current/final state is checked
-  against the live world at verification time — keep it true through the end, or revise it
-  when your own later actions change the state it describes. A claim about a **past action
+- **Give every claim a temporal index, and choose it.** What is true now and will stay true is
+  stated in the present tense, without an effect index: it is checked against the live world at
+  verification time, the strongest evidence there is — keep it true through the end, or revise
+  it when your own later actions change the state it describes. A claim about a **past action
   or past state** ("the test run succeeded", "at discovery, X was unreachable") must say so
   explicitly ("as of effect:<seq>", "before <event>") and cite the tool execution that
   witnessed it in `deps` (`effect:<seq>`): the hooks record every tool call and its output
   in the verifier's ledger, so such claims verify against the record even after the world
-  has legitimately moved on. Index by the record, never by the calendar: a date or clock
+  has legitimately moved on. Reserve `as of effect:<seq>` for an event, or for a state that may
+  since have changed, and cite the execution whose own output observed it: a past state that no
+  recorded output observed cannot be checked at all. Index by the record, never by the calendar: a date or clock
   time in a claim is one more term to establish, and the record rarely settles it. Present-tense claims about past observations are the single
   most common cause of refuted-but-honest claims.
 - You do **not** need to prove it yourself. Verification is the verifier's job. An
