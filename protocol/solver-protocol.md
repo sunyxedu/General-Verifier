@@ -45,7 +45,9 @@ conclusions, not a diary**. Decide per claim, from the task itself:
 - **The verifier's processes and files are not part of your task.** Do not read its code or
   state, and do not stop, restart, or reconfigure it or the check processes it starts: a
   verifier restarted with other settings voids its certificates. If a `gv` call fails, say so
-  and go on with the task rather than repairing the verifier. When you stop processes, stop the
+  and go on with the task rather than repairing the verifier: a verifier failure is not a
+  defect of your delivery, so do not rewrite the final for it — request the certificate once
+  more, and if that fails too, report it. When you stop processes, stop the
   ones you started, by their process ids — never by name or pattern, which also hits the
   verifier's checks running the same programs.
 - A claim's statement must be **self-contained and checkable**: it names everything it
@@ -103,7 +105,10 @@ conclusions, not a diary**. Decide per claim, from the task itself:
 
 ## Wrap-up
 
-- After committing `final`, call `gv.certificate(final_label=...)`.
+- After committing `final`, call `gv.certificate(final_label=...)`. While a final's check is
+  running, do not finish: wait, and poll `gv.status` until its verdict arrives. A `void`
+  certificate (the verifier was restarted or reconfigured) is no verdict on your delivery;
+  report it as void.
 - The verdict comes from the final claim's independently checked task contract; the final
   is never screened and never admitted on confidence. Earlier claims remain in the
   certificate for audit; their status does not decide the final verdict. The final admits

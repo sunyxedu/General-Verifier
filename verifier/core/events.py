@@ -54,6 +54,13 @@ EVENT_TYPES = (
     "candidate_response_published",
     "status_change",
     "certificate",
+    # a certificate request that raised after its verify_request: the
+    # request's end, so no reader mistakes it for a check still running
+    "certificate_failed",
+    # the stop hook's own records: a stop let through without the goal
+    # met, and a hook that could not assess the certificate
+    "goal_released",
+    "goal_hook_error",
 
     # admission screening (online economy: a claim the record settles is
     # assumed, not checked)

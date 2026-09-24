@@ -27,12 +27,15 @@ premises and any poisoning refuted premise disclosed for audit.
 """
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Dict
 
 from ..core.events import EventLog
 from ..execution.instruments import ArtifactStore
 from ..llm.model_spans import submit_with_context
+from ..llm.schema import RoleError
 from .kernel import Kernel
 from ..core.model import (
     CLAIM_FINAL,
@@ -62,7 +65,20 @@ def request_certificate(
         raise ValueError(f"unknown certificate scope: {scope!r}")
     log.append("verify_request", {"target": final_id, "cause": "certificate",
                                   "scope": scope})
+    try:
+        return _certify(store, kernel, log, artifacts, final_id, scope)
+    except Exception as err:
+        # the request is on the ledger; without its end a reader (the stop
+        # hook) cannot tell a check that errored from one still running.
+        # The error still reaches the caller.
+        log.append("certificate_failed", {
+            "final": final_id, "error": f"{type(err).__name__}: {err}"[:500],
+            "infrastructure": infrastructure_failure(err)})
+        raise
 
+
+def _certify(store: ClaimStore, kernel: Kernel, log: EventLog,
+             artifacts: ArtifactStore, final_id: str, scope: str) -> Dict:
     slice_ids = store.backward_slice(final_id)
     pending = [cid for cid in reversed(slice_ids)
                if store.status(cid) in (STATUS_UNVERIFIED, STATUS_STALE)
@@ -199,6 +215,36 @@ def request_certificate(
                                **({"void": void} if void else {}),
                                "digest": digest})
     return certificate
+
+
+# Failures of the verifier's own means of checking — its model seats, their
+# provider and transport, its host — as opposed to an internal error of the
+# verifier's logic. Neither is a defect of the delivery; the flag tells the
+# reader whether repeating the same request is the remedy.
+_INFRASTRUCTURE_NAMES = frozenset({
+    "TransientTransportError", "AwaitingCredit", "OutputBudgetExhausted",
+    "HTTPError", "HTTPStatusError", "TransportError", "TimeoutException",
+    "APIError", "APIStatusError", "APIConnectionError", "APITimeoutError",
+    "RateLimitError", "InternalServerError",
+})
+_HTTP_STATUS = re.compile(r"\bHTTP [45]\d\d\b")
+
+
+def infrastructure_failure(err: BaseException) -> bool:
+    """Whether ``err`` (or an exception it was raised from) is a seat,
+    provider, transport, or host failure rather than a verifier bug."""
+    seen = 0
+    while err is not None and seen < 8:
+        if isinstance(err, (RoleError, OSError, TimeoutError, FutureTimeout)):
+            return True
+        if any(k.__name__ in _INFRASTRUCTURE_NAMES
+               for k in type(err).__mro__):
+            return True
+        if _HTTP_STATUS.search(str(err)):
+            return True
+        err = err.__cause__ or err.__context__
+        seen += 1
+    return False
 
 
 def verifier_integrity(log: EventLog) -> Dict:
