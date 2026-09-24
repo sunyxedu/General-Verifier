@@ -774,6 +774,8 @@ def _instruments_read_any_repository(environ=os.environ) -> None:
 
 def main() -> None:
     _instruments_read_any_repository()
+    from .execution.resource_share import yield_server
+    yield_server()
     ap = argparse.ArgumentParser()
     ap.add_argument("--state-dir", required=True)
     ap.add_argument("--model", default=None)

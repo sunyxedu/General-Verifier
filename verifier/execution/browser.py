@@ -242,6 +242,8 @@ class ProcessBrowserObserver:
                          "PATH": os.defpath},
                     start_new_session=True,
                 )
+                from .resource_share import yield_process
+                yield_process(process.pid)
                 stdout, stderr = _bounded_communicate(
                     process, encoded_body, self.timeout_seconds,
                 )

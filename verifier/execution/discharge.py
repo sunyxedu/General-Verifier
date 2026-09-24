@@ -551,21 +551,24 @@ class AgentDischarger:
             except OSError:
                 pass
 
+        from .resource_share import launch_slot, yield_process
         try:
-            proc = subprocess.Popen(
-                [*interpreter, path], cwd=workdir, env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL, start_new_session=True)
-            scratch = ScratchWatch(workdir, scratch_cap_bytes(),
-                                   lambda: _stop(proc))
-            try:
-                with scratch:
-                    raw_out, raw_err = proc.communicate(timeout=timeout)
-                exit_code = proc.returncode
-            except subprocess.TimeoutExpired:
-                _stop(proc)
-                raw_out, raw_err = proc.communicate()
-                timed_out = True
+            with launch_slot():
+                proc = subprocess.Popen(
+                    [*interpreter, path], cwd=workdir, env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL, start_new_session=True)
+                yield_process(proc.pid)
+                scratch = ScratchWatch(workdir, scratch_cap_bytes(),
+                                       lambda: _stop(proc))
+                try:
+                    with scratch:
+                        raw_out, raw_err = proc.communicate(timeout=timeout)
+                    exit_code = proc.returncode
+                except subprocess.TimeoutExpired:
+                    _stop(proc)
+                    raw_out, raw_err = proc.communicate()
+                    timed_out = True
             out = raw_out.decode("utf-8", errors="replace")
             err = raw_err.decode("utf-8", errors="replace")
             if scratch.exceeded:

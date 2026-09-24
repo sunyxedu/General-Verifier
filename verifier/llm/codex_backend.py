@@ -560,7 +560,15 @@ def _run_codex_process(cmd, *, cwd, stdin, timeout, input_text=None,
         run_kwargs["input"] = input_text
     if os.name != "posix" or not hasattr(os, "killpg"):
         return subprocess.run(cmd, **run_kwargs)
+    from ..execution.resource_share import launch_slot
+    with launch_slot():
+        return _run_codex_group(cmd, cwd=cwd, stdin=stdin, timeout=timeout,
+                                input_text=input_text, bound_cwd=bound_cwd,
+                                watch_dir=watch_dir, watch_cap=watch_cap)
 
+
+def _run_codex_group(cmd, *, cwd, stdin, timeout, input_text, bound_cwd,
+                     watch_dir, watch_cap):
     launch_cmd = cmd
     launch_cwd = cwd
     launch_kwargs = {}
@@ -582,6 +590,8 @@ def _run_codex_process(cmd, *, cwd, stdin, timeout, input_text=None,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, start_new_session=True, **launch_kwargs,
     )
+    from ..execution.resource_share import yield_process
+    yield_process(proc.pid)
     from ..execution.scratch_budget import ScratchWatch
     watch = ScratchWatch(watch_dir, watch_cap, lambda: _kill_process_group(proc))
     try:
@@ -2301,6 +2311,8 @@ class CodexBackend:
         usage_target = _usage_target(self.cwd)
         call_id = uuid.uuid4().hex
         started, error = time.time(), None
+        from ..execution.resource_share import take_room_wait
+        take_room_wait()
         try:
             with model_call_span(
                     call_id, role=role_name, model=role_model):
@@ -2334,10 +2346,13 @@ class CodexBackend:
         gaps. Telemetry only; never read by any seat."""
         if not self.cwd:
             return
+        from ..execution.resource_share import take_room_wait
         finished = time.time()
         row = {"role": role_name, "backend": "codex", "model": model,
                "started": started, "finished": finished,
                "seconds": round(finished - started, 3), "error": error,
+               # of those, waiting for the envelope's memory (resource_share)
+               "room_wait": take_room_wait(),
                "claim_text": str(variables.get("claim_text", ""))[:120],
                "obligation_text": str(variables.get("obligation_text", ""))[:160]}
         try:
