@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -87,7 +88,12 @@ class AwaitingCredit(TransientTransportError):
 
 class OutputBudgetExhausted(RuntimeError):
     """The model spent the whole output budget before answering (long
-    reasoning at high effort); one retry with a larger budget is due."""
+    reasoning at high effort); one retry with a larger budget is due. The
+    provider's usage for the spent attempt rides along: it was billed."""
+
+    def __init__(self, detail: str, usage: Optional[Dict[str, Any]] = None):
+        super().__init__(detail)
+        self.usage = dict(usage or {})
 
 
 def strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -345,7 +351,7 @@ class OpenAIChatTransport:
             detail = (f"finish_reason={finish}; refusal={str(message.get('refusal'))[:200]}; "
                       f"reasoning_chars={len(message.get('reasoning') or '')}")
             if finish in ("length", "max_tokens", "max_output_tokens"):
-                raise OutputBudgetExhausted(detail)
+                raise OutputBudgetExhausted(detail, data.get("usage"))
             raise RoleError(f"direct call returned no answer text ({detail})")
         try:
             payload = json.loads(text or "")
@@ -353,7 +359,8 @@ class OpenAIChatTransport:
             if finish in ("length", "max_tokens", "max_output_tokens"):
                 # the answer was cut at the budget: retry larger, not fail
                 raise OutputBudgetExhausted(
-                    f"finish_reason={finish}; truncated answer of {len(text)} chars") from err
+                    f"finish_reason={finish}; truncated answer of {len(text)} chars",
+                    data.get("usage")) from err
             raise RoleError(
                 f"direct call returned non-JSON text ({finish}): {str(text)[:300]}") from err
         if not isinstance(payload, dict):
@@ -372,6 +379,12 @@ class DirectBackend:
         self.model = model or getattr(transport, "model", None)
         self.uses_role_wire_schema = True
         self.transcripts: List[Dict[str, Any]] = []
+        # the output budget each role last needed: a role whose reasoning
+        # outgrew the default once (obligation compilation at max effort
+        # spends 35-50k tokens) starts there next time instead of paying a
+        # whole truncated attempt again on every call
+        self._role_budget: Dict[str, int] = {}
+        self._budget_lock = threading.Lock()
 
     def allows_lazy_oracle_catalog(self, role_name: str,
                                    variables: Dict[str, Any]) -> bool:
@@ -405,7 +418,8 @@ class DirectBackend:
               schema: Dict[str, Any], model: Optional[str],
               attempts: List[Dict[str, Any]]) -> Dict[str, Any]:
         last: Optional[str] = None
-        max_tokens = DEFAULT_MAX_TOKENS
+        with self._budget_lock:
+            max_tokens = self._role_budget.get(role.name, DEFAULT_MAX_TOKENS)
         transient_waits = iter(TRANSIENT_DELAYS[1:])
         billing_waits = iter(BILLING_DELAYS)
         while True:
@@ -422,11 +436,14 @@ class DirectBackend:
                 last = str(err)
                 attempts.append({"role": role.name, "seconds": round(
                     time.time() - attempt_started, 3), "error": last,
-                    "max_tokens": max_tokens})
+                    "max_tokens": max_tokens, "usage": err.usage or None})
                 if max_tokens >= 4 * DEFAULT_MAX_TOKENS:
                     raise RoleError(f"{role.name}: output budget exhausted "
                                     f"at {max_tokens} tokens: {last}")
-                max_tokens *= 2
+                max_tokens = min(2 * max_tokens, 4 * DEFAULT_MAX_TOKENS)
+                with self._budget_lock:
+                    self._role_budget[role.name] = max(
+                        max_tokens, self._role_budget.get(role.name, 0))
                 continue
             except AwaitingCredit as err:
                 last = str(err)

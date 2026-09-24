@@ -207,6 +207,36 @@ def test_empty_answer_with_exhausted_budget_retries_with_a_larger_budget(monkeyp
     assert calls == [db.DEFAULT_MAX_TOKENS, 2 * db.DEFAULT_MAX_TOKENS]
 
 
+def test_a_role_that_outgrew_the_budget_starts_at_the_budget_it_needed(monkeypatch, tmp_path):
+    calls = []
+    answer = {"choices": [{"finish_reason": "stop",
+        "message": {"content": json.dumps({"confidence": "low", "grounds": "g", "reason": "r"})}}],
+        "usage": {"completion_tokens": 40000}}
+
+    def handler(request):
+        body = json.loads(request.content); calls.append(body["max_tokens"])
+        if len(calls) == 1:
+            return httpx.Response(200, json={"choices": [{"finish_reason": "length",
+                "message": {"content": None}}], "usage": {"completion_tokens": 32000}})
+        return httpx.Response(200, json=answer)
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
+        transport=httpx.MockTransport(handler), **kw))
+    transport = db.OpenAIChatTransport("k", "m", base_url="https://x.test")
+    direct = db.DirectBackend(transport, cwd=str(tmp_path))
+    role = ALL_AGENT_ROLES["screener"]
+    variables = {name: "" for name in _variables(role)}
+    role.call(direct, variables)
+    role.call(direct, variables)
+    # the second call pays no truncated attempt
+    assert calls == [db.DEFAULT_MAX_TOKENS, 2 * db.DEFAULT_MAX_TOKENS,
+                     2 * db.DEFAULT_MAX_TOKENS]
+    receipts = [json.loads(l) for l in open(tmp_path / "role_calls.jsonl")]
+    # the truncated attempt was billed: its usage is on the receipt
+    assert receipts[0]["usage"][0] == {"completion_tokens": 32000}
+    assert receipts[1]["attempts"] == 1
+
+
 def test_authority_compilation_runs_on_the_direct_transport_of_a_routing_backend(tmp_path):
     from verifier.llm.authority_backend import authority_compilation_backend
     transport = FakeTransport([])
