@@ -52,7 +52,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Mapping, Optional
 
-from .agents import ALL_AGENT_ROLES, to_json_schema
+from .agents import ALL_AGENT_ROLES, SeatResourceKilled, to_json_schema
 from .codex_service import (
     DEFAULT_SERVICE_TIER,
     SERVICE_TIERS,
@@ -512,9 +512,13 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
     ``start_new_session=True`` makes the child's pid the process-group id.
     Calling killpg after the leader has exited is intentional: detached
-    same-group descendants may still be alive. This does not contain a child
-    that deliberately creates another session or process group.
+    same-group descendants may still be alive. A descendant that moved to
+    its own process group or session is found through /proc where there is
+    one (resource_share.kill_escaped) and killed first, while its parents
+    still link it to the seat.
     """
+    from ..execution.resource_share import kill_escaped
+    kill_escaped(proc.pid)
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -558,6 +562,11 @@ def _run_codex_process(cmd, *, cwd, stdin, timeout, input_text=None,
     if input_text is not None:
         run_kwargs.pop("stdin")
         run_kwargs["input"] = input_text
+    # Checked before waiting for room: Popen refuses an argument holding a
+    # NUL byte with a ValueError, which no retry path recognises, and two
+    # judger calls met it only after 526 s and 688 s in the room queue.
+    if any("\0" in str(arg) for arg in cmd):
+        raise RoleError("codex command line holds a NUL byte")
     if os.name != "posix" or not hasattr(os, "killpg"):
         return subprocess.run(cmd, **run_kwargs)
     from ..execution.resource_share import launch_slot
@@ -665,6 +674,29 @@ _PERMANENT_CLI_PATTERNS = (
     "unrecognized option", "unexpected argument", "invalid value",
     "permission denied", "no such file", "command not found",
 )
+# Without --json, codex writes the seat's whole transcript to stderr — its
+# commands, their output, the diffs it applied — after a session header.
+# Only codex's own lines speak for the attempt: what it printed before the
+# header (a launch or configuration failure never gets that far) and its
+# error lines after it ("ERROR: ..." and its log's "<time>Z ERROR ...").
+# Matching the transcript let a seat's own "no such file" make a provider
+# capacity failure permanent, and a seat's curl printing 503 rerun a call.
+_CODEX_SESSION_RULE = re.compile(r"^-{8,}\s*$")
+_CODEX_ERROR_LINE = re.compile(
+    r"^(?:ERROR\b|error:|Error:|\d{4}-\d\d-\d\dT\S*Z\s+ERROR\b)")
+
+
+def _codex_own_stderr(stderr: str) -> str:
+    """The lines of a non-JSON codex stderr that codex itself wrote."""
+    lines = stderr.splitlines()
+    header = next((index for index, line in enumerate(lines)
+                   if _CODEX_SESSION_RULE.match(line)), None)
+    if header is None:
+        return stderr
+    return "\n".join(lines[:header] + [
+        line for line in lines[header:] if _CODEX_ERROR_LINE.match(line)])
+
+
 _TRANSIENT_HTTP_STATUS = re.compile(
     r"(?:\bhttp(?:\s+status)?|\bstatus(?:\s+code)?)\D{0,8}"
     r"(?:429|502|503|504)\b|(?:^|\s)(?:429|502|503|504)(?:\s|$)")
@@ -695,7 +727,7 @@ def _transient_failure_reason(
             error = event.get("error")
             if isinstance(error, dict):
                 messages.append(str(error.get("message") or ""))
-    stderr_text = _stream_text(stderr).lower()
+    stderr_text = _codex_own_stderr(_stream_text(stderr)).lower()
     all_text = "\n".join(
         [message.lower() for message in messages] + [stderr_text])
     # Permanent account, configuration, and local-launch failures often also
@@ -1628,17 +1660,32 @@ def _revalidate_private_empty_directory(
     return binding.path
 
 
-def extract_json(text: str) -> Any:
-    """First JSON object in `text` (fences and prose tolerated)."""
+def extract_json(text: str, accept: Optional[Any] = None) -> Any:
+    """The answer's JSON object in `text` (fences and prose tolerated): the
+    last complete top-level object, or with ``accept`` (a validator that
+    raises on a wrong shape) the last one it accepts. The answer comes last
+    by contract; a JSON-like fragment in the prose before it is not it."""
     decoder = json.JSONDecoder()
-    for i, ch in enumerate(text):
-        if ch == "{":
+    found = []
+    i = text.find("{")
+    while i >= 0:
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except (json.JSONDecodeError, RecursionError):
+            i = text.find("{", i + 1)
+            continue
+        found.append(obj)
+        i = text.find("{", end)
+    if not found:
+        raise RoleError(f"no JSON object in output: {text[:200]!r}")
+    if accept is not None:
+        for obj in reversed(found):
             try:
-                obj, _end = decoder.raw_decode(text[i:])
-                return obj
-            except json.JSONDecodeError:
+                accept(obj)
+            except RoleError:
                 continue
-    raise RoleError(f"no JSON object in output: {text[:200]!r}")
+            return obj
+    return found[-1]
 
 
 class CodexBackend:
@@ -2346,13 +2393,15 @@ class CodexBackend:
         gaps. Telemetry only; never read by any seat."""
         if not self.cwd:
             return
-        from ..execution.resource_share import take_room_wait
+        from ..execution.resource_share import take_room_wait_detail
         finished = time.time()
+        room_wait = take_room_wait_detail()
         row = {"role": role_name, "backend": "codex", "model": model,
                "started": started, "finished": finished,
                "seconds": round(finished - started, 3), "error": error,
                # of those, waiting for the envelope's memory (resource_share)
-               "room_wait": take_room_wait(),
+               "room_wait": room_wait["seconds"],
+               "room_wait_reason": room_wait["reason"],
                "claim_text": str(variables.get("claim_text", ""))[:120],
                "obligation_text": str(variables.get("obligation_text", ""))[:160]}
         try:
@@ -2480,6 +2529,9 @@ class CodexBackend:
             + "\n\nYour FINAL message must be exactly one JSON object "
               "matching this JSON Schema, with no other prose around it:\n"
             + schema)
+        # Evidence quoted into a prompt can carry a NUL byte (a binary
+        # file's text); no command-line argument can, so it is spelled out.
+        instruction = instruction.replace("\0", "\\x00")
         attempt_base = {
             "backend": "codex-cli",
             "call_id": call_id,
@@ -2663,6 +2715,27 @@ class CodexBackend:
                           f"in {wait}s", file=sys.stderr, flush=True)
                     time.sleep(wait)
                     continue
+                if proc.returncode < 0:
+                    # Killed by a signal we did not send (our timeout and
+                    # scratch budget raise before this): in a 2 GB envelope,
+                    # the kernel's OOM killer. Nothing the model did wrong,
+                    # so no "fix it" feedback; the role's retry launches
+                    # again through the room queue.
+                    _record_codex_attempt(
+                        usage_target, base=attempt_base,
+                        attempt_id=attempt_id, attempt_index=attempt + 1,
+                        started=True, attempt_status="nonzero_exit",
+                        returncode=proc.returncode,
+                        started_at_unix_ns=started_at_unix_ns,
+                        finished_at_unix_ns=finished_at_unix_ns,
+                        duration_ns=duration_ns, stdout=stdout,
+                        error_kind="signal_killed",
+                        error="Codex CLI was killed by a signal",
+                    )
+                    raise SeatResourceKilled(
+                        f"{role_name}: codex exec was killed by signal "
+                        f"{-proc.returncode} (not a timeout; most likely "
+                        f"out of memory)")
                 if proc.returncode != 0:
                     _record_codex_attempt(
                         usage_target, base=attempt_base,
@@ -2677,8 +2750,8 @@ class CodexBackend:
                     )
                     raise RoleError(
                         f"{role_name}: codex exec failed "
-                        f"(rc={proc.returncode}, "
-                        f"stderr={proc.stderr[-300:]!r})")
+                        f"(rc={proc.returncode}, stderr="
+                        f"{_codex_own_stderr(_stream_text(proc.stderr))[-300:]!r})")
                 try:
                     self._validate_attempt_stream(stdout)
                     validated_stream_response = self._validated_stream_response(
@@ -2855,7 +2928,9 @@ class CodexBackend:
                         f"{role_name}: codex exec produced no output "
                         f"(rc={proc.returncode}, "
                         f"stderr={proc.stderr[-300:]!r})")
-                payload = extract_json(text)
+                payload = extract_json(text, accept=lambda candidate: validate(
+                    getattr(role, "wire_schema", None) or role.schema,
+                    candidate))
                 validate(
                     getattr(role, "wire_schema", None) or role.schema,
                     payload,

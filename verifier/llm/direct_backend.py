@@ -35,9 +35,13 @@ from .schema import RoleError
 
 try:                                    # the transports' HTTP client
     import httpx as _httpx
-    _CONNECTION_ERRORS: Tuple[type, ...] = (_httpx.TransportError,)
+    # RequestError: transport failures and a body that failed to decode;
+    # OSError: a raw socket or TLS error (ssl.SSLError, "UNEXPECTED_EOF")
+    # that escaped httpx's mapping — every one a request that never
+    # completed, nothing the model said
+    _CONNECTION_ERRORS: Tuple[type, ...] = (_httpx.RequestError, OSError)
 except ImportError:                     # pragma: no cover - httpx is a dependency
-    _CONNECTION_ERRORS = ()
+    _CONNECTION_ERRORS = (OSError,)
 
 DIRECT_SEATS_ENV = "GV_DIRECT_SEATS"
 DIRECT_PROVIDER_ENV = "GV_DIRECT_PROVIDER"     # anthropic | openai | openrouter
@@ -132,6 +136,18 @@ def strip_optional_nulls(payload: Any, schema: Dict[str, Any]) -> Any:
     return payload
 
 
+def _response_json(response) -> Any:
+    """A 200's JSON body. A body cut off in transit (a connection dropped
+    mid-read) does not parse; that is the transport's failure, retried like
+    one, not an answer the model gave."""
+    try:
+        return response.json()
+    except ValueError as err:
+        raise TransientTransportError(
+            f"HTTP {response.status_code} with an unparseable body "
+            f"({len(response.content)} bytes): {err}") from err
+
+
 class AnthropicMessagesTransport:
     """One forced tool call per request against /v1/messages."""
 
@@ -185,7 +201,7 @@ class AnthropicMessagesTransport:
             raise RoleError(
                 f"direct call failed: HTTP {response.status_code}: "
                 f"{response.text[:500]}")
-        data = response.json()
+        data = _response_json(response)
         for block in data.get("content") or []:
             if block.get("type") == "tool_use" and block.get("name") == EMIT_TOOL:
                 payload = block.get("input")
@@ -242,7 +258,7 @@ class OpenAIResponsesTransport:
             raise RoleError(
                 f"direct call failed: HTTP {response.status_code}: "
                 f"{response.text[:500]}")
-        data = response.json()
+        data = _response_json(response)
         text = data.get("output_text")
         if not text:
             parts: List[str] = []
@@ -309,7 +325,7 @@ class OpenAIChatTransport:
             raise RoleError(
                 f"direct call failed: HTTP {response.status_code}: "
                 f"{response.text[:500]}")
-        data = response.json()
+        data = _response_json(response)
         if data.get("error"):
             raise RoleError(f"direct call failed: {json.dumps(data['error'])[:500]}")
         choices = data.get("choices") or []
@@ -360,6 +376,9 @@ class DirectBackend:
     def allows_lazy_oracle_catalog(self, role_name: str,
                                    variables: Dict[str, Any]) -> bool:
         return False   # no tools: the catalog must be inlined, never lazily read
+
+    def routes_direct(self, role_name: str) -> bool:
+        return True    # every role here is one HTTP request (agents._seat_gate)
 
     def complete(self, role_name: str, prompt: str,
                  variables: Dict[str, Any]) -> Any:
@@ -430,6 +449,13 @@ class DirectBackend:
                                     f"failure persisted: {last}")
                 time.sleep(delay)
                 continue
+            except Exception as err:
+                # any other failure still took an attempt: on record with its
+                # error, like the retried ones
+                attempts.append({"role": role.name, "seconds": round(
+                    time.time() - attempt_started, 3),
+                    "error": f"{type(err).__name__}: {err}"[:300]})
+                raise
             attempts.append({"role": role.name, "seconds": round(
                 time.time() - attempt_started, 3), "usage": usage})
             self.transcripts.append({"role": role.name, "usage": usage})
@@ -452,6 +478,8 @@ class DirectBackend:
             "seconds": round(time.time() - started, 3),
             "attempts": len(attempts),
             "usage": [a.get("usage") for a in attempts],
+            # why each attempt that did not answer failed (None if it did)
+            "attempt_errors": [a.get("error") for a in attempts],
             "error": error,
             "claim_text": str(variables.get("claim_text", ""))[:120],
             "obligation_text": str(variables.get("obligation_text", ""))[:160],

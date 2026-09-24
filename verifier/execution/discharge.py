@@ -118,6 +118,61 @@ class ScriptRun:
     launch_error: str            # "" unless bash itself could not start
     seconds: float
     world_moved: dict = field(default_factory=dict)   # see DischargeResult
+    room_wait: float = 0.0       # seconds waiting for memory before the run
+
+
+# What a check script's run keeps of each output stream while it runs: the
+# first and the last half of this many bytes, the rest counted and dropped
+# (a check printing without bound once held its whole output in memory in a
+# 2 GB container before _bounded cut it to SCRIPT_OUTPUT_CAP).
+SCRIPT_CAPTURE_CAP = 4 << 20
+# After the kill, how long the process and its output readers are waited
+# for; a descendant that escaped the kill and holds a pipe is not.
+SCRIPT_DRAIN_SECONDS = 5.0
+
+
+class _CappedReader:
+    """Drains one pipe in a daemon thread, keeping its head and tail."""
+
+    def __init__(self, stream, cap: int = SCRIPT_CAPTURE_CAP):
+        import threading
+        self._stream, self._half = stream, cap // 2
+        self._head, self._tail = bytearray(), bytearray()
+        self._total = 0
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="gv-script-output")
+        self._thread.start()
+
+    def _run(self):
+        try:
+            while True:
+                chunk = self._stream.read1(65536)
+                if not chunk:
+                    return
+                with self._lock:
+                    self._total += len(chunk)
+                    room = self._half - len(self._head)
+                    if room > 0:
+                        self._head += chunk[:room]
+                        chunk = chunk[room:]
+                    if chunk:
+                        self._tail += chunk
+                        del self._tail[:-self._half]
+        except (OSError, ValueError):
+            return
+
+    def join(self, timeout: float) -> None:
+        self._thread.join(timeout)
+
+    def text(self) -> str:
+        with self._lock:
+            kept = len(self._head) + len(self._tail)
+            dropped = self._total - kept
+            data = bytes(self._head) + (
+                f"\n<... {dropped} bytes dropped ...>\n".encode()
+                if dropped else b"") + bytes(self._tail)
+        return data.decode("utf-8", errors="replace")
 
 
 def _bounded(text: str, cap: int = SCRIPT_OUTPUT_CAP):
@@ -540,37 +595,54 @@ class AgentDischarger:
         except ValueError:
             timeout = float(SCRIPT_TIMEOUT_DEFAULT)
         started = _time.time()
+        ran = None
         exit_code: Optional[int] = None
         out, err, timed_out, launch_error = "", "", False, ""
         from .scratch_budget import ScratchWatch, scratch_cap_bytes
         import signal as _signal
 
         def _stop(proc):
+            kill_escaped(proc.pid)
             try:
                 os.killpg(proc.pid, _signal.SIGKILL)
             except OSError:
                 pass
 
-        from .resource_share import launch_slot, yield_process
+        from .resource_share import kill_escaped, launch_slot, yield_process
         try:
             with launch_slot():
+                ran = _time.time()
                 proc = subprocess.Popen(
                     [*interpreter, path], cwd=workdir, env=env,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     stdin=subprocess.DEVNULL, start_new_session=True)
-                yield_process(proc.pid)
-                scratch = ScratchWatch(workdir, scratch_cap_bytes(),
-                                       lambda: _stop(proc))
+                # Output is drained by readers that keep at most
+                # SCRIPT_CAPTURE_CAP bytes of each stream; the wait is on
+                # the script itself, not on its pipes, which a `server &`
+                # it started holds open until it is killed.
+                readers = (_CappedReader(proc.stdout),
+                           _CappedReader(proc.stderr))
                 try:
-                    with scratch:
-                        raw_out, raw_err = proc.communicate(timeout=timeout)
-                    exit_code = proc.returncode
-                except subprocess.TimeoutExpired:
+                    yield_process(proc.pid)
+                    scratch = ScratchWatch(workdir, scratch_cap_bytes(),
+                                           lambda: _stop(proc))
+                    try:
+                        with scratch:
+                            proc.wait(timeout=timeout)
+                        exit_code = proc.returncode
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                finally:
+                    # after a normal exit too: what the script left running
+                    # holds the container's memory and the pipes
                     _stop(proc)
-                    raw_out, raw_err = proc.communicate()
-                    timed_out = True
-            out = raw_out.decode("utf-8", errors="replace")
-            err = raw_err.decode("utf-8", errors="replace")
+                    try:
+                        proc.wait(timeout=SCRIPT_DRAIN_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    for reader in readers:
+                        reader.join(SCRIPT_DRAIN_SECONDS)
+            out, err = (reader.text() for reader in readers)
             if scratch.exceeded:
                 launch_error = (
                     "the script's scratch directory outgrew its "
@@ -579,7 +651,10 @@ class AgentDischarger:
                     "whole filesystem or a device file)")
         except OSError as exc:
             launch_error = str(exc)
-        seconds = round(_time.time() - started, 3)
+        # the script's own run; the wait for the envelope's room before it
+        # is recorded apart (a 300 s timeout is 300 s of running)
+        room_wait = round((ran or _time.time()) - started, 3)
+        seconds = round(_time.time() - (ran or started), 3)
         with open(os.path.join(workdir, "stdout.txt"), "w",
                   encoding="utf-8") as f:
             f.write(out)
@@ -599,6 +674,7 @@ class AgentDischarger:
             "timed_out": timed_out,
             "launch_error": launch_error,
             "seconds": seconds,
+            "room_wait": room_wait,
             # directories appended after the task's own PATH
             "instrument_path": instrument_dirs,
             "stdout": stdout, "stdout_truncated": out_trunc,
@@ -612,7 +688,8 @@ class AgentDischarger:
                          stdout=stdout, stderr=stderr,
                          stdout_truncated=out_trunc,
                          stderr_truncated=err_trunc, timed_out=timed_out,
-                         launch_error=launch_error, seconds=seconds)
+                         launch_error=launch_error, seconds=seconds,
+                         room_wait=room_wait)
 
     def _maybe_cleanup(self, workdir: str) -> None:
         if self.cleanup:

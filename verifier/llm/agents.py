@@ -165,6 +165,27 @@ class _SeatGate:
 
 
 SEAT_GATE = _SeatGate()
+# Direct seats (one HTTP request, no process, no memory of their own) hold a
+# permit of their own pool, the same size: a codex seat waits for the
+# envelope's memory while holding its permit, and with the pool shared a
+# direct call queued behind codex seats that were queued behind memory.
+DIRECT_SEAT_GATE = _SeatGate()
+
+
+class SeatResourceKilled(RoleError):
+    """A seat's process was killed by a signal the verifier did not send —
+    in a small container, the kernel's out-of-memory killer. The answer was
+    never malformed, so the role's retry carries no feedback to the model;
+    its launch waits for room like any other."""
+
+
+def _seat_gate(backend, role_name: str) -> _SeatGate:
+    routes_direct = getattr(backend, "routes_direct", None)
+    try:
+        direct = callable(routes_direct) and routes_direct(role_name) is True
+    except Exception:  # noqa: BLE001 - an optional probe never fails a call
+        direct = False
+    return DIRECT_SEAT_GATE if direct else SEAT_GATE
 
 
 @dataclass
@@ -201,7 +222,7 @@ class AgentRole:
                 try:
                     with role_attempt(attempt_index):
                         wait_started = seat_wait_started()
-                        with SEAT_GATE.slot():
+                        with _seat_gate(backend, self.name).slot():
                             acquired = seat_acquired(wait_started)
                             try:
                                 # Bind after queueing: a view captured before
@@ -357,6 +378,10 @@ class AgentRole:
                     # feedback can fix: rerunning the same prompt spends it
                     # again (a 30-minute executor timeout became an hour)
                     raise
+                except SeatResourceKilled as err:
+                    # retried as it was asked: "fix it" would send the model
+                    # looking for a fault in an answer it never gave
+                    last_error = err
                 except RoleError as err:
                     last_error = err
                     retry_feedback = (
