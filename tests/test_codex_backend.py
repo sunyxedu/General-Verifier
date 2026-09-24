@@ -837,7 +837,7 @@ def test_usage_ledger_records_output_processing_interruption(
         return SimpleNamespace(
             returncode=0, stderr="", stdout=_complete_usage_stream())
 
-    def interrupt_extract(_text):
+    def interrupt_extract(_text, **_kwargs):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(

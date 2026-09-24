@@ -61,6 +61,9 @@ class ScratchWatch:
         self.poll = POLL_SECONDS if poll is None else poll
         self.exceeded = False
         self._done = threading.Event()
+        # held while stopping: once __exit__ has taken it, no stop follows
+        # (the process may be reaped and its pid reused by then)
+        self._stopping = threading.Lock()
         self._thread = None
 
     def __enter__(self):
@@ -74,12 +77,20 @@ class ScratchWatch:
         while not self._done.wait(self.poll):
             try:
                 if exceeds(self.path, self.cap):
-                    self.exceeded = True
-                    self._stop_process()
+                    with self._stopping:
+                        if self._done.is_set():
+                            return
+                        self.exceeded = True
+                        self._stop_process()
                     return
             except Exception:  # noqa: BLE001 - a watcher never breaks the check
                 continue
 
     def __exit__(self, *exc):
-        self._done.set()
+        with self._stopping:
+            self._done.set()
+        if self._thread is not None:
+            # a walk in progress sees _done before it could stop anything;
+            # waiting for it only keeps a stale watcher from outliving the run
+            self._thread.join(self.poll)
         return False
