@@ -10,11 +10,17 @@ from typing import Dict, Optional
 
 from ..core.events import EventLog
 from ..core.model import Claim, canonical, CLAIM_EFFECT
-from ..core.store import ClaimStore
+from ..core.store import ClaimStore, UnknownDependency
 
 
 class TraceError(ValueError):
     pass
+
+
+class UnresolvedCommit(TraceError):
+    """A commit that names something the record does not hold (an unknown
+    reference, a dependency missing from the store): no claim was recorded,
+    and replaying the commit fails the same way."""
 
 
 def effect_text(event: dict, tool: Optional[str]) -> str:
@@ -89,20 +95,43 @@ class Builder:
                 self.call_alias[f"effect:{call_seq}"] = label
         elif etype in ("commit", "extracted_commit"):
             payload = event["payload"]
-            deps = tuple(self.resolve(r) for r in payload.get("deps", []))
-            revises = payload.get("revises")
-            claim = Claim(
-                kind=payload["kind"],
-                text=payload["text"],
-                deps=deps,
-                revises=self.resolve(revises) if revises else None,
-            )
-            if "label" in payload:
-                self.labels[payload["label"]] = claim.id
+            try:
+                deps = tuple(self.resolve(r) for r in payload.get("deps", []))
+                revises = payload.get("revises")
+                claim = Claim(
+                    kind=payload["kind"],
+                    text=payload["text"],
+                    deps=deps,
+                    revises=self.resolve(revises) if revises else None,
+                )
+            except (ValueError, KeyError, TypeError) as err:
+                raise UnresolvedCommit(
+                    str(err) if isinstance(err, TraceError)
+                    else f"malformed commit: {err!r}") from None
+            label = payload.get("label")
+            before = self.labels.get(label) if label is not None else None
+            if label is not None:
+                self.labels[label] = claim.id
             if payload["kind"] == "final":
                 self.finals.append(claim.id)
+            new_seq = claim.id not in self.commit_seq
             self.commit_seq.setdefault(claim.id, event["seq"])
-            self.store.add_claim(claim)
+            try:
+                self.store.add_claim(claim)
+            except UnknownDependency as err:
+                if self.store._exists(claim.id):
+                    raise
+                # nothing was recorded: undo the wiring above
+                if label is not None:
+                    if before is None:
+                        self.labels.pop(label, None)
+                    else:
+                        self.labels[label] = before
+                if payload["kind"] == "final":
+                    self.finals.remove(claim.id)
+                if new_seq:
+                    self.commit_seq.pop(claim.id, None)
+                raise UnresolvedCommit(str(err)) from None
 
     def replay(self) -> "Builder":
         for event in self.log.replay():

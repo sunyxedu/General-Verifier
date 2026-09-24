@@ -34,7 +34,10 @@ def main() -> None:
             "payload": {
                 "tool": data.get("tool_name"),
                 "tool_use_id": data.get("tool_use_id"),
-                "response_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                # surrogatepass: the digest of exactly what the tool
+                # returned, lone surrogates included
+                "response_sha256": hashlib.sha256(canonical.encode(
+                    "utf-8", "surrogatepass")).hexdigest(),
                 "response_chars": len(canonical),
                 "excerpt_truncated": len(canonical) > excerpt_chars,
                 "excerpt": canonical[:excerpt_chars],
@@ -48,7 +51,10 @@ def main() -> None:
         },
         ensure_ascii=False,
     )
-    with open(feed, "a", encoding="utf-8") as f:
+    # a lone surrogate (undecodable bytes in a tool's output) cannot be
+    # encoded as UTF-8 and used to raise here, dropping the call from the
+    # record: it is written as "?", so the line is always written and valid
+    with open(feed, "a", encoding="utf-8", errors="replace") as f:
         f.write(line + "\n")
 
 

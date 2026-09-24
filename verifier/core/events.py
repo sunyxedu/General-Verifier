@@ -10,6 +10,7 @@ import re
 import math
 import os
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -110,6 +111,15 @@ EVENT_TYPES = (
     "server_started",
     "server_config_changed",
     "server_concurrent_start",
+    # a commit whose references did not resolve: the commit event stays for
+    # audit, and replay skips it (it recorded no claim)
+    "commit_failed",
+    # a hook-feed line the server could not ingest (not JSON, not an
+    # object, a payload the ledger cannot hold), with its feed offset
+    "hook_feed_rejected",
+    # a refutation the solver has been told of, so a restarted server does
+    # not announce it again
+    "news_delivered",
 
     # search support
     "dedup_hit",
@@ -375,23 +385,67 @@ def _unlock_file(f) -> None:
         pass
 
 
+TORN_SUFFIX = ".torn"
+
+
+def _lines_backwards(f, end: int, block: int = 65536) -> Iterator[bytes]:
+    """The LF-delimited pieces of an open binary file before byte ``end``,
+    last first. The first piece yielded is whatever follows the last
+    newline (empty when the file ends with one); a record of any length is
+    yielded whole."""
+    pos, carry = end, b""
+    while pos > 0:
+        step = min(block, pos)
+        pos -= step
+        f.seek(pos)
+        parts = (f.read(step) + carry).split(b"\n")
+        carry = parts[0]
+        for piece in reversed(parts[1:]):
+            yield piece
+    yield carry
+
+
 def _tail_seq(f) -> int:
-    """The seq of the last complete record in an open append-mode file
-    (0 when empty): reads only the tail, so allocation stays cheap."""
+    """The seq of the last complete record in an open file (0 when empty):
+    reads backwards from the end, so allocation stays cheap however large
+    the last record is. An unterminated final fragment is not a record."""
     f.seek(0, os.SEEK_END)
     size = f.tell()
     if size == 0:
         return 0
-    window = min(size, 65536)
-    f.seek(size - window)
-    chunk = f.read(window)
-    lines = [ln for ln in chunk.split(b"\n") if ln.strip()]
-    for ln in reversed(lines):
+    pieces = _lines_backwards(f, size)
+    next(pieces)   # after the last newline: empty, or a torn fragment
+    for ln in pieces:
+        if not ln.strip():
+            continue
         try:
             return int(json.loads(ln.decode("utf-8"))["seq"])
         except (ValueError, KeyError, TypeError):
-            continue   # a torn or foreign line; look one record further back
+            continue   # a foreign line; look one record further back
     return 0
+
+
+def _cut_torn_tail(f, path: str) -> None:
+    """A write that died part-way (disk full, a killed process) leaves an
+    unterminated fragment; appending after it would fuse the next record
+    onto it. Cut the file back to its last newline, keeping the fragment
+    in a sidecar for audit. Called under the writer's file lock."""
+    f.seek(0, os.SEEK_END)
+    size = f.tell()
+    if size == 0:
+        return
+    f.seek(size - 1)
+    if f.read(1) == b"\n":
+        return
+    fragment = next(_lines_backwards(f, size))
+    keep = size - len(fragment)
+    try:
+        with open(path + TORN_SUFFIX, "ab") as side:
+            side.write(fragment + b"\n")
+    except OSError:
+        pass
+    f.truncate(keep)
+    f.flush()
 
 
 class EventLog:
@@ -408,6 +462,10 @@ class EventLog:
         # together, so concurrent seats (parallel obligations/claims) can
         # never interleave into a gap or a duplicate that replay rejects
         self._lock = threading.Lock()
+        # the excerpt of an unterminated final fragment replay skipped
+        self.torn_tail: Optional[str] = None
+        # called with every event this instance appends (after the write)
+        self._listeners: list = []
         self._seq = self._last_seq()
         # claim id -> absolute path of the frozen record bound to that
         # claim's verification; every seat resolves its ledger through here
@@ -417,13 +475,8 @@ class EventLog:
     def _last_seq(self) -> int:
         if not os.path.exists(self.path):
             return 0
-        last = 0
-        with open(self.path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    last = json.loads(line)["seq"]
-        return last
+        with open(self.path, "rb") as f:
+            return _tail_seq(f)
 
     def append(self, type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if type not in EVENT_TYPES:
@@ -440,6 +493,7 @@ class EventLog:
             with open(self.path, "a+b") as f:
                 _lock_file(f)
                 try:
+                    _cut_torn_tail(f, self.path)
                     last = max(self._seq, _tail_seq(f))
                     next_seq = last + 1
                     event = {"seq": next_seq, "ts": time.time(), "type": type,
@@ -457,7 +511,16 @@ class EventLog:
                 finally:
                     _unlock_file(f)
             self._seq = next_seq
+        for listener in list(self._listeners):
+            try:
+                listener(event)
+            except Exception:  # noqa: BLE001 - an observer never fails a write
+                pass
         return event
+
+    def subscribe(self, listener) -> None:
+        """Observe every event this instance appends, after it is written."""
+        self._listeners.append(listener)
 
 
     def last_seq(self) -> int:
@@ -561,12 +624,19 @@ class EventLog:
         if not os.path.exists(self.path):
             return
         expected = 0
-        with open(self.path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+        with open(self.path, "rb") as f:
+            for raw in f:
+                if not raw.endswith(b"\n"):
+                    # a torn final write: not a record (the next append
+                    # cuts it off into the sidecar)
+                    self.torn_tail = raw[:200].decode("utf-8", "replace")
+                    print(f"gv: {self.path}: skipped an unterminated final "
+                          f"record ({len(raw)} bytes)", file=sys.stderr)
+                    break
+                line = raw.strip()
                 if not line:
                     continue
-                event = json.loads(line)
+                event = json.loads(line.decode("utf-8"))
                 expected += 1
                 if event["seq"] != expected:
                     raise ValueError(
