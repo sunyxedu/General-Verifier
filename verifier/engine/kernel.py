@@ -23,6 +23,7 @@ from dataclasses import replace
 from typing import Dict, List, Optional
 
 from ..execution.discharge import AgentDischarger, DischargeResult
+from ..execution.resource_share import warmup_launches
 from ..execution.config import (
     APPEND_ONLY_DELTA_PROTOCOL,
     append_only_deltas_enabled,
@@ -263,6 +264,15 @@ class Kernel:
         # ClaimStore.generation); one entry per claim, checks being
         # serialized per claim
         self._check_generation: Dict[str, int] = {}
+        # obligation node -> seq of its newest seat failure (see
+        # _seat_failure), noted as the log appends; None when the log
+        # takes no listeners
+        subscribe = getattr(log, "subscribe", None)
+        self._seat_failures: Optional[Dict[str, int]] = (
+            {} if callable(subscribe) else None)
+        self._seat_failures_lock = threading.Lock()
+        if callable(subscribe):
+            subscribe(self._note_seat_failure)
         store.on_trigger(self.verify)  # the single rule wires straight in
         store.on_trigger_error(self._check_raised)
         store.on_stale(self._log_staled)
@@ -921,11 +931,14 @@ class Kernel:
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 ev = self.store.evidence_for(oid)
                 won_for = ev[-1].get("candidate_digest") if ev else None
-                if won_for is not None and won_for != candidate:
+                if candidate is not None \
+                        and won_for not in (None, candidate):
                     # CANDIDATE IDENTITY: the verdict was won while another
                     # final's text was the candidate response the seats
                     # read (one shared file); an answer-bearing check says
                     # nothing about this candidate. Reopen and check afresh.
+                    # Only a final presents a candidate: a support claim
+                    # sharing the node reuses what any final settled.
                     self.log.append(
                         "dedup_hit",
                         {"claim": row["id"], "obligation": oid,
@@ -1040,30 +1053,48 @@ class Kernel:
             since = self.log.last_seq()
             outcome, witness, basis, strength = self._discharge(
                 row, obligation, generation=generation)
-            infrastructure = (outcome == OUTCOME_FAILED
-                              and self._seat_failure(oid, since))
-            return (outcome, witness, basis or BASIS_RECORD, strength,
-                    infrastructure)
+        # outside the node lock: other claims waiting on this node do not
+        # wait on a look at the ledger
+        infrastructure = (outcome == OUTCOME_FAILED
+                          and self._seat_failure(oid, since))
+        return (outcome, witness, basis or BASIS_RECORD, strength,
+                infrastructure)
 
     # a seat call that failed for good (after its own retries): the
     # ledger events through which the binding game reports them
+    @staticmethod
+    def _is_seat_failure(event: Dict) -> bool:
+        payload = event.get("payload") or {}
+        if event.get("type") == "judger_call_failed":
+            return not payload.get("will_retry")
+        if event.get("type") == "methods_enumerated":
+            return bool(payload.get("error")) and not payload.get("prewarm")
+        return False
+
+    def _note_seat_failure(self, event: Dict) -> None:
+        """Log listener: the newest seat-failure seq per obligation node."""
+        if not self._is_seat_failure(event):
+            return
+        oid = (event.get("payload") or {}).get("obligation")
+        if isinstance(oid, str):
+            with self._seat_failures_lock:
+                self._seat_failures[oid] = max(
+                    self._seat_failures.get(oid, 0), event["seq"])
+
     def _seat_failure(self, oid: str, since: int) -> bool:
         """Whether this node's discharge, which began after ledger seq
         ``since``, lost a seat to an infrastructure error (an Oracle or
         Judger call that raised through its retries — a transport error,
         an HTTP 403, a schema-invalid generation). A failed outcome owed
-        to one is no finding about the world."""
+        to one is no finding about the world. Read from what the log
+        listener noted; a log without listeners is scanned."""
+        if self._seat_failures is not None:
+            with self._seat_failures_lock:
+                return self._seat_failures.get(oid, 0) > since
         for event in self.log.replay():
-            if event["seq"] <= since:
-                continue
-            payload = event.get("payload") or {}
-            if payload.get("obligation") != oid:
-                continue
-            if event["type"] == "judger_call_failed" \
-                    and not payload.get("will_retry"):
-                return True
-            if event["type"] == "methods_enumerated" \
-                    and payload.get("error") and not payload.get("prewarm"):
+            if event["seq"] > since \
+                    and (event.get("payload") or {}).get("obligation") == oid \
+                    and self._is_seat_failure(event):
                 return True
         return False
 
@@ -1144,8 +1175,15 @@ class Kernel:
                                     "payload": draft}
             if enumerate is not None and pool is not None:
                 draft_futures.extend(
-                    submit_with_context(pool, enumerate, row, o)
+                    submit_with_context(pool, warm, row, o)
                     for o in obligations)
+
+        def warm(row, obligation):
+            # a warm-up: while the review runs, its launches wait behind
+            # the review's (and every check's), which the envelope's room
+            # must serve first; the final then waits on no queued draft
+            with warmup_launches(until=self._contract_ready.is_set):
+                enumerate(row, obligation)
 
         try:
             with model_scope(claim_id=row["id"], claim_kind=CLAIM_FINAL,

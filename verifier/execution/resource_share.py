@@ -16,7 +16,11 @@ on the task:
   check that cannot finish is pure waste;)
 - a new seat process starts only while the envelope has room for one, or
   when none of the verifier's is running, so a check always progresses;
-  launches waiting for room are admitted in arrival order.
+  launches waiting for room are admitted in arrival order, a warm-up's
+  (a draft contract's method prewarm) after every other's;
+- a launch waiting for room gives back the seat permit its thread holds
+  (see hold_permit_while_waiting): seats that wait for memory are not in
+  flight, so they never hold up a seat that needs none.
 """
 from __future__ import annotations
 
@@ -43,9 +47,18 @@ _cond = threading.Condition()
 _running = 0
 # (admission time, ticket) of launches within STARTUP_SECONDS
 _admitted = collections.deque()
-_queue = collections.deque()      # tickets of waiting launches, in arrival order
+# (priority probe, ticket) of waiting launches; the head is the one of
+# lowest (priority, ticket), see _head
+_queue = collections.deque()
 _tickets = itertools.count()
 _waited = threading.local()
+# a launch's priority: ordinary launches before warm-ups
+PRIORITY_NORMAL = 0
+PRIORITY_WARMUP = 1
+# process-group leaders of the launches running now (track_launched), so an
+# exiting server can kill them rather than wait for them
+_launched: set = set()
+_launched_lock = threading.Lock()
 
 
 def seat_room_bytes() -> int:
@@ -154,6 +167,79 @@ def _mb(value: int) -> int:
 
 
 @contextlib.contextmanager
+def warmup_launches(until=None):
+    """This thread's launches wait behind every ordinary launch — until
+    ``until()`` turns true, when they queue as ordinary ones again: a
+    warm-up (enumerating methods for a contract still under review) must
+    never delay the review it anticipates, and once the review is done a
+    check may be waiting on it."""
+    before = getattr(_waited, "priority", None)
+    _waited.priority = (lambda: PRIORITY_NORMAL
+                        if until is not None and until() else PRIORITY_WARMUP)
+    try:
+        yield
+    finally:
+        _waited.priority = before
+
+
+def _priority_probe():
+    """This thread's launch priority as a probe any thread may ask."""
+    current = getattr(_waited, "priority", None)
+    if current is None:
+        return lambda: PRIORITY_NORMAL
+
+    def probe() -> int:
+        try:
+            return current()
+        except Exception:  # noqa: BLE001 - a probe never blocks a launch
+            return PRIORITY_NORMAL
+    return probe
+
+
+@contextlib.contextmanager
+def hold_permit_while_waiting(release, reacquire):
+    """While set, a launch of this thread that has to wait for room calls
+    ``release()`` first and ``reacquire()`` once admitted (outside the
+    room's lock): the thread's seat permit is not held while it waits."""
+    before = getattr(_waited, "permit", None)
+    _waited.permit = (release, reacquire)
+    try:
+        yield
+    finally:
+        _waited.permit = before
+
+
+def _head():
+    """The waiting launch admitted next: ordinary before warm-up, then in
+    arrival order. Priorities are asked afresh (a warm-up's lapses)."""
+    return min(_queue, key=lambda entry: (entry[0](), entry[1]))
+
+
+def track_launched(pid: int) -> None:
+    with _launched_lock:
+        _launched.add(pid)
+
+
+def untrack_launched(pid: int) -> None:
+    with _launched_lock:
+        _launched.discard(pid)
+
+
+def kill_launched() -> int:
+    """SIGKILL every tracked launch's process group (and what escaped it);
+    returns how many groups were signalled."""
+    with _launched_lock:
+        leaders = sorted(_launched)
+    for leader in leaders:
+        kill_escaped(leader)
+        try:
+            os.killpg(leader, signal.SIGKILL)
+        except OSError:
+            pass
+    return len(leaders)
+
+
+@contextlib.contextmanager
 def launch_slot(room=envelope_room):
     """Held while one launched seat or check process runs; entered once the
     envelope has room for it, or at once when none of ours is running.
@@ -162,42 +248,61 @@ def launch_slot(room=envelope_room):
     the verifier's one server process, and with every waiter polling the
     room, whichever poll came first after room appeared won — a method
     synthesis call waited 38 minutes while later arrivals went ahead. Only
-    the head of the queue asks for room; the others wait behind it."""
+    the head of the queue asks for room; the others wait behind it. A
+    warm-up's launch (warmup_launches) queues behind every ordinary one."""
     global _running
     need = seat_room_bytes()
     started = time.monotonic()
     reason = None
-    with _cond:
-        ticket = next(_tickets)
-        if need > 0:
-            _queue.append(ticket)
-            try:
-                while True:
-                    if _queue[0] != ticket:
-                        reason = reason or "queued behind earlier launches"
-                    elif _running == 0:
-                        break
-                    else:
-                        now = time.monotonic()
-                        while _admitted and \
-                                now - _admitted[0][0] > STARTUP_SECONDS:
-                            _admitted.popleft()
-                        free = room()
-                        held = need * len(_admitted)
-                        if free is None or free - held >= need:
+    permit = getattr(_waited, "permit", None)
+    released = admitted = False
+    try:
+        with _cond:
+            ticket = next(_tickets)
+            if need > 0:
+                entry = (_priority_probe(), ticket)
+                _queue.append(entry)
+                try:
+                    while True:
+                        if _head() != entry:
+                            reason = reason or "queued behind earlier launches"
+                        elif _running == 0:
                             break
-                        reason = (
-                            f"no room: {_mb(free)} MB free"
-                            + (f" less {_mb(held)} MB held for launches "
-                               "still starting" if held else "")
-                            + f", {_mb(need)} MB needed, "
-                            f"{_running} running")
-                    _cond.wait(ROOM_POLL_SECONDS)
-            finally:
-                _queue.remove(ticket)
-                _cond.notify_all()
-        _running += 1
-        _admitted.append((time.monotonic(), ticket))
+                        else:
+                            now = time.monotonic()
+                            while _admitted and \
+                                    now - _admitted[0][0] > STARTUP_SECONDS:
+                                _admitted.popleft()
+                            free = room()
+                            held = need * len(_admitted)
+                            if free is None or free - held >= need:
+                                break
+                            reason = (
+                                f"no room: {_mb(free)} MB free"
+                                + (f" less {_mb(held)} MB held for launches "
+                                   "still starting" if held else "")
+                                + f", {_mb(need)} MB needed, "
+                                f"{_running} running")
+                        if permit is not None and not released:
+                            permit[0]()      # waiting is not being in flight
+                            released = True
+                        _cond.wait(ROOM_POLL_SECONDS)
+                finally:
+                    _queue.remove(entry)
+                    _cond.notify_all()
+            _running += 1
+            _admitted.append((time.monotonic(), ticket))
+            admitted = True
+    finally:
+        if released:
+            # admitted (or interrupted): the caller's permit is held again
+            # before its launch runs, and before the caller releases it
+            try:
+                permit[1]()
+            except BaseException:
+                if admitted:
+                    _leave(ticket)
+                raise
     waited = time.monotonic() - started
     _waited.seconds = round(getattr(_waited, "seconds", 0.0) + waited, 3)
     if reason and waited >= getattr(_waited, "longest", 0.0):
@@ -205,13 +310,18 @@ def launch_slot(room=envelope_room):
     try:
         yield
     finally:
-        with _cond:
-            _running -= 1
-            # a process that already exited holds no memory: its start-up
-            # share goes back to the room at once, not after STARTUP_SECONDS
-            for entry in [e for e in _admitted if e[1] == ticket]:
-                _admitted.remove(entry)
-            _cond.notify_all()
+        _leave(ticket)
+
+
+def _leave(ticket: int) -> None:
+    global _running
+    with _cond:
+        _running -= 1
+        # a process that already exited holds no memory: its start-up
+        # share goes back to the room at once, not after STARTUP_SECONDS
+        for entry in [e for e in _admitted if e[1] == ticket]:
+            _admitted.remove(entry)
+        _cond.notify_all()
 
 
 def _proc_table() -> dict:

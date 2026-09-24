@@ -378,7 +378,7 @@ class DirectBackend:
         return False   # no tools: the catalog must be inlined, never lazily read
 
     def routes_direct(self, role_name: str) -> bool:
-        return True    # every role here is one HTTP request (agents._seat_gate)
+        return True    # every role here is one HTTP request
 
     def complete(self, role_name: str, prompt: str,
                  variables: Dict[str, Any]) -> Any:

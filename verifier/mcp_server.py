@@ -259,6 +259,7 @@ class Service:
                 continue
             try:
                 self.builder.feed(event)
+                self._index_effect(event)
             except VERB_ERRORS as err:
                 if event["type"] == "commit" \
                         and isinstance(err, UnresolvedCommit):
@@ -266,7 +267,14 @@ class Service:
                 print(f"gv: replay skipped event {event['seq']} "
                       f"({event['type']}): {err}", file=sys.stderr)
                 continue
-            self._index_effect(event)
+            except Exception as err:  # noqa: BLE001 - never blocks a start
+                # a hook event recorded before its fields were validated (a
+                # tool_use_id that is not a string, say)
+                if event["type"] not in HOOK_EVENT_TYPES:
+                    raise
+                print(f"gv: replay skipped event {event['seq']} "
+                      f"({event['type']}): {err!r}", file=sys.stderr)
+                continue
             delivered_through = max(delivered_through,
                                     self._gv_response_boundary(event))
         # the effects the solver was last shown: those recorded before the
@@ -306,9 +314,16 @@ class Service:
             return
         if etype == "status_change" and "obligation" not in payload:
             status = payload.get("status")
-            self._last_change[claim] = (event["seq"], status)
+            # listeners run outside the log's lock, so two appends can
+            # arrive here out of order: the newest change is the one with
+            # the highest seq, not the last observed
+            last = self._last_change.get(claim)
+            if last is None or event["seq"] >= last[0]:
+                self._last_change[claim] = (event["seq"], status)
             if status == "refuted":
-                self._refutations.setdefault(claim, []).append(event["seq"])
+                seqs = self._refutations.setdefault(claim, [])
+                seqs.append(event["seq"])
+                seqs.sort()
         elif etype == "news_delivered":
             if isinstance(payload.get("change_seq"), int):
                 self._reported[claim] = max(self._reported.get(claim, 0),
@@ -342,6 +357,13 @@ class Service:
             self._reject_feed_line(None, end, raw_event,
                                    "payload is not an object")
             return
+        call_id = payload.get("tool_use_id")
+        if call_id is not None and not isinstance(call_id, str):
+            # an id the graph cannot key a pending call by (a list, an
+            # object) raised TypeError on every later drain and at startup
+            self._reject_feed_line(None, end, raw_event,
+                                   "tool_use_id is not a string")
+            return
         # the feed offset just past this line: a restart resumes after the
         # last line the ledger holds, even when it died before saving the
         # offset file (it used to ingest the batch again, duplicating
@@ -352,8 +374,15 @@ class Service:
         except ValueError as err:   # a payload the ledger cannot encode
             self._reject_feed_line(None, end, raw_event, str(err))
             return
-        self.builder.feed(event)
-        self._index_effect(event)
+        # the line is in the ledger from here on, so it is consumed: a step
+        # below that raises must not leave it for the next drain, which
+        # appended the same tool call again on every verb
+        try:
+            self.builder.feed(event)
+            self._index_effect(event)
+        except Exception as err:  # noqa: BLE001 - recorded, never re-raised
+            print(f"gv: hook event {event['seq']} ({etype}) recorded but not "
+                  f"wired into the graph: {err!r}", file=sys.stderr)
 
     def _reject_feed_line(self, start: Optional[int], end: int, line: Any,
                           error: str) -> None:
@@ -378,6 +407,8 @@ class Service:
         if tool.startswith("mcp__gv__"):
             return
         call_id = payload.get("tool_use_id")
+        if not isinstance(call_id, str):
+            call_id = None
         if etype == "tool_call":
             if call_id:
                 self._call_inputs[call_id] = _excerpt(payload.get("input"))
@@ -1232,7 +1263,43 @@ def main() -> None:
         pass
     service.record_start(launch_identity(args))
     service.start_background()
-    server.run()   # stdio
+    try:
+        server.run()   # stdio; returns when the client closes stdin
+    finally:
+        terminate(service)
+
+
+def terminate(service: Service, exit=os._exit) -> None:
+    """The client is gone: end the process now. Left to the interpreter,
+    shutdown joined the worker threads still inside seat calls (up to half
+    an hour) while this process held the state lock, and the client's
+    restarted server gave up on the lock after SERVER_LOCK_WAIT. The seat
+    and script processes the verifier launched are killed, the ledger is
+    closed to further appends (each append is written and closed under the
+    log's lock, so holding it means none is half-written), the lock is
+    released, and the process exits without joining anything."""
+    from .execution.resource_share import kill_launched
+    try:
+        kill_launched()
+    except Exception:  # noqa: BLE001 - exiting regardless
+        pass
+    if service._drain_lock.acquire(timeout=5.0):
+        service._save_feed_offset()
+    service.log._lock.acquire(timeout=10.0)
+    handle = service.server_lock
+    if handle is not None:
+        try:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+        except (ImportError, OSError, ValueError):
+            pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    exit(0)
 
 
 if __name__ == "__main__":

@@ -358,34 +358,6 @@ def test_a_killed_seat_is_retried_without_model_feedback():
     assert prompts == ["judge it", "judge it"]
 
 
-def test_direct_seats_do_not_queue_behind_process_seats(monkeypatch):
-    used = []
-
-    @contextlib.contextmanager
-    def tagged(name):
-        used.append(name)
-        yield
-
-    monkeypatch.setattr(agents.SEAT_GATE, "slot", lambda: tagged("process"))
-    monkeypatch.setattr(agents.DIRECT_SEAT_GATE, "slot",
-                        lambda: tagged("direct"))
-
-    class Routing:
-        def routes_direct(self, role_name):
-            return role_name == "critic"
-
-        def complete(self, role_name, prompt, variables):
-            return {"ok": True}
-
-    class Process:
-        def complete(self, role_name, prompt, variables):
-            return {"ok": True}
-
-    _role().call(Routing(), {"x": "a"})
-    _role().call(Process(), {"x": "a"})
-    assert used == ["direct", "process"]
-
-
 # ------------------------------------------------------------- direct
 
 

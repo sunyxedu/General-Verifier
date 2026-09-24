@@ -608,7 +608,9 @@ class AgentDischarger:
             except OSError:
                 pass
 
-        from .resource_share import kill_escaped, launch_slot, yield_process
+        from .resource_share import (
+            kill_escaped, launch_slot, track_launched, untrack_launched,
+            yield_process)
         try:
             with launch_slot():
                 ran = _time.time()
@@ -620,6 +622,7 @@ class AgentDischarger:
                 # SCRIPT_CAPTURE_CAP bytes of each stream; the wait is on
                 # the script itself, not on its pipes, which a `server &`
                 # it started holds open until it is killed.
+                track_launched(proc.pid)
                 readers = (_CappedReader(proc.stdout),
                            _CappedReader(proc.stderr))
                 try:
@@ -636,6 +639,7 @@ class AgentDischarger:
                     # after a normal exit too: what the script left running
                     # holds the container's memory and the pipes
                     _stop(proc)
+                    untrack_launched(proc.pid)
                     try:
                         proc.wait(timeout=SCRIPT_DRAIN_SECONDS)
                     except subprocess.TimeoutExpired:

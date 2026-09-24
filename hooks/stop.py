@@ -22,8 +22,9 @@ The latest final is in one of these states, each answered differently:
     to POLL_SECONDS); if none arrives it blocks with "still running" as a
     WAIT, not a block. Waits have their own cap (MAX_WAITS) so a check
     that never ends cannot hold the solver forever;
-  - the verifier failed (certificate_failed, or the verifier restarted
-    while the check ran): the delivery is not at fault; retry once;
+  - the verifier failed (certificate_failed, the verifier restarted while
+    the check ran, or its server died and nothing serves the state — the
+    state lock is free): the delivery is not at fault; retry once;
   - the certificate is void (the verifier was restarted with other
     settings, or ran twice): no delivery fix can certify it; the solver is
     told once and then allowed to stop;
@@ -58,6 +59,15 @@ GLOBAL_BLOCK_FACTOR = 3
 # a running certificate is waited for inside the hook (its timeout is 60 s)
 POLL_SECONDS = 45.0
 POLL_INTERVAL = 2.0
+# the whole hook, reading the ledger included, ends this long after it
+# started: a hook the harness kills at 60 s lets the stop through with no
+# goal_released on record
+HOOK_BUDGET_SECONDS = 40.0
+# the state lock a live verifier server holds (verifier.mcp_server
+# SERVER_LOCK): takeable means no server is alive to answer a request
+SERVER_LOCK = "server.lock"
+# states in which the verifier, not the delivery, failed: retried once
+VERIFIER_FAILED = ("restarted", "stopped", "failed")
 # a "still running" block is not charged to the block budget; this many of
 # them (each after a full poll, so tens of minutes in all) end the waiting
 MAX_WAITS = 30
@@ -81,22 +91,51 @@ def _verifier_import(module: str, name: str):
         return None
 
 
-def _events(state_dir: str) -> List[Dict[str, Any]]:
-    path = os.path.join(state_dir, "events.jsonl")
-    out: List[Dict[str, Any]] = []
-    try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    out.append(json.loads(line))
-                except ValueError:
-                    continue
-    except OSError:
-        pass
-    return out
+class _Ledger:
+    """The ledger as read so far. A re-read parses only the complete lines
+    appended since the last one: re-parsing a large ledger every poll cost
+    more than the hook's whole time on one CPU."""
+
+    def __init__(self, state_dir: str):
+        self.path = os.path.join(state_dir, "events.jsonl")
+        self.events: List[Dict[str, Any]] = []
+        # bumped whenever the file was replaced and read afresh
+        self.generation = 0
+        self._offset = 0
+        self._inode: Optional[int] = None
+
+    def refresh(self) -> bool:
+        """Read what was appended; True when the events changed."""
+        try:
+            with open(self.path, "rb") as f:
+                info = os.fstat(f.fileno())
+                reset = (info.st_ino != self._inode
+                         or info.st_size < self._offset)
+                if reset:
+                    self.events, self._offset = [], 0
+                    self._inode = info.st_ino
+                    self.generation += 1
+                if info.st_size <= self._offset:
+                    return reset
+                f.seek(self._offset)
+                data = f.read(info.st_size - self._offset)
+        except OSError:
+            return False
+        end = data.rfind(b"\n") + 1     # a torn last line waits for its end
+        self._offset += end
+        added = False
+        for line in data[:end].split(b"\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line.decode("utf-8"))
+            except ValueError:
+                continue
+            if isinstance(event, dict):
+                self.events.append(event)
+                added = True
+        return added or reset
 
 
 def _append_event(state_dir: str, etype: str, payload: Dict[str, Any]) -> bool:
@@ -120,54 +159,116 @@ class _NullStore:
         pass
 
 
-def latest_final(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The newest final commit that resolved: {seq, label, id}. ``id`` is
-    the claim id, or None when the verifier package is unavailable."""
-    builder_cls = _verifier_import("verifier.stream.builder", "Builder")
-    if builder_cls is None:
-        return _latest_final_by_labels(events)
-    builder = builder_cls(None, _NullStore())
-    latest = None
-    for e in events:
-        if e.get("type") not in ("tool_call", "tool_result", "commit"):
-            continue
-        try:
-            builder.feed(e)
-        except Exception:  # noqa: BLE001 - a failed commit resolves nothing
-            continue
-        payload = e.get("payload") or {}
-        if e["type"] == "commit" and payload.get("kind") == "final":
-            latest = {"seq": e.get("seq") or 0, "label": payload.get("label"),
-                      "id": builder.finals[-1]}
-    return latest
+def _failed_commits(events: List[Dict[str, Any]]) -> set:
+    """Commit seqs the server recorded as having recorded nothing."""
+    return {(e.get("payload") or {}).get("commit") for e in events
+            if e.get("type") == "commit_failed"}
 
 
-def _latest_final_by_labels(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    known = set()
-    latest = None
-    for e in events:
+class _FinalReplay:
+    """The ledger's commits replayed, as the server's own replay does:
+    through the verifier's Builder with a store that records nothing
+    (label resolution without the package), skipping commits a
+    commit_failed names. Fed incrementally: only events it has not seen."""
+
+    def __init__(self, failed=()):
+        self.failed = set(failed)
+        self.seen = 0                   # events consumed
+        self.accepted: set = set()      # seqs of the commits that resolved
+        self.latest: Optional[Dict[str, Any]] = None
+        builder_cls = _verifier_import("verifier.stream.builder", "Builder")
+        self.builder = (builder_cls(None, _NullStore())
+                        if builder_cls is not None else None)
+        self.known: set = set()
+
+    def feed(self, events: List[Dict[str, Any]]) -> None:
+        for e in events[self.seen:]:
+            self.seen += 1
+            self._one(e)
+
+    def _one(self, e: Dict[str, Any]) -> None:
         etype, payload = e.get("type"), e.get("payload") or {}
-        if etype in ("tool_call", "tool_result"):
-            known.add(f"effect:{e.get('seq')}")
-        elif etype == "commit":
+        if etype not in ("tool_call", "tool_result", "commit"):
+            return
+        if etype == "commit" and e.get("seq") in self.failed:
+            return
+        if self.builder is None:
+            if etype != "commit":
+                self.known.add(f"effect:{e.get('seq')}")
+                return
             refs = list(payload.get("deps") or [])
             if payload.get("revises"):
                 refs.append(payload["revises"])
-            if not all(r in known for r in refs) or "text" not in payload:
-                continue
+            if not all(r in self.known for r in refs) or "text" not in payload:
+                return
             if payload.get("label"):
-                known.add(payload["label"])
-            if payload.get("kind") == "final":
-                latest = {"seq": e.get("seq") or 0,
-                          "label": payload.get("label"), "id": None}
-    return latest
+                self.known.add(payload["label"])
+            fid = None
+        else:
+            try:
+                self.builder.feed(e)
+            except Exception:  # noqa: BLE001 - a failed commit resolves nothing
+                return
+            if etype != "commit":
+                return
+            fid = self.builder.finals[-1] if payload.get("kind") == "final" \
+                else None
+        self.accepted.add(e.get("seq"))
+        if payload.get("kind") == "final":
+            self.latest = {"seq": e.get("seq") or 0,
+                           "label": payload.get("label"), "id": fid}
 
 
-def final_state(events: List[Dict[str, Any]], goal: str
+def latest_final(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The newest final commit that resolved: {seq, label, id}. ``id`` is
+    the claim id, or None when the verifier package is unavailable. A
+    commit a commit_failed event names is skipped, as the server's replay
+    skips it."""
+    replay = _FinalReplay(_failed_commits(events))
+    replay.feed(events)
+    return replay.latest
+
+
+def server_alive(state_dir: Optional[str]) -> Optional[bool]:
+    """Whether a verifier server holds the state's lock (SERVER_LOCK):
+    False when the lock can be taken — no server is alive to answer a
+    request — and None when that cannot be told (no lock file, no flock)."""
+    if not state_dir:
+        return None
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    try:
+        fd = os.open(os.path.join(state_dir, SERVER_LOCK), os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, PermissionError):
+            return True
+        except OSError:
+            return None
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+_UNSET = object()
+
+
+def final_state(events: List[Dict[str, Any]], goal: str,
+                state_dir: Optional[str] = None, final: Any = _UNSET
                 ) -> Tuple[str, Optional[Dict[str, Any]], Dict[str, Any]]:
     """(state, latest final, the event that decided it). States: none,
-    unrequested, running, restarted, failed, void, below, met."""
-    final = latest_final(events)
+    unrequested, running, restarted, stopped, failed, void, below, met.
+    With ``state_dir`` a request no server is alive to answer is
+    ``stopped``, not running; ``final`` is the latest final when the
+    caller already knows it."""
+    if final is _UNSET:
+        final = latest_final(events)
     if final is None:
         return "none", None, {}
     fid = final["id"]
@@ -189,8 +290,13 @@ def final_state(events: List[Dict[str, Any]], goal: str
     seq = lambda e: (e or {}).get("seq") or 0  # noqa: E731
     if request is not None and seq(request) > seq(terminal):
         # a server launched after the request never answers it
-        return ("restarted" if seq(restart) > seq(request) else "running",
-                final, request)
+        if seq(restart) > seq(request):
+            return "restarted", final, request
+        # nor does a server that died with nothing restarting it: waiting
+        # on it spent the whole wait budget on a check nobody runs
+        if server_alive(state_dir) is False:
+            return "stopped", final, request
+        return "running", final, request
     if terminal is None:
         return "unrequested", final, {}
     payload = terminal.get("payload") or {}
@@ -226,9 +332,12 @@ def message(state: str, events: List[Dict[str, Any]],
                 "Do not stop and do not commit another final for this: wait, "
                 "and poll gv.status on the final claim until its check "
                 "finishes, then read the certificate.")
-    if state in ("restarted", "failed"):
+    if state in VERIFIER_FAILED:
         if state == "restarted":
             cause = "the verifier restarted while the check was running"
+        elif state == "stopped":
+            cause = ("the verifier's server exited while the check was "
+                     "running and no server is serving the state")
         elif payload.get("infrastructure"):
             cause = ("the verifier's own model provider or transport failed"
                      f" ({str(payload.get('error') or '')[:300]})")
@@ -310,22 +419,55 @@ def _final_findings(events: List[Dict[str, Any]], final_id: Optional[str],
     return out
 
 
-def _poll_running(state_dir: str, goal: str, deadline: float):
-    """Re-read the ledger while the latest final's certificate runs."""
-    events = _events(state_dir)
-    judged = final_state(events, goal)
-    size = -1
-    while judged[0] == "running" and time.monotonic() < deadline:
-        time.sleep(POLL_INTERVAL)
-        try:
-            now = os.path.getsize(os.path.join(state_dir, "events.jsonl"))
-        except OSError:
-            now = -1
-        if now != size:
-            size = now
-            events = _events(state_dir)
-            judged = final_state(events, goal)
-    return events, judged
+class _Judge:
+    """The latest final's state, kept current as the ledger grows: the
+    ledger is read incrementally and the Builder replays only commits and
+    tool events it has not seen (from scratch only when a commit_failed
+    names a commit it accepted, or the file was replaced)."""
+
+    def __init__(self, state_dir: str, goal: str):
+        self.state_dir, self.goal = state_dir, goal
+        self.ledger = _Ledger(state_dir)
+        self.replay: Optional[_FinalReplay] = None
+        self._generation = -1
+
+    @property
+    def events(self) -> List[Dict[str, Any]]:
+        return self.ledger.events
+
+    def judge(self):
+        events = self.ledger.events
+        if self.replay is not None and self._generation == self.ledger.generation:
+            fresh = events[self.replay.seen:]
+            if any(e.get("type") == "commit_failed"
+                   and (e.get("payload") or {}).get("commit")
+                   in self.replay.accepted for e in fresh):
+                self.replay = None
+        if self.replay is None or self._generation != self.ledger.generation:
+            self.replay = _FinalReplay(_failed_commits(events))
+            self._generation = self.ledger.generation
+        self.replay.failed |= _failed_commits(events[self.replay.seen:])
+        self.replay.feed(events)
+        return final_state(events, self.goal, state_dir=self.state_dir,
+                           final=self.replay.latest)
+
+    def read(self):
+        self.ledger.refresh()
+        return self.judge()
+
+    def poll(self, judged, deadline: float):
+        """Re-read the ledger while the latest final's certificate runs,
+        until ``deadline`` less the time a re-read takes."""
+        cost = 0.0
+        while judged[0] == "running" \
+                and time.monotonic() + POLL_INTERVAL + cost < deadline:
+            time.sleep(POLL_INTERVAL)
+            began = time.monotonic()
+            # judged afresh even when nothing was appended: the server may
+            # have died meanwhile
+            judged = self.read()
+            cost = time.monotonic() - began
+        return judged
 
 
 def _load_record(path: str) -> Dict[str, Any]:
@@ -366,17 +508,23 @@ def _block(reason: str) -> None:
     sys.stdout.write(json.dumps({"decision": "block", "reason": reason}))
 
 
-def run(state_dir: str, goal: str, max_blocks: int) -> None:
+def run(state_dir: str, goal: str, max_blocks: int,
+        started: Optional[float] = None) -> None:
+    """``started``: when the hook process began (monotonic); the whole run,
+    reading included, ends within HOOK_BUDGET_SECONDS of it."""
+    if started is None:
+        started = time.monotonic()
     blocks_path = os.path.join(state_dir, BLOCKS_FILE)
     record = _load_record(blocks_path)
     blocks = record.setdefault("blocks", [])
     waits = record.setdefault("waits", [])
-    started = time.monotonic()
-    events = _events(state_dir)
-    state, final, decided = final_state(events, goal)
+    judge = _Judge(state_dir, goal)
+    state, final, decided = judge.read()
     if state == "running":
-        events, (state, final, decided) = _poll_running(
-            state_dir, goal, started + POLL_SECONDS)
+        state, final, decided = judge.poll(
+            (state, final, decided),
+            started + min(POLL_SECONDS, HOOK_BUDGET_SECONDS))
+    events = judge.events
     if state == "met":
         return
     key = (final or {}).get("id") or (
@@ -398,8 +546,8 @@ def run(state_dir: str, goal: str, max_blocks: int) -> None:
         _release(state_dir, record, key, "certificate void")
         _save_record(blocks_path, record)
         return
-    if state in ("restarted", "failed") and any(
-            b.get("state") in ("restarted", "failed")
+    if state in VERIFIER_FAILED and any(
+            b.get("state") in VERIFIER_FAILED
             and b.get("event") != decided.get("seq") for b in mine):
         # the solver was told to retry once, and the retry failed as well
         _release(state_dir, record, key, "the verifier failed twice")
@@ -420,6 +568,7 @@ def run(state_dir: str, goal: str, max_blocks: int) -> None:
 
 
 def main() -> None:
+    started = time.monotonic()
     goal = (os.environ.get("GV_GOAL") or "partial").strip().lower()
     if goal in ("off", "0", "none"):
         return
@@ -436,7 +585,7 @@ def main() -> None:
     except ValueError:
         max_blocks = 3
     try:
-        run(state_dir, goal, max_blocks)
+        run(state_dir, goal, max_blocks, started)
     except Exception as err:  # noqa: BLE001 - a broken hook leaves a trace
         # never a silent pass: the error goes to the ledger, and the solver
         # is stopped once with it (only when that count is on disk, so a

@@ -230,9 +230,11 @@ def _file_identity(value: os.stat_result) -> Tuple[int, ...]:
 def _read_stable_event_log(path: str) -> bytes:
     """Read one real, private ledger path without following aliases.
 
-    EventLog's writer lock is held by the caller.  Descriptor and path
+    EventLog's thread lock is held by the caller, and a shared flock on
+    the ledger is held for the read: writers in other processes (the stop
+    hook's notes) append under an exclusive one.  Descriptor and path
     identities are checked on both sides of the read as defence against
-    mutation by actors which do not participate in that lock.
+    mutation by actors which do not participate in either lock.
     """
     absolute = os.path.abspath(os.fspath(path))
     parent = os.path.realpath(os.path.dirname(absolute))
@@ -277,6 +279,7 @@ def _read_stable_event_log(path: str) -> bytes:
                 "event ledger exceeds the source projection byte limit")
 
         file_fd = os.open(name, _file_flags(), dir_fd=parent_fd)
+        _lock_fd(file_fd, shared=True)
         before = os.fstat(file_fd)
         if (not stat.S_ISREG(before.st_mode)
                 or before.st_nlink != 1
@@ -314,7 +317,7 @@ def _read_stable_event_log(path: str) -> bytes:
             f"cannot safely read event ledger: {error}") from error
     finally:
         if file_fd >= 0:
-            os.close(file_fd)
+            os.close(file_fd)    # closing drops the shared lock
         if parent_fd >= 0:
             os.close(parent_fd)
 
@@ -376,12 +379,16 @@ def _strict_events(raw: bytes) -> Tuple[Dict[str, Any], ...]:
     return tuple(events)
 
 
-def _lock_file(f) -> None:
+def _lock_fd(fd: int, shared: bool = False) -> None:
     try:
         import fcntl
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
     except (ImportError, OSError):
         pass   # no advisory locks here: the thread lock still guards one process
+
+
+def _lock_file(f) -> None:
+    _lock_fd(f.fileno())
 
 
 def _unlock_file(f) -> None:

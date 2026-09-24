@@ -599,7 +599,9 @@ def _run_codex_group(cmd, *, cwd, stdin, timeout, input_text, bound_cwd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, start_new_session=True, **launch_kwargs,
     )
-    from ..execution.resource_share import yield_process
+    from ..execution.resource_share import (
+        track_launched, untrack_launched, yield_process)
+    track_launched(proc.pid)
     yield_process(proc.pid)
     from ..execution.scratch_budget import ScratchWatch
     watch = ScratchWatch(watch_dir, watch_cap, lambda: _kill_process_group(proc))
@@ -630,6 +632,7 @@ def _run_codex_group(cmd, *, cwd, stdin, timeout, input_text, bound_cwd,
             # inherited pipes. This finally also covers interruption and
             # communicate() errors, not just normal completion and timeout.
             _kill_process_group(proc)
+            untrack_launched(proc.pid)
             if proc.poll() is None:
                 try:
                     proc.wait(timeout=1)

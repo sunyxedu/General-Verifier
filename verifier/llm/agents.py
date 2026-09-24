@@ -134,7 +134,12 @@ def _seat_limit() -> int:
 
 class _SeatGate:
     """A bounded semaphore sized lazily from the env, shared by every role
-    in the process; ``slot()`` yields one in-flight permit."""
+    in the process; ``slot()`` yields one in-flight permit. Every seat —
+    a direct HTTP call or a launched process — holds one, so the cap bounds
+    them all together; a seat whose process waits for the envelope's
+    memory gives its permit back while it waits (resource_share
+    hold_permit_while_waiting), so seats that need no memory of their own
+    never queue behind seats that are waiting for memory."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -157,19 +162,16 @@ class _SeatGate:
         if sem is None:
             yield
             return
+        from ..execution.resource_share import hold_permit_while_waiting
         sem.acquire()
         try:
-            yield
+            with hold_permit_while_waiting(sem.release, sem.acquire):
+                yield
         finally:
             sem.release()
 
 
 SEAT_GATE = _SeatGate()
-# Direct seats (one HTTP request, no process, no memory of their own) hold a
-# permit of their own pool, the same size: a codex seat waits for the
-# envelope's memory while holding its permit, and with the pool shared a
-# direct call queued behind codex seats that were queued behind memory.
-DIRECT_SEAT_GATE = _SeatGate()
 
 
 class SeatResourceKilled(RoleError):
@@ -177,15 +179,6 @@ class SeatResourceKilled(RoleError):
     in a small container, the kernel's out-of-memory killer. The answer was
     never malformed, so the role's retry carries no feedback to the model;
     its launch waits for room like any other."""
-
-
-def _seat_gate(backend, role_name: str) -> _SeatGate:
-    routes_direct = getattr(backend, "routes_direct", None)
-    try:
-        direct = callable(routes_direct) and routes_direct(role_name) is True
-    except Exception:  # noqa: BLE001 - an optional probe never fails a call
-        direct = False
-    return DIRECT_SEAT_GATE if direct else SEAT_GATE
 
 
 @dataclass
@@ -222,7 +215,7 @@ class AgentRole:
                 try:
                     with role_attempt(attempt_index):
                         wait_started = seat_wait_started()
-                        with _seat_gate(backend, self.name).slot():
+                        with SEAT_GATE.slot():
                             acquired = seat_acquired(wait_started)
                             try:
                                 # Bind after queueing: a view captured before

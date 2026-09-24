@@ -40,6 +40,8 @@ def test_codex_mcp_routes_tool_free_roles_to_dotenv_openrouter(
     monkeypatch.setattr(mcp_server, "build_server", lambda service: FakeServer())
     monkeypatch.setattr(mcp_server, "_default_kernel",
                         lambda sc, model, *, backend: backend)
+    # the real one ends the process once the server returns
+    monkeypatch.setattr(mcp_server, "terminate", lambda service: None)
     monkeypatch.setattr(sys, "argv", [
         "verifier.mcp_server", "--state-dir", str(tmp_path),
         "--seats", "codex", "--model", "gpt-5.6-luna",
