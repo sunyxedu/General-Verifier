@@ -178,15 +178,51 @@ def request_certificate(
                 < strength_rank(STRENGTH_DECISIVE):
             verdict = "supported"
 
+    integrity = verifier_integrity(log)
+    void = integrity.pop("void", None)
+    if void:
+        # the verifier that produced this slice is not the one the session
+        # started with: nothing it settled is a verdict of that verifier
+        verdict, verdict_strength = "unverified", None
     certificate = {
         "final": final_id,
         "verdict": verdict,
         "verdict_strength": verdict_strength,
+        "integrity": integrity,
+        **({"void": void} if void else {}),
         "slice": entries,
     }
     digest = artifacts.put(certificate)
     certificate["certificate_id"] = digest
     log.append("certificate", {"final": final_id, "verdict": verdict,
                                "verdict_strength": verdict_strength,
+                               **({"void": void} if void else {}),
                                "digest": digest})
     return certificate
+
+
+def verifier_integrity(log: EventLog) -> Dict:
+    """How the verifier ran during the session, from its own launch records:
+    how many times its server started, and whether any start changed its
+    settings or code or ran beside a live server (then ``void`` says why)."""
+    starts, changes, concurrent = 0, [], 0
+    for event in log.replay():
+        kind = event.get("type")
+        if kind == "server_started":
+            starts += 1
+        elif kind == "server_config_changed":
+            changes += list((event.get("payload") or {}).get("changed") or [])
+        elif kind == "server_concurrent_start":
+            concurrent += 1
+    out = {"server_starts": starts}
+    reasons = []
+    if changes:
+        out["changed"] = sorted(set(changes))
+        reasons.append("the verifier was restarted with other settings or "
+                       "code (" + ", ".join(out["changed"][:6]) + ")")
+    if concurrent:
+        out["concurrent_starts"] = concurrent
+        reasons.append("a second verifier server ran on the same state")
+    if reasons:
+        out["void"] = "; ".join(reasons)
+    return out

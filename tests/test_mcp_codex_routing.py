@@ -20,6 +20,9 @@ def test_codex_mcp_routes_tool_free_roles_to_dotenv_openrouter(
         def start_background(self):
             return False
 
+        def record_start(self, launch):
+            captured["launch"] = launch
+
     class FakeServer:
         def run(self):
             pass

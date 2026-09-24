@@ -23,24 +23,34 @@ class TailError(ValueError):
 
 class Tail:
     def __init__(self, path: str, on_event: Callable[[Dict], None],
-                 start_seq: int = 0, raw: bool = False):
+                 start_seq: int = 0, raw: bool = False,
+                 start_offset: int = 0):
         """
         raw=True: a feed of bare JSON lines with no seq discipline 
         (e.g. hook processes appending concurrently); 
         torn-line handling only.
+        start_offset: resume after the lines an earlier reader consumed.
         """
         self.path = path
         self.on_event = on_event
         self.raw = raw
-        self._offset = 0
+        self._offset = max(0, int(start_offset or 0))
         self._buffer = b""
         self._expected = start_seq  # last seq already consumed
+
+    @property
+    def consumed(self) -> int:
+        """Byte offset just past the last complete line consumed."""
+        return self._offset - len(self._buffer)
 
     def poll(self) -> int:
         """Consume every complete new line; returns how many events fired."""
         if not os.path.exists(self.path):
             return 0
         size = os.path.getsize(self.path)
+        if size < self._offset:
+            # the feed was replaced by a shorter one: nothing resumes there
+            self._offset, self._buffer = 0, b""
         if size <= self._offset:
             return 0
         with open(self.path, "rb") as f:

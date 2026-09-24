@@ -105,6 +105,11 @@ EVENT_TYPES = (
     # a verify request answered from the last complete check, which ran on
     # the same world (gv.verify forces a rerun)
     "verify_skipped",
+    # the verifier's own launches: a restart with other settings or code, or
+    # a second server on the same state, voids the session's certificates
+    "server_started",
+    "server_config_changed",
+    "server_concurrent_start",
 
     # search support
     "dedup_hit",

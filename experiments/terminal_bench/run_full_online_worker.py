@@ -58,6 +58,8 @@ _RUNTIME_STATE_TOP_LEVEL = frozenset({
     "record",
     # the final claim under check, published for the seats to read
     "candidate_response.txt",
+    # how far the hook feed was ingested, and the live server's pid
+    "hook_feed.offset", "server.pid",
 })
 _ARTIFACT_CAP = 32 * 1024 * 1024
 _EVENT_CAP = 64 * 1024 * 1024

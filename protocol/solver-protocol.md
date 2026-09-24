@@ -45,6 +45,12 @@ conclusions, not a diary**. Decide per claim, from the task itself:
     The statement may stay the same after you repair the underlying result: an explicit
     revision creates a new claim version and runs a fresh check. Repeating a commit
     without `revises` reuses the existing version.
+- **The verifier's processes and files are not part of your task.** Do not read its code or
+  state, and do not stop, restart, or reconfigure it or the check processes it starts: a
+  verifier restarted with other settings voids its certificates. If a `gv` call fails, say so
+  and go on with the task rather than repairing the verifier. When you stop processes, stop the
+  ones you started, by their process ids — never by name or pattern, which also hits the
+  verifier's checks running the same programs.
 - A claim's statement must be **self-contained and checkable**: write "for all 1≤n≤100,
   6 divides n³−n", not "the property above holds".
 - **Give every claim a temporal index.** A claim about the current/final state is checked

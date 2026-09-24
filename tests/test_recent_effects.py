@@ -78,7 +78,6 @@ def test_a_restarted_server_lists_the_record_it_rebuilt(tmp_path):
     svc = service(tmp_path)
     bash(tmp_path, "u1", "make", "ok\n")
     svc.drain_hooks()
-    os.remove(os.path.join(tmp_path, HOOK_FEED))   # consumed
     again = service(tmp_path)
     assert [e["input"] for e in again.status()["recent_effects"]] == ["command=make"]
 

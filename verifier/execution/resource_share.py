@@ -11,8 +11,9 @@ on the task:
   choice when the envelope runs out of memory, and the verifier's server the
   next: under pressure the verifier loses a check, never the solver's session
   or a service the task runs;
-- those processes run at a lower CPU priority, so a check beside the
-  solver's build does not slow it;
+- (they keep their CPU share: at a lower priority, 38 of 50 checks of a
+  video task timed out on one CPU while the solver ran its own OCR, and a
+  check that cannot finish is pure waste;)
 - a new seat process starts only while the envelope has room for one, or
   when none of the verifier's is running, so a check always progresses.
 """
@@ -27,7 +28,7 @@ from typing import Optional
 
 LAUNCHED_OOM_SCORE_ADJ = 1000
 SERVER_OOM_SCORE_ADJ = 500
-LAUNCHED_NICENESS = 10
+LAUNCHED_NICENESS = 0      # CPU shared fairly (see above); >0 deprioritizes
 # one seat process with what it runs, plus slack for the solver's next step
 SEAT_ROOM_MB_DEFAULT = 512
 # a started process's memory shows in the envelope's counters only after
@@ -99,10 +100,11 @@ def _write_oom_score_adj(pid: int, value: int) -> None:
 def yield_process(pid: int) -> None:
     """Mark a launched process — and so what it forks later, which inherits
     both settings — as the envelope's first to give way."""
-    try:
-        os.setpriority(os.PRIO_PROCESS, pid, LAUNCHED_NICENESS)
-    except (AttributeError, OSError):
-        pass
+    if LAUNCHED_NICENESS:
+        try:
+            os.setpriority(os.PRIO_PROCESS, pid, LAUNCHED_NICENESS)
+        except (AttributeError, OSError):
+            pass
     _write_oom_score_adj(pid, LAUNCHED_OOM_SCORE_ADJ)
 
 

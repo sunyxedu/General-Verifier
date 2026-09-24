@@ -147,11 +147,12 @@ def test_launches_admitted_moments_ago_hold_their_share(monkeypatch):
         t.join(2)
 
 
-def test_a_launched_process_yields_cpu_and_memory(tmp_path):
+def test_a_launched_process_yields_memory_and_keeps_its_cpu_share(tmp_path):
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
     try:
         yield_process(proc.pid)
-        assert os.getpriority(os.PRIO_PROCESS, proc.pid) >= resource_share.LAUNCHED_NICENESS
+        assert os.getpriority(os.PRIO_PROCESS, proc.pid) == \
+            os.getpriority(os.PRIO_PROCESS, os.getpid()) + resource_share.LAUNCHED_NICENESS
         adj = f"/proc/{proc.pid}/oom_score_adj"
         if os.path.exists(adj):
             assert open(adj).read().strip() == str(resource_share.LAUNCHED_OOM_SCORE_ADJ)

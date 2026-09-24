@@ -137,6 +137,13 @@ def _refutation_brief(store, claim_id: str, cap: int = 320) -> str:
 
 
 HOOK_FEED = "hook_feed.jsonl"
+# how far the hook feed has been ingested into the ledger: a restarted
+# server resumes there instead of re-reading the feed from its start (a
+# restart used to append every earlier tool call to the ledger again —
+# 8164 rows for 1169 calls after eleven restarts)
+FEED_OFFSET = "hook_feed.offset"
+# the live server's pid, so a second server on the same state is noticed
+SERVER_PIDFILE = "server.pid"
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 
 
@@ -179,7 +186,8 @@ class Service:
         self.kernel = kernel_factory(self)  # factory receives the service
 
         self._feed = Tail(os.path.join(state_dir, HOOK_FEED),
-                          self._ingest_hook_event, raw=True)
+                          self._ingest_hook_event, raw=True,
+                          start_offset=self._saved_feed_offset())
         # verbs run concurrently (build_server), and the feed's tail keeps
         # one read offset: two drains at once would ingest the same lines
         # twice. Only the drain is serialized; verification is not.
@@ -255,7 +263,57 @@ class Service:
 
     def drain_hooks(self) -> int:
         with self._drain_lock:
-            return self._feed.poll()
+            fired = self._feed.poll()
+            if fired:
+                self._save_feed_offset()
+            return fired
+
+    def _saved_feed_offset(self) -> int:
+        try:
+            with open(os.path.join(self.state_dir, FEED_OFFSET),
+                      encoding="ascii") as f:
+                return max(0, int(f.read().strip() or 0))
+        except (OSError, ValueError):
+            return 0
+
+    def _save_feed_offset(self) -> None:
+        path = os.path.join(self.state_dir, FEED_OFFSET)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "w", encoding="ascii") as f:
+                f.write(str(self._feed.consumed))
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def record_start(self, launch: Dict[str, Any]) -> None:
+        """Record this server's launch in the ledger. The solver shares the
+        verifier's machine and can stop it and start its own with other
+        settings (observed: seats moved off their provider, their effort cut
+        to low); a launch whose settings or code differ from the first, or
+        a second server on the same state while one is alive, is recorded
+        and voids every later certificate (see verifier_integrity)."""
+        fingerprint = _digest(launch)
+        first = next((e["payload"] for e in self.log.replay()
+                      if e["type"] == "server_started"), None)
+        pidfile = os.path.join(self.state_dir, SERVER_PIDFILE)
+        other = _live_server_pid(pidfile)
+        self.log.append("server_started", {
+            "pid": os.getpid(), "fingerprint": fingerprint,
+            "launch": launch})
+        if other is not None:
+            self.log.append("server_concurrent_start",
+                            {"pid": os.getpid(), "other_pid": other})
+        if first is not None and first.get("fingerprint") != fingerprint:
+            before = first.get("launch") or {}
+            self.log.append("server_config_changed", {
+                "from": first.get("fingerprint"), "to": fingerprint,
+                "changed": _changed_keys(before, launch)})
+        try:
+            with open(pidfile, "w", encoding="ascii") as f:
+                f.write(str(os.getpid()))
+        except OSError:
+            pass
 
     # MCP verbs
     def commit(self, label: str, kind: str, text: str,
@@ -457,11 +515,14 @@ class Service:
             slice_summary.append(entry)
             if e["status"] == "refuted":
                 self._mark_reported(e["id"], "refuted")
-        return self._with_news({
+        result = {
             "verdict": cert["verdict"],
             "certificate_id": cert["certificate_id"],
             "slice": slice_summary,
-        })
+        }
+        if cert.get("void"):
+            result["void"] = cert["void"]
+        return self._with_news(result)
 
     def status(self, label: Optional[str] = None) -> Dict[str, Any]:
         self.drain_hooks()
@@ -498,6 +559,81 @@ class Service:
     def _checking(self, claim_id: str) -> bool:
         checking = getattr(self.kernel, "checking", None)
         return bool(checking is not None and checking(claim_id))
+
+SECRET_MARKS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH")
+
+
+def launch_identity(args: argparse.Namespace,
+                    environ=os.environ) -> Dict[str, Any]:
+    """What decides how this server verifies: its arguments, the verifier's
+    own settings in the environment (never a credential's value), and a
+    digest of its code and shipped configuration."""
+    env = {k: v for k, v in environ.items()
+           if (k.startswith("GV_") or k == "CODEX_HOME")
+           and not any(m in k.upper() for m in SECRET_MARKS)}
+    return {"args": {k: v for k, v in sorted(vars(args).items())},
+            "env": dict(sorted(env.items())),
+            "code": _code_digest()}
+
+
+def _code_digest() -> str:
+    import hashlib
+    root = os.path.dirname(os.path.abspath(__file__))
+    top = os.path.dirname(root)
+    digest = hashlib.sha256()
+    paths = []
+    for base in (root, os.path.join(top, "protocol")):
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+            paths += [os.path.join(dirpath, n) for n in sorted(filenames)
+                      if n.endswith((".py", ".md", ".json", ".toml"))]
+    paths.append(os.path.join(top, ".env"))
+    for path in paths:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        digest.update(os.path.relpath(path, top).encode() + b"\0")
+        digest.update(hashlib.sha256(data).digest())
+    return digest.hexdigest()
+
+
+def _digest(value: Any) -> str:
+    import hashlib
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str)
+                          .encode("utf-8")).hexdigest()[:16]
+
+
+def _changed_keys(before: Dict[str, Any], after: Dict[str, Any]) -> List[str]:
+    changed = []
+    for section in sorted(set(before) | set(after)):
+        a, b = before.get(section), after.get(section)
+        if isinstance(a, dict) and isinstance(b, dict):
+            changed += [f"{section}.{k}" for k in sorted(set(a) | set(b))
+                        if a.get(k) != b.get(k)]
+        elif a != b:
+            changed.append(section)
+    return changed
+
+
+def _live_server_pid(pidfile: str) -> Optional[int]:
+    """The pid in the pidfile when that process is alive and not us."""
+    try:
+        with open(pidfile, encoding="ascii") as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+    if pid == os.getpid():
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return pid
+    return pid
+
 
 RECENT_EFFECTS = 8           # tool results a gv response lists at most
 EFFECT_EXCERPT_CHARS = 100   # of each listed call's input and output
@@ -822,6 +958,7 @@ def main() -> None:
         import claude_agent_sdk  # noqa: F401
     except ImportError:
         pass
+    service.record_start(launch_identity(args))
     service.start_background()
     server.run()   # stdio
 
