@@ -11,19 +11,16 @@ Every `commit` starts an independent check, so the graph should hold **load-bear
 conclusions, not a diary**. Decide per claim, from the task itself:
 
 - **Commit** a conclusion when later work depends on it AND its being wrong would be
-  expensive to discover late — a diagnosis of the root cause, a reading of what the task
-  or an authority requires, a design assumption about the environment, an intermediate
-  result the deliverable is built from. These are worth an independent check *before*
-  you build on them.
+  expensive to discover late. Such a conclusion is worth an independent check *before*
+  you build on it.
 - **Do not commit** what the record already shows. The hooks retain every tool call and
   its output; a command's result needs no claim of its own — cite it as `effect:<seq>`
-  from the claim that relies on it. Do not commit narration ("I will now …"), restated
-  task text, or trivially re-observable facts.
+  from the claim that relies on it. Do not commit narration, restated task text, or
+  trivially re-observable facts.
 - **One conclusion per claim, without the evidence.** The counts, listings, and outputs
   that support a conclusion are already on the record; cite the tool executions that
   produced them as `effect:<seq>` deps instead of copying them into the statement. A
-  bundled claim ("A, because B (12345 lines), and therefore C") compiles into many
-  checks and waits for the slowest of them; three short claims each verify quickly, and a
+  bundled claim compiles into many checks and waits for the slowest of them; three short claims each verify quickly, and a
   refutation then points at the one that is wrong.
 - Most tasks need **zero to four** intermediate claims plus one `final`. Fewer, sharper
   claims mean less waiting and a clearer certificate; the final's verdict does not depend
@@ -33,7 +30,7 @@ conclusions, not a diary**. Decide per claim, from the task itself:
 
 - `gv.commit` fields:
   - `kind`: `assertion` (intermediate conclusion) | `final` (final answer)
-  - `label`: short and stable (`A1`, `lemma-even`, …); later `deps` reference claims by label
+  - `label`: short and stable; later `deps` reference claims by label
   - `deps`: every already-committed claim this conclusion directly depends on; to reference
     a tool-execution result use `effect:<seq>` (the event sequence number captured by the hooks).
     Every `gv` response lists the tool results recorded since your previous `gv` call under
@@ -51,14 +48,13 @@ conclusions, not a diary**. Decide per claim, from the task itself:
   and go on with the task rather than repairing the verifier. When you stop processes, stop the
   ones you started, by their process ids — never by name or pattern, which also hits the
   verifier's checks running the same programs.
-- A claim's statement must be **self-contained and checkable**: write "for all 1≤n≤100,
-  6 divides n³−n", not "the property above holds".
+- A claim's statement must be **self-contained and checkable**: it names everything it
+  speaks of instead of pointing back to earlier text.
 - **Give every claim a temporal index, and choose it.** What is true now and will stay true is
   stated in the present tense, without an effect index: it is checked against the live world at
   verification time, the strongest evidence there is — keep it true through the end, or revise
   it when your own later actions change the state it describes. A claim about a **past action
-  or past state** ("the test run succeeded", "at discovery, X was unreachable") must say so
-  explicitly ("as of effect:<seq>", "before <event>") and cite the tool execution that
+  or past state** must say so explicitly (`as of effect:<seq>`, `before <event>`) and cite the tool execution that
   witnessed it in `deps` (`effect:<seq>`): the hooks record every tool call and its output
   in the verifier's ledger, so such claims verify against the record even after the world
   has legitimately moved on. Reserve `as of effect:<seq>` for an event, or for a state that may
@@ -123,9 +119,8 @@ conclusions, not a diary**. Decide per claim, from the task itself:
 - `unverified` is not a failure — it means "couldn't be verified": you can add supporting
   grounds and resubmit with a revise. A certificate does not rerun a check on the world it
   already ran on (the claim is marked `not_rechecked`): change what the residue says is
-  missing, or, after a change outside the files (a service started, a package installed),
-  call `gv.verify`.
+  missing, or, after a change outside the files, call `gv.verify`.
 - **Never leave a `refuted` or `unverified` final standing.** Read the obligation reasons
   and the counterexample witness out of the certificate, fix the world (or the wording, if
-  the statement no longer matches reality — e.g. it describes a state that your own later
-  actions changed), resubmit with `revises=`, and request the certificate again.
+  the statement no longer matches reality), resubmit with `revises=`, and request the
+  certificate again.
