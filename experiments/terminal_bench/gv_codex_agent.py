@@ -102,12 +102,15 @@ class GVCodex(TieredCodex):
             f'export HOME="${{HOME:-/root}}"\n'
             f"export CODEX_HOME={SEATS_HOME}\n"
             # the server's stderr is otherwise lost with the per-run
-            # CODEX_HOME; keep it beside the ledger for diagnosis
+            # CODEX_HOME; keep it beside the ledger for diagnosis. Arguments
+            # pass through: a solver that ran `gv-mcp-server --help` got a
+            # second server on the live state instead of the usage text,
+            # and that voided the session's certificates
             f"exec uv run --project {GV_DEST} python -m verifier.mcp_server "
             f"--state-dir {STATE_DIR} --toolchain-dir {TOOLCHAIN} "
             f"--seats codex --model {shlex.quote(model)} "
             f"--effort {shlex.quote(effort)} "
-            f"--service-tier {shlex.quote(tier)}{trigger_arg} "
+            f'--service-tier {shlex.quote(tier)}{trigger_arg} "$@" '
             f"2>>{STATE_DIR}/mcp_server.stderr\n")
         await self.exec_as_root(environment, command=(
             f"printf %s {shlex.quote(wrapper)} > {MCP_SERVER} && "

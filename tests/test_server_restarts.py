@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 from verifier.core.store import TRIGGER_LAZY
 from verifier.engine.certificate import verifier_integrity
@@ -115,3 +116,29 @@ def test_a_second_server_beside_a_live_one_voids(tmp_path):
     finally:
         alive.kill()
         alive.wait()
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_asking_the_server_for_help_starts_no_server(tmp_path):
+    # a solver's `gv-mcp-server --help` prints the usage and leaves the live
+    # session alone: the arguments are parsed before the launch is recorded
+    done = subprocess.run(
+        [sys.executable, "-m", "verifier.mcp_server",
+         "--state-dir", str(tmp_path), "--help"],
+        cwd=ROOT, capture_output=True, text=True, timeout=120,
+        stdin=subprocess.DEVNULL)
+    assert done.returncode == 0 and "usage:" in done.stdout
+    assert not (tmp_path / "events.jsonl").exists()
+    assert not (tmp_path / SERVER_PIDFILE).exists()
+
+
+def test_the_codex_wrapper_hands_its_arguments_to_the_server():
+    # it once dropped them, so `gv-mcp-server --help` started a second
+    # server on the live state and voided the session's certificates
+    source = (ROOT / "experiments" / "terminal_bench"
+              / "gv_codex_agent.py").read_text()
+    start = source.index('f"exec uv run')
+    end = source.index("mcp_server.stderr", start)
+    assert '"$@"' in source[start:end]
