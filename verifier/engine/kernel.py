@@ -35,7 +35,7 @@ from ..execution.instruments import (
 from ..core.model import (
     Claim, Evidence, Obligation, basis_satisfies,
     BASIS_RECORD, BASIS_WORLD,
-    CLAIM_EFFECT, CLAIM_FINAL,
+    CLAIM_EFFECT, CLAIM_FINAL, OBLIGATION_KINDS,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
     STRENGTH_DECISIVE, strength_rank, weakest_strength,
@@ -71,6 +71,14 @@ REFERENT_CONTEXT_MAX_ANCESTORS = 32
 REFERENT_CONTEXT_TEXT_CHARS = 8_000
 REFERENT_CONTEXT_EVENT_CHARS = 12_000
 REFERENT_CONTEXT_TOTAL_CHARS = 48_000
+
+# How long a final waits for a final-contract precompile still under
+# review before compiling its contract inline instead. While it waits it
+# settles the compiler's draft (speculation), so the wait is rarely idle;
+# a review still running after this long is stuck in critic rounds or on
+# a hung seat, and an inline compile — minutes — is no slower than
+# waiting on. The precompile keeps running and still serves later finals.
+PRECOMPILE_WAIT_SECONDS = 600
 
 
 def _repair_oscillation(history: List[Dict]) -> bool:
@@ -251,7 +259,13 @@ class Kernel:
                     "sealed contract replay must be bound to this kernel")
             validate_kernel(self)
         self.contract_replay = contract_replay
+        # claim id -> the store generation its running check began at (see
+        # ClaimStore.generation); one entry per claim, checks being
+        # serialized per claim
+        self._check_generation: Dict[str, int] = {}
         store.on_trigger(self.verify)  # the single rule wires straight in
+        store.on_trigger_error(self._check_raised)
+        store.on_stale(self._log_staled)
 
     # locks and pools
     def _lock_for(self, table: Dict[str, threading.Lock],
@@ -282,6 +296,9 @@ class Kernel:
         a caller asks for the check explicitly (force): the solver's
         `verify` verb and the certificate never take the screener's word."""
         with self._lock_for(self._claim_locks, claim_id):
+            # read before the row: an invalidation landing in between
+            # makes the check's settlement refused, never silently wrong
+            generation = self.store.generation(claim_id)
             row = self.store.get(claim_id)
             if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
                 return row["status"]
@@ -302,18 +319,83 @@ class Kernel:
                                  "reason": "already checked on this world"})
                 return row["status"]
             self.not_rechecked.discard(claim_id)
-            with model_scope(
-                    claim_id=row["id"], claim_kind=row["kind"],
-                    locus=("final_task" if row["kind"] == CLAIM_FINAL
-                           else "support")):
-                if row["kind"] == CLAIM_EFFECT:
-                    self._verify_effect(row)
-                else:
-                    if row["kind"] == CLAIM_FINAL:
-                        self._publish_candidate_response(row)
-                    self._freeze_record(row)
-                    self._verify_assertion(row, force=force)
+            self._check_generation[claim_id] = generation
+            try:
+                with model_scope(
+                        claim_id=row["id"], claim_kind=row["kind"],
+                        locus=("final_task" if row["kind"] == CLAIM_FINAL
+                               else "support")):
+                    if row["kind"] == CLAIM_EFFECT:
+                        self._verify_effect(row)
+                    else:
+                        if row["kind"] == CLAIM_FINAL:
+                            self._publish_candidate_response(row)
+                        self._freeze_record(row)
+                        self._verify_assertion(row, force=force)
+            finally:
+                self._check_generation.pop(claim_id, None)
             return self.store.status(claim_id)
+
+    def _check_raised(self, claim_id: str, error: Exception) -> None:
+        """A triggered check raised (a seat outage, a compile error): the
+        claim keeps its status, the failure is on its evidence and in the
+        ledger, and the rest of the triggered batch still runs (see
+        ClaimStore.fire)."""
+        message = f"check raised {type(error).__name__}: {error}"[:500]
+        self.store.record_evidence(
+            claim_id, {"outcome": OUTCOME_FAILED, "error": message})
+        self.log.append("status_change",
+                        {"claim": claim_id,
+                         "status": self.store.status(claim_id),
+                         "reason": "check raised", "error": message})
+
+    def _log_staled(self, staled, revised: str) -> None:
+        """A revision's cone marked these stale: the ledger records each
+        status change (obligation nodes under their own key, so readers
+        that follow claim verdicts are not misled)."""
+        for cid, kind in staled:
+            key = "obligation" if kind == OBLIGATION_KINDS else "claim"
+            self.log.append("status_change",
+                            {key: cid, "status": STATUS_STALE,
+                             "reason": "cone", "revised": revised})
+
+    def _report_status(self, claim_id: str, applied: bool, proposed: str,
+                       reason: Optional[str] = None) -> None:
+        """Log the status the store actually holds after a settlement: the
+        proposed one when applied, otherwise the held one with the reason
+        the settlement was refused (never a verdict the store lacks)."""
+        payload = {"claim": claim_id}
+        if applied:
+            payload["status"] = proposed
+        else:
+            payload["status"] = self.store.status(claim_id)
+            payload["settle_refused"] = (
+                self.store.settle_refusal(
+                    claim_id, self._check_generation.get(claim_id))
+                or "refused")
+            payload["proposed"] = proposed
+        if reason is not None:
+            payload["reason"] = reason
+        self.log.append("status_change", payload)
+
+    def _conclude_unverified(self, claim_id: str, reason: str) -> bool:
+        """A check that ended without settling the claim (premise chain
+        refuted, nothing checkable, critic fail-closed) leaves it
+        unverified in the store too — the ledger and the store agree."""
+        if claim_id == self.PRECOMPILE_ID \
+                or getattr(self.store, "set_unverified", None) is None:
+            # a precompile's pseudo-claim has no store row (and the
+            # concurrent precompile critiques against an evidence buffer)
+            self.log.append("status_change",
+                            {"claim": claim_id, "status": STATUS_UNVERIFIED,
+                             "reason": reason})
+            return False
+        applied = self.store.set_unverified(
+            claim_id, reason=reason,
+            generation=self._check_generation.get(claim_id))
+        self._report_status(claim_id, applied, STATUS_UNVERIFIED,
+                            reason=reason)
+        return applied
 
     # the verifier's own state (rewritten on every solver act) and bytecode
     # caches (rewritten by merely running the code) are not the world
@@ -365,13 +447,19 @@ class Kernel:
 
     def _checked_on_this_world(self, claim_id: str) -> bool:
         """Whether the claim's last complete check ran on the world as it
-        stands now (same fingerprint)."""
-        stamp = next((e.get("world_fingerprint")
-                      for e in reversed(self.store.evidence_for(claim_id))
+        stands now (same fingerprint), on the graph as it stands now (same
+        generation: a check from before the claim was invalidated judged
+        premises that were revised since). A check some of whose
+        obligations failed on an infrastructure error carries no
+        fingerprint: it is rerun once the seats are back."""
+        epoch = next((e for e in reversed(self.store.evidence_for(claim_id))
                       if e.get("outcome") == "epoch"), None)
-        if not stamp:
+        if not epoch or not epoch.get("world_fingerprint"):
             return False
-        return stamp == self._world_fingerprint()
+        if "generation" in epoch \
+                and epoch["generation"] != self.store.generation(claim_id):
+            return False
+        return epoch["world_fingerprint"] == self._world_fingerprint()
 
     def _publish_candidate_response(self, row: Dict) -> None:
         """The final claim under check is the candidate response until the
@@ -443,6 +531,21 @@ class Kernel:
         self._settle(row["id"], [result.outcome], [BASIS_RECORD],
                      [STRENGTH_DECISIVE], [SEVERITY_MUST])
 
+    def _candidate_digest(self, row: Dict) -> Optional[str]:
+        """Identity of the candidate response a final's checks read (the
+        solver's reply once written, else the final's own text — see
+        publish_candidate_response); None for any other claim. Evidence
+        won under a final is about THAT candidate: it is reused only by
+        a final presenting the same one."""
+        if row.get("kind") != CLAIM_FINAL:
+            return None
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        try:
+            with open(os.path.join(state, "final.txt"), "rb") as handle:
+                return hashlib.sha256(handle.read()).hexdigest()
+        except OSError:
+            return hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
+
     # admission screening
     def _screen(self, row: Dict) -> bool:
         """Grade a non-final claim from the retained record before any
@@ -489,8 +592,17 @@ class Kernel:
              "reason": verdict["reason"][:500]})
         if verdict["confidence"] != "high":
             return False
-        self.store.set_confident(
-            row["id"], f"{verdict['reason']} — grounds: {verdict['grounds']}"[:1000])
+        if not self.store.set_confident(
+                row["id"],
+                f"{verdict['reason']} — grounds: {verdict['grounds']}"[:1000],
+                generation=self._check_generation.get(row["id"])):
+            # revised or re-staled while the screener read it: the grade
+            # was about a graph that no longer stands. Nothing is admitted
+            # and nothing is checked — a check begun on that graph could
+            # not settle the claim either; it stays stale for a recheck
+            self._report_status(row["id"], False, STATUS_UNVERIFIED,
+                                reason="admission refused")
+            return True
         self.store.record_evidence(
             row["id"],
             {"outcome": "admitted", "instrument": "screener",
@@ -591,11 +703,7 @@ class Kernel:
                           "skipped (effective verdict is refuted)",
                  "refuted_deps": refuted_deps},
             )
-            self.log.append(
-                "status_change",
-                {"claim": row["id"], "status": STATUS_UNVERIFIED,
-                 "reason": "premise chain refuted"},
-            )
+            self._conclude_unverified(row["id"], "premise chain refuted")
             return
 
         # admission screening: a non-final claim the retained record
@@ -641,11 +749,7 @@ class Kernel:
                 row["id"],
                 {"outcome": OUTCOME_FAILED, "error": "no obligations"},
             )
-            self.log.append(
-                "status_change",
-                {"claim": row["id"], "status": STATUS_UNVERIFIED,
-                 "reason": "no obligations"},
-            )
+            self._conclude_unverified(row["id"], "no obligations")
             return
 
         if speculated:
@@ -672,15 +776,25 @@ class Kernel:
              and r[0].severity == SEVERITY_MUST), None)
         # the epoch this verdict is about (a world-basis claim's verdict
         # is about the world as it was now); recorded before the fold so
-        # the fold's own rows stay the last word on the claim
-        self.store.record_evidence(
-            row["id"], {"outcome": "epoch",
-                        "world_epoch": claim_epoch,
-                        "world_fingerprint": claim_world})
-        self._settle(row["id"], outcomes, bases, strengths, severities)
+        # the fold's own rows stay the last word on the claim. A check
+        # some of whose obligations failed on a seat error is not a
+        # complete check of this world: it gets no fingerprint, so it is
+        # not taken as the last word once the seats recover (verify)
+        infrastructure = sum(1 for r in settled if r[5])
+        epoch_evidence = {"outcome": "epoch",
+                          "world_epoch": claim_epoch,
+                          "world_fingerprint": (None if infrastructure
+                                                else claim_world)}
+        if row["id"] in self._check_generation:
+            epoch_evidence["generation"] = self._check_generation[row["id"]]
+        if infrastructure:
+            epoch_evidence["infrastructure_failures"] = infrastructure
+        self.store.record_evidence(row["id"], epoch_evidence)
+        applied = self._settle(row["id"], outcomes, bases, strengths,
+                               severities)
         refutation = next((r for r in settled if r[1] == OUTCOME_REFUTED
                            and r[0].severity == SEVERITY_MUST), None)
-        if refutation is not None:
+        if refutation is not None and applied:
             evidence = self.store.evidence_for(refutation[0].id)[-1]
             self.store.record_evidence(row["id"], {
                 "outcome": OUTCOME_REFUTED,
@@ -702,8 +816,10 @@ class Kernel:
 
     def _settle_obligations(self, row: Dict, obligations: List[Obligation]):
         """Settle every obligation of a claim; returns
-        [(obligation, outcome, witness, basis, strength)] in compile
-        order for the obligations actually settled.
+        [(obligation, outcome, witness, basis, strength, infrastructure)]
+        in compile order for the obligations actually settled
+        (infrastructure: a failed outcome owed to a seat error, see
+        _seat_failure).
 
         Sequential (parallel_obligations == 1): one after another,
         stopping at the first MUST refutation — the claim is decided and
@@ -779,10 +895,14 @@ class Kernel:
         inheritance from a same-text claim, or by fresh discharge — under
         the node's lock, so two claims sharing a node never discharge it
         twice: the second waits, then takes the dedup path. Returns
-        (outcome, witness, basis, strength)."""
+        (outcome, witness, basis, strength, infrastructure)."""
         oid = self.store.add_obligation(row["id"], obligation)
-        epoch = self._current_epoch()
         with self._lock_for(self._node_locks, oid):
+            # the epoch is read once the node is ours: a wait on another
+            # claim's check of it may outlast world-mutating solver
+            # actions, and reuse must be judged against the world as it
+            # stands when the verdict is taken, not when the wait began
+            epoch = self._current_epoch()
             known = self.store.status(oid)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL) \
                     and not self._node_epoch_current(oid, epoch):
@@ -797,6 +917,23 @@ class Kernel:
                 self.store.set_stale(oid, reason="world moved since the "
                                                  "verdict was won")
                 known = self.store.status(oid)
+            candidate = self._candidate_digest(row)
+            if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
+                ev = self.store.evidence_for(oid)
+                won_for = ev[-1].get("candidate_digest") if ev else None
+                if won_for is not None and won_for != candidate:
+                    # CANDIDATE IDENTITY: the verdict was won while another
+                    # final's text was the candidate response the seats
+                    # read (one shared file); an answer-bearing check says
+                    # nothing about this candidate. Reopen and check afresh.
+                    self.log.append(
+                        "dedup_hit",
+                        {"claim": row["id"], "obligation": oid,
+                         "status": known,
+                         "refused": "another candidate response"})
+                    self.store.set_stale(oid, reason="verdict won for "
+                                                     "another candidate")
+                    known = self.store.status(oid)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 # foreign-assumption gate: a node settled under another
                 # claim may have ASSUMED that claim's premises (declared
@@ -819,7 +956,7 @@ class Kernel:
                     # old status with new evidence would erase assumptions.
                     return (OUTCOME_FAILED,
                             "settled evidence has foreign assumptions",
-                            None, None)
+                            None, None, False)
             if known in (STATUS_VERIFIED, STATUS_REFUTED, STATUS_PARTIAL):
                 # content-addressed reuse: the same world-condition was
                 # already settled under another claim. The verdict and its
@@ -836,7 +973,11 @@ class Kernel:
                     ev = self.store.evidence_for(oid)
                     witness = ev[-1].get("witness") if ev else None
                 return (outcome, witness, node["basis"] or BASIS_RECORD,
-                        node["strength"])
+                        node["strength"], False)
+            # the node is unsettled from here on and ours: whatever settles
+            # it below does so only while no revision invalidates it
+            generation = self.store.generation(oid)
+            src_epoch = epoch
             src = self.store.settled_statement(obligation.text,
                                                exclude=row["id"])
             if src is not None:
@@ -861,11 +1002,13 @@ class Kernel:
                         and src_eff["premise_refuted"] is None
                         and not src_eff["open_premises"])
                 )
+                src_ev = self.store.evidence_for(src["id"])
+                stamp = next((e.get("world_epoch") for e in
+                              reversed(src_ev)
+                              if e.get("world_epoch") is not None), None)
+                if stamp is not None:
+                    src_epoch = int(stamp)
                 if transferable and src_eff["effective_basis"] == BASIS_WORLD:
-                    src_ev = self.store.evidence_for(src["id"])
-                    stamp = next((e.get("world_epoch") for e in
-                                  reversed(src_ev)
-                                  if e.get("world_epoch") is not None), None)
                     if stamp is None or int(stamp) != epoch:
                         transferable = False   # the world moved since
                 if transferable and not basis_satisfies(
@@ -890,11 +1033,39 @@ class Kernel:
                     src = None
             if src is not None:
                 outcome, witness, basis, strength = self._inherit(
-                    row, obligation, src)
-                return outcome, witness, basis or BASIS_RECORD, strength
+                    row, obligation, src, epoch=src_epoch,
+                    generation=generation)
+                return (outcome, witness, basis or BASIS_RECORD, strength,
+                        False)
+            since = self.log.last_seq()
             outcome, witness, basis, strength = self._discharge(
-                row, obligation)
-            return outcome, witness, basis or BASIS_RECORD, strength
+                row, obligation, generation=generation)
+            infrastructure = (outcome == OUTCOME_FAILED
+                              and self._seat_failure(oid, since))
+            return (outcome, witness, basis or BASIS_RECORD, strength,
+                    infrastructure)
+
+    # a seat call that failed for good (after its own retries): the
+    # ledger events through which the binding game reports them
+    def _seat_failure(self, oid: str, since: int) -> bool:
+        """Whether this node's discharge, which began after ledger seq
+        ``since``, lost a seat to an infrastructure error (an Oracle or
+        Judger call that raised through its retries — a transport error,
+        an HTTP 403, a schema-invalid generation). A failed outcome owed
+        to one is no finding about the world."""
+        for event in self.log.replay():
+            if event["seq"] <= since:
+                continue
+            payload = event.get("payload") or {}
+            if payload.get("obligation") != oid:
+                continue
+            if event["type"] == "judger_call_failed" \
+                    and not payload.get("will_retry"):
+                return True
+            if event["type"] == "methods_enumerated" \
+                    and payload.get("error") and not payload.get("prewarm"):
+                return True
+        return False
 
     def _premises_in_force(self, row: Dict) -> set:
         """The premise ids whose content evidence for this claim may
@@ -934,6 +1105,7 @@ class Kernel:
         if not os.path.isfile(task):
             return False
         self._final_contract: Optional[Dict] = None
+        self._draft_contract: Optional[Dict] = None
         self._contract_ready = threading.Event()
         self._precompile_thread = threading.Thread(
             target=self._precompile_final, name="gv-precompile", daemon=True)
@@ -954,10 +1126,32 @@ class Kernel:
         row = {"id": self.PRECOMPILE_ID, "kind": CLAIM_FINAL,
                "text": self.PRECOMPILE_TEXT}
         started = time.time()
+        enumerate = getattr(self.binder, "prewarm", None)
+        pool = self._obligation_pool()
+        draft_futures = []
+
+        def on_draft(draft):
+            # the compiler's draft: usable for speculation by a final that
+            # arrives before the review ends, and warm enough to start
+            # enumerating now — content-addressed nodes mean every
+            # obligation the review keeps is already served
+            try:
+                obligations = self._materialize_obligations(
+                    row, draft, record=False) or []
+            except (KeyError, TypeError, ValueError):
+                return   # a malformed draft: the review decides alone
+            self._draft_contract = {"task_hash": task_hash,
+                                    "payload": draft}
+            if enumerate is not None and pool is not None:
+                draft_futures.extend(
+                    submit_with_context(pool, enumerate, row, o)
+                    for o in obligations)
+
         try:
             with model_scope(claim_id=row["id"], claim_kind=CLAIM_FINAL,
                              locus="final_task"):
-                payload = self._compile_obligation_payload(row)
+                payload = self._compile_obligation_payload(
+                    row, on_draft=on_draft)
         except Exception as err:  # noqa: BLE001 - background, never fatal
             self.log.append("contract_precompiled",
                             {"task_hash": task_hash, "error": str(err)[:300],
@@ -982,13 +1176,16 @@ class Kernel:
         self._contract_ready.set()
         # method batches: the oracle only reads, so its enumeration is
         # as valid now as at commit time; the scripts run against the
-        # world as it is then
+        # world as it is then. Draft batches already served are skipped.
         obligations = self._materialize_obligations(row, payload,
                                                     record=False) or []
-        enumerate = getattr(self.binder, "prewarm", None)
         if enumerate is None:
             return
-        pool = self._obligation_pool()
+        for fut in draft_futures:
+            try:
+                fut.result()
+            except Exception:  # noqa: BLE001 - a warm-up only
+                pass
         if pool is None:
             for obligation in obligations:
                 enumerate(row, obligation)
@@ -1008,7 +1205,27 @@ class Kernel:
             return None
         state = os.path.dirname(os.path.abspath(self.log.path))
         task_hash = self._task_hash(state)
-        self._contract_ready.wait()
+        waited_from = time.time()
+        if not self._contract_ready.is_set() and speculate is not None:
+            draft = getattr(self, "_draft_contract", None)
+            if draft and draft["task_hash"] == task_hash:
+                unreviewed = self._materialize_obligations(
+                    row, draft["payload"], record=False) or []
+                self.log.append(
+                    "speculative_discharge",
+                    {"claim": row["id"], "source": "precompile draft",
+                     "obligations": [o.id for o in unreviewed]})
+                speculate(unreviewed)
+        remaining = PRECOMPILE_WAIT_SECONDS - (time.time() - waited_from)
+        if not self._contract_ready.wait(max(0.0, remaining)):
+            # bounded: the final compiles its own contract (the normal
+            # path) rather than idle on a review that does not end
+            self.log.append("contract_precompiled",
+                            {"claim": row["id"], "adopted": False,
+                             "reason": "precompile still under review after "
+                                       f"{PRECOMPILE_WAIT_SECONDS}s; "
+                                       "compiled inline"})
+            return None
         contract = getattr(self, "_final_contract", None)
         if not contract or contract["task_hash"] != task_hash:
             return None
@@ -1058,19 +1275,22 @@ class Kernel:
         )
 
     def _compile_obligation_payload(self, row: Dict, speculate=None,
-                                    compiled=None):
+                                    compiled=None, on_draft=None):
         """Run the unchanged Compiler/Critic path and return its raw payload.
 
         This extraction is a seam for the explicit offline isolation setup;
         default verification still calls it only through
         :meth:`_compile_obligations` and materializes exactly once afterwards.
+        ``on_draft`` receives the compiler's payload before the critic
+        reviews it (the precompile warms and publishes the draft).
         """
         state = os.path.dirname(os.path.abspath(self.log.path))
-        cached = self._precompiled_contract(row)
+        cached = self._precompiled_contract(row, speculate=speculate)
         if cached is not None:
             self.log.append("contract_cache_hit", {"claim": row["id"]})
             return cached
-        handled, payload = self._authority_final_contract(row, state)
+        handled, payload = self._authority_final_contract(
+            row, state, on_draft=on_draft)
         if handled:
             return payload
         if compiled is not None:
@@ -1080,6 +1300,8 @@ class Kernel:
             variables = self._compile_inputs(row)
             with model_scope(stage="contract_compile", round=0):
                 payload = self.obligations_role.call(self.backend, variables)
+        if on_draft is not None:
+            on_draft(payload)
         if speculate is not None and self.critic_role is not None:
             # SPECULATIVE DISCHARGE: the critic reviews while the
             # compiler's obligations are already being settled; nodes
@@ -1200,7 +1422,8 @@ class Kernel:
             "critic_feedback": "",
         }
 
-    def _authority_final_contract(self, row: Dict, state: str):
+    def _authority_final_contract(self, row: Dict, state: str,
+                                  on_draft=None):
         """Compile a final through the candidate-independent authority boundary.
 
         Cache availability controls reuse only.  A fresh miss and a cache-off
@@ -1244,6 +1467,8 @@ class Kernel:
                     with model_scope(stage="contract_compile", round=0):
                         payload = session.obligations_role.call(
                             session.backend, variables)
+                    if on_draft is not None:
+                        on_draft(payload)
                     payload = self._critique(
                         row, payload, variables, backend=session.backend,
                         obligations_role=session.obligations_role,
@@ -1283,6 +1508,8 @@ class Kernel:
                         with model_scope(stage="contract_compile", round=0):
                             payload = session.obligations_role.call(
                                 session.backend, variables)
+                        if on_draft is not None:
+                            on_draft(payload)
                         payload = self._critique(
                             row, payload, variables,
                             backend=session.backend,
@@ -1759,14 +1986,7 @@ class Kernel:
                 "missing_condition": failure_missing_condition,
             },
         )
-        self.log.append(
-            "status_change",
-            {
-                "claim": row["id"],
-                "status": STATUS_UNVERIFIED,
-                "reason": reason,
-            },
-        )
+        self._conclude_unverified(row["id"], reason)
         return None
 
     @staticmethod
@@ -2107,12 +2327,19 @@ class Kernel:
             context = render(kept, budget_exhausted)
         return context
 
-    def _inherit(self, row: Dict, obligation: Obligation, src: Dict):
+    def _inherit(self, row: Dict, obligation: Obligation, src: Dict,
+                 epoch: Optional[int] = None,
+                 generation: Optional[int] = None):
         """
         Transfer a same-text settled CLAIM's verdict onto an obligation
         node. The node is settled too (when still settleable), so every
         later claim sharing it gets the plain node-dedup path. Returns
         (outcome, witness, basis, strength).
+
+        ``epoch`` is the world epoch of the source's evidence: the
+        inherited verdict is about the world the source was checked on,
+        not the one of the day. ``generation`` is the node's, read when
+        this settlement began.
         """
 
         oid = obligation.id
@@ -2151,7 +2378,9 @@ class Kernel:
                 "witness_kind": ev[-1].get("witness_kind") if ev else None,
                 "artifact": ev[-1].get("artifact", "") if ev else "",
                 "assumed_premises": [],
-                "world_epoch": self._current_epoch(),
+                "world_epoch": (self._current_epoch() if epoch is None
+                                else epoch),
+                **self._candidate_stamp(row),
             },
         )
         # The node lock and scoped identity keep its verdict paired with
@@ -2159,11 +2388,13 @@ class Kernel:
         if self.store.status(oid) in (STATUS_UNVERIFIED, STATUS_STALE):
             if outcome == OUTCOME_HOLDS:
                 self.store.set_verified(oid, basis=src_basis,
-                                        strength=src_strength)
+                                        strength=src_strength,
+                                        generation=generation)
             else:
                 self.store.set_refuted(oid, reason=str(witness)[:200],
                                        basis=src_basis,
-                                       strength=src_strength)
+                                       strength=src_strength,
+                                       generation=generation)
         self.log.append(
             "dedup_hit",
             {"claim": row["id"], "obligation": oid, "source": src["id"],
@@ -2171,12 +2402,23 @@ class Kernel:
         )
         return outcome, witness, src_basis, src_strength
 
-    def _discharge(self, row: Dict, obligation: Obligation):
+    def _candidate_stamp(self, row: Dict) -> Dict:
+        digest = self._candidate_digest(row)
+        return {} if digest is None else {"candidate_digest": digest}
+
+    def _discharge(self, row: Dict, obligation: Obligation,
+                   generation: Optional[int] = None):
         """
         Discharge one obligation NODE: evidence lands on the node, and
-        the node's status is settled (when still settleable) so any other
-        claim sharing this obligation reuses the verdict. Returns
-        (outcome, witness, basis, strength).
+        the node's status is settled (when still settleable, and while
+        the node's ``generation`` is the one read when this discharge
+        began) so any other claim sharing this obligation reuses the
+        verdict. Returns (outcome, witness, basis, strength).
+
+        A discharge whose node a revision invalidated meanwhile (e.g. a
+        superseded final's check still running, or a premise revised)
+        records its evidence for audit and settles nothing: the node
+        stays stale and the next claim relying on it checks it afresh.
         """
 
         oid = obligation.id
@@ -2336,6 +2578,7 @@ class Kernel:
             "severity": obligation.severity,
             "clause": obligation.clause,
             "evidence_id": evidence.id,
+            **self._candidate_stamp(row),
         }
         self.store.record_evidence(oid, evidence_payload)
         # Retries append only while the node is unsettled. A settled node
@@ -2343,14 +2586,17 @@ class Kernel:
         if self.store.status(oid) in (STATUS_UNVERIFIED, STATUS_STALE):
             if result.outcome == OUTCOME_HOLDS:
                 self.store.set_verified(oid, basis=result.basis,
-                                        strength=result.strength)
+                                        strength=result.strength,
+                                        generation=generation)
             elif result.outcome == OUTCOME_REFUTED:
                 self.store.set_refuted(oid,
                                        reason=str(result.witness)[:200],
                                        basis=result.basis,
-                                       strength=result.strength)
+                                       strength=result.strength,
+                                       generation=generation)
             elif result.outcome == OUTCOME_UNOBTAINABLE:
-                self.store.set_partial(oid)  # well-defined, env can't host
+                # well-defined, env can't host
+                self.store.set_partial(oid, generation=generation)
         # failed -> the node stays unverified; a later claim may retry it
         self.log.append(
             "discharge",
@@ -2368,7 +2614,12 @@ class Kernel:
     def _settle(self, claim_id: str, outcomes: List[str],
                 bases: List[str] = (),
                 strengths: List[Optional[str]] = (),
-                severities: List[str] = ()) -> None:
+                severities: List[str] = ()) -> bool:
+        """Fold the obligation outcomes into the claim's local verdict.
+        Returns whether the store took it: a claim revised, or
+        invalidated by a revision in its cone, while its check ran keeps
+        the status it holds, and the ledger says so (settle_refused)."""
+        generation = self._check_generation.get(claim_id)
         severities = list(severities) or [SEVERITY_MUST] * len(outcomes)
         must_refuted = [i for i, o in enumerate(outcomes)
                         if o == OUTCOME_REFUTED
@@ -2386,11 +2637,12 @@ class Kernel:
             # Parallel checks may finish after the refutation. Provenance
             # belongs to the deciding check, never an unrelated later one.
             index = must_refuted[0]
-            self.store.set_refuted(claim_id, reason="counterexample on record",
-                                   basis=bases[index] if bases else None,
-                                   strength=(strengths[index] if strengths
-                                             else None))
-            new_status = "refuted"
+            applied = self.store.set_refuted(
+                claim_id, reason="counterexample on record",
+                basis=bases[index] if bases else None,
+                strength=strengths[index] if strengths else None,
+                generation=generation)
+            new_status = STATUS_REFUTED
         elif should_violated and all(
                 o in (OUTCOME_HOLDS, OUTCOME_UNOBTAINABLE) for o in settled):
             self.store.record_evidence(
@@ -2399,8 +2651,8 @@ class Kernel:
                  "contrary_signals": len(should_violated),
                  "error": "advisory (should) clause violated; every "
                           "acceptance (must) check that ran held"})
-            self.store.set_partial(claim_id)
-            new_status = "partial"
+            applied = self.store.set_partial(claim_id, generation=generation)
+            new_status = STATUS_PARTIAL
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes \
                 and self.store.get(claim_id)["kind"] == CLAIM_FINAL \
                 and BASIS_WORLD not in bases:
@@ -2415,9 +2667,10 @@ class Kernel:
                 {"outcome": OUTCOME_FAILED,
                  "error": "no world-basis evidence for a completion claim"},
             )
-            self.store.set_unverified(
+            applied = self.store.set_unverified(
                 claim_id,
                 reason="no world-basis evidence for a completion claim",
+                generation=generation,
             )
             new_status = STATUS_UNVERIFIED
         elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes:
@@ -2434,9 +2687,10 @@ class Kernel:
             # strength is a weakest-link fold over the obligations that
             # settled this claim; below decisive the certificate reads
             # the verified status out as "supported"
-            self.store.set_verified(claim_id, basis=basis,
-                                    strength=weakest_strength(strengths))
-            new_status = "verified"
+            applied = self.store.set_verified(
+                claim_id, basis=basis, strength=weakest_strength(strengths),
+                generation=generation)
+            new_status = STATUS_VERIFIED
         elif any(o == OUTCOME_UNOBTAINABLE for o in settled) and all(
                 o in (OUTCOME_HOLDS, OUTCOME_UNOBTAINABLE)
                 for o in settled):
@@ -2444,9 +2698,11 @@ class Kernel:
             # run held, but at least one necessary check is structurally
             # unavailable inside this fixed evidence boundary. A retryable
             # failed check is not partial progress and takes the branch below.
-            self.store.set_partial(claim_id)
-            new_status = "partial"
+            applied = self.store.set_partial(claim_id, generation=generation)
+            new_status = STATUS_PARTIAL
         else:
-            self.store.set_unverified(claim_id)
+            applied = self.store.set_unverified(claim_id,
+                                                generation=generation)
             new_status = STATUS_UNVERIFIED
-        self.log.append("status_change", {"claim": claim_id, "status": new_status})
+        self._report_status(claim_id, applied, new_status)
+        return applied
