@@ -16,7 +16,7 @@ import json
 import sqlite3
 import contextlib
 import threading
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from .model import (
     Claim, CLAIM_EFFECT, CLAIM_FINAL, OBLIGATION_KINDS,
@@ -26,6 +26,11 @@ from .model import (
 )
 
 TriggerCallback = Callable[[str], None]
+# (claim_id, error): a triggered check raised; the remaining triggered
+# checks still run (see fire)
+TriggerErrorCallback = Callable[[str, Exception], None]
+# ([(claim_id, kind), ...], revised_id): claims a revision just invalidated
+StaleCallback = Callable[[List[Tuple[str, str]], str], None]
 
 TRIGGER_ON_COMMIT = "on-commit"
 TRIGGER_ON_FIRST_DEPENDENT = "on-first-dependent"
@@ -71,7 +76,12 @@ CREATE TABLE IF NOT EXISTS claims (
     -- spending a check. Status stays unverified; cleared when the claim
     -- goes stale. Never set on a final.
     confident INTEGER NOT NULL DEFAULT 0,
-    confidence_reason TEXT
+    confidence_reason TEXT,
+    -- invalidation counter: bumped whenever the claim is marked stale
+    -- (a revision's cone, a reopened node). A check reads it when it
+    -- begins and may settle the claim only while it is unchanged, so a
+    -- verdict about premises that were revised meanwhile never lands.
+    generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS deps (
     child  TEXT NOT NULL,
@@ -133,6 +143,10 @@ class ClaimStore:
             self.db.execute("ALTER TABLE claims ADD COLUMN "
                             "confidence_reason TEXT")
             self.db.commit()
+        if "generation" not in cols:
+            self.db.execute("ALTER TABLE claims ADD COLUMN generation "
+                            "INTEGER NOT NULL DEFAULT 0")
+            self.db.commit()
         edge_cols = {r[1] for r in
                      self.db.execute("PRAGMA table_info(obligation_edges)")}
         for name, decl in (("severity", "TEXT NOT NULL DEFAULT 'must'"),
@@ -159,6 +173,8 @@ class ClaimStore:
             self.db.commit()
         self.trigger = trigger
         self._trigger_callbacks: List[TriggerCallback] = []
+        self._trigger_error_callbacks: List[TriggerErrorCallback] = []
+        self._stale_callbacks: List[StaleCallback] = []
         self._deferral = threading.local()
 
     # wiring
@@ -179,9 +195,38 @@ class ClaimStore:
 
     def fire(self, claim_ids) -> None:
         """Run the trigger callbacks for claims whose triggers were deferred."""
+        self._run_triggers(list(claim_ids))
+
+    def _run_triggers(self, claim_ids: List[str]) -> None:
+        """Each claim's check is isolated: one that raises (a seat outage,
+        a claim revised under its check) is reported to the error
+        callbacks and the rest of the batch still runs. The first error is
+        re-raised once every claim had its turn, so the caller still
+        learns the batch was not clean."""
+        first: Optional[Exception] = None
         for claim_id in claim_ids:
             for cb in self._trigger_callbacks:
-                cb(claim_id)
+                try:
+                    cb(claim_id)
+                except Exception as err:  # noqa: BLE001 - isolated per claim
+                    for sink in self._trigger_error_callbacks:
+                        try:
+                            sink(claim_id, err)
+                        except Exception:  # noqa: BLE001 - a report only
+                            pass
+                    if first is None:
+                        first = err
+        if first is not None:
+            raise first
+
+    def on_trigger_error(self, cb: TriggerErrorCallback) -> None:
+        """cb(claim_id, error) fires when a triggered check raises."""
+        self._trigger_error_callbacks.append(cb)
+
+    def on_stale(self, cb: StaleCallback) -> None:
+        """cb(claims, revised) fires, inside the committing call, with the
+        (id, kind) of every claim a revision's cone newly marked stale."""
+        self._stale_callbacks.append(cb)
 
     def on_trigger(self, cb: TriggerCallback) -> None:
         """
@@ -218,10 +263,16 @@ class ClaimStore:
             if not had_dependents and self.status(dep) == STATUS_UNVERIFIED:
                 fired.append(dep)
 
+        staled: List[Tuple[str, str]] = []
         if claim.revises is not None:
-            self._mark_stale_cone(claim.revises)
+            staled = self._mark_stale_cone(claim.revises)
 
         self.db.commit()
+        if staled:
+            # the invalidation is a status change like any other: the
+            # ledger hears of it (no claim silently changes status)
+            for cb in self._stale_callbacks:
+                cb(staled, claim.revises)
 
         if self.trigger == TRIGGER_ON_COMMIT and claim.kind != CLAIM_EFFECT:
             fired.append(claim.id)
@@ -236,9 +287,7 @@ class ClaimStore:
         # hold the store lock while it waits on seats or on other threads
         self._lock.release()
         try:
-            for claim_id in fired:
-                for cb in self._trigger_callbacks:
-                    cb(claim_id)
+            self._run_triggers(fired)
         finally:
             self._lock.acquire()
         return claim.id
@@ -250,46 +299,82 @@ class ClaimStore:
         return row["status"]
 
     @_locked
+    def generation(self, claim_id: str) -> int:
+        """The claim's invalidation counter (see the schema): read when a
+        check begins, handed back when it settles."""
+        (n,) = self.db.execute("SELECT generation FROM claims WHERE id=?",
+                               (claim_id,)).fetchone() or (None,)
+        if n is None:
+            raise UnknownDependency(f"{claim_id[:12]}… not in store")
+        return int(n)
+
+    # Every settling transition takes the generation its check began at
+    # (None: unguarded) and returns whether it was applied. A refused one
+    # changes nothing; the caller reports the status the claim still holds.
+    @_locked
     def set_verified(self, claim_id: str, basis: Optional[str] = None,
-                     strength: Optional[str] = None) -> None:
-        self._transition(claim_id, STATUS_VERIFIED,
-                         allowed={STATUS_UNVERIFIED, STATUS_STALE},
-                         basis=basis, strength=strength)
+                     strength: Optional[str] = None,
+                     generation: Optional[int] = None) -> bool:
+        return self._transition(claim_id, STATUS_VERIFIED,
+                                allowed={STATUS_UNVERIFIED, STATUS_STALE},
+                                basis=basis, strength=strength,
+                                generation=generation)
 
     @_locked
     def set_refuted(self, claim_id: str, reason: str,
                     basis: Optional[str] = None,
-                    strength: Optional[str] = None) -> None:
+                    strength: Optional[str] = None,
+                    generation: Optional[int] = None) -> bool:
         # basis = the refuting evidence's achieved basis: it decides
         # whether the refutation may transfer by inheritance (a record
         # counterexample cannot settle a world demand) and is disclosed
         # on the certificate. strength is disclosure only — mechanics
         # upstream admit no refutation below decisive.
-        self._transition(claim_id, STATUS_REFUTED,
-                         allowed={STATUS_UNVERIFIED, STATUS_STALE},
-                         reason=reason, basis=basis, strength=strength)
+        return self._transition(claim_id, STATUS_REFUTED,
+                                allowed={STATUS_UNVERIFIED, STATUS_STALE},
+                                reason=reason, basis=basis, strength=strength,
+                                generation=generation)
 
     @_locked
-    def set_stale(self, claim_id: str, reason: Optional[str] = None) -> None:
+    def set_stale(self, claim_id: str, reason: Optional[str] = None) -> bool:
         """A settled verdict the world has moved past: reopened for a
-        fresh check (world-basis obligation nodes whose epoch is over)."""
-        self._transition(claim_id, STATUS_STALE,
-                         allowed={STATUS_VERIFIED, STATUS_REFUTED,
-                                  STATUS_PARTIAL, STATUS_UNVERIFIED,
-                                  STATUS_STALE},
-                         reason=reason)
+        fresh check (world-basis obligation nodes whose epoch is over).
+        Bumps the generation: a check that began before the reopening
+        settles nothing."""
+        applied = self._transition(claim_id, STATUS_STALE,
+                                   allowed={STATUS_VERIFIED, STATUS_REFUTED,
+                                            STATUS_PARTIAL, STATUS_UNVERIFIED,
+                                            STATUS_STALE},
+                                   reason=reason)
+        self.db.execute("UPDATE claims SET generation=generation+1 "
+                        "WHERE id=?", (claim_id,))
+        self.db.commit()
+        return applied
 
     @_locked
-    def set_partial(self, claim_id: str) -> None:
-        self._transition(claim_id, STATUS_PARTIAL,
-                         allowed={STATUS_UNVERIFIED, STATUS_STALE})
+    def set_partial(self, claim_id: str,
+                    generation: Optional[int] = None) -> bool:
+        return self._transition(claim_id, STATUS_PARTIAL,
+                                allowed={STATUS_UNVERIFIED, STATUS_STALE},
+                                generation=generation)
 
     @_locked
-    def set_confident(self, claim_id: str, reason: str) -> None:
+    def set_confident(self, claim_id: str, reason: str,
+                      generation: Optional[int] = None) -> bool:
         """Admit an UNVERIFIED claim on the record's strength: the flag is
         orthogonal to the status machine (the status stays unverified —
-        nothing was checked) and it clears with the claim's staleness."""
+        nothing was checked) and it clears with the claim's staleness.
+
+        A claim revised or re-staled while the screener read it is not
+        admitted (returns False): the grade was about a graph that no
+        longer stands, and the claim is rechecked from its stale state."""
+        if self.superseded(claim_id):
+            return False
+        if generation is not None and self.generation(claim_id) != generation:
+            return False
         current = self.status(claim_id)
+        if current == STATUS_STALE:
+            return False
         if current != STATUS_UNVERIFIED:
             raise IllegalTransition(
                 f"confident admission requires unverified, not {current}")
@@ -299,14 +384,16 @@ class ClaimStore:
             "UPDATE claims SET confident=1, confidence_reason=? WHERE id=?",
             (reason, claim_id))
         self.db.commit()
+        return True
 
     @_locked
     def set_unverified(self, claim_id: str,
-                       reason: Optional[str] = None) -> None:
+                       reason: Optional[str] = None,
+                       generation: Optional[int] = None) -> bool:
         """Finish a stale/failed recheck without claiming new evidence."""
-        self._transition(claim_id, STATUS_UNVERIFIED,
-                         allowed={STATUS_UNVERIFIED, STATUS_STALE},
-                         reason=reason)
+        return self._transition(claim_id, STATUS_UNVERIFIED,
+                                allowed={STATUS_UNVERIFIED, STATUS_STALE},
+                                reason=reason, generation=generation)
 
     @_locked
     def superseded(self, claim_id: str) -> bool:
@@ -315,14 +402,28 @@ class ClaimStore:
                                (claim_id,)).fetchone() is not None
 
     @_locked
+    def settle_refusal(self, claim_id: str,
+                       generation: Optional[int] = None) -> Optional[str]:
+        """Why a settling transition for a check that began at
+        ``generation`` would be refused now; None when it would not."""
+        if self.superseded(claim_id):
+            return "superseded by a revision"
+        if generation is not None and self.generation(claim_id) != generation:
+            return "invalidated while the check ran"
+        return None
+
+    @_locked
     def _transition(self, claim_id, new, allowed, reason=None, basis=None,
-                    strength=None):
-        if new != STATUS_STALE and self.superseded(claim_id):
+                    strength=None, generation=None) -> bool:
+        if new != STATUS_STALE and self.settle_refusal(claim_id, generation):
             # a revised claim stays invalidated: a check of it that was still
             # running when the revision arrived settles nothing afterwards
             # (online commits return before their checks, so the revision
-            # need not wait for the check it supersedes)
-            return
+            # need not wait for the check it supersedes). Likewise a claim
+            # re-staled under its check (a premise revised): the check
+            # judged a graph that no longer stands, the claim stays stale
+            # and is rechecked when next requested.
+            return False
         current = self.status(claim_id)
         if current not in allowed:
             raise IllegalTransition(f"{current} -> {new} not allowed")
@@ -332,9 +433,13 @@ class ClaimStore:
             (new, reason, basis, strength, claim_id),
         )
         self.db.commit()
+        return True
 
     @_locked
-    def _mark_stale_cone(self, claim_id: str) -> None:
+    def _mark_stale_cone(self, claim_id: str) -> List[Tuple[str, str]]:
+        """Stale the claim and everything relying on it; bump each one's
+        generation (a check running on any of them settles nothing).
+        Returns (id, kind) of the claims whose status actually changed."""
         # Claim dependencies alone omit two forms of reliance: a claim's
         # compiled checks, and verdicts inherited from another statement.
         # Invalidate both the checks and every consumer of their evidence.
@@ -365,10 +470,19 @@ class ClaimStore:
                 continue
             stale.add(cid)
             pending.extend(affected_by.get(cid, ()))
+        changed = []
+        for cid in sorted(stale):
+            row = self.db.execute(
+                "SELECT kind, status, confident FROM claims WHERE id=?",
+                (cid,)).fetchone()
+            if row is not None and (row[1] != STATUS_STALE or row[2]):
+                changed.append((cid, row[0]))
         self.db.executemany(
             "UPDATE claims SET status=?, reason=NULL, basis=NULL, "
-            "strength=NULL, confident=0, confidence_reason=NULL "
+            "strength=NULL, confident=0, confidence_reason=NULL, "
+            "generation=generation+1 "
             "WHERE id=?", [(STATUS_STALE, cid) for cid in stale])
+        return changed
 
     # evidence
     @_locked
