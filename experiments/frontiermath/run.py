@@ -112,6 +112,14 @@ def main():
     ap.add_argument("--seat-tier", default="standard",
                     choices=["standard", "fast"],
                     help="the verifier seats' service tier (gv-codex)")
+    ap.add_argument("--service-tier", default=None,
+                    choices=["standard", "fast"],
+                    help="the codex solver's service tier (codex arms); "
+                    "default: whatever ~/.codex/config.toml says")
+    ap.add_argument("--tag", default="",
+                    help="a separate run of the same arm (another effort, "
+                    "say): results/<arm>-<tag>/ and its own workdirs, so "
+                    "earlier rows are neither resumed nor overwritten")
     ap.add_argument("--web", action="store_true",
                     help="allow solver web access (default OFF: the sample "
                     "problems' answers are published — a codex solver was "
@@ -121,7 +129,8 @@ def main():
 
     with open(os.path.join(HERE, "problems.json")) as f:
         problems = json.load(f)
-    results_path = os.path.join(HERE, "results", args.arm, "results.jsonl")
+    arm_dir = f"{args.arm}-{args.tag}" if args.tag else args.arm
+    results_path = os.path.join(HERE, "results", arm_dir, "results.jsonl")
     done = res.recorded(results_path, "pid", "sample")
     # sample-major order: s0 of every problem, then s1, ... — concurrent
     # workers land on DIFFERENT problems instead of five-way hammering the
@@ -131,7 +140,7 @@ def main():
     if args.pid:
         wanted = set(args.pid)          # repeatable: --pid a --pid b
         todo = [(p, s) for p, s in todo if p["id"] in wanted]
-    print(f"[fm:{args.arm}] {len(todo)} runs ({len(done)} recorded), "
+    print(f"[fm:{arm_dir}] {len(todo)} runs ({len(done)} recorded), "
           f"web={'ON' if args.web else 'off'}", flush=True)
     bar = progress.Board(len(todo))
 
@@ -156,7 +165,7 @@ def main():
     append_lock = threading.Lock()
 
     def attempt(p, s):
-        work = os.path.join(WORKROOT, args.arm, p["id"], f"s{s}")
+        work = os.path.join(WORKROOT, arm_dir, p["id"], f"s{s}")
         os.makedirs(work, exist_ok=True)
         prompt = BASE_PROMPT.format(statement=p["statement"],
                                     answer_spec=ANSWER_SPEC[p["answer_type"]])
@@ -195,7 +204,8 @@ def main():
             out, seconds = solver.run_codex(work, prompt, model=codex_model,
                                             timeout=args.timeout,
                                             web=args.web, codex_home=home,
-                                            effort=args.effort)
+                                            effort=args.effort,
+                                            service_tier=args.service_tier)
         elif args.arm == "codex":
             # Ground truth + rollout capture so a codex trace scores through
             # the same offline ORM path as `rec`: codex has no recording
@@ -216,7 +226,8 @@ def main():
             since = _time.time()
             out, seconds = solver.run_codex(work, prompt, model=codex_model,
                                             timeout=args.timeout,
-                                            web=args.web, effort=args.effort)
+                                            web=args.web, effort=args.effort,
+                                            service_tier=args.service_tier)
             rollout = solver.rollout_for(work, since=since - 5)
             if rollout is None:
                 bar.log(f"[fm:codex] WARNING {p['id']}#{s}: no rollout with "
@@ -230,7 +241,7 @@ def main():
                                              timeout=args.timeout,
                                              base_url=proxy_url,
                                              web=args.web)
-        transcripts_dir = os.path.join(HERE, "results", args.arm,
+        transcripts_dir = os.path.join(HERE, "results", arm_dir,
                                        "transcripts")
         os.makedirs(transcripts_dir, exist_ok=True)
         transcript_file = os.path.join(transcripts_dir,
@@ -240,6 +251,11 @@ def main():
         answer = parse_final(out)
         rec = {"pid": p["id"], "sample": s, "arm": args.arm,
                "model": effective_model, "answer": answer,
+               **({"effort": args.effort}
+                  if args.arm in ("codex", "gv-codex") else {}),
+               **({"service_tier": args.service_tier}
+                  if args.service_tier else {}),
+               **({"tag": args.tag} if args.tag else {}),
                "solved": matches(answer, p), "seconds": seconds,
                "workdir": work, "transcript_file": transcript_file,
                "output_tail": out[-300:]}

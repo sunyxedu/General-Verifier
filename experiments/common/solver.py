@@ -303,8 +303,12 @@ def mount_gv_codex(work: str, model: str | None = None, *,
 
 def run_codex(work: str, prompt: str, model: str | None = None,
               timeout: int | None = DEFAULT_TIMEOUT, web: bool = True,
-              codex_home: str | None = None, effort: str | None = None):
+              codex_home: str | None = None, effort: str | None = None,
+              service_tier: str | None = None):
     """Headless Codex CLI. Returns (stdout, seconds).
+
+    `service_tier` ("standard" | "fast") overrides the user's codex config
+    either way; None leaves whatever that config says (the older runs).
 
     `web=False` cuts every network channel (see NO_WEB_CODEX_FLAGS) — for
     benchmarks whose answers are published online: on an early FrontierMath
@@ -325,6 +329,9 @@ def run_codex(work: str, prompt: str, model: str | None = None,
         cmd[2:2] = ["-c", f"model_reasoning_effort={effort}"]
     if model:
         cmd[2:2] = ["-m", model]
+    if service_tier:
+        from verifier.llm.codex_service import service_tier_cli_args
+        cmd[2:2] = service_tier_cli_args(service_tier)
     env = None
     if codex_home:
         env = dict(os.environ, CODEX_HOME=os.path.abspath(codex_home))
