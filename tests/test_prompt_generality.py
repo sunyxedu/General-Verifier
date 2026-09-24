@@ -118,6 +118,8 @@ def test_prompt_corpus_stays_bounded():
     """Prose rules have diminishing returns; growth is the smell of case
     patches. Raise this bound deliberately, never incidentally.
     (Raised from 17,000 when two seats were added — the admission screener
-    and the script reader — not when an existing seat grew.)"""
+    and the script reader — not when an existing seat grew; and to 24,100
+    on 2026-09-24 for the compiler's EVENT RESPONSES rule, after two
+    cross-seat rules the same day had been paid for by folding restatements.)"""
     total = sum(len(t.split()) for t in SURFACES.values())
-    assert total <= 24_000, total
+    assert total <= 24_100, total
