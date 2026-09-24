@@ -35,7 +35,11 @@ conclusions, not a diary**. Decide per claim, from the task itself:
   - `kind`: `assertion` (intermediate conclusion) | `final` (final answer)
   - `label`: short and stable (`A1`, `lemma-even`, …); later `deps` reference claims by label
   - `deps`: every already-committed claim this conclusion directly depends on; to reference
-    a tool-execution result use `effect:<seq>` (the event sequence number captured by the hooks)
+    a tool-execution result use `effect:<seq>` (the event sequence number captured by the hooks).
+    Every `gv` response lists the tool results recorded since your previous `gv` call under
+    `recent_effects`, each with its `effect:<seq>` id and a glimpse of its input and output:
+    cite ids from there. The ledger's numbering is not the line numbering of any file you
+    can read.
   - To correct a conclusion, resubmit with `revises=<old label>`: the old conclusion and
     its checks are invalidated, along with consumers of shared or inherited evidence.
     The statement may stay the same after you repair the underlying result: an explicit
@@ -50,7 +54,8 @@ conclusions, not a diary**. Decide per claim, from the task itself:
   explicitly ("as of effect:<seq>", "before <event>") and cite the tool execution that
   witnessed it in `deps` (`effect:<seq>`): the hooks record every tool call and its output
   in the verifier's ledger, so such claims verify against the record even after the world
-  has legitimately moved on. Present-tense claims about past observations are the single
+  has legitimately moved on. Index by the record, never by the calendar: a date or clock
+  time in a claim is one more term to establish, and the record rarely settles it. Present-tense claims about past observations are the single
   most common cause of refuted-but-honest claims.
 - You do **not** need to prove it yourself. Verification is the verifier's job. An
   `assertion`'s `gv.commit` returns as soon as the claim is recorded (`checking: true`);
@@ -59,7 +64,10 @@ conclusions, not a diary**. Decide per claim, from the task itself:
   obligation and its counterexample — arrives in the `news` field of your next `gv` call.
   Read `news` whenever it appears, and rely on a claim still being checked only as far as
   you would on any unchecked conclusion. A `final`'s commit waits for its check, and
-  `gv.certificate` waits for every check in its slice.
+  `gv.certificate` waits for every check in its slice. A final's check can take tens of
+  minutes; while it runs, `gv.status` marks it `checking`. Do not commit another version
+  of the final meanwhile unless you have changed the deliverable: every version starts its
+  own full check, and the one already running is not sped up by it.
 
 ## Reading a commit result
 
@@ -104,7 +112,10 @@ conclusions, not a diary**. Decide per claim, from the task itself:
   Relay the verdict and certificate_id verbatim to the user/CI. Include unresolved
   conditions and, for `supported`, the disclosed bridging assumptions.
 - `unverified` is not a failure — it means "couldn't be verified": you can add supporting
-  grounds and resubmit with a revise.
+  grounds and resubmit with a revise. A certificate does not rerun a check on the world it
+  already ran on (the claim is marked `not_rechecked`): change what the residue says is
+  missing, or, after a change outside the files (a service started, a package installed),
+  call `gv.verify`.
 - **Never leave a `refuted` or `unverified` final standing.** Read the obligation reasons
   and the counterexample witness out of the certificate, fix the world (or the wording, if
   the statement no longer matches reality — e.g. it describes a state that your own later

@@ -309,8 +309,20 @@ class ClaimStore:
                          reason=reason)
 
     @_locked
+    def superseded(self, claim_id: str) -> bool:
+        """Whether a later claim revises this one."""
+        return self.db.execute("SELECT 1 FROM claims WHERE revises=? LIMIT 1",
+                               (claim_id,)).fetchone() is not None
+
+    @_locked
     def _transition(self, claim_id, new, allowed, reason=None, basis=None,
                     strength=None):
+        if new != STATUS_STALE and self.superseded(claim_id):
+            # a revised claim stays invalidated: a check of it that was still
+            # running when the revision arrived settles nothing afterwards
+            # (online commits return before their checks, so the revision
+            # need not wait for the check it supersedes)
+            return
         current = self.status(claim_id)
         if current not in allowed:
             raise IllegalTransition(f"{current} -> {new} not allowed")

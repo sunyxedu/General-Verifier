@@ -167,6 +167,9 @@ class Kernel:
         self._node_locks: Dict[str, threading.Lock] = {}
         self._claim_locks: Dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        # unsettled claims a verify request left alone because their last
+        # complete check ran on the world as it stands (see verify)
+        self.not_rechecked: set = set()
         self.store = store
         self.log = log
         self.backend = backend
@@ -259,15 +262,6 @@ class Kernel:
                 lock = table[key] = threading.Lock()
             return lock
 
-    def settle_barrier(self, claim_id: str) -> None:
-        """Return once no check of this claim is in flight. A revision waits
-        here for the check of the version it replaces: that check settles
-        what it will, the revision then invalidates it, and the new version
-        is checked afresh (online commits return before their checks, so a
-        revision can otherwise race the check it supersedes)."""
-        with self._lock_for(self._claim_locks, claim_id):
-            return
-
     def _obligation_pool(self) -> Optional[ThreadPoolExecutor]:
         if self.parallel_obligations <= 1:
             return None
@@ -293,6 +287,21 @@ class Kernel:
                 return row["status"]
             if row.get("confident") and not force:
                 return row["status"]
+            if self.store.superseded(claim_id):
+                # replaced by its revision: a check would settle nothing
+                return row["status"]
+            if (row["status"] == STATUS_UNVERIFIED and not force
+                    and self._checked_on_this_world(claim_id)):
+                # the whole check already ran on this very world and could
+                # not settle the claim: running it again (every queued
+                # certificate request did, 30-100 minutes each) spends the
+                # same seats on the same evidence. gv.verify forces it.
+                self.not_rechecked.add(claim_id)
+                self.log.append("verify_skipped",
+                                {"claim": claim_id,
+                                 "reason": "already checked on this world"})
+                return row["status"]
+            self.not_rechecked.discard(claim_id)
             with model_scope(
                     claim_id=row["id"], claim_kind=row["kind"],
                     locus=("final_task" if row["kind"] == CLAIM_FINAL
@@ -305,6 +314,64 @@ class Kernel:
                     self._freeze_record(row)
                     self._verify_assertion(row, force=force)
             return self.store.status(claim_id)
+
+    # the verifier's own state (rewritten on every solver act) and bytecode
+    # caches (rewritten by merely running the code) are not the world
+    FINGERPRINT_SKIP = frozenset({".gv", "__pycache__"})
+    FINGERPRINT_MAX_ENTRIES = 200_000
+
+    def checking(self, claim_id: str) -> bool:
+        """Whether a check of this claim is running right now."""
+        lock = self._claim_locks.get(claim_id)
+        return bool(lock is not None and lock.locked())
+
+    def _world_fingerprint(self) -> Optional[str]:
+        """A cheap identity of the delivered world as it stands: every entry
+        under the recorded root, and each file's mode, size and times (the
+        VCS store included: a commit changes the world). None offline,
+        without a baseline root, or when the tree is too large to walk
+        cheaply. State outside the files (a running service, an installed
+        package) is not in it: gv.verify reruns a check after such a change."""
+        if not self.live_world:
+            return None
+        from ..baseline import delivered_root
+        state = os.path.dirname(os.path.abspath(self.log.path))
+        root = delivered_root(state)
+        if not root:
+            return None
+        digest = hashlib.sha256()
+        count = 0
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames
+                                 if d not in self.FINGERPRINT_SKIP)
+            for name in dirnames + sorted(filenames):
+                path = os.path.join(dirpath, name)
+                try:
+                    st = os.lstat(path)
+                except OSError:
+                    continue
+                # a directory's own times move with its entries, which are
+                # walked anyway; a file's mode and change time catch chmod
+                # and chown, which leave its content alone
+                stamp = ("dir" if name in dirnames else
+                         f"{st.st_mode}\0{st.st_size}\0{st.st_mtime_ns}"
+                         f"\0{st.st_ctime_ns}")
+                digest.update(f"{os.path.relpath(path, root)}\0{stamp}\n"
+                              .encode("utf-8", "surrogateescape"))
+                count += 1
+                if count > self.FINGERPRINT_MAX_ENTRIES:
+                    return None
+        return digest.hexdigest()
+
+    def _checked_on_this_world(self, claim_id: str) -> bool:
+        """Whether the claim's last complete check ran on the world as it
+        stands now (same fingerprint)."""
+        stamp = next((e.get("world_fingerprint")
+                      for e in reversed(self.store.evidence_for(claim_id))
+                      if e.get("outcome") == "epoch"), None)
+        if not stamp:
+            return False
+        return stamp == self._world_fingerprint()
 
     def _publish_candidate_response(self, row: Dict) -> None:
         """The final claim under check is the candidate response until the
@@ -497,8 +564,11 @@ class Kernel:
     # assertion / final
     def _verify_assertion(self, row: Dict, force: bool = False) -> None:
         # the epoch this verification began in; the claim's verdict is
-        # stamped with it (see _discharge), never with a later one
+        # stamped with it (see _discharge), never with a later one — and the
+        # world's fingerprint then, so an unsettled check is not rerun on the
+        # same world (verify)
         claim_epoch = self._current_epoch()
+        claim_world = self._world_fingerprint()
         # Local verdicts are CONDITIONAL: a claim is verified/refuted
         # assuming its premises (deps) are true, and the read-time
         # effective fold (store.effective) charges the premise chain's
@@ -605,7 +675,8 @@ class Kernel:
         # the fold's own rows stay the last word on the claim
         self.store.record_evidence(
             row["id"], {"outcome": "epoch",
-                        "world_epoch": claim_epoch})
+                        "world_epoch": claim_epoch,
+                        "world_fingerprint": claim_world})
         self._settle(row["id"], outcomes, bases, strengths, severities)
         refutation = next((r for r in settled if r[1] == OUTCOME_REFUTED
                            and r[0].severity == SEVERITY_MUST), None)

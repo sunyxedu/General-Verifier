@@ -120,21 +120,48 @@ def test_a_background_check_that_raises_is_logged_and_the_server_goes_on(tmp_pat
     assert svc.commit("F", "final", "the task is complete", [])["status"] == "verified"
 
 
-def test_a_revision_waits_for_the_check_it_replaces(tmp_path):
-    class Barrier(SlowKernel):
-        def settle_barrier(self, claim_id):
-            with self._locks[claim_id]:
-                return
-
-    svc = Service(str(tmp_path), live_world=True, trigger=TRIGGER_ON_COMMIT,
-                  kernel_factory=lambda sc: Barrier(sc, {"the answer is 14"}))
+def test_a_revision_returns_at_once_and_the_replaced_version_stays_invalidated(tmp_path):
+    svc = service(tmp_path, refute={"the answer is 14"})
     svc.commit("A1", "assertion", "the answer is 14", [])
-    # revised while A1's check is still running: the revision waits for it
+    # revised while A1's check is still running: the revision does not wait
     t0 = time.time()
-    svc.commit("A2", "assertion", "the answer is 15", [], revises="A1")
-    assert time.time() - t0 >= CHECK / 2
-    time.sleep(CHECK + 0.5)
+    out = svc.commit("A2", "assertion", "the answer is 15", [], revises="A1")
+    assert time.time() - t0 < CHECK / 2 and out["checking"] is True
+    time.sleep(2 * CHECK + 0.5)
     a1, a2 = svc.builder.labels["A1"], svc.builder.labels["A2"]
-    # the replaced version stays invalidated; nothing settled it back
+    # A1's check finished after the revision arrived and settled nothing
+    assert svc.kernel.calls[a1] == 1
     assert svc.store.status(a1) == "stale"
     assert svc.store.status(a2) == "verified"
+    assert not any(n["label"] == "A1" for n in svc.status("A2").get("news", []))
+
+
+def test_a_final_check_does_not_wait_for_the_checks_of_what_it_cites(tmp_path):
+    svc = service(tmp_path)
+    svc.commit("A1", "assertion", "the root cause is the stale cache", [])
+    t0 = time.time()
+    out = svc.commit("F", "final", "the task is complete", ["A1"])
+    # A1's check (still running) and F's own ran side by side
+    assert time.time() - t0 < 1.7 * CHECK
+    assert out["status"] == "verified"
+    cert = svc.certificate("F")
+    a1 = svc.builder.labels["A1"]
+    assert svc.store.status(a1) == "verified" and svc.kernel.calls[a1] == 1
+    assert "error" not in cert
+
+
+class Checking(SlowKernel):
+    def checking(self, claim_id):
+        return self._locks[claim_id].locked()
+
+
+def test_status_marks_a_claim_whose_check_is_running(tmp_path):
+    svc = Service(str(tmp_path), live_world=True, trigger=TRIGGER_ON_COMMIT,
+                  kernel_factory=lambda sc: Checking(sc))
+    svc.commit("A1", "assertion", "the file has three lines", [])
+    time.sleep(0.1)
+    assert svc.status("A1")["checking"] is True
+    assert svc.status()["A1"] == "unverified (checking)"
+    time.sleep(CHECK + 0.3)
+    assert "checking" not in svc.status("A1")
+    assert svc.status()["A1"] == "verified"

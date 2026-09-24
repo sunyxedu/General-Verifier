@@ -102,6 +102,9 @@ EVENT_TYPES = (
     # an intermediate claim's background check raised (online commits
     # return before their checks; a crash there must not pass silently)
     "background_check_failed",
+    # a verify request answered from the last complete check, which ran on
+    # the same world (gv.verify forces a rerun)
+    "verify_skipped",
 
     # search support
     "dedup_hit",

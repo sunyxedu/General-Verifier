@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import threading
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 from verifier.core.model import CLAIM_KINDS
@@ -193,9 +194,17 @@ class Service:
             live_world and os.environ.get("GV_BACKGROUND_CHECKS", "1") != "0")
         self._reported: set = set()     # refuted claims the solver was told of
         self._news_lock = threading.Lock()
+        # the solver cannot see the ledger's sequence numbers, and cited the
+        # wrong effects when it guessed them (or counted lines of the hook
+        # feed): every gv response lists the tool results recorded since the
+        # previous one, each under the id a claim cites it by
+        self._effect_index: deque = deque(maxlen=RECENT_EFFECTS)
+        self._call_inputs: Dict[str, str] = {}
+        self._effects_listed = 0        # seq of the newest effect listed
         # a restarted server rebuilds its view from its own ledger
         for event in self.log.replay():
             self.builder.feed(event)
+            self._index_effect(event)
 
     def start_background(self) -> bool:
         """Online: compile the final's task contract and its method
@@ -218,6 +227,31 @@ class Service:
             return  # unknown feed line: ignored, the feed is untrusted input
         event = self.log.append(etype, raw_event.get("payload", {}))
         self.builder.feed(event)
+        self._index_effect(event)
+
+    def _index_effect(self, event: Dict[str, Any]) -> None:
+        etype = event.get("type")
+        if etype not in ("tool_call", "tool_result"):
+            return
+        payload = event.get("payload") or {}
+        tool = str(payload.get("tool") or "")
+        if tool.startswith("mcp__gv__"):
+            return
+        call_id = payload.get("tool_use_id")
+        if etype == "tool_call":
+            if call_id:
+                self._call_inputs[call_id] = _excerpt(payload.get("input"))
+            return
+        label = f"effect:{event['seq']}"
+        if label not in self.builder.labels:
+            return
+        entry = {"ref": label, "tool": tool or None}
+        command = self._call_inputs.pop(call_id, None) if call_id else None
+        if command:
+            entry["input"] = command
+        entry["output"] = _excerpt(payload.get("excerpt"))
+        with self._news_lock:
+            self._effect_index.append((event["seq"], entry))
 
     def drain_hooks(self) -> int:
         with self._drain_lock:
@@ -234,19 +268,12 @@ class Service:
         failure = None
         background = self.background_checks and kind not in ("final", "effect")
         deferred: List[str] = []
-        if revises:
-            barrier = getattr(self.kernel, "settle_barrier", None)
-            try:
-                replaced = self.builder.resolve(revises)
-            except TraceError:
-                replaced = None      # the feed below reports the bad reference
-            if replaced and barrier is not None:
-                barrier(replaced)
+        split_deps = self.background_checks and kind == "final"
         try:
             event = self.log.append("commit", payload)
-            if background:
+            if background or split_deps:
                 # recorded and wired now (later commits may cite its label at
-                # once); the checks its commit triggers run in the background
+                # once); the checks its commit triggers are queued, not run
                 with self.store.deferred_triggers() as deferred:
                     self.builder.feed(event)
             else:
@@ -255,6 +282,20 @@ class Service:
                 self.builder.feed(event)
         except VERB_ERRORS as err:
             failure = str(err)
+        if split_deps and failure is None and label in self.builder.labels:
+            # a final's contract is compiled and checked independently of the
+            # claims it cites: their checks (first triggered by this commit,
+            # or still running from their own) proceed in the background, and
+            # the final's own check starts now instead of after theirs
+            final_id = self.builder.labels[label]
+            others = [cid for cid in deferred if cid != final_id]
+            if others:
+                self._check_in_background(final_id, others)
+            if final_id in deferred:
+                try:
+                    self.store.fire([final_id])
+                except VERB_ERRORS as err:
+                    failure = str(err)
         if label not in self.builder.labels:
             result = {"error": failure or "commit failed"}
             if failure and "unknown claim reference" in failure:
@@ -303,17 +344,25 @@ class Service:
         return self._with_news(result)
 
     def _check_in_background(self, claim_id: str, deferred: List[str]) -> None:
-        def run():
+        """Run the deferred checks off the verb's thread: the claim's own
+        check and those of the claims it cites side by side (a claim's local
+        verdict is conditional on its premises and never waits for theirs)."""
+        def run(batch):
             try:
-                self.store.fire(deferred)
+                self.store.fire(batch)
             except Exception as err:  # noqa: BLE001 - never takes the server down
                 try:
                     self.log.append("background_check_failed",
                                     {"claim": claim_id, "error": str(err)[:500]})
                 except Exception:  # noqa: BLE001
                     pass
-        threading.Thread(target=run, name=f"gv-check-{claim_id[:8]}",
-                         daemon=True).start()
+        own = [cid for cid in deferred if cid == claim_id]
+        cited = [cid for cid in deferred if cid != claim_id]
+        for batch in (cited, own):
+            if batch:
+                threading.Thread(target=run, args=(batch,),
+                                 name=f"gv-check-{claim_id[:8]}",
+                                 daemon=True).start()
 
     def _mark_reported(self, claim_id: str, status: str) -> None:
         if status == "refuted":
@@ -338,7 +387,16 @@ class Service:
 
     def _with_news(self, result: Dict[str, Any]) -> Dict[str, Any]:
         news = self._news()
-        return dict(result, news=news) if news else result
+        out = dict(result, news=news) if news else dict(result)
+        with self._news_lock:
+            fresh = [entry for seq, entry in self._effect_index
+                     if seq > self._effects_listed]
+            if self._effect_index:
+                self._effects_listed = max(self._effects_listed,
+                                           self._effect_index[-1][0])
+        if fresh:
+            out["recent_effects"] = fresh
+        return out
 
     def verify(self, label: str) -> Dict[str, Any]:
         self.drain_hooks()
@@ -369,8 +427,14 @@ class Service:
         except VERB_ERRORS as err:
             return {"error": str(err)}
         slice_summary = []
+        not_rechecked = getattr(self.kernel, "not_rechecked", ())
         for e in cert["slice"]:
             entry = {"text": e["text"], "status": e["status"]}
+            if e["status"] == "unverified" and e["id"] in not_rechecked:
+                entry["not_rechecked"] = (
+                    "its last check ran on the world as it stands and is "
+                    "not repeated; change what it found missing, or "
+                    "gv.verify it after a change outside the files")
             if e.get("confident"):
                 entry["confident"] = True
                 slice_summary.append(entry)
@@ -408,6 +472,8 @@ class Service:
                 return {"error": str(err)}
             row = self.store.get(claim_id)
             result = {k: row[k] for k in ("id", "kind", "text", "status")}
+            if self._checking(claim_id):
+                result["checking"] = True
             if row.get("confident"):
                 result["confident"] = True
                 result["confidence_reason"] = row.get("confidence_reason")
@@ -423,9 +489,41 @@ class Service:
             elif row["status"] == "refuted" and row["kind"] != "effect":
                 out[label] = "refuted: " + _refutation_brief(self.store, cid)
                 self._mark_reported(cid, "refuted")
+            elif self._checking(cid):
+                out[label] = f"{row['status']} (checking)"
             else:
                 out[label] = row["status"]
-        return out
+        return self._with_news(out)
+
+    def _checking(self, claim_id: str) -> bool:
+        checking = getattr(self.kernel, "checking", None)
+        return bool(checking is not None and checking(claim_id))
+
+RECENT_EFFECTS = 8           # tool results a gv response lists at most
+EFFECT_EXCERPT_CHARS = 100   # of each listed call's input and output
+
+
+def _excerpt(value: Any, cap: int = EFFECT_EXCERPT_CHARS) -> str:
+    """A one-line glimpse of a tool call's input or output: enough to tell
+    which recorded effect is which, never the evidence itself."""
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            decoded = value
+        value = decoded
+    if isinstance(value, dict):
+        value = " ".join(f"{k}={v}" if isinstance(v, str)
+                         else f"{k}={json.dumps(v, ensure_ascii=False, default=str)}"
+                         for k, v in value.items())
+    elif not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=False, default=str)
+    text = " ".join(value.split())
+    if len(text) <= cap:
+        return text
+    half = (cap - 3) // 2
+    return text[:half] + " … " + text[-half:]
+
 
 def _parallel_default(name: str, fallback: int) -> int:
     """Per-trial parallelism defaults: GV_PARALLEL_OBLIGATIONS (discharges
