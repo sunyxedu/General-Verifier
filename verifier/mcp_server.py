@@ -35,6 +35,7 @@ import json
 import os
 import sys
 import threading
+import time
 from collections import deque
 from typing import Any, Dict, List, Optional
 
@@ -856,11 +857,13 @@ class StateBusy(RuntimeError):
     """Another live process holds the state's server lock."""
 
 
-def hold_server_lock(state_dir: str):
+def hold_server_lock(state_dir: str, wait: float = 0.0):
     """Take the state's server lock for this process's lifetime: an
-    exclusive, non-blocking flock on <state>/server.lock. Returns the open
-    lock file (keep it referenced), or None where advisory locks are
-    unavailable; raises StateBusy when another process holds it. The
+    exclusive flock on <state>/server.lock, retried for up to ``wait``
+    seconds (a client that restarts its server before the old process has
+    exited gets the state once the old one is gone). Returns the open lock
+    file (keep it referenced), or None where advisory locks are
+    unavailable; raises StateBusy when another process still holds it. The
     kernel drops the lock when its holder exits, however it exits, so a
     dead or zombie server never blocks its restart."""
     try:
@@ -869,19 +872,27 @@ def hold_server_lock(state_dir: str):
         return None
     os.makedirs(state_dir, exist_ok=True)
     handle = open(os.path.join(state_dir, SERVER_LOCK), "a+", encoding="ascii")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (BlockingIOError, PermissionError):
+    deadline = time.monotonic() + max(0.0, wait)
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except (BlockingIOError, PermissionError):
+            if time.monotonic() < deadline:
+                time.sleep(0.25)
+                continue
+        except OSError:
+            handle.close()
+            return None   # the filesystem offers no flock: the pidfile probe
         handle.close()
         raise StateBusy(
             f"another gv server holds {os.path.join(state_dir, SERVER_LOCK)}; "
             "this process exits without touching the state") from None
-    except OSError:
-        handle.close()
-        return None   # the filesystem offers no flock: the pidfile probe
-    return handle
 
 
+# seconds a starting server waits for the state lock a previous server of
+# the same client may still hold while it exits
+SERVER_LOCK_WAIT = 30.0
 RECENT_EFFECTS = 8           # tool results a gv response lists at most
 # recorded tool results named in an unresolved commit's known_references
 # and in the all-labels status map
@@ -1185,7 +1196,9 @@ def main() -> None:
     # served state (a stray `gv-mcp-server </dev/null`, a solver's own
     # launch) leaves no event, no precompile, no pidfile
     try:
-        server_lock = hold_server_lock(args.state_dir)
+        server_lock = hold_server_lock(
+            args.state_dir,
+            wait=float(os.environ.get("GV_SERVER_LOCK_WAIT", SERVER_LOCK_WAIT)))
     except StateBusy as busy:
         print(f"gv-mcp-server: {busy}", file=sys.stderr)
         sys.exit(3)

@@ -183,6 +183,15 @@ def test_the_state_lock_admits_one_holder(tmp_path):
     hold_server_lock(str(tmp_path)).close()
 
 
+def test_a_restart_waits_for_the_exiting_server_to_release_the_state(tmp_path):
+    import threading
+    held = hold_server_lock(str(tmp_path))
+    threading.Timer(0.6, held.close).start()        # the old server exits
+    again = hold_server_lock(str(tmp_path), wait=10)
+    assert again is not None
+    again.close()
+
+
 def test_a_second_server_on_a_served_state_exits_untouched(tmp_path):
     held = hold_server_lock(str(tmp_path))
     try:
@@ -190,7 +199,8 @@ def test_a_second_server_on_a_served_state_exits_untouched(tmp_path):
             [sys.executable, "-m", "verifier.mcp_server",
              "--state-dir", str(tmp_path)],
             cwd=ROOT, capture_output=True, text=True, timeout=120,
-            stdin=subprocess.DEVNULL)
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "GV_SERVER_LOCK_WAIT": "1"})
     finally:
         held.close()
     assert done.returncode != 0 and SERVER_LOCK in done.stderr
