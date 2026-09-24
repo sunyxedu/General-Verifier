@@ -37,6 +37,8 @@ class PageLinks(HTMLParser):
             self.in_search_index = False
 
 
+@unittest.skipUnless((ROOT / "docs" / "report").is_dir(),
+                     "the report sources are local-only: docs/ is never tracked")
 class ReportBuildTests(unittest.TestCase):
     def test_full_site_has_only_report_files_and_resolved_local_links(self):
         with tempfile.TemporaryDirectory() as directory:

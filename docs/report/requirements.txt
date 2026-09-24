@@ -1,3 +1,0 @@
-# The report builder is independent of the verifier and its model backends.
-markdown-it-py==4.2.0
-mdurl==0.1.2
