@@ -33,12 +33,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import threading
 from collections import deque
 from typing import Any, Dict, List, Optional
 
 from verifier.core.model import CLAIM_KINDS
-from .stream.builder import Builder, TraceError
+from .stream.builder import Builder, TraceError, UnresolvedCommit
 from .engine.certificate import request_certificate
 from .core.events import EventLog
 from .execution.instruments import ArtifactStore
@@ -142,8 +143,13 @@ HOOK_FEED = "hook_feed.jsonl"
 # restart used to append every earlier tool call to the ledger again —
 # 8164 rows for 1169 calls after eleven restarts)
 FEED_OFFSET = "hook_feed.offset"
-# the live server's pid, so a second server on the same state is noticed
+# the live server's pid, for information (liveness is the lock below)
 SERVER_PIDFILE = "server.pid"
+# held (flock) by the one server serving a state for its whole lifetime: a
+# second process on the same state exits before touching it. A pid probe
+# could not tell a live server from a zombie or a reused pid, and voided
+# the certificates of a legitimate restart.
+SERVER_LOCK = "server.lock"
 HOOK_EVENT_TYPES = ("tool_call", "tool_result")
 
 
@@ -157,7 +163,11 @@ class Service:
                  critic_rounds: Optional[int] = None,
                  parallel_obligations: Optional[int] = None,
                  parallel_claims: Optional[int] = None,
-                 shared_cache_dir: Optional[str] = None):
+                 shared_cache_dir: Optional[str] = None,
+                 server_lock=None):
+        # the held state lock (hold_server_lock), kept for the process's
+        # lifetime; None when this Service did not take one
+        self.server_lock = server_lock
         self.toolchain_dir = toolchain_dir
         # a verifier-owned cache root shared across trials (install caches
         # for the executor's instruments); None keeps every cache
@@ -177,6 +187,17 @@ class Service:
                                 trigger=trigger)
         self.artifacts = ArtifactStore(os.path.join(state_dir, "artifacts"))
         self.builder = Builder(self.log, self.store)
+        # which refutation of each claim the solver was told of. A claim is
+        # keyed by the ledger seq of the status_change that refuted it, so
+        # a claim refuted again after a recheck is news again, and the
+        # delivered keys are rebuilt from the ledger after a restart
+        self._refutations: Dict[str, List[int]] = {}
+        self._last_change: Dict[str, tuple] = {}
+        self._reported: Dict[str, int] = {}
+        # told before its status_change landed: claim -> the seq of the
+        # claim's last status_change at that time (0 for none)
+        self._pending_reported: Dict[str, int] = {}
+        self.log.subscribe(self._observe)
 
         if kernel_factory is None:
             kernel_factory = lambda sc: _default_kernel(  # noqa: E731
@@ -185,9 +206,6 @@ class Service:
                 parallel_claims=parallel_claims)
         self.kernel = kernel_factory(self)  # factory receives the service
 
-        self._feed = Tail(os.path.join(state_dir, HOOK_FEED),
-                          self._ingest_hook_event, raw=True,
-                          start_offset=self._saved_feed_offset())
         # verbs run concurrently (build_server), and the feed's tail keeps
         # one read offset: two drains at once would ingest the same lines
         # twice. Only the drain is serialized; verification is not.
@@ -200,7 +218,6 @@ class Service:
         # check in its slice. GV_BACKGROUND_CHECKS=0 restores blocking commits.
         self.background_checks = (
             live_world and os.environ.get("GV_BACKGROUND_CHECKS", "1") != "0")
-        self._reported: set = set()     # refuted claims the solver was told of
         self._news_lock = threading.Lock()
         # the solver cannot see the ledger's sequence numbers, and cited the
         # wrong effects when it guessed them (or counted lines of the hook
@@ -209,10 +226,95 @@ class Service:
         self._effect_index: deque = deque(maxlen=RECENT_EFFECTS)
         self._call_inputs: Dict[str, str] = {}
         self._effects_listed = 0        # seq of the newest effect listed
+        self._gv_calls: Dict[str, int] = {}
         # a restarted server rebuilds its view from its own ledger
-        for event in self.log.replay():
-            self.builder.feed(event)
+        feed_offset = self._replay()
+        self._feed = Tail(os.path.join(state_dir, HOOK_FEED),
+                          self._ingest_hook_event, raw=True,
+                          start_offset=max(feed_offset,
+                                           self._saved_feed_offset()),
+                          on_reject=self._reject_feed_line)
+
+    def _replay(self) -> int:
+        """Rebuild the graph, the news already delivered, and the effect
+        index from the ledger; returns the hook-feed offset the ledger has
+        ingested through. An event that no longer resolves (a commit whose
+        reference failed, recorded before its failure was) is skipped and
+        noted; it never keeps the server from starting."""
+        events = list(self.log.replay())
+        failed = {e["payload"].get("commit") for e in events
+                  if e["type"] == "commit_failed"}
+        unresolved = []
+        feed_offset = 0
+        delivered_through = 0
+        for event in events:
+            self._observe(event)
+            payload = event.get("payload") or {}
+            if isinstance(payload.get("feed_offset"), int) and \
+                    event["type"] in HOOK_EVENT_TYPES + ("hook_feed_rejected",):
+                feed_offset = max(feed_offset, payload["feed_offset"])
+            if event["type"] in ("commit", "extracted_commit") \
+                    and event["seq"] in failed:
+                continue
+            try:
+                self.builder.feed(event)
+            except VERB_ERRORS as err:
+                if event["type"] == "commit" \
+                        and isinstance(err, UnresolvedCommit):
+                    unresolved.append((event["seq"], str(err)))
+                print(f"gv: replay skipped event {event['seq']} "
+                      f"({event['type']}): {err}", file=sys.stderr)
+                continue
             self._index_effect(event)
+            delivered_through = max(delivered_through,
+                                    self._gv_response_boundary(event))
+        # the effects the solver was last shown: those recorded before the
+        # last gv call that returned, so a restart does not list them again
+        self._effects_listed = delivered_through
+        for seq, error in unresolved:
+            # recorded now, so the next replay (and every other reader of
+            # the ledger) knows this commit recorded nothing
+            self.log.append("commit_failed", {"commit": seq,
+                                              "error": error[:500]})
+        return feed_offset
+
+    def _gv_response_boundary(self, event: Dict[str, Any]) -> int:
+        """The seq of the call a delivered gv response answered (0 when
+        the event is not such a response): every effect before that call
+        was listed in the response."""
+        payload = event.get("payload") or {}
+        if not str(payload.get("tool") or "").startswith("mcp__gv__"):
+            return 0
+        call_id = payload.get("tool_use_id")
+        if event["type"] == "tool_call":
+            if call_id:
+                self._gv_calls[call_id] = event["seq"]
+            return 0
+        if event["type"] == "tool_result" and call_id:
+            return self._gv_calls.pop(call_id, 0)
+        return 0
+
+    def _observe(self, event: Dict[str, Any]) -> None:
+        """Every ledger event, replayed or appended: the claims' status
+        changes and the refutations already delivered. Touches only its own
+        maps (it runs on whichever thread appended), never a lock."""
+        etype = event.get("type")
+        payload = event.get("payload") or {}
+        claim = payload.get("claim")
+        if not isinstance(claim, str):
+            return
+        if etype == "status_change" and "obligation" not in payload:
+            status = payload.get("status")
+            self._last_change[claim] = (event["seq"], status)
+            if status == "refuted":
+                self._refutations.setdefault(claim, []).append(event["seq"])
+        elif etype == "news_delivered":
+            if isinstance(payload.get("change_seq"), int):
+                self._reported[claim] = max(self._reported.get(claim, 0),
+                                            payload["change_seq"])
+                self._pending_reported.pop(claim, None)
+            else:
+                self._pending_reported[claim] = int(payload.get("after") or 0)
 
     def start_background(self) -> bool:
         """Online: compile the final's task contract and its method
@@ -233,9 +335,38 @@ class Service:
         etype = raw_event.get("type")
         if etype not in HOOK_EVENT_TYPES:
             return  # unknown feed line: ignored, the feed is untrusted input
-        event = self.log.append(etype, raw_event.get("payload", {}))
+        payload = raw_event.get("payload", {})
+        end = self._feed.position
+        if not isinstance(payload, dict):
+            self._reject_feed_line(None, end, raw_event,
+                                   "payload is not an object")
+            return
+        # the feed offset just past this line: a restart resumes after the
+        # last line the ledger holds, even when it died before saving the
+        # offset file (it used to ingest the batch again, duplicating
+        # tool_use_ids)
+        payload = dict(payload, feed_offset=end)
+        try:
+            event = self.log.append(etype, payload)
+        except ValueError as err:   # a payload the ledger cannot encode
+            self._reject_feed_line(None, end, raw_event, str(err))
+            return
         self.builder.feed(event)
         self._index_effect(event)
+
+    def _reject_feed_line(self, start: Optional[int], end: int, line: Any,
+                          error: str) -> None:
+        """A feed line the server cannot ingest: recorded with where it
+        was, then skipped; the rest of the feed is still read."""
+        if isinstance(line, bytes):
+            excerpt = line[:200].decode("utf-8", "replace")
+        else:
+            excerpt = json.dumps(line, ensure_ascii=True, default=str)[:200]
+        payload = {"feed_offset": end, "error": str(error)[:200],
+                   "excerpt": excerpt}
+        if start is not None:
+            payload["start"] = start
+        self.log.append("hook_feed_rejected", payload)
 
     def _index_effect(self, event: Dict[str, Any]) -> None:
         etype = event.get("type")
@@ -263,10 +394,18 @@ class Service:
 
     def drain_hooks(self) -> int:
         with self._drain_lock:
-            fired = self._feed.poll()
-            if fired:
+            try:
+                return self._feed.poll()
+            finally:
                 self._save_feed_offset()
-            return fired
+
+    def _drain_for_verb(self) -> None:
+        """A verb's drain: an error while ingesting the feed is the
+        verifier's own problem and never fails the solver's call."""
+        try:
+            self.drain_hooks()
+        except Exception as err:  # noqa: BLE001
+            print(f"gv: hook feed drain failed: {err!r}", file=sys.stderr)
 
     def _saved_feed_offset(self) -> int:
         try:
@@ -290,14 +429,18 @@ class Service:
         """Record this server's launch in the ledger. The solver shares the
         verifier's machine and can stop it and start its own with other
         settings (observed: seats moved off their provider, their effort cut
-        to low); a launch whose settings or code differ from the first, or
-        a second server on the same state while one is alive, is recorded
-        and voids every later certificate (see verifier_integrity)."""
+        to low); a launch whose settings or code differ from the first is
+        recorded and voids every later certificate (see
+        verifier_integrity). A second server on the same state never gets
+        here while the first holds the state lock; only where no lock could
+        be taken does the pidfile probe stand in, and a live pid there is
+        recorded as a concurrent start."""
         fingerprint = _digest(launch)
         first = next((e["payload"] for e in self.log.replay()
                       if e["type"] == "server_started"), None)
         pidfile = os.path.join(self.state_dir, SERVER_PIDFILE)
-        other = _live_server_pid(pidfile)
+        other = (None if self.server_lock is not None
+                 else _live_server_pid(pidfile))
         self.log.append("server_started", {
             "pid": os.getpid(), "fingerprint": fingerprint,
             "launch": launch})
@@ -319,7 +462,7 @@ class Service:
     def commit(self, label: str, kind: str, text: str,
                deps: List[str],
                revises: Optional[str] = None) -> Dict[str, Any]:
-        self.drain_hooks()
+        self._drain_for_verb()
         payload = {"label": label, "kind": kind, "text": text, "deps": deps}
         if revises:
             payload["revises"] = revises
@@ -327,6 +470,7 @@ class Service:
         background = self.background_checks and kind not in ("final", "effect")
         deferred: List[str] = []
         split_deps = self.background_checks and kind == "final"
+        event = None
         try:
             event = self.log.append("commit", payload)
             if background or split_deps:
@@ -340,6 +484,12 @@ class Service:
                 self.builder.feed(event)
         except VERB_ERRORS as err:
             failure = str(err)
+            if event is not None and isinstance(err, UnresolvedCommit):
+                # the commit event stays for audit; this one says it
+                # recorded nothing, so replay skips it instead of failing
+                # on it (a restart used to die on such a commit, over and
+                # over) and readers of the ledger do not count it
+                self._record_commit_failed(event["seq"], failure)
         if split_deps and failure is None and label in self.builder.labels:
             # a final's contract is compiled and checked independently of the
             # claims it cites: their checks (first triggered by this commit,
@@ -360,12 +510,12 @@ class Service:
                 # the solver cannot see the ledger's sequence numbers; an
                 # unresolved reference gets the record's live index so the
                 # retry needs no status round trip
-                effects = [l for l in self.builder.labels
-                           if l.startswith("effect:")]
+                # a snapshot: concurrent verbs add labels meanwhile
+                labels = list(self.builder.labels)
+                effects = [l for l in labels if l.startswith("effect:")]
                 result["known_references"] = (
-                    [l for l in self.builder.labels
-                     if not l.startswith("effect:")]
-                    + effects[-40:])
+                    [l for l in labels if not l.startswith("effect:")]
+                    + effects[-EFFECTS_LISTED:])
                 result["note"] = ("effect:<seq> names a recorded TOOL RESULT "
                                   "by its ledger sequence number; the most "
                                   "recent results are listed last")
@@ -401,6 +551,14 @@ class Service:
             self._mark_reported(claim_id, status)
         return self._with_news(result)
 
+    def _record_commit_failed(self, seq: int, error: str) -> None:
+        try:
+            self.log.append("commit_failed", {"commit": seq,
+                                              "error": error[:500]})
+        except Exception as err:  # noqa: BLE001 - the verb still answers
+            print(f"gv: could not record commit_failed: {err!r}",
+                  file=sys.stderr)
+
     def _check_in_background(self, claim_id: str, deferred: List[str]) -> None:
         """Run the deferred checks off the verb's thread: the claim's own
         check and those of the claims it cites side by side (a claim's local
@@ -425,7 +583,52 @@ class Service:
     def _mark_reported(self, claim_id: str, status: str) -> None:
         if status == "refuted":
             with self._news_lock:
-                self._reported.add(claim_id)
+                self._deliver(claim_id)
+
+    def _refuted_at(self, claim_id: str) -> Optional[int]:
+        """The seq of the status_change that refuted the claim as it stands
+        now; None when that event has not landed (the store changes first)
+        or the claim was refuted without one."""
+        last = self._last_change.get(claim_id)
+        return last[0] if last and last[1] == "refuted" else None
+
+    def _delivered(self, claim_id: str) -> bool:
+        """Whether the solver was told of the claim's current refutation.
+        Called under the news lock."""
+        after = self._pending_reported.get(claim_id)
+        if after is not None:
+            # told before the refuting event landed: the first refutation
+            # after that point is the one it was told of
+            landed = [r for r in self._refutations.get(claim_id, ())
+                      if r > after]
+            if not landed:
+                return True
+            del self._pending_reported[claim_id]
+            self._reported[claim_id] = max(self._reported.get(claim_id, 0),
+                                           landed[0])
+        key = self._refuted_at(claim_id)
+        if key is None:
+            return claim_id in self._reported
+        return self._reported.get(claim_id, -1) >= key
+
+    def _deliver(self, claim_id: str) -> None:
+        """Note (in memory and in the ledger) that the solver was told of
+        the claim's current refutation. Called under the news lock."""
+        if self._delivered(claim_id):
+            return
+        key = self._refuted_at(claim_id)
+        if key is not None:
+            marker = {"claim": claim_id, "change_seq": key}
+        else:
+            last = self._last_change.get(claim_id)
+            marker = {"claim": claim_id, "change_seq": None,
+                      "after": last[0] if last else 0}
+        try:
+            # _observe applies the marker as it is appended
+            self.log.append("news_delivered", marker)
+        except Exception:  # noqa: BLE001 - the in-memory note still holds
+            self._observe({"type": "news_delivered", "seq": 0,
+                           "payload": marker})
 
     def _news(self) -> list:
         """Refutations the solver has not been told of yet: a check that
@@ -433,12 +636,12 @@ class Service:
         out = []
         with self._news_lock:
             for label, cid in list(self.builder.labels.items()):
-                if label.startswith("effect:") or cid in self._reported:
+                if label.startswith("effect:") or self._delivered(cid):
                     continue
                 row = self.store.get(cid)
                 if row["kind"] == "effect" or row["status"] != "refuted":
                     continue
-                self._reported.add(cid)
+                self._deliver(cid)
                 out.append({"label": label, "status": "refuted",
                             "why": _refutation_brief(self.store, cid)})
         return out
@@ -457,7 +660,7 @@ class Service:
         return out
 
     def verify(self, label: str) -> Dict[str, Any]:
-        self.drain_hooks()
+        self._drain_for_verb()
         try:
             claim_id = self.builder.resolve(label)
             self.log.append("verify_request", {"target": claim_id, "cause": "mcp"})
@@ -477,7 +680,7 @@ class Service:
         return self._with_news(result)
 
     def certificate(self, final_label: str) -> Dict[str, Any]:
-        self.drain_hooks()
+        self._drain_for_verb()
         try:
             final_id = self.builder.resolve(final_label)
             cert = request_certificate(self.store, self.kernel, self.log,
@@ -525,7 +728,7 @@ class Service:
         return self._with_news(result)
 
     def status(self, label: Optional[str] = None) -> Dict[str, Any]:
-        self.drain_hooks()
+        self._drain_for_verb()
         if label is not None:
             try:
                 claim_id = self.builder.resolve(label)
@@ -543,7 +746,15 @@ class Service:
                 self._mark_reported(claim_id, row["status"])
             return self._with_news(result)
         out = {}
-        for label, cid in self.builder.labels.items():
+        effects = []
+        # a snapshot: concurrent verbs add labels meanwhile
+        for label, cid in list(self.builder.labels.items()):
+            if label.startswith("effect:"):
+                # every recorded tool result has a label; listing each one
+                # grew the map past 20K characters (and every response is
+                # recorded back into the ledger), so effects are counted
+                effects.append(label)
+                continue
             row = self.store.get(cid)
             if row.get("confident"):
                 out[label] = f"{row['status']} (confident)"
@@ -554,6 +765,12 @@ class Service:
                 out[label] = f"{row['status']} (checking)"
             else:
                 out[label] = row["status"]
+        if effects:
+            out["effects" if "effects" not in out else "effect:*"] = {
+                "recorded": len(effects),
+                "latest": effects[-EFFECTS_LISTED:],
+                "note": "effect:<seq> names a recorded tool result; "
+                        "gv.status(<ref>) shows one"}
         return self._with_news(out)
 
     def _checking(self, claim_id: str) -> bool:
@@ -635,7 +852,40 @@ def _live_server_pid(pidfile: str) -> Optional[int]:
     return pid
 
 
+class StateBusy(RuntimeError):
+    """Another live process holds the state's server lock."""
+
+
+def hold_server_lock(state_dir: str):
+    """Take the state's server lock for this process's lifetime: an
+    exclusive, non-blocking flock on <state>/server.lock. Returns the open
+    lock file (keep it referenced), or None where advisory locks are
+    unavailable; raises StateBusy when another process holds it. The
+    kernel drops the lock when its holder exits, however it exits, so a
+    dead or zombie server never blocks its restart."""
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    os.makedirs(state_dir, exist_ok=True)
+    handle = open(os.path.join(state_dir, SERVER_LOCK), "a+", encoding="ascii")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, PermissionError):
+        handle.close()
+        raise StateBusy(
+            f"another gv server holds {os.path.join(state_dir, SERVER_LOCK)}; "
+            "this process exits without touching the state") from None
+    except OSError:
+        handle.close()
+        return None   # the filesystem offers no flock: the pidfile probe
+    return handle
+
+
 RECENT_EFFECTS = 8           # tool results a gv response lists at most
+# recorded tool results named in an unresolved commit's known_references
+# and in the all-labels status map
+EFFECTS_LISTED = 40
 EFFECT_EXCERPT_CHARS = 100   # of each listed call's input and output
 
 
@@ -931,6 +1181,14 @@ def main() -> None:
                     help="the seats' web_search knowledge channel; turn it "
                          "off for a benchmark whose answers are published")
     args = ap.parse_args()
+    # before anything reads or writes the state: a second process on a
+    # served state (a stray `gv-mcp-server </dev/null`, a solver's own
+    # launch) leaves no event, no precompile, no pidfile
+    try:
+        server_lock = hold_server_lock(args.state_dir)
+    except StateBusy as busy:
+        print(f"gv-mcp-server: {busy}", file=sys.stderr)
+        sys.exit(3)
     kernel_factory = None
     if args.seats == "codex":
         from .llm.codex_backend import CodexBackend
@@ -949,7 +1207,8 @@ def main() -> None:
                       model=args.model,
                       memory_dir=args.memory_dir,
                       toolchain_dir=args.toolchain_dir,
-                      trigger=args.trigger)
+                      trigger=args.trigger,
+                      server_lock=server_lock)
     server = build_server(service)   # imports the MCP server modules
     # every module the seats import must be importable by the main thread
     # first: a seat thread and the server importing the same package at

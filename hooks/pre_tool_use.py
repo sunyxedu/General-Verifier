@@ -38,7 +38,10 @@ def main() -> None:
         },
         ensure_ascii=False,
     )
-    with open(feed, "a", encoding="utf-8") as f:
+    # a lone surrogate (undecodable bytes in a tool's input) cannot be
+    # encoded as UTF-8 and used to raise here, dropping the call from the
+    # record: it is written as "?", so the line is always written and valid
+    with open(feed, "a", encoding="utf-8", errors="replace") as f:
         f.write(line + "\n")
 
 
