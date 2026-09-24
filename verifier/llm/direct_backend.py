@@ -73,7 +73,11 @@ TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 BILLING_STATUSES = {402}
 BILLING_DELAYS = (60, 120, 300, 600, 600, 600, 600, 600)
 TRANSIENT_DELAYS = (0, 20, 60, 120, 240)
-DEFAULT_MAX_TOKENS = 32000
+# the output budget a direct call starts with. Reasoning counts against it,
+# and at max effort obligation compilation alone spends 35-50k tokens: a
+# smaller start pays a whole truncated attempt before the retry
+DEFAULT_MAX_TOKENS = 64000
+MAX_OUTPUT_TOKENS = 128000   # the most a retry asks for
 EMIT_TOOL = "emit"
 
 
@@ -380,9 +384,8 @@ class DirectBackend:
         self.uses_role_wire_schema = True
         self.transcripts: List[Dict[str, Any]] = []
         # the output budget each role last needed: a role whose reasoning
-        # outgrew the default once (obligation compilation at max effort
-        # spends 35-50k tokens) starts there next time instead of paying a
-        # whole truncated attempt again on every call
+        # outgrew the default once starts there next time instead of paying
+        # a whole truncated attempt again on every call
         self._role_budget: Dict[str, int] = {}
         self._budget_lock = threading.Lock()
 
@@ -437,10 +440,10 @@ class DirectBackend:
                 attempts.append({"role": role.name, "seconds": round(
                     time.time() - attempt_started, 3), "error": last,
                     "max_tokens": max_tokens, "usage": err.usage or None})
-                if max_tokens >= 4 * DEFAULT_MAX_TOKENS:
+                if max_tokens >= MAX_OUTPUT_TOKENS:
                     raise RoleError(f"{role.name}: output budget exhausted "
                                     f"at {max_tokens} tokens: {last}")
-                max_tokens = min(2 * max_tokens, 4 * DEFAULT_MAX_TOKENS)
+                max_tokens = min(2 * max_tokens, MAX_OUTPUT_TOKENS)
                 with self._budget_lock:
                     self._role_budget[role.name] = max(
                         max_tokens, self._role_budget.get(role.name, 0))
