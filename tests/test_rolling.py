@@ -63,3 +63,37 @@ def test_a_rerun_skips_tasks_that_already_have_a_result(tmp_path):
     starts = [l for l in (batch / "concurrency.log").read_text().splitlines()
               if l.startswith("start")]
     assert starts.count("start a") == 1 and starts.count("start c") == 1
+
+
+def test_a_restarted_scheduler_adopts_a_task_still_running(tmp_path):
+    import time
+    fake = tmp_path / "fake_run.py"
+    fake.write_text(FAKE_RUN)
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    # a task a previous scheduler started: its run.py outlives the scheduler
+    slow = tmp_path / "terminal_bench" / "run.py"
+    slow.parent.mkdir()
+    slow.write_text(FAKE_RUN.replace("time.sleep(0.6)", "time.sleep(2)"))
+    orphan = subprocess.Popen(
+        [sys.executable, str(slow), "--tasks-file", "x", "--job-name", "a",
+         "--jobs-dir", str(batch), "--n-concurrent", "1", "--arm", "gv-codex"],
+        start_new_session=True)
+    time.sleep(0.3)
+    tasks_file = tmp_path / "tasks.txt"
+    tasks_file.write_text("a\nb\n")
+    done = subprocess.run(
+        [sys.executable, ROLLING, "--tasks-file", str(tasks_file),
+         "--batch-dir", str(batch), "--max-concurrent", "2",
+         "--min-free-gb", "0", "--hard-free-gb", "0", "--pull-timeout", "0",
+         "--poll-seconds", "0.05", "--run-py", str(fake), "--keep-images",
+         "--", "--arm", "gv-codex"],
+        capture_output=True, text=True, timeout=120)
+    orphan.wait(timeout=30)
+    assert done.returncode == 0, done.stderr
+    log = (batch / "rolling.log").read_text()
+    assert "adopted running a" in log and "start a " not in log
+    starts = [l for l in (batch / "concurrency.log").read_text().splitlines()
+              if l.startswith("start")]
+    assert starts.count("start a") == 1
+    assert "a\t1" in (batch / "summary.tsv").read_text()

@@ -12,11 +12,14 @@ before any task finishes. This scheduler instead:
   - removes a finished task's image (Harbor already removed its container
     after copying its artifacts back), so the images of all tasks never
     sit on the disk together;
-  - below --hard-free-gb, saves the newest task's /gv-state, stops it and
-    queues it again once (an infrastructure stop, not a result);
+  - below --hard-free-gb, saves the newest task's /gv-state, stops it,
+    moves its job directory aside and queues it again (an infrastructure
+    stop, not a result: every task runs until it has one);
   - copies each running task's /gv-state into its trial directory every
     --backup-seconds, so a lost container loses minutes, not the run;
-  - skips tasks whose job already has a result, so a rerun resumes.
+  - skips tasks whose job already has a result, and adopts tasks a previous
+    scheduler left running, so a restart resumes without duplicates;
+  - writes <batch-dir>/summary.tsv (task, reward) when every task is done.
 
 Everything after `--` is passed to run.py unchanged (arm, model, effort,
 service tier, ...). Example:
@@ -68,7 +71,8 @@ def trial_dirs(job_dir: str) -> List[str]:
     if not os.path.isdir(job_dir):
         return []
     return [os.path.join(job_dir, d) for d in sorted(os.listdir(job_dir))
-            if "__" in d and os.path.isdir(os.path.join(job_dir, d))]
+            if "__" in d and "." not in d
+            and os.path.isdir(os.path.join(job_dir, d))]
 
 
 def container_of(trial: str) -> str:
@@ -120,10 +124,38 @@ def save_state(container: str, trial: str, name: str) -> bool:
 
 
 class Running:
-    def __init__(self, task: str, proc: subprocess.Popen, job_dir: str):
+    def __init__(self, task: str, proc: Optional[subprocess.Popen],
+                 job_dir: str, pid: Optional[int] = None):
         self.task, self.proc, self.job_dir = task, proc, job_dir
+        self.pid = proc.pid if proc is not None else pid
         self.started = time.time()
         self.image: Optional[str] = None
+
+    def alive(self) -> bool:
+        if self.proc is not None:
+            return self.proc.poll() is None
+        try:
+            os.kill(self.pid, 0)   # adopted: re-parented to init
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        # a zombie answers the signal probe; it is still gone
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(self.pid)],
+                              capture_output=True, text=True).stdout.strip()
+        return bool(stat) and not stat.startswith("Z")
+
+    def stop(self) -> None:
+        for sig, wait in ((signal.SIGTERM, 60), (signal.SIGKILL, 10)):
+            try:
+                os.killpg(self.pid, sig)
+            except ProcessLookupError:
+                return
+            deadline = time.time() + wait
+            while self.alive() and time.time() < deadline:
+                time.sleep(1)
+            if not self.alive():
+                return
 
     def trial(self) -> Optional[str]:
         trials = trial_dirs(self.job_dir)
@@ -144,6 +176,27 @@ class Running:
         if image:
             self.image = image
         return running == "true"
+
+
+def adopt(batch_dir: str, tasks: List[str]) -> Dict[str, int]:
+    """run.py processes a previous scheduler started for this batch and
+    that still run (their sessions outlive it): task -> pid."""
+    out = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True,
+                         text=True).stdout
+    found: Dict[str, int] = {}
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        parts = cmd.split()
+        if not any(p.endswith("terminal_bench/run.py") for p in parts[:3]):
+            continue
+        try:
+            task = parts[parts.index("--job-name") + 1]
+            jobs = parts[parts.index("--jobs-dir") + 1]
+        except (ValueError, IndexError):
+            continue
+        if os.path.abspath(jobs) == os.path.abspath(batch_dir) and task in tasks:
+            found[task] = int(pid)
+    return found
 
 
 def main() -> None:
@@ -179,9 +232,15 @@ def main() -> None:
 
     excluded = set(read_tasks(args.exclude_file)) if args.exclude_file else set()
     queue = [t for t in read_tasks(args.tasks_file) if t not in excluded]
+    all_tasks = list(queue)
     queue = [t for t in queue if not done(os.path.join(args.batch_dir, t))]
     requeued: Dict[str, int] = {}
     running: List[Running] = []
+    for task, pid in adopt(args.batch_dir, queue).items():
+        running.append(Running(task, None, os.path.join(args.batch_dir, task),
+                               pid=pid))
+        queue.remove(task)
+        log(args.batch_dir, f"adopted running {task} (pid {pid})")
     pulling: Optional[Running] = None
     last_backup = 0.0
     stopping = False
@@ -199,7 +258,7 @@ def main() -> None:
     while (queue or running) and not stopping:
         # finished tasks: record, drop the image
         for r in list(running):
-            if r.proc.poll() is None:
+            if r.alive():
                 continue
             running.remove(r)
             if pulling is r:
@@ -213,34 +272,32 @@ def main() -> None:
 
         free = free_gb(disk_path)
 
-        # out of disk: stop the newest task, queue it again once
+        # out of disk: stop the newest task, queue it again
         if free < args.hard_free_gb and running:
             r = max(running, key=lambda x: x.started)
             trial, cont = r.trial(), r.container()
             if trial and cont:
                 save_state(cont, trial, "gv-state-at-diskguard")
-            os.killpg(r.proc.pid, signal.SIGTERM)
-            try:
-                r.proc.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                os.killpg(r.proc.pid, signal.SIGKILL)
+            r.stop()
             if cont:
                 docker("rm", "-f", cont)
             running.remove(r)
             if pulling is r:
                 pulling = None
-            if trial:
-                os.rename(trial, trial + ".diskguard-stopped")
-            if requeued.get(r.task, 0) < 1:
-                requeued[r.task] = requeued.get(r.task, 0) + 1
-                queue.append(r.task)
+            n = requeued.get(r.task, 0) + 1
+            requeued[r.task] = n
+            if os.path.isdir(r.job_dir):
+                # the whole job aside: Harbor wrote a result for the stopped
+                # trial, and the rerun starts a fresh job under the name
+                os.rename(r.job_dir, f"{r.job_dir}.diskguard-stopped-{n}")
+            queue.append(r.task)
             log(args.batch_dir, f"disk {free:.1f} GB < {args.hard_free_gb}: "
-                f"stopped {r.task} (state saved), requeued="
-                f"{r.task in queue}")
+                f"stopped {r.task} (state saved, job moved aside), queued "
+                f"again (stop #{n})")
             continue
 
         # the last admission's container is up (or it gave up): admit again
-        if pulling and (pulling.container_up() or pulling.proc.poll() is not None
+        if pulling and (pulling.container_up() or not pulling.alive()
                         or time.time() - pulling.started > args.pull_timeout):
             pulling = None
 
@@ -289,18 +346,16 @@ def main() -> None:
             trial, cont = r.trial(), r.container()
             if trial and cont:
                 save_state(cont, trial, "gv-state-at-stop")
-            try:
-                os.killpg(r.proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        for r in running:
-            try:
-                r.proc.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                os.killpg(r.proc.pid, signal.SIGKILL)
+            r.stop()
             cont = r.container()
             if cont:
                 docker("rm", "-f", cont)
+    else:
+        with open(os.path.join(args.batch_dir, "summary.tsv"), "w",
+                  encoding="utf-8") as f:
+            f.write("task\treward\n")
+            for t in all_tasks:
+                f.write(f"{t}\t{reward(os.path.join(args.batch_dir, t))}\n")
     log(args.batch_dir, "finished")
 
 
