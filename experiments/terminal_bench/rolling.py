@@ -43,6 +43,7 @@ import time
 from typing import Dict, List, Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+MAX_NO_RESULT = 3   # run.py exits without a trial result this often: give up
 RUN_PY = os.path.join(HERE, "run.py")
 
 
@@ -235,6 +236,7 @@ def main() -> None:
     all_tasks = list(queue)
     queue = [t for t in queue if not done(os.path.join(args.batch_dir, t))]
     requeued: Dict[str, int] = {}
+    failures: Dict[str, int] = {}
     running: List[Running] = []
     for task, pid in adopt(args.batch_dir, queue).items():
         running.append(Running(task, None, os.path.join(args.batch_dir, task),
@@ -263,8 +265,23 @@ def main() -> None:
             running.remove(r)
             if pulling is r:
                 pulling = None
-            log(args.batch_dir, f"done {r.task} reward={reward(r.job_dir)} "
-                f"after {(time.time() - r.started) / 60:.0f} min")
+            got = reward(r.job_dir)
+            if got == "-":
+                # run.py ended without a trial result (setup failed, a
+                # stale job directory, ...): that is no result, run it again
+                failures[r.task] = failures.get(r.task, 0) + 1
+                n = failures[r.task]
+                if os.path.isdir(r.job_dir):
+                    os.rename(r.job_dir, f"{r.job_dir}.noresult-{n}")
+                if n < MAX_NO_RESULT:
+                    queue.append(r.task)
+                log(args.batch_dir, f"no result {r.task} after "
+                    f"{(time.time() - r.started) / 60:.0f} min (#{n}); "
+                    + ("queued again" if n < MAX_NO_RESULT else
+                       f"given up after {n}, see {r.task}.log"))
+            else:
+                log(args.batch_dir, f"done {r.task} reward={got} "
+                    f"after {(time.time() - r.started) / 60:.0f} min")
             if r.image and not args.keep_images:
                 busy = {x.image for x in running}
                 if r.image not in busy and docker("rmi", r.image).returncode == 0:

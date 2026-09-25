@@ -97,3 +97,26 @@ def test_a_restarted_scheduler_adopts_a_task_still_running(tmp_path):
               if l.startswith("start")]
     assert starts.count("start a") == 1
     assert "a\t1" in (batch / "summary.tsv").read_text()
+
+
+def test_a_task_that_ends_without_a_result_runs_again(tmp_path):
+    fake = tmp_path / "fake_run.py"
+    # first launch of "a" leaves no result (a setup failure), the next succeeds
+    fake.write_text(FAKE_RUN.replace(
+        "trial = os.path.join", "marker = os.path.join(a.jobs_dir, 'failed-once')\n"
+        "if a.job_name == 'a' and not os.path.exists(marker):\n"
+        "    open(marker, 'w').close(); sys.exit(1)\n"
+        "trial = os.path.join"))
+    tasks_file = tmp_path / "tasks.txt"
+    tasks_file.write_text("a\n")
+    batch = tmp_path / "batch"
+    done = subprocess.run(
+        [sys.executable, ROLLING, "--tasks-file", str(tasks_file),
+         "--batch-dir", str(batch), "--max-concurrent", "1",
+         "--min-free-gb", "0", "--hard-free-gb", "0", "--pull-timeout", "0",
+         "--poll-seconds", "0.05", "--run-py", str(fake), "--keep-images",
+         "--", "--arm", "gv-codex"],
+        capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr
+    log = (batch / "rolling.log").read_text()
+    assert "no result a" in log and "done a reward=1" in log
