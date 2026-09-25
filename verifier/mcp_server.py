@@ -39,7 +39,7 @@ import time
 from collections import deque
 from typing import Any, Dict, List, Optional
 
-from verifier.core.model import CLAIM_KINDS
+from verifier.core.model import CLAIM_FINAL, CLAIM_KINDS
 from .stream.builder import Builder, TraceError, UnresolvedCommit
 from .engine.certificate import request_certificate
 from .core.events import EventLog
@@ -235,6 +235,15 @@ class Service:
                           start_offset=max(feed_offset,
                                            self._saved_feed_offset()),
                           on_reject=self._reject_feed_line)
+        # a final a revision made stale is checked again at once: nothing
+        # else would reopen it while the solver polls gv.status for its
+        # verdict (only a certificate request rechecks a stale claim), and
+        # the check it had running settles nothing any more
+        if self.background_checks:
+            self.store.on_stale(self._recheck_stale_finals)
+            self._recheck_stale_finals(
+                [(cid, CLAIM_FINAL) for cid in self.builder.finals
+                 if self.store.status(cid) == "stale"], None)
 
     def _replay(self) -> int:
         """Rebuild the graph, the news already delivered, and the effect
@@ -590,6 +599,15 @@ class Service:
         except Exception as err:  # noqa: BLE001 - the verb still answers
             print(f"gv: could not record commit_failed: {err!r}",
                   file=sys.stderr)
+
+    def _recheck_stale_finals(self, staled, revised) -> None:
+        for cid, kind in staled:
+            if kind != CLAIM_FINAL or self.store.superseded(cid):
+                continue
+            self.log.append("recheck_scheduled",
+                            {"claim": cid, "reason": "stale final",
+                             "revised": revised})
+            self._check_in_background(cid, [cid])
 
     def _check_in_background(self, claim_id: str, deferred: List[str]) -> None:
         """Run the deferred checks off the verb's thread: the claim's own
