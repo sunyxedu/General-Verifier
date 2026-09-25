@@ -40,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from typing import Dict, List, Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -179,6 +180,17 @@ class Running:
         return running == "true"
 
 
+def move_aside(path: str, tag: str) -> str:
+    """Rename a job directory out of the way under the first unused
+    <path>.<tag>-<n>; never fails the scheduler for a name already taken."""
+    n = 1
+    while os.path.exists(f"{path}.{tag}-{n}"):
+        n += 1
+    dest = f"{path}.{tag}-{n}"
+    os.rename(path, dest)
+    return dest
+
+
 def adopt(batch_dir: str, tasks: List[str]) -> Dict[str, int]:
     """run.py processes a previous scheduler started for this batch and
     that still run (their sessions outlive it): task -> pid."""
@@ -258,103 +270,109 @@ def main() -> None:
         f"hard stop < {args.hard_free_gb} GB; run.py {' '.join(run_args)}")
 
     while (queue or running) and not stopping:
-        # finished tasks: record, drop the image
-        for r in list(running):
-            if r.alive():
-                continue
-            running.remove(r)
-            if pulling is r:
-                pulling = None
-            got = reward(r.job_dir)
-            if got == "-":
-                # run.py ended without a trial result (setup failed, a
-                # stale job directory, ...): that is no result, run it again
-                failures[r.task] = failures.get(r.task, 0) + 1
-                n = failures[r.task]
-                if os.path.isdir(r.job_dir):
-                    os.rename(r.job_dir, f"{r.job_dir}.noresult-{n}")
-                if n < MAX_NO_RESULT:
-                    queue.append(r.task)
-                log(args.batch_dir, f"no result {r.task} after "
-                    f"{(time.time() - r.started) / 60:.0f} min (#{n}); "
-                    + ("queued again" if n < MAX_NO_RESULT else
-                       f"given up after {n}, see {r.task}.log"))
-            else:
-                log(args.batch_dir, f"done {r.task} reward={got} "
-                    f"after {(time.time() - r.started) / 60:.0f} min")
-            if r.image and not args.keep_images:
-                busy = {x.image for x in running}
-                if r.image not in busy and docker("rmi", r.image).returncode == 0:
-                    log(args.batch_dir, f"removed image {r.image}")
+        try:
+            # finished tasks: record, drop the image
+            for r in list(running):
+                if r.alive():
+                    continue
+                running.remove(r)
+                if pulling is r:
+                    pulling = None
+                got = reward(r.job_dir)
+                if got == "-":
+                    # run.py ended without a trial result (setup failed, a
+                    # stale job directory, ...): that is no result, run it again
+                    failures[r.task] = failures.get(r.task, 0) + 1
+                    n = failures[r.task]
+                    if os.path.isdir(r.job_dir):
+                        move_aside(r.job_dir, "noresult")
+                    if n < MAX_NO_RESULT:
+                        queue.append(r.task)
+                    log(args.batch_dir, f"no result {r.task} after "
+                        f"{(time.time() - r.started) / 60:.0f} min (#{n}); "
+                        + ("queued again" if n < MAX_NO_RESULT else
+                           f"given up after {n}, see {r.task}.log"))
+                else:
+                    log(args.batch_dir, f"done {r.task} reward={got} "
+                        f"after {(time.time() - r.started) / 60:.0f} min")
+                if r.image and not args.keep_images:
+                    busy = {x.image for x in running}
+                    if r.image not in busy and docker("rmi", r.image).returncode == 0:
+                        log(args.batch_dir, f"removed image {r.image}")
 
-        free = free_gb(disk_path)
+            free = free_gb(disk_path)
 
-        # out of disk: stop the newest task, queue it again
-        if free < args.hard_free_gb and running:
-            r = max(running, key=lambda x: x.started)
-            trial, cont = r.trial(), r.container()
-            if trial and cont:
-                save_state(cont, trial, "gv-state-at-diskguard")
-            r.stop()
-            if cont:
-                docker("rm", "-f", cont)
-            running.remove(r)
-            if pulling is r:
-                pulling = None
-            n = requeued.get(r.task, 0) + 1
-            requeued[r.task] = n
-            if os.path.isdir(r.job_dir):
-                # the whole job aside: Harbor wrote a result for the stopped
-                # trial, and the rerun starts a fresh job under the name
-                os.rename(r.job_dir, f"{r.job_dir}.diskguard-stopped-{n}")
-            queue.append(r.task)
-            log(args.batch_dir, f"disk {free:.1f} GB < {args.hard_free_gb}: "
-                f"stopped {r.task} (state saved, job moved aside), queued "
-                f"again (stop #{n})")
-            continue
-
-        # the last admission's container is up (or it gave up): admit again
-        if pulling and (pulling.container_up() or not pulling.alive()
-                        or time.time() - pulling.started > args.pull_timeout):
-            pulling = None
-
-        if (queue and pulling is None and len(running) < args.max_concurrent
-                and free >= args.min_free_gb):
-            task = queue.pop(0)
-            job_dir = os.path.join(args.batch_dir, task)
-            fd, tasks_file = tempfile.mkstemp(prefix=f"rolling-{task}-",
-                                              suffix=".txt")
-            with os.fdopen(fd, "w") as f:
-                f.write(task + "\n")
-            out = open(os.path.join(args.batch_dir, f"{task}.log"), "a")
-            proc = subprocess.Popen(
-                [sys.executable, args.run_py, *run_args, "--tasks-file", tasks_file,
-                 "--job-name", task, "--jobs-dir", args.batch_dir,
-                 "--n-concurrent", "1"],
-                stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=True)
-            r = Running(task, proc, job_dir)
-            running.append(r)
-            pulling = r
-            log(args.batch_dir, f"start {task} ({len(running)} running, "
-                f"{len(queue)} queued, {free:.1f} GB free)")
-
-        if time.time() - last_backup >= args.backup_seconds:
-            last_backup = time.time()
-            saved = 0
-            for r in running:
+            # out of disk: stop the newest task, queue it again
+            if free < args.hard_free_gb and running:
+                r = max(running, key=lambda x: x.started)
                 trial, cont = r.trial(), r.container()
-                if trial and cont and r.container_up():
-                    saved += save_state(cont, trial, "gv-state-live")
-            status = {"time": time.strftime("%F %T"), "free_gb": round(free, 1),
-                      "running": [r.task for r in running], "queued": queue,
-                      "backed_up": saved}
-            with open(os.path.join(args.batch_dir, "rolling_status.json"),
-                      "w", encoding="utf-8") as f:
-                json.dump(status, f, indent=1)
-            log(args.batch_dir, f"heartbeat: {len(running)} running, "
-                f"{len(queue)} queued, {free:.1f} GB free, backed up {saved}")
-        time.sleep(args.poll_seconds)
+                if trial and cont:
+                    save_state(cont, trial, "gv-state-at-diskguard")
+                r.stop()
+                if cont:
+                    docker("rm", "-f", cont)
+                running.remove(r)
+                if pulling is r:
+                    pulling = None
+                n = requeued.get(r.task, 0) + 1
+                requeued[r.task] = n
+                if os.path.isdir(r.job_dir):
+                    # the whole job aside: Harbor wrote a result for the stopped
+                    # trial, and the rerun starts a fresh job under the name
+                    move_aside(r.job_dir, "diskguard-stopped")
+                queue.append(r.task)
+                log(args.batch_dir, f"disk {free:.1f} GB < {args.hard_free_gb}: "
+                    f"stopped {r.task} (state saved, job moved aside), queued "
+                    f"again (stop #{n})")
+                continue
+
+            # the last admission's container is up (or it gave up): admit again
+            if pulling and (pulling.container_up() or not pulling.alive()
+                            or time.time() - pulling.started > args.pull_timeout):
+                pulling = None
+
+            if (queue and pulling is None and len(running) < args.max_concurrent
+                    and free >= args.min_free_gb):
+                task = queue.pop(0)
+                job_dir = os.path.join(args.batch_dir, task)
+                fd, tasks_file = tempfile.mkstemp(prefix=f"rolling-{task}-",
+                                                  suffix=".txt")
+                with os.fdopen(fd, "w") as f:
+                    f.write(task + "\n")
+                out = open(os.path.join(args.batch_dir, f"{task}.log"), "a")
+                proc = subprocess.Popen(
+                    [sys.executable, args.run_py, *run_args, "--tasks-file", tasks_file,
+                     "--job-name", task, "--jobs-dir", args.batch_dir,
+                     "--n-concurrent", "1"],
+                    stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                    start_new_session=True)
+                r = Running(task, proc, job_dir)
+                running.append(r)
+                pulling = r
+                log(args.batch_dir, f"start {task} ({len(running)} running, "
+                    f"{len(queue)} queued, {free:.1f} GB free)")
+
+            if time.time() - last_backup >= args.backup_seconds:
+                last_backup = time.time()
+                saved = 0
+                for r in running:
+                    trial, cont = r.trial(), r.container()
+                    if trial and cont and r.container_up():
+                        saved += save_state(cont, trial, "gv-state-live")
+                status = {"time": time.strftime("%F %T"), "free_gb": round(free, 1),
+                          "running": [r.task for r in running], "queued": queue,
+                          "backed_up": saved}
+                with open(os.path.join(args.batch_dir, "rolling_status.json"),
+                          "w", encoding="utf-8") as f:
+                    json.dump(status, f, indent=1)
+                log(args.batch_dir, f"heartbeat: {len(running)} running, "
+                    f"{len(queue)} queued, {free:.1f} GB free, backed up {saved}")
+            time.sleep(args.poll_seconds)
+
+        except Exception:  # noqa: BLE001 - the batch outlives one bad pass
+            log(args.batch_dir, "scheduler pass failed, continuing:\n"
+                + traceback.format_exc())
+            time.sleep(args.poll_seconds)
 
     if stopping:
         log(args.batch_dir, f"signal: stopping {len(running)} running tasks "

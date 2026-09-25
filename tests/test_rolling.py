@@ -120,3 +120,13 @@ def test_a_task_that_ends_without_a_result_runs_again(tmp_path):
     assert done.returncode == 0, done.stderr
     log = (batch / "rolling.log").read_text()
     assert "no result a" in log and "done a reward=1" in log
+
+
+def test_moving_a_job_aside_takes_the_first_unused_name(tmp_path):
+    sys.path.insert(0, os.path.dirname(ROLLING))
+    import rolling
+    job = tmp_path / "t"
+    (tmp_path / "t.diskguard-stopped-1").mkdir()
+    job.mkdir(); (job / "x").write_text("1")
+    dest = rolling.move_aside(str(job), "diskguard-stopped")
+    assert dest.endswith("t.diskguard-stopped-2") and not job.exists()
