@@ -255,7 +255,10 @@ def test_fast_direction_audit_preserves_features_rank_and_ordered_outcome(
         semantic_report(cold, cold_commit["claim_id"])
 
 
-def test_default_online_service_uses_adapter_without_executor_seat(tmp_path):
+def test_default_online_service_uses_adapter_without_executor_seat(
+        tmp_path, monkeypatch):
+    # the adapter path under the separate final path's stage sequence
+    monkeypatch.setenv("GV_UNIFY_FINAL", "0")
     cache = default_accepted_method_cache()
     cache.clear()
     delivery = tmp_path / "live-delivery" / "result.json"

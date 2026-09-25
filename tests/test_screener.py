@@ -244,3 +244,38 @@ def test_a_high_screen_drops_the_speculative_compile(tmp_path):
 
     assert store.get(cid)["confident"] is True
     assert discharger.seen == []
+
+
+def test_a_unified_final_admitted_by_the_screener_certifies_screened(tmp_path):
+    import time
+    log = EventLog(os.path.join(tmp_path, "events.jsonl"))
+    store = ClaimStore(trigger=TRIGGER_ON_COMMIT)
+    backend = FixtureBackend({"obligations": COMPILE, "screener": HIGH})
+    discharger = StubDischarger()
+    artifacts = ArtifactStore(os.path.join(tmp_path, "art"))
+    kernel = Kernel(store, log, backend, artifacts, critic_role=None,
+                    discharger=discharger, screener_role=SCREENER_AGENT,
+                    unify_final=True)
+    cid = store.add_claim(Claim(CLAIM_FINAL, "the task is complete"))
+    # admitted at once; the certificate waits for no check and says so
+    cert = request_certificate(store, kernel, log, artifacts, cid)
+    assert cert["verdict"] in ("screened", "verified")
+    types = [e["type"] for e in log.replay()]
+    assert "admitted_final_check" in types
+    # the task contract is still checked, in the background
+    deadline = time.time() + 10
+    while store.status(cid) != "verified" and time.time() < deadline:
+        time.sleep(0.05)
+    assert store.status(cid) == "verified"
+    assert request_certificate(store, kernel, log, artifacts, cid)["verdict"] \
+        == "verified"
+
+
+def test_the_stop_gate_accepts_a_screened_final():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "stop_hook", os.path.join(os.path.dirname(__file__), "..", "hooks",
+                                  "stop.py"))
+    stop = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stop)
+    assert stop.VERDICT_RANK["screened"] >= stop.VERDICT_RANK["partial"]

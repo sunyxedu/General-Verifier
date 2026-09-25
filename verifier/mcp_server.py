@@ -1003,7 +1003,8 @@ def harness_roles(state_dir: str) -> Dict[str, Any]:
 def _default_kernel(sc: Service, model, backend=None,
                     critic_rounds: Optional[int] = None,
                     parallel_obligations: Optional[int] = None,
-                    parallel_claims: Optional[int] = None) -> Kernel:
+                    parallel_claims: Optional[int] = None,
+                    unify_final: Optional[bool] = None) -> Kernel:
     from .llm.agents import AgentBackend, SCREENER_AGENT
     from .execution.config import (
         contract_cache_enabled,
@@ -1125,6 +1126,14 @@ def _default_kernel(sc: Service, model, backend=None,
                   parallel_claims=parallel_claims,
                   screener_role=screener,
                   critic_rounds_nonfinal=nonfinal_rounds,
+                  # online, the final takes the path of any claim (screened,
+                  # non-final critic budget) with its contract still
+                  # compiled from the task statement; GV_UNIFY_FINAL=0
+                  # restores the separate final path
+                  unify_final=(
+                      unify_final if unify_final is not None else (
+                          sc.live_world
+                          and os.environ.get("GV_UNIFY_FINAL", "1") != "0")),
                   # online: overlap the critic's review with the checks
                   # (GV_SPECULATIVE_DISCHARGE=0 disables)
                   speculative_discharge=(

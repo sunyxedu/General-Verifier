@@ -116,6 +116,9 @@ EVENT_TYPES = (
     # a final a revision made stale, queued for its recheck (nothing else
     # reopens it while the solver waits on gv.status)
     "recheck_scheduled",
+    # a final the screener admitted: its task contract is checked in the
+    # background, the solver may finish on the admission
+    "admitted_final_check",
     # the verifier's own launches: a restart with other settings or code, or
     # a second server on the same state, voids the session's certificates
     "server_started",

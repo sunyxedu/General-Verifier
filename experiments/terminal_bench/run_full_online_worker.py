@@ -781,6 +781,8 @@ def _execute_live_chain(modules, state: Path, backend, projection,
         return modules["mcp"]._default_kernel(
             service, RUNTIME["model"], backend=backend, critic_rounds=3,
             parallel_obligations=4, parallel_claims=1,
+            # this audit pins the separate final path's stage sequence
+            unify_final=False,
         )
 
     service = modules["mcp"].Service(

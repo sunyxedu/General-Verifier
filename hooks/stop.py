@@ -50,7 +50,9 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-VERDICT_RANK = {"refuted": 0, "unverified": 1, "partial": 2,
+# screened: the screener admitted the final on the retained record (its
+# contract check continues in the background); it meets the default goal
+VERDICT_RANK = {"refuted": 0, "unverified": 1, "screened": 2, "partial": 2,
                 "supported": 3, "verified": 4}
 BLOCKS_FILE = "goal_blocks.json"
 # the run's block cap is this many per-final budgets: new finals refresh

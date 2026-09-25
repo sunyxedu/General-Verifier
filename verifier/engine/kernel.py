@@ -162,6 +162,7 @@ class Kernel:
         screener_role=None,
         critic_rounds_nonfinal: Optional[int] = None,
         speculative_discharge: bool = False,
+        unify_final: bool = False,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -213,6 +214,11 @@ class Kernel:
         # the last repair stands unreviewed instead of failing closed;
         # 0 seats no critic for non-finals. None -> the full game.
         self.critic_rounds_nonfinal = critic_rounds_nonfinal
+        # UNIFIED FINAL: the final takes the path of any claim — screened
+        # (an admitted final's contract is checked in the background) and
+        # reviewed on the non-final critic budget — while its contract is
+        # still compiled from the authoritative task statement.
+        self.unify_final = unify_final
         # SPECULATIVE DISCHARGE: start settling the compiler's obligations
         # while the critic reviews them. Obligation nodes are
         # content-addressed, so every obligation the repaired
@@ -557,8 +563,21 @@ class Kernel:
             return hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
 
     # admission screening
+    def _check_admitted_final(self, claim_id: str) -> None:
+        """An admitted final's task contract is still checked, off the
+        solver's path: forced (the admission does not stop it), in the
+        background, settling the final as any check does."""
+        def run():
+            try:
+                self.verify(claim_id, force=True)
+            except Exception as err:  # noqa: BLE001 - background, reported
+                self._check_raised(claim_id, err)
+        self.log.append("admitted_final_check", {"claim": claim_id})
+        threading.Thread(target=run, name=f"gv-final-{claim_id[:8]}",
+                         daemon=True).start()
+
     def _screen(self, row: Dict) -> bool:
-        """Grade a non-final claim from the retained record before any
+        """Grade a claim from the retained record before any
         instrument is spent. `high` admits it as confident: assumed by
         every consumer, unverified, no check run. Returns True when the
         claim was admitted and verification must stop here."""
@@ -621,6 +640,8 @@ class Kernel:
         self.log.append("status_change",
                         {"claim": row["id"], "status": STATUS_UNVERIFIED,
                          "confident": True, "reason": "admitted on the record"})
+        if row["kind"] == CLAIM_FINAL:
+            self._check_admitted_final(row["id"])
         return True
 
     # the retained record, sliced for the screener: each cited event in
@@ -716,12 +737,15 @@ class Kernel:
             self._conclude_unverified(row["id"], "premise chain refuted")
             return
 
-        # admission screening: a non-final claim the retained record
-        # already settles is assumed, not checked. A final is the task
-        # contract and is always checked; an explicit request (force)
-        # always checks.
+        # admission screening: a claim the retained record already settles
+        # is assumed, not checked; an explicit request (force) always
+        # checks. A final is screened only when finals are handled like any
+        # claim (unify_final); one admitted this way still has its whole
+        # task contract checked, in the background (see _screen): the
+        # solver may finish on the admission, the ledger gets the verdict.
         screen = (self.screener_role is not None and not force
-                  and row["kind"] != CLAIM_FINAL
+                  and (row["kind"] != CLAIM_FINAL
+                       or getattr(self, "unify_final", False))
                   and row["status"] == STATUS_UNVERIFIED)
         compiled = None
         if screen and self.speculative_discharge:
@@ -1797,9 +1821,13 @@ class Kernel:
         critic_role = critic_role or self.critic_role
         if critic_role is None:
             return payload
-        advisory = (row["kind"] != CLAIM_FINAL
-                    and self.critic_rounds_nonfinal is not None)
-        rounds = (self.critic_rounds_nonfinal if advisory
+        # with finals handled like any claim (unify_final) the critic's
+        # budget and advisory review apply to the final and its precompile
+        # too: the review no longer holds a final's check back
+        nonfinal = getattr(self, "critic_rounds_nonfinal", None)
+        advisory = nonfinal is not None and (
+            row["kind"] != CLAIM_FINAL or getattr(self, "unify_final", False))
+        rounds = (nonfinal if advisory
                   else self.critic_rounds)
         if rounds <= 0:
             return payload

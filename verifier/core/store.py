@@ -378,8 +378,6 @@ class ClaimStore:
         if current != STATUS_UNVERIFIED:
             raise IllegalTransition(
                 f"confident admission requires unverified, not {current}")
-        if self._row(claim_id)["kind"] == CLAIM_FINAL:
-            raise IllegalTransition("a final is never admitted confident")
         self.db.execute(
             "UPDATE claims SET confident=1, confidence_reason=? WHERE id=?",
             (reason, claim_id))
