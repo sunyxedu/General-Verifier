@@ -12,7 +12,8 @@ before any task finishes. This scheduler instead:
   - removes a finished task's image (Harbor already removed its container
     after copying its artifacts back), so the images of all tasks never
     sit on the disk together;
-  - below --hard-free-gb, saves the newest task's /gv-state, stops it,
+  - below --hard-free-gb, saves the /gv-state of the task whose container
+    holds the most disk, stops it,
     moves its job directory aside and queues it again (an infrastructure
     stop, not a result: every task runs until it has one);
   - copies each running task's /gv-state into its trial directory every
@@ -98,6 +99,23 @@ def reward(job_dir: str) -> str:
                     or {})
             return "ERR:" + str(info.get("exception_type", "?"))
     return "-"
+
+
+def container_sizes() -> Dict[str, float]:
+    """Writable-layer size of each running container, in bytes."""
+    r = docker("ps", "-s", "--format", "{{.Names}}\t{{.Size}}", timeout=300)
+    units = {"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}
+    sizes: Dict[str, float] = {}
+    for line in r.stdout.splitlines():
+        name, _, size = line.partition("\t")
+        head = size.split(" ")[0]          # "10.5GB (virtual 11.1GB)"
+        num = head.rstrip("kKMGTB")
+        unit = head[len(num):]
+        try:
+            sizes[name] = float(num) * units.get(unit, 1)
+        except ValueError:
+            continue
+    return sizes
 
 
 def save_state(container: str, trial: str, name: str) -> bool:

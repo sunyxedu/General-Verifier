@@ -101,6 +101,11 @@ class GVCodex(TieredCodex):
             f'[ -e {SEATS_HOME}/config.toml ] || printf %s "" > {SEATS_HOME}/config.toml\n'
             f'export HOME="${{HOME:-/root}}"\n'
             f"export CODEX_HOME={SEATS_HOME}\n"
+            # the verifier's checks install what they need into the task's
+            # container, whose disk is the task's: no package caches left
+            # behind (a pip cache alone reached 2.9 GB); the solver's own
+            # environment is untouched
+            "export PIP_NO_CACHE_DIR=1 UV_NO_CACHE=1\n"
             # the server's stderr is otherwise lost with the per-run
             # CODEX_HOME; keep it beside the ledger for diagnosis. Arguments
             # pass through: a solver that ran `gv-mcp-server --help` got a

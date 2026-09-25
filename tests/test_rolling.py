@@ -130,3 +130,15 @@ def test_moving_a_job_aside_takes_the_first_unused_name(tmp_path):
     job.mkdir(); (job / "x").write_text("1")
     dest = rolling.move_aside(str(job), "diskguard-stopped")
     assert dest.endswith("t.diskguard-stopped-2") and not job.exists()
+
+
+def test_container_sizes_parse_docker_ps_sizes(monkeypatch):
+    sys.path.insert(0, os.path.dirname(ROLLING))
+    import rolling
+
+    class Out:
+        stdout = ("big__a__env-main-1\t10.5GB (virtual 11.1GB)\n"
+                  "small__b__env-main-1\t577MB (virtual 10.3GB)\n")
+    monkeypatch.setattr(rolling, "docker", lambda *a, **k: Out())
+    sizes = rolling.container_sizes()
+    assert sizes["big__a__env-main-1"] > sizes["small__b__env-main-1"] > 0
