@@ -14,6 +14,7 @@ from verifier.core.events import EventLog
 from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
 from verifier.engine.game import BindingGame
+from verifier.engine.contract_compiler import ContractCompiler
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
@@ -66,7 +67,7 @@ def test_precompiled_contract_serves_the_final(tmp_path):
         tmp_path, {"obligations": CONTRACT, "critic": PASS,
                    "oracles": ORACLE, "judger": JUDGE_YES})
     assert kernel.start_final_precompile() is True
-    kernel._precompile_thread.join()
+    kernel.contracts.precompile_thread.join()
 
     pre = events(log, "contract_precompiled")
     assert pre and pre[0]["obligations"] == [
@@ -97,7 +98,7 @@ def test_a_changed_task_statement_is_compiled_fresh(tmp_path):
         tmp_path, {"obligations": CONTRACT, "critic": PASS,
                    "oracles": ORACLE, "judger": JUDGE_YES})
     kernel.start_final_precompile()
-    kernel._precompile_thread.join()
+    kernel.contracts.precompile_thread.join()
     (tmp_path / "task.md").write_text("A different task entirely")
 
     final = store.add_claim(Claim(CLAIM_FINAL, "the task is done"))
@@ -113,7 +114,7 @@ def test_non_final_claims_never_use_the_precompiled_contract(tmp_path):
         tmp_path, {"obligations": CONTRACT, "critic": PASS,
                    "oracles": ORACLE, "judger": JUDGE_YES})
     kernel.start_final_precompile()
-    kernel._precompile_thread.join()
+    kernel.contracts.precompile_thread.join()
 
     cid = store.add_claim(Claim(CLAIM_ASSERTION, "an intermediate fact"))
 
@@ -138,14 +139,14 @@ def test_a_precompile_the_critic_rejects_leaves_the_final_untouched(tmp_path):
                    "oracles": ORACLE, "judger": JUDGE_YES})
     kernel.critic_rounds = 1
     kernel.start_final_precompile()
-    kernel._precompile_thread.join()
+    kernel.contracts.precompile_thread.join()
 
     pre = events(log, "contract_precompiled")
     assert pre and "critic" in pre[0]["error"]
     # nothing was written to the store for any real claim
     assert store.db.execute(
         "SELECT COUNT(*) FROM evidence WHERE claim_id != ?",
-        (Kernel.PRECOMPILE_ID,)).fetchone()[0] == 0
+        (ContractCompiler.PRECOMPILE_ID,)).fetchone()[0] == 0
     final = store.add_claim(Claim(CLAIM_FINAL, "the task is done"))
     # the real final compiles fresh and fails closed on its own account
     assert store.status(final) == "unverified"

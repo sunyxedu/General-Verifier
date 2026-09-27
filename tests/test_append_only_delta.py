@@ -133,7 +133,7 @@ def test_append_delta_keeps_ococ_and_second_critic_gets_complete_contract(
     machine, row, backend = _machine(
         tmp_path, monkeypatch, [original, delta], [APPEND_ATTACK, PASS])
 
-    obligations = machine._compile_obligations(row)
+    obligations = machine.contracts.compile_obligations(row)
 
     assert _roles(backend) == ["obligations", "critic", "obligations", "critic"]
     assert json.loads(backend.calls[3]["variables"]["obligations_json"]) == \
@@ -174,7 +174,7 @@ def test_unambiguous_bad_delta_is_rejected_then_retried_within_budget(
         tmp_path, monkeypatch,
         [INITIAL, bad_delta, DELTA], [APPEND_ATTACK, PASS], rounds=3)
 
-    obligations = machine._compile_obligations(row)
+    obligations = machine.contracts.compile_obligations(row)
 
     assert _roles(backend) == [
         "obligations", "critic", "obligations", "obligations", "critic"]
@@ -195,7 +195,7 @@ def test_invalid_delta_retries_are_bounded_and_exhaustion_fails_closed(
         tmp_path, monkeypatch,
         [INITIAL, {"obligations": []}, FULL], [APPEND_ATTACK], rounds=3)
 
-    assert machine._compile_obligations(row) is None
+    assert machine.contracts.compile_obligations(row) is None
     assert _roles(backend) == [
         "obligations", "critic", "obligations", "obligations"]
     guard = [event for event in _events(machine, "decomposition_attacked")
@@ -218,7 +218,7 @@ def test_changed_old_like_tail_cannot_replace_old_and_fresh_critic_can_reject(
         [INITIAL, {"obligations": [CHANGED_LIKE]}],
         [APPEND_ATTACK, second_attack], rounds=2)
 
-    assert machine._compile_obligations(row) is None
+    assert machine.contracts.compile_obligations(row) is None
     assert _roles(backend) == ["obligations", "critic", "obligations", "critic"]
     reviewed = json.loads(backend.calls[-1]["variables"]["obligations_json"])
     assert reviewed == [OLD, CHANGED_LIKE]
@@ -240,7 +240,7 @@ def test_non_append_repairs_keep_complete_replacement_semantics(
     machine, row, backend = _machine(
         tmp_path, monkeypatch, [INITIAL, replacement], [attack, PASS])
 
-    obligations = machine._compile_obligations(row)
+    obligations = machine.contracts.compile_obligations(row)
 
     assert _roles(backend) == ["obligations", "critic", "obligations", "critic"]
     assert _public(obligations) == replacement["obligations"]
@@ -254,7 +254,7 @@ def test_default_off_keeps_legacy_full_append_repair(tmp_path, monkeypatch):
         tmp_path, monkeypatch, [INITIAL, FULL], [APPEND_ATTACK, PASS],
         enabled=None)
 
-    obligations = machine._compile_obligations(row)
+    obligations = machine.contracts.compile_obligations(row)
 
     assert machine.append_only_deltas is False
     assert machine.append_only_delta_protocol is None

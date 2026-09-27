@@ -294,8 +294,8 @@ def prepare_contract_entry(
         try:
             with model_scope(claim_id=claim_id, claim_kind=row["kind"],
                              locus="final_task" if row["kind"] == CLAIM_FINAL else "support"):
-                payload = kernel._compile_obligation_payload(row)
-                obligations = kernel._materialize_obligations(row, payload, record=False)
+                payload = kernel.contracts.compile_payload(row)
+                obligations = kernel.contracts.materialize_obligations(row, payload, record=False)
         except Exception as error:
             # No outer retry; provider/schema retries inside the unchanged
             # role implementation still run and every attempt stays charged.

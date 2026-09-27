@@ -139,8 +139,8 @@ def test_replay_uses_exact_contract_without_compiler_or_critic_calls(tmp_path):
     claims, support_payload, final_payload, inputs, _, _, bundle = _bundle(tmp_path)
     machine, store, backend = _kernel(tmp_path, "replay", claims, replay=bundle)
 
-    support = machine._compile_obligations(store.get(claims[1].id))
-    final = machine._compile_obligations(store.get(claims[2].id))
+    support = machine.contracts.compile_obligations(store.get(claims[1].id))
+    final = machine.contracts.compile_obligations(store.get(claims[2].id))
 
     assert not backend.calls
     assert [item.text for item in support] == [
@@ -193,7 +193,7 @@ def test_runtime_premise_status_does_not_invalidate_preexecution_lookup(tmp_path
         tmp_path, "status-replay", claims, replay=bundle)
 
     store.set_verified(premise.id, basis="record")
-    obligations = machine._compile_obligations(store.get(dependent.id))
+    obligations = machine.contracts.compile_obligations(store.get(dependent.id))
 
     assert not backend.calls
     assert [item.text for item in obligations] == ["residual check"]
@@ -208,7 +208,7 @@ def test_missing_or_materialization_mismatch_is_hard_failure_without_fallback(
     extra = Claim(CLAIM_ASSERTION, "not in the sealed graph")
     store.add_claim(extra)
     with pytest.raises(ContractReplayError, match="missing"):
-        machine._compile_obligations(store.get(extra.id))
+        machine.contracts.compile_obligations(store.get(extra.id))
     assert not backend.calls
 
     entry = bundle.lookup(claims[1].id)
@@ -362,12 +362,12 @@ def test_live_kernel_cannot_inject_contract_replay(tmp_path):
     machine.contract_replay = _TestBoundReplay(bundle)
     machine.live_world = True
     with pytest.raises(ValueError, match="offline diagnostic"):
-        machine._compile_obligations(store.get(claims[-1].id))
+        machine.contracts.compile_obligations(store.get(claims[-1].id))
 
     machine.live_world = False
     machine.contract_replay = bundle
     with pytest.raises(ValueError, match="bound to this kernel"):
-        machine._compile_obligations(store.get(claims[-1].id))
+        machine.contracts.compile_obligations(store.get(claims[-1].id))
 
 
 def test_bound_provider_revalidates_kernel_before_lookup(tmp_path):
@@ -394,7 +394,7 @@ def test_bound_provider_revalidates_kernel_before_lookup(tmp_path):
     provider = BoundProvider()
     machine.contract_replay = provider
     with pytest.raises(ContractReplayError, match="bound graph changed"):
-        machine._compile_obligations(store.get(claims[-1].id))
+        machine.contracts.compile_obligations(store.get(claims[-1].id))
     assert not provider.lookup_called
     assert not backend.calls
     assert not list(machine.log.replay())
@@ -407,9 +407,9 @@ def test_default_compiler_critic_variables_and_order_are_unchanged(tmp_path):
     backend = FixtureBackend({"obligations": payload, "critic": PASS})
     machine, store, _ = _kernel(tmp_path, "ordinary", [claim], backend=backend)
     row = store.get(claim.id)
-    expected = machine._obligation_compile_variables(row)
+    expected = machine.contracts.compile_variables(row)
 
-    obligations = machine._compile_obligations(row)
+    obligations = machine.contracts.compile_obligations(row)
 
     assert [call["role"] for call in backend.calls] == ["obligations", "critic"]
     assert backend.calls[0]["variables"] == expected

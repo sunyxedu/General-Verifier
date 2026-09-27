@@ -276,7 +276,7 @@ def fixture_bundle(sc, config, *, failed=False):
             entries.append(passed_contract_entry(
                 claim_id=claim_id, compile_input_sha256=digest,
                 critic_receipt_sha256=content_hash("synthetic operator receipt"),
-                payload=payload, obligations=sc.kernel._materialize_obligations(
+                payload=payload, obligations=sc.kernel.contracts.materialize_obligations(
                     sc.store.get(claim_id), payload, record=False)))
     return build_contract_bundle_bytes(
         identity=replay_identity(sc.kernel, graph, config),
@@ -303,7 +303,7 @@ def test_loader_derives_identity_from_fresh_arm_not_bundle_fields(tmp_path):
     # original, status-sensitive compiler digest at contract lookup time.
     second.store.db.execute("UPDATE claims SET status='verified' WHERE id=?",
                             (second.builder.labels["effect:2"],))
-    assert second.kernel._compile_obligations(assertion(second))
+    assert second.kernel.contracts.compile_obligations(assertion(second))
     assert not backend.calls
 
 
@@ -397,7 +397,7 @@ def test_bound_replay_allows_evidence_growth_but_not_later_structural_drift(tmp_
                                      expected_sha256=hashlib.sha256(raw).hexdigest())
     attach_replay_contracts(sc.kernel, provider)
     cid = assertion(sc)["id"]
-    obligation = sc.kernel._compile_obligations(assertion(sc))[0]
+    obligation = sc.kernel.contracts.compile_obligations(assertion(sc))[0]
     sc.store.add_obligation(cid, obligation)
     sc.store.record_evidence(cid, {"outcome": "holds"})
     sc.store.db.execute("UPDATE claims SET status='verified' WHERE id=?", (cid,))
@@ -405,7 +405,7 @@ def test_bound_replay_allows_evidence_growth_but_not_later_structural_drift(tmp_
     assert provider.lookup(sc.builder.finals[-1])
     sc.store.add_claim(Claim("assertion", "new off-slice context after attach"))
     with pytest.raises(ReplaySetupError, match="structure changed"):
-        sc.kernel._compile_obligations(sc.store.get(sc.builder.finals[-1]))
+        sc.kernel.contracts.compile_obligations(sc.store.get(sc.builder.finals[-1]))
     assert not sc.kernel.backend.calls
 
 
@@ -427,12 +427,12 @@ def test_attach_rechecks_exact_semantic_inputs_and_constructor_is_not_loader(tmp
                                      expected_sha256=hashlib.sha256(raw).hexdigest())
     with pytest.raises(ReplaySetupError, match="operator-pinned"):
         KernelBoundReplay(sc.kernel, provider._bundle, graph, {})
-    original = sc.kernel._obligation_compile_variables
+    original = sc.kernel.contracts.compile_variables
 
     def changed(row):
         return dict(original(row), dependency_referent_context="changed semantic context")
 
-    sc.kernel._obligation_compile_variables = changed
+    sc.kernel.contracts.compile_variables = changed
     with pytest.raises(ReplaySetupError, match="compiler inputs changed"):
         attach_replay_contracts(sc.kernel, provider)
     assert sc.kernel.contract_replay is None

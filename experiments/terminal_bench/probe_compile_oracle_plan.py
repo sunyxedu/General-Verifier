@@ -198,8 +198,8 @@ def run_probe(
                 claim_id=row["id"], claim_kind=row["kind"],
                 locus="final_task",
             ):
-                payload = service.kernel._compile_obligation_payload(row)
-                obligations = service.kernel._materialize_obligations(
+                payload = service.kernel.contracts.compile_payload(row)
+                obligations = service.kernel.contracts.materialize_obligations(
                     row, payload, record=False)
             if not obligations or len(obligations) > MAX_OBLIGATIONS:
                 raise ValueError("compiled obligation count is outside probe bounds")

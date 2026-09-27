@@ -60,8 +60,8 @@ def test_same_task_candidates_compile_once_and_materialize_fresh_claims(tmp_path
     a, ar, _ = kernel(tmp_path, backend, cache, name="a", live_world=live)
     b, br, _ = kernel(tmp_path, backend, cache, name="b", final="different answer",
                       live_world=live)
-    first = a._compile_obligations(ar)
-    second = b._compile_obligations(br)
+    first = a.contracts.compile_obligations(ar)
+    second = b.contracts.compile_obligations(br)
     assert [call["role"] for call in backend.calls] == ["obligations", "critic"]
     assert first[0].claim_id == ar["id"] != br["id"] == second[0].claim_id
     assert first[0].id == second[0].id
@@ -77,7 +77,7 @@ def test_compiler_critic_and_repairs_receive_no_candidate_context(tmp_path):
     (state / "world" / "answer.txt").write_text("WORLD SECRET")
     machine.log.append("message", {"text": "LEDGER SECRET"})
     machine.memory_hits = "MEMORY SECRET"
-    assert machine._compile_obligations(row)
+    assert machine.contracts.compile_obligations(row)
     assert [call["role"] for call in backend.calls] == [
         "obligations", "critic", "obligations", "critic"]
     for call in backend.calls:
@@ -92,7 +92,7 @@ def test_cache_off_still_compiles_final_inside_authority_boundary(tmp_path):
     backend = fixture()
     machine, row, _ = kernel(tmp_path, backend, None)
 
-    assert machine._compile_obligations(row)
+    assert machine.contracts.compile_obligations(row)
 
     assert [call["role"] for call in backend.calls] == ["obligations", "critic"]
     for call in backend.calls:
@@ -105,14 +105,14 @@ def test_cache_off_still_compiles_final_inside_authority_boundary(tmp_path):
 def test_task_change_and_role_change_never_hit(tmp_path):
     backend, cache = fixture(), CompiledFinalContractCache()
     a, ar, _ = kernel(tmp_path, backend, cache, name="a")
-    a._compile_obligations(ar)
+    a.contracts.compile_obligations(ar)
     b, br, _ = kernel(tmp_path, backend, cache, name="b", task="A different task")
-    b._compile_obligations(br)
+    b.contracts.compile_obligations(br)
     c, cr, _ = kernel(tmp_path, backend, cache, name="c")
     c.obligations_role = replace(c.obligations_role, system="changed contract semantics")
-    c._compile_obligations(cr)
+    c.contracts.compile_obligations(cr)
     d, dr, _ = kernel(tmp_path, backend, cache, name="d", critic_rounds=2)
-    d._compile_obligations(dr)
+    d.contracts.compile_obligations(dr)
     assert len(backend.calls) == 8
     assert len(cache) == 4
 
@@ -129,7 +129,7 @@ def test_authority_mutation_during_compilation_is_never_published(tmp_path, chan
                 (state / "baseline").mkdir(exist_ok=True)
         return copy.deepcopy(PAYLOAD)
     backend.fixtures["obligations"] = compile_
-    assert machine._compile_obligations(row)
+    assert machine.contracts.compile_obligations(row)
     assert len(cache) == 0
     assert events(machine, "contract_cache_bypass")
 
@@ -145,7 +145,7 @@ def test_ineligible_contract_uses_legacy_candidate_specific_compiler(tmp_path, m
     machine, row, _ = kernel(tmp_path, backend, cache, **kwargs)
     if mode == "nonfinal":
         row["kind"] = "assertion"
-    machine._compile_obligations(row)
+    machine.contracts.compile_obligations(row)
     assert backend.calls[0]["variables"]["claim_text"] == row["text"]
     assert len(cache) == 0
 
@@ -153,11 +153,11 @@ def test_ineligible_contract_uses_legacy_candidate_specific_compiler(tmp_path, m
 def test_rejected_contract_not_cached_and_next_candidate_can_recover(tmp_path):
     backend, cache = fixture(critic=ATTACK), CompiledFinalContractCache()
     a, ar, _ = kernel(tmp_path, backend, cache, name="a", critic_rounds=1)
-    assert a._compile_obligations(ar) is None
+    assert a.contracts.compile_obligations(ar) is None
     assert len(cache) == 0
     backend.fixtures["critic"] = PASS
     b, br, _ = kernel(tmp_path, backend, cache, name="b", critic_rounds=1)
-    assert b._compile_obligations(br)
+    assert b.contracts.compile_obligations(br)
     assert len(cache) == 1
 
 
@@ -167,9 +167,9 @@ def test_empty_and_malformed_contracts_are_not_cached(tmp_path):
         machine, row, _ = kernel(tmp_path, backend, cache, name=str(index))
         if index:
             with pytest.raises(RoleError):
-                machine._compile_obligations(row)
+                machine.contracts.compile_obligations(row)
         else:
-            assert machine._compile_obligations(row) == []
+            assert machine.contracts.compile_obligations(row) == []
         assert len(cache) == 0
         assert cache.acquire("unrelated").leader
 
@@ -181,10 +181,10 @@ def test_interrupted_fill_releases_same_key(tmp_path):
         raise KeyboardInterrupt
     backend.fixtures["obligations"] = interrupt
     with pytest.raises(KeyboardInterrupt):
-        machine._compile_obligations(row)
+        machine.contracts.compile_obligations(row)
     assert not cache._flights
     backend.fixtures["obligations"] = PAYLOAD
-    assert machine._compile_obligations(row)
+    assert machine.contracts.compile_obligations(row)
 
 
 def test_24_candidates_single_flight_and_exact_contract(tmp_path):
@@ -198,7 +198,7 @@ def test_24_candidates_single_flight_and_exact_contract(tmp_path):
     candidates = [kernel(tmp_path, backend, cache, name=str(i), final=f"answer {i}")
                   for i in range(24)]
     with ThreadPoolExecutor(max_workers=24) as pool:
-        futures = [pool.submit(k._compile_obligations, row) for k, row, _ in candidates]
+        futures = [pool.submit(k.contracts.compile_obligations, row) for k, row, _ in candidates]
         assert started.wait(5)
         release.set()
         results = [f.result(timeout=10) for f in futures]
@@ -269,6 +269,6 @@ def test_runtime_calendar_rollover_during_fill_is_not_published(tmp_path, monkey
         return copy.deepcopy(PAYLOAD)
     backend, cache = fixture(obligations=compile_), CompiledFinalContractCache()
     machine, row, _ = kernel(tmp_path, backend, cache)
-    assert machine._compile_obligations(row)
+    assert machine.contracts.compile_obligations(row)
     assert len(cache) == 0
     assert events(machine, "contract_cache_bypass")

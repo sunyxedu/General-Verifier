@@ -16,9 +16,9 @@ import threading
 import pytest
 
 from verifier.core.events import EventLog
-from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL
+from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL, Obligation
 from verifier.core.store import ClaimStore, TRIGGER_LAZY, TRIGGER_ON_COMMIT
-from verifier.engine import kernel as kernel_module
+from verifier.engine import contract_compiler
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
@@ -320,7 +320,7 @@ def test_the_same_candidate_reuses_its_verdict(tmp_path):
     assert kernel.verify(one) == "verified"
     oid = store.obligation_children(one)[0]["id"]
     assert kernel.settler.settle_one(store.get(one),
-                              kernel_module.Obligation(one, "the file holds 15",
+                              Obligation(one, "the file holds 15",
                                                        "world"))[0] == "holds"
     assert len(gate.calls) == 1
     assert store.status(oid) == "verified"
@@ -386,10 +386,10 @@ def test_a_final_arriving_during_review_speculates_on_the_draft(tmp_path):
         speculative_discharge=True)
     kernel.start_final_precompile()
     for _ in range(200):
-        if getattr(kernel, "_draft_contract", None):
+        if kernel.contracts.draft_contract:
             break
         threading.Event().wait(0.05)
-    assert kernel._draft_contract
+    assert kernel.contracts.draft_contract
 
     final = store.add_claim(Claim(CLAIM_FINAL, "the task is done"))
 
@@ -406,7 +406,7 @@ def test_a_final_arriving_during_review_speculates_on_the_draft(tmp_path):
 
 def test_the_wait_for_a_precompile_under_review_is_bounded(tmp_path,
                                                           monkeypatch):
-    monkeypatch.setattr(kernel_module, "PRECOMPILE_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(contract_compiler, "PRECOMPILE_WAIT_SECONDS", 0.2)
     stuck = threading.Event()
     critic_calls = []
 

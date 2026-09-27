@@ -100,7 +100,7 @@ class PrecompiledFinalContract:
         )
         from .contract_cache import contract_cache_key
         from .contract_critic import CriticGame
-        from .kernel import Kernel
+        from .contract_compiler import ContractCompiler
 
         started = time.monotonic()
         outcome = self._outcome
@@ -115,7 +115,7 @@ class PrecompiledFinalContract:
                 with authority_compilation_backend(
                         self.backend, self.obligations_role,
                         self.critic_role) as session:
-                    variables = Kernel._authority_contract_variables(view)
+                    variables = ContractCompiler.authority_contract_variables(view)
                     outcome.key = contract_cache_key(
                         view=view, variables=variables,
                         backend_identity=session.identity,

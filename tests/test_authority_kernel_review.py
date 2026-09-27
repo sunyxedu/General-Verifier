@@ -129,9 +129,9 @@ def test_cross_candidate_repair_is_sanitized_and_hit_binds_current_claim(tmp_pat
     second, second_row = _kernel(b, backend, cache, "ANSWER_B_SECRET")
     first.log.append("message", {"text": "LEDGER_A_SECRET"})
 
-    first_obligations = first._compile_obligations(first_row)
+    first_obligations = first.contracts.compile_obligations(first_row)
     calls_after_cold_fill = len(backend.calls)
-    second_obligations = second._compile_obligations(second_row)
+    second_obligations = second.contracts.compile_obligations(second_row)
 
     assert [call["role"] for call in backend.calls] == [
         "obligations", "critic", "obligations", "critic",
@@ -187,7 +187,7 @@ def test_baseline_semantic_change_misses_but_host_root_change_does_not(tmp_path)
             "root": host_root, "identity": identity,
         })
         machine, row = _kernel(state, backend, cache, f"candidate {name}")
-        machine._compile_obligations(row)
+        machine.contracts.compile_obligations(row)
         machines.append(machine)
 
     # a compiles, b reuses despite its irrelevant host root, c recompiles
@@ -211,7 +211,7 @@ def test_compiler_failure_releases_flight_without_legacy_or_publish(tmp_path):
     machine, row = _kernel(state, backend, cache, "PRIVATE CANDIDATE ANSWER")
 
     with pytest.raises(RoleError, match="failed twice"):
-        machine._compile_obligations(row)
+        machine.contracts.compile_obligations(row)
 
     assert not cache._flights
     assert len(cache) == 0

@@ -287,8 +287,8 @@ def normalized_compile_inputs(kernel, row: dict[str, Any]) -> dict[str, Any]:
     state = os.path.abspath(os.path.dirname(kernel.log.path))
     if row["kind"] == CLAIM_FINAL:
         view = build_authority_compilation_view(state)
-        return copy.deepcopy(kernel._authority_contract_variables(view))
-    variables = copy.deepcopy(kernel._obligation_compile_variables(row))
+        return copy.deepcopy(kernel.contracts.authority_contract_variables(view))
+    variables = copy.deepcopy(kernel.contracts.compile_variables(row))
     if variables["ledger_path"] != os.path.join(state, "events.jsonl"):
         raise ReplaySetupError("unexpected compiler ledger locator")
     variables["ledger_path"] = _local_locator(variables["ledger_path"], state)

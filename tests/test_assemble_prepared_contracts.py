@@ -103,7 +103,7 @@ def test_validated_full_bundle_loads_into_two_fresh_diagnostic_arms(tmp_path, mo
             sc.kernel, sc.builder.finals[-1], config, result["bundle_bytes"],
             expected_sha256=result["bundle_sha256"])
         attach_replay_contracts(sc.kernel, provider)
-        materialized = {cid: sc.kernel._compile_obligations(sc.store.get(cid))
+        materialized = {cid: sc.kernel.contracts.compile_obligations(sc.store.get(cid))
                         for cid in args["expected_compile_inputs"]}
         provider.validate_inputs()
         arms.append((sc, materialized))
