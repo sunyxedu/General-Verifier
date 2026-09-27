@@ -22,7 +22,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from typing import Dict, List, Optional
 
-from ..execution.discharge import AgentDischarger, DischargeResult
+from ..execution.discharge import AgentDischarger
 from ..execution.resource_share import warmup_launches
 from ..config import (
     APPEND_ONLY_DELTA_PROTOCOL,
@@ -35,15 +35,15 @@ from ..execution.instruments import (
     world_evidence_context, world_map,
 )
 from ..core.model import (
-    Claim, Evidence, Obligation, basis_satisfies,
+    Evidence, Obligation, basis_satisfies,
     BASIS_RECORD, BASIS_WORLD,
     CLAIM_EFFECT, CLAIM_FINAL, OBLIGATION_KINDS,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
-    STRENGTH_ANALYTIC, STRENGTH_DECISIVE, strength_rank, weakest_strength,
-    SEVERITY_MUST, SEVERITY_SHOULD, SEVERITIES,
+    STRENGTH_ANALYTIC, STRENGTH_DECISIVE, weakest_strength,
+    SEVERITY_MUST, SEVERITIES,
     TASK_BEARING_REQUIRED, TASK_BEARING_UNCLEAR,
-    WITNESS_NONE, witness_admissible, circular_inputs,
+    WITNESS_NONE,
 )
 from ..llm import prompts
 from ..llm.agents import AgentRole, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
@@ -59,6 +59,9 @@ from .contract_cache import (
 from .source_evidence import bind_source_evidence_variables
 from ..core.world import world_epoch
 from .quoted_identities import recorded_identities, restore
+from .gates import (
+    GateScope, admissible_refutation, apply_backstop, transferable_refutation,
+)
 
 # attack rounds on a decomposition before the claim fails closed: each round
 # is one critic attempt; an `insufficient` verdict sends the decomposition
@@ -642,8 +645,8 @@ class Kernel:
         refused = None
         if verdict["confidence"] != "high" or settles is None:
             settles = None
-        elif verdict["verdict"] == "refuted" and not (
-                witness and witness_admissible(witness_kind, False)):
+        elif verdict["verdict"] == "refuted" and not admissible_refutation(
+                witness, witness_kind):
             # WITNESS AXIOM, as for any refutation: only a positive,
             # retained observation refutes; the full checks decide instead
             refused = ("a refutation needs a positive witness; reported "
@@ -1109,11 +1112,9 @@ class Kernel:
                     evidence = self.store.evidence_for(src["id"])
                     witness_kind = (evidence[-1].get("witness_kind")
                                     if evidence else None)
-                    transferable = (
-                        witness_admissible(witness_kind,
-                                           obligation.refutable_by_absence)
-                        and strength_rank(src_eff["effective_strength"])
-                        >= strength_rank(STRENGTH_DECISIVE))
+                    transferable = transferable_refutation(
+                        witness_kind, src_eff["effective_strength"],
+                        obligation)
                 if not transferable:
                     src = None
             if src is not None:
@@ -2546,127 +2547,13 @@ class Kernel:
             else:
                 with model_scope(stage="discharge", method_attempt=1, redo=0):
                     result = self.discharger.discharge(row, obligation)
-        if result.outcome == OUTCOME_REFUTED \
-                and strength_rank(result.strength) \
-                < strength_rank(STRENGTH_DECISIVE):
-            # backstop behind the binding game's own conversion (a custom
-            # binder could mislabel): nothing below decisive may refute —
-            # the instrument's scope gap is exactly what a negative
-            # verdict cannot carry across. None reads as decisive (direct
-            # discharge has no ladder), so pre-ladder paths are untouched.
-            result = DischargeResult(
-                outcome=OUTCOME_FAILED,
-                witness=(f"refutation below decisive strength is "
-                         f"inadmissible ({result.strength} instrument "
-                         f"reported: {result.witness})"),
-                artifact=result.artifact,
-                instrument=result.instrument,
-                basis=result.basis,
-                strength=result.strength,
-                assumed_premises=result.assumed_premises,
-            )
-        if result.outcome == OUTCOME_REFUTED and not witness_admissible(
-                result.witness_kind, obligation.refutable_by_absence):
-            # WITNESS AXIOM: a refutation is made of a positive, retained
-            # observation — an execution, a world artifact's content, or
-            # two contradicting records. Absence (nothing found, nothing
-            # printed, nothing captured) refutes only a presence
-            # requirement compiled as refutable_by_absence; an undeclared
-            # kind reads as none. Anything else is an evidence gap: the
-            # finding stays in the witness for audit, the verdict is
-            # failed, never refuted.
-            kind = result.witness_kind or WITNESS_NONE
-            result = DischargeResult(
-                outcome=OUTCOME_FAILED,
-                witness=(f"refutation witness of kind {kind!r} is "
-                         f"inadmissible for this obligation (absence and "
-                         f"silence never refute unless the obligation is a "
-                         f"presence requirement); reported: "
-                         f"{result.witness}"),
-                artifact=result.artifact,
-                instrument=result.instrument,
-                basis=result.basis,
-                strength=result.strength,
-                assumed_premises=result.assumed_premises,
-                witness_kind=result.witness_kind,
-                inputs=result.inputs,
-            )
-        circular = (circular_inputs(result.inputs)
-                    if result.outcome == OUTCOME_HOLDS else [])
-        if circular:
-            # INDEPENDENCE AXIOM: a delivered artifact (anything the solver
-            # produced or changed) may be the subject of a check or an input
-            # to it, never the authority that decides whether the subject
-            # is right. A holds whose declared authority is delivered is
-            # the circular certificate — it establishes consistency with
-            # the solver's own work, not truth — and settles nothing.
-            result = DischargeResult(
-                outcome=OUTCOME_FAILED,
-                witness=(f"circular evidence: delivered artifact(s) "
-                         f"{circular} declared as authority for the check; "
-                         f"a positive verdict grounded on the solver's own "
-                         f"output establishes consistency, not truth"),
-                artifact=result.artifact,
-                instrument=result.instrument,
-                basis=result.basis,
-                strength=result.strength,
-                assumed_premises=result.assumed_premises,
-                witness_kind=result.witness_kind,
-                inputs=result.inputs,
-            )
-        if result.outcome in (OUTCOME_HOLDS, OUTCOME_REFUTED) \
-                and not basis_satisfies(result.basis,
-                                        obligation.required_basis):
-            # backstop behind the binding game's method filter (direct
-            # discharge has no filter; a mislabel can slip an audit):
-            # evidence below the obligation's floor settles NOTHING, in
-            # either direction — a record counterexample of a world
-            # demand is the same laundering as a record pass, mirrored.
-            # Fails closed to failed; the reported finding stays in the
-            # witness for audit.
-            detail = (f" (reported counterexample: {result.witness})"
-                      if result.outcome == OUTCOME_REFUTED
-                      and result.witness else "")
-            result = DischargeResult(
-                outcome=OUTCOME_FAILED,
-                witness=(f"evidence basis {result.basis!r} below the "
-                         f"obligation's floor "
-                         f"{obligation.required_basis!r}{detail}"),
-                artifact=result.artifact,
-                instrument=result.instrument,
-                basis=result.basis,
-                strength=result.strength,
-                assumed_premises=result.assumed_premises,
-            )
-        if result.outcome in (OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_UNOBTAINABLE) \
-                and result.assumed_premises:
-            # gate on assumed premises: evidence may assume the content
-            # of the premises IN FORCE for this claim (the conditional
-            # fold charges those to every consumer) — never anything
-            # else. For a FINAL nothing is in force: its contract is
-            # adjudicated independently of the solver-derived graph and
-            # it is exempt from the premise fold, so an assumption there
-            # would never be charged to anyone. An id outside the
-            # in-force set (or unknown) is an undeclared axiom; the
-            # verdict it produced settles nothing.
-            in_force = self._premises_in_force(row)
-            illegal = sorted(set(result.assumed_premises) - in_force)
-            if illegal:
-                why = ("a completion claim's contract admits no assumed "
-                       "premises" if row["kind"] == CLAIM_FINAL
-                       else "assumed premises outside the claim's "
-                            "dependency closure")
-                result = DischargeResult(
-                    outcome=OUTCOME_FAILED,
-                    witness=(f"{why}: {illegal} "
-                             f"(reported {result.outcome}: "
-                             f"{result.witness})"),
-                    artifact=result.artifact,
-                    instrument=result.instrument,
-                    basis=result.basis,
-                    strength=result.strength,
-                    assumed_premises=result.assumed_premises,
-                )
+        # the axioms behind every discharge (a custom binder could
+        # mislabel, direct discharge has no game, an audit can be slipped):
+        # each violated one converts the result to failed, its finding
+        # kept in the witness for audit (see engine.gates)
+        result = apply_backstop(result, obligation, GateScope(
+            premises_in_force=frozenset(self._premises_in_force(row)),
+            completion_claim=row["kind"] == CLAIM_FINAL))
         evidence = Evidence(
             obligation_id=oid,
             instrument=result.instrument,

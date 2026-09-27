@@ -78,10 +78,10 @@ from ..core.model import (
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
     PROVENANCE_DELIVERED, ROLE_SUBJECT,
     STRENGTH_ANALYTIC, STRENGTH_DECISIVE, STRENGTHS, strength_rank,
-    WITNESS_NONE, witness_admissible, circular_inputs,
 )
 from ..llm.schema import RoleError
 from ..llm.typed_judger_backend import restricted_typed_judger_backend
+from .gates import below_decisive_reason, preflight_defect
 from .method_cache import AcceptedMethod, build_method_cache_key
 from .judger_prefetch import build_judger_evidence_packet
 from ..execution.record_shape import record_shape_json
@@ -1153,9 +1153,7 @@ class BindingGame:
                 # repair pass — a decisive method may yet refute honestly.
                 failed_seen = True
                 contrary_signal = True
-                reason = (f"refutation below decisive strength is "
-                          f"inadmissible ({strength} instrument reported: "
-                          f"{result.witness})")
+                reason = below_decisive_reason(strength, result.witness)
                 structural_feedback.append({
                     "procedure": procedure,
                     "reason": reason,
@@ -1265,9 +1263,8 @@ class BindingGame:
                         and strength != STRENGTH_DECISIVE:
                     failed_seen = True
                     contrary_signal = True
-                    reason = (f"refutation below decisive strength is "
-                              f"inadmissible (redo {rounds}; {strength} "
-                              f"instrument reported: {result.witness})")
+                    reason = below_decisive_reason(
+                        strength, result.witness, redo=rounds)
                     structural_feedback.append({
                         "procedure": procedure,
                         "reason": reason,
@@ -1428,9 +1425,7 @@ class BindingGame:
             attempt.rejected = reason
             return None
         if outcome == OUTCOME_REFUTED and strength != STRENGTH_DECISIVE:
-            reason = (f"refutation below decisive strength is "
-                      f"inadmissible ({strength} instrument reported: "
-                      f"{result.witness})")
+            reason = below_decisive_reason(strength, result.witness)
             attempt.audit["_contrary"] = True
             self._reject(row, obligation, method, reason)
             attempt.rejected = reason
@@ -1538,36 +1533,11 @@ class BindingGame:
     def _structural_defect(result: DischargeResult,
                            obligation: Obligation) -> Optional[str]:
         """The axioms checked on the executor's own declaration, before
-        any semantic audit: a refutation needs an admissible witness kind
-        (positive observation; absence only against a presence
-        requirement), a holds must not rest on a delivered artifact
-        standing as authority (the circular certificate), and a check
-        must leave the delivered world as it found it — a check is an
-        observation, and one that altered the delivery both corrupts the
-        subject for every later check and may have changed what the task
-        is graded on."""
-        changes = getattr(result, "world_changes", None)
-        if changes:
-            return ("check altered the delivered world: "
-                    + json.dumps(changes, ensure_ascii=False)[:400]
-                    + " — a check must leave the delivery as it found it "
-                    "(exercise mutable behaviour on a copy, or restore the "
-                    "state it changed before finishing)")
-        if result.outcome == OUTCOME_REFUTED and not witness_admissible(
-                result.witness_kind, obligation.refutable_by_absence):
-            kind = result.witness_kind or WITNESS_NONE
-            return (f"refutation witness of kind {kind!r} is inadmissible: "
-                    f"absence, silence, and undeclared witnesses never "
-                    f"refute unless the obligation is a presence "
-                    f"requirement (reported: {result.witness})")
-        if result.outcome == "holds":
-            circular = circular_inputs(result.inputs)
-            if circular:
-                return (f"circular evidence: delivered artifact(s) "
-                        f"{circular} declared as authority; a holds "
-                        f"grounded on the solver's own output establishes "
-                        f"consistency, not truth")
-        return None
+        any semantic audit (see engine.gates PREFLIGHT): the check left
+        the delivered world as it found it, a refutation carries an
+        admissible witness, and a holds rests on no delivered artifact
+        standing as authority."""
+        return preflight_defect(result, obligation)
 
     @staticmethod
     def _blocking(method: Dict[str, str], tier_listed: set,
