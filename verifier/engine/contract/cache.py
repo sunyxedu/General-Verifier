@@ -12,8 +12,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ..core.model import content_hash
-from .method_cache import _role_identity
+from ...core.model import content_hash
+from ..method_cache import _role_identity
 
 
 CONTRACT_CACHE_SCHEMA = "gv-authority-final-contract-v2"

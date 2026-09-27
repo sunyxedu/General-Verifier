@@ -18,7 +18,7 @@ import pytest
 from verifier.core.events import EventLog
 from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL, Obligation
 from verifier.core.store import ClaimStore, TRIGGER_LAZY, TRIGGER_ON_COMMIT
-from verifier.engine import contract_compiler
+from verifier.engine.contract import compiler as contract_compiler
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Sequence
 
-from ..core.model import (
+from ...core.model import (
     BASIS_RECORD,
     BASIS_WORLD,
     CLAIM_EFFECT,

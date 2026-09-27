@@ -20,25 +20,25 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Protocol
 
-from ..core.model import (
+from ...core.model import (
     BASIS_RECORD, CLAIM_EFFECT, CLAIM_FINAL, Obligation, SEVERITIES,
     SEVERITY_MUST, STATUS_VERIFIED, TASK_BEARING_REQUIRED,
     TASK_BEARING_UNCLEAR,
 )
-from ..execution.instruments import (
+from ...execution.instruments import (
     authoritative_task_context, world_evidence_context, world_map,
 )
-from ..execution.resource_share import warmup_launches
-from ..llm import prompts
-from ..llm.model_spans import model_scope, submit_with_context
+from ...execution.resource_share import warmup_launches
+from ...llm import prompts
+from ...llm.model_spans import model_scope, submit_with_context
 from .authority_view import (
     AuthorityViewUnavailable, build_authority_compilation_view,
 )
-from .contract_cache import CompiledFinalContract, contract_cache_key
-from .contract_critic import CriticGame
+from .cache import CompiledFinalContract, contract_cache_key
+from .critic import CriticGame
 from .quoted_identities import recorded_identities, restore
 from .referent import dependency_referent_context
-from .source_evidence import bind_source_evidence_variables
+from ..source_evidence import bind_source_evidence_variables
 
 # attack rounds on a decomposition before the claim fails closed: each round
 # is one critic attempt; an `insufficient` verdict sends the decomposition
@@ -484,10 +484,10 @@ class ContractCompiler:
             self.host.log.append("contract_cache_bypass", {
                 "claim": row["id"], "reason": "independent Critic required"})
             return False, None
-        from ..llm.authority_backend import (
+        from ...llm.authority_backend import (
             AuthorityBackendUnavailable, authority_compilation_backend,
         )
-        from ..llm.schema import validate
+        from ...llm.schema import validate
 
         if self.precompiled_final is not None and self.contract_cache is None:
             adopted, payload = self.adopt_precompiled_final(row, state)
@@ -603,7 +603,7 @@ class ContractCompiler:
         an authority bypass, or a failed thread all fall back to the
         unchanged inline compile; a failed thread's work is not reused.
         """
-        from ..llm.authority_backend import (
+        from ...llm.authority_backend import (
             AuthorityBackendUnavailable, authority_compilation_backend,
         )
 

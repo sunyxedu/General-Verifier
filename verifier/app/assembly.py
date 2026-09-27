@@ -53,7 +53,7 @@ def final_contract_cache(extensions: ExtensionConfig):
     is on, else None."""
     if not extensions.contract_cache:
         return None
-    from ..engine.contract_cache import default_compiled_final_contract_cache
+    from ..engine.contract.cache import default_compiled_final_contract_cache
     return default_compiled_final_contract_cache()
 
 
@@ -226,7 +226,7 @@ def start_offline_final_precompile(state_dir: str, kernel_backend,
     the thread compiles only for the task's first candidate (a key nobody
     has published or started); later candidates' kernels hit the published
     entry."""
-    from ..engine.precompile import PrecompiledFinalContract
+    from ..engine.contract.precompile import PrecompiledFinalContract
     from ..engine.kernel import compile_roles_for_run
     from ..config import APPEND_ONLY_DELTA_PROTOCOL
     roles = harness_roles(state_dir)

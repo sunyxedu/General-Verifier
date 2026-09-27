@@ -26,7 +26,7 @@ from verifier.contract_replay import (
 from verifier.core.model import content_hash
 from verifier.core.store import TRIGGER_LAZY
 from verifier.engine.certificate import request_certificate
-from verifier.engine.contract_bundle import (
+from verifier.engine.contract.bundle import (
     MAX_CONTRACT_BUNDLE_BYTES, ContractBundleIdentity,
 )
 from verifier.engine.game import BindingGame

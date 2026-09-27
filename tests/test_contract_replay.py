@@ -20,7 +20,7 @@ from verifier.core.events import EventLog
 from verifier.core.model import Claim, content_hash
 from verifier.core.store import TRIGGER_LAZY
 from verifier.engine.kernel import Kernel
-from verifier.engine.contract_bundle import (
+from verifier.engine.contract.bundle import (
     ContractReplayError, build_contract_bundle_bytes, failed_contract_entry,
     passed_contract_entry,
 )

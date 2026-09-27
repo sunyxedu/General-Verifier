@@ -8,7 +8,7 @@ from experiments.terminal_bench.run_typed_adapter_eval import _source_fingerprin
 from test_contract_replay import COMMITS
 from test_prepare_contract_entry import harness, PAYLOAD, PASS
 from verifier import offline
-from verifier.engine.contract_bundle import ContractBundleIdentity
+from verifier.engine.contract.bundle import ContractBundleIdentity
 from verifier.contract_replay import load_replay_contracts, clone_extracted_inputs
 
 

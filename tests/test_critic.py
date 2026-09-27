@@ -17,8 +17,8 @@ from verifier.core.model import (
     canonical, Claim, CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL,
 )
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
-from verifier.engine.contract_critic import CriticGame
-from verifier.engine.referent import (
+from verifier.engine.contract.critic import CriticGame
+from verifier.engine.contract.referent import (
     dependency_referent_context, effect_referent_records,
 )
 from verifier.engine.kernel import Kernel, MAX_CRITIC_ROUNDS

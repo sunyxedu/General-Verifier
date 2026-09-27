@@ -16,10 +16,10 @@ import json
 from dataclasses import replace
 from typing import Callable, Dict, List, Optional
 
-from ..core.model import BASIS_RECORD, CLAIM_FINAL, OUTCOME_FAILED, SEVERITY_MUST
-from ..llm import prompts
-from ..llm.model_spans import model_scope
-from .source_evidence import bind_source_evidence_variables
+from ...core.model import BASIS_RECORD, CLAIM_FINAL, OUTCOME_FAILED, SEVERITY_MUST
+from ...llm import prompts
+from ...llm.model_spans import model_scope
+from ..source_evidence import bind_source_evidence_variables
 
 
 def _repair_oscillation(history: List[Dict]) -> bool:

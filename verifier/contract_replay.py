@@ -22,8 +22,8 @@ from .core.model import (
     content_hash,
 )
 from .core.world import load_world_view
-from .engine.authority_view import build_authority_compilation_view
-from .engine.contract_bundle import (
+from .engine.contract.authority_view import build_authority_compilation_view
+from .engine.contract.bundle import (
     ContractBundleIdentity, SealedContractBundle, claim_graph_sha256,
 )
 from .engine.method_cache import _backend_identity, _role_identity

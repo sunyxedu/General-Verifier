@@ -14,7 +14,7 @@ from verifier.core.events import EventLog
 from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
 from verifier.engine.game import BindingGame
-from verifier.engine.contract_compiler import ContractCompiler
+from verifier.engine.contract.compiler import ContractCompiler
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore

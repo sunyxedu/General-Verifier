@@ -30,7 +30,7 @@ from verifier import offline
 from verifier.contract_replay import ReplaySetupError, clone_sealed_inputs
 from verifier.core.events import EventLog
 from verifier.core.model import Obligation, content_hash
-from verifier.engine.contract_bundle import _strict_json
+from verifier.engine.contract.bundle import _strict_json
 from verifier.engine.game import BindingGame
 from verifier.engine.judger_prefetch import PREFETCH_PROTOCOL
 from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL

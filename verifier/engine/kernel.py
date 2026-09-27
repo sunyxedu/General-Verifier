@@ -39,7 +39,7 @@ from ..llm.agents import AgentRole, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
 from ..llm.model_spans import model_scope, submit_with_context
 from ..llm.runtime import capabilities_of
 from ..core.store import ClaimStore
-from .contract_compiler import (
+from .contract.compiler import (
     MAX_CRITIC_ROUNDS, ContractCompiler,
 )
 from .fold import fold

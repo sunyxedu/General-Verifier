@@ -10,7 +10,7 @@ import pytest
 from verifier.core.store import TRIGGER_LAZY
 from verifier.engine.certificate import CERTIFICATE_SCOPE_FINAL, request_certificate
 from verifier.engine.kernel import compile_roles_for_run
-from verifier.engine.precompile import PrecompiledFinalContract
+from verifier.engine.contract.precompile import PrecompiledFinalContract
 from verifier.config import final_contract_precompile_enabled
 from verifier.llm.schema import FixtureBackend, RoleError
 from verifier.app.assembly import build_kernel, harness_roles
@@ -207,7 +207,7 @@ def _cached_service(state, backend, monkeypatch, handle):
 
 def test_precompile_publishes_into_the_contract_cache_on_a_miss(
         tmp_path, monkeypatch):
-    from verifier.engine.contract_cache import (
+    from verifier.engine.contract.cache import (
         default_compiled_final_contract_cache,
     )
     cache = default_compiled_final_contract_cache()
@@ -257,7 +257,7 @@ def test_precompile_publishes_into_the_contract_cache_on_a_miss(
 
 
 def test_precompile_yields_to_an_in_flight_compilation(tmp_path, monkeypatch):
-    from verifier.engine.contract_cache import CompiledFinalContractCache
+    from verifier.engine.contract.cache import CompiledFinalContractCache
     cache = CompiledFinalContractCache()
     state = _state(tmp_path)
     backend = FixtureBackend(_fixtures())

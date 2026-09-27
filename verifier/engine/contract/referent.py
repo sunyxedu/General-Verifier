@@ -7,9 +7,9 @@ from __future__ import annotations
 import json
 from typing import Dict, List
 
-from ..core.events import EventLog
-from ..core.model import CLAIM_EFFECT
-from .excerpts import bounded_context_value
+from ...core.events import EventLog
+from ...core.model import CLAIM_EFFECT
+from ..excerpts import bounded_context_value
 
 # The compiler needs enough of the dependency chain to close references such
 # as "the selected rows", but copying a whole long trace into every seat would

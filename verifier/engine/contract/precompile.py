@@ -17,9 +17,9 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.model import CLAIM_FINAL, STATUS_UNVERIFIED, content_hash
-from ..llm.model_spans import model_scope
-from ..llm.runtime import capabilities_of
+from ...core.model import CLAIM_FINAL, STATUS_UNVERIFIED, content_hash
+from ...llm.model_spans import model_scope
+from ...llm.runtime import capabilities_of
 
 PRECOMPILE_LOCUS = "final_task"
 
@@ -91,16 +91,16 @@ class PrecompiledFinalContract:
 
     def _run(self) -> None:
         import time
-        from ..llm.authority_backend import (
+        from ...llm.authority_backend import (
             AuthorityBackendUnavailable, authority_compilation_backend,
         )
-        from ..llm.schema import validate
+        from ...llm.schema import validate
         from .authority_view import (
             AuthorityViewUnavailable, build_authority_compilation_view,
         )
-        from .contract_cache import contract_cache_key
-        from .contract_critic import CriticGame
-        from .contract_compiler import ContractCompiler
+        from .cache import contract_cache_key
+        from .critic import CriticGame
+        from .compiler import ContractCompiler
 
         started = time.monotonic()
         outcome = self._outcome

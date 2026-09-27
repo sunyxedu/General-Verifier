@@ -11,7 +11,7 @@ from verifier.core.model import (
     CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL, Claim, Obligation, canonical,
 )
 from verifier.core.store import ClaimStore, TRIGGER_LAZY
-from verifier.engine.contract_bundle import (
+from verifier.engine.contract.bundle import (
     ContractBundleIdentity,
     ContractReplayError,
     SealedContractBundle,

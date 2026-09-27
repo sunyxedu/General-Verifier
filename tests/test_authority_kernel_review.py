@@ -14,7 +14,7 @@ import pytest
 from verifier.core.events import EventLog
 from verifier.core.model import CLAIM_FINAL, Claim
 from verifier.core.store import ClaimStore, TRIGGER_LAZY
-from verifier.engine.contract_cache import CompiledFinalContractCache
+from verifier.engine.contract.cache import CompiledFinalContractCache
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore

@@ -6,7 +6,7 @@ from pathlib import Path
 from experiments.terminal_bench import run_typed_adapter_eval
 from experiments.terminal_bench import shared_setup
 from verifier.core.model import CLAIM_FINAL, Claim, Obligation
-from verifier.engine.contract_bundle import (
+from verifier.engine.contract.bundle import (
     ContractBundleIdentity,
     build_contract_bundle_bytes,
     claim_graph_sha256,

@@ -23,12 +23,12 @@ from verifier.contract_replay import (
 )
 from verifier.core.model import CLAIM_EFFECT, CLAIM_FINAL, canonical, content_hash
 from verifier.core.store import ClaimStore, TRIGGER_LAZY
-from verifier.engine.contract_bundle import (
+from verifier.engine.contract.bundle import (
     ContractBundleIdentity, SealedContractBundle, _compile_input_mapping,
     _parse_claims, _parse_entries, _strict_json, build_contract_bundle_bytes,
     claim_graph_sha256,
 )
-from verifier.engine.authority_view import build_authority_compilation_view
+from verifier.engine.contract.authority_view import build_authority_compilation_view
 from verifier.stream.builder import Builder
 
 

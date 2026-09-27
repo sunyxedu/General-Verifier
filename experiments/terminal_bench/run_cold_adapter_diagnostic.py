@@ -31,7 +31,7 @@ from experiments.terminal_bench.validate_prepared_contract_entry import _private
 from verifier import offline
 from verifier.core.model import content_hash
 from verifier.config import offline_runtime_read_roots
-from verifier.engine.contract_bundle import _strict_json, MAX_CONTRACT_BUNDLE_BYTES
+from verifier.engine.contract.bundle import _strict_json, MAX_CONTRACT_BUNDLE_BYTES
 
 
 SCHEMA = "gv-single-cold-adapter-diagnostic/v1"

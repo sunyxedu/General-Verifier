@@ -18,8 +18,8 @@ from verifier.contract_replay import compile_input_digests, replay_identity
 from verifier.core.events import EventLog
 from verifier.core.model import CLAIM_ASSERTION, Claim, content_hash
 from verifier.core.store import ClaimStore, TRIGGER_LAZY
-from verifier.engine.contract_cache import contract_cache_key
-from verifier.engine.contract_critic import CriticGame
+from verifier.engine.contract.cache import contract_cache_key
+from verifier.engine.contract.critic import CriticGame
 from verifier.engine.kernel import Kernel
 from verifier.config import (
     APPEND_ONLY_DELTA_PROTOCOL,

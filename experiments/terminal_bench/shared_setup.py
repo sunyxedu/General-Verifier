@@ -21,7 +21,7 @@ from typing import Any, Mapping, Optional
 
 from experiments.terminal_bench import analyze_model_spans
 from experiments.terminal_bench import run_typed_adapter_eval
-from verifier.engine.contract_bundle import (
+from verifier.engine.contract.bundle import (
     MAX_CONTRACT_BUNDLE_BYTES,
     ContractBundleIdentity,
     ContractReplayError,

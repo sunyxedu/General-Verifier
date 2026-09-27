@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from verifier.engine import authority_view
-from verifier.engine.authority_view import (
+from verifier.engine.contract import authority_view
+from verifier.engine.contract.authority_view import (
     AUTHORITY_VIEW_SCHEMA,
     AuthorityViewUnavailable,
     build_authority_compilation_view,

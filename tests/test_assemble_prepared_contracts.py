@@ -9,7 +9,7 @@ from test_contract_replay import snapshot, service
 from verifier.contract_replay import (
     attach_replay_contracts, clone_extracted_inputs, compile_input_digests, load_replay_contracts,
 )
-from verifier.engine.contract_bundle import SealedContractBundle
+from verifier.engine.contract.bundle import SealedContractBundle
 from verifier.llm.codex.runtime import CodexRuntime
 
 
