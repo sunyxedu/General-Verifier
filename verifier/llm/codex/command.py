@@ -164,7 +164,7 @@ class RunInstructions:
         self.judger_prefetch_protocol = None
         self.judger_prefetch_note = ""
         if judger_prefetch:
-            from ...engine.judger_prefetch import PREFETCH_PROTOCOL
+            from ...execution.judger_packets.prefetch import PREFETCH_PROTOCOL
             self.judger_prefetch_protocol = PREFETCH_PROTOCOL
             self.judger_prefetch_note = (
                 _JUDGER_PREFETCH_NOTE + PREFETCH_PROTOCOL + ".\n")

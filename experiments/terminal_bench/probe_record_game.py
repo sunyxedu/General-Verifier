@@ -32,8 +32,8 @@ from verifier.core.events import EventLog
 from verifier.core.model import Obligation, content_hash
 from verifier.engine.contract.bundle import _strict_json
 from verifier.engine.game import BindingGame
-from verifier.engine.judger_prefetch import PREFETCH_PROTOCOL
-from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
+from verifier.execution.judger_packets.prefetch import PREFETCH_PROTOCOL
+from verifier.execution.judger_packets.typed import TYPED_JUDGER_PACKET_PROTOCOL
 from verifier.execution.discharge import AgentDischarger
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.codex.runtime import CodexRuntime

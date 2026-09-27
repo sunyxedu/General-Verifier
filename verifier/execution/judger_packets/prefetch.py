@@ -17,9 +17,9 @@ import stat
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ..core.events import EventLog, RECORD_DIRECTORY
-from ..core.model import BASIS_RECORD, content_hash
-from ..execution.instruments import (
+from ...core.events import EventLog, RECORD_DIRECTORY
+from ...core.model import BASIS_RECORD, content_hash
+from ..instruments import (
     MAX_IMAGE_PIXELS,
     MAX_IMAGE_SIDE,
     image_blob_path,

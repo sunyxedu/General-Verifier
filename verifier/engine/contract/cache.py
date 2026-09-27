@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from ...core.model import content_hash
-from ..method_cache import _role_identity
+from ...llm.identity import role_identity
 
 
 CONTRACT_CACHE_SCHEMA = "gv-authority-final-contract-v2"
@@ -28,8 +28,8 @@ def contract_cache_key(*, view, variables, backend_identity,
         "authority": view.identity,
         "variables": variables,
         "backend": backend_identity,
-        "obligations_role": _role_identity(obligations_role),
-        "critic_role": _role_identity(critic_role),
+        "obligations_role": role_identity(obligations_role),
+        "critic_role": role_identity(critic_role),
         "critic_rounds": critic_rounds,
         "append_only_repair": {
             "enabled": append_only_deltas,

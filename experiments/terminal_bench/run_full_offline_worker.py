@@ -181,6 +181,15 @@ def _environment(plan):
     sys.dont_write_bytecode = True
 
 
+
+def _frozen_module(source: Path, current: str, legacy: str) -> str:
+    """The module path of a runtime part in the frozen tree: its path
+    before the refactor when only that file exists there, else its
+    current path."""
+    def present(name):
+        return source.joinpath(*name.split(".")).with_suffix(".py").is_file()
+    return legacy if present(legacy) and not present(current) else current
+
 def _load_runtime(source):
     if any(name == "verifier" or name.startswith("verifier.") for name in sys.modules):
         raise RuntimeError("worker requires a fresh process with no imported verifier")
@@ -191,11 +200,8 @@ def _load_runtime(source):
         raise ValueError("frozen verifier source contains aliased Python files")
     sys.path.insert(0, str(source))
     offline = importlib.import_module("verifier.offline")
-    backend = importlib.import_module(
-        "verifier.llm.codex.runtime"
-        if (source / "verifier" / "llm" / "codex" / "runtime.py").is_file()
-        # a frozen tree from before the Codex runtime became a package
-        else "verifier.llm.codex_backend")
+    backend = importlib.import_module(_frozen_module(
+        source, "verifier.llm.codex.runtime", "verifier.llm.codex_backend"))
     for name, module in list(sys.modules.items()):
         if name == "verifier" or name.startswith("verifier."):
             location = getattr(module, "__file__", None)
@@ -408,7 +414,9 @@ def run_worker(plan):
     policy = _support("eval_offline_policy")
     offline, backend = _load_runtime(source)
     expected_prefetch_protocol = (
-        importlib.import_module("verifier.engine.judger_prefetch").PREFETCH_PROTOCOL
+        importlib.import_module(_frozen_module(
+            Path(source), "verifier.execution.judger_packets.prefetch",
+            "verifier.engine.judger_prefetch")).PREFETCH_PROTOCOL
         if plan["arm"] == "treatment" else None)
     seam = ("legacy-subprocess-run" if plan["arm"] == "control"
             else "run-codex-process")

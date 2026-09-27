@@ -97,7 +97,7 @@ def _calendar_epoch():
 @contextmanager
 def authority_compilation_backend(backend, obligations_role, critic_role):
     """Create a private role registry; never mutate a shared candidate backend."""
-    from ..engine.method_cache import _backend_identity
+    from .identity import backend_identity
 
     if any(type(role) is not AgentRole
            for role in (obligations_role, critic_role)):
@@ -106,7 +106,7 @@ def authority_compilation_backend(backend, obligations_role, critic_role):
              for role in (obligations_role, critic_role)]
     registry = {role.name: role for role in roles}
     identity = {"boundary": AUTHORITY_BOUNDARY_VERSION,
-                "backend": _backend_identity(backend),
+                "backend": backend_identity(backend),
                 # Codex's environment message carries a date/timezone. A
                 # process surviving midnight must not reuse yesterday's
                 # interpretation of a relative-date authority.

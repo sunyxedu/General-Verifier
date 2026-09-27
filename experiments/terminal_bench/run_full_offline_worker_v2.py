@@ -190,6 +190,15 @@ def _environment(plan):
     sys.dont_write_bytecode = True
 
 
+
+def _frozen_module(source: Path, current: str, legacy: str) -> str:
+    """The module path of a runtime part in the frozen tree: its path
+    before the refactor when only that file exists there, else its
+    current path."""
+    def present(name):
+        return source.joinpath(*name.split(".")).with_suffix(".py").is_file()
+    return legacy if present(legacy) and not present(current) else current
+
 def _load_runtime(source):
     if any(name == "verifier" or name.startswith("verifier.")
            for name in sys.modules):
@@ -202,15 +211,14 @@ def _load_runtime(source):
     sys.path.insert(0, str(source))
     modules = {
         "offline": importlib.import_module("verifier.offline"),
-        "backend": importlib.import_module(
-            "verifier.llm.codex.runtime"
-            if (source / "verifier" / "llm" / "codex" / "runtime.py").is_file()
-            # a frozen tree from before the Codex runtime became a package
-            else "verifier.llm.codex_backend"),
+        "backend": importlib.import_module(_frozen_module(
+            source, "verifier.llm.codex.runtime",
+            "verifier.llm.codex_backend")),
         "typed_backend": importlib.import_module(
             "verifier.llm.typed_judger_backend"),
-        "typed_packet": importlib.import_module(
-            "verifier.engine.typed_judger_packet"),
+        "typed_packet": importlib.import_module(_frozen_module(
+            source, "verifier.execution.judger_packets.typed",
+            "verifier.engine.typed_judger_packet")),
     }
     for name, module in list(sys.modules.items()):
         if name == "verifier" or name.startswith("verifier."):

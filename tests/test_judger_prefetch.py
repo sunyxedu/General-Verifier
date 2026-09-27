@@ -13,7 +13,7 @@ import pytest
 
 from verifier.core.events import EventLog
 from verifier.core.model import BASIS_RECORD, BASIS_WORLD, content_hash
-from verifier.engine import judger_prefetch as prefetch
+from verifier.execution.judger_packets import prefetch as prefetch
 from verifier.execution.instruments import ArtifactStore
 
 

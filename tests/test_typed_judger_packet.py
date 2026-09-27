@@ -9,7 +9,7 @@ from verifier.core.events import EventLog
 from verifier.core.model import BASIS_WORLD, Obligation
 from verifier.engine import game as game_module
 from verifier.engine.game import Attempt, BindingGame
-from verifier.engine import typed_judger_packet as packet_module
+from verifier.execution.judger_packets import typed as packet_module
 from verifier.execution.adapters import (
     AdapterRoutingDischarger,
     FileExistsAdapter,

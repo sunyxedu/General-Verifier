@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from verifier.engine.method_cache import _backend_identity
+from verifier.llm.identity import backend_identity
 from verifier.llm.codex import command as codex_command
 from verifier.llm.codex import runtime as cb
 
@@ -76,11 +76,11 @@ def test_default_keeps_previous_identity_and_profiles_never_share(monkeypatch):
     assert base.runtime_instruction_identity == hashlib.sha256(
         (codex_command._ARTIFACT_ADDRESS_NOTE + codex_command._ORACLE_COMPILE_NOTE).encode()
     ).hexdigest()
-    assert _backend_identity(base) != _backend_identity(opt)
-    before = _backend_identity(opt)
+    assert backend_identity(base) != backend_identity(opt)
+    before = backend_identity(opt)
     monkeypatch.setattr(codex_command, "_COMPACT_INSPECTION_NOTE", "changed runtime note")
-    assert _backend_identity(opt) == before
-    assert _backend_identity(cb.CodexRuntime(compact_inspection=True)) != before
+    assert backend_identity(opt) == before
+    assert backend_identity(cb.CodexRuntime(compact_inspection=True)) != before
 
 
 @pytest.mark.parametrize("invalid", [None, 0, 1, "1", [], {}])

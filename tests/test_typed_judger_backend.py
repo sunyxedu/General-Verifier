@@ -16,7 +16,7 @@ from verifier.core.events import EventLog
 from verifier.core.model import BASIS_WORLD, Obligation
 from verifier.engine import game as game_module
 from verifier.engine.game import Attempt, BindingGame
-from verifier.engine.typed_judger_packet import (
+from verifier.execution.judger_packets.typed import (
     TYPED_JUDGER_PACKET_PROTOCOL,
     TypedAdapterJudgerPacket,
     build_typed_adapter_judger_packet,

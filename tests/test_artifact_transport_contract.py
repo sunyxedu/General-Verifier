@@ -10,7 +10,7 @@ import pytest
 
 from verifier.execution import instruments as instrument_module
 from verifier.core.model import canonical, content_hash
-from verifier.engine.method_cache import _backend_identity
+from verifier.llm.identity import backend_identity
 from verifier.execution.instruments import ArtifactStore, validated_image_info
 from verifier.llm.codex import command as codex_command
 from verifier.llm.codex import runtime as cb
@@ -106,12 +106,12 @@ def test_only_judger_receives_format_note_without_tool_or_schema_changes(tmp_pat
 
 def test_runtime_transport_identity_is_frozen_per_backend_and_separates_cache(monkeypatch):
     before = cb.CodexRuntime(model="gpt-5.6-luna")
-    first = _backend_identity(before)
+    first = backend_identity(before)
     monkeypatch.setattr(codex_command, "_ARTIFACT_ADDRESS_NOTE", codex_command._ARTIFACT_ADDRESS_NOTE + " revision")
     after = cb.CodexRuntime(model="gpt-5.6-luna")
-    assert _backend_identity(before) == first
-    assert _backend_identity(after) != first
-    assert set(_backend_identity(after)) == set(first)
+    assert backend_identity(before) == first
+    assert backend_identity(after) != first
+    assert set(backend_identity(after)) == set(first)
     assert first["runtime_instruction_identity"] == before.runtime_instruction_identity
 
 

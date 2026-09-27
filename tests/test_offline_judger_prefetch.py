@@ -10,7 +10,7 @@ from verifier.llm.codex import runtime as cb
 
 
 def test_config_default_protocol_and_identity(monkeypatch):
-    from verifier.engine.judger_prefetch import PREFETCH_PROTOCOL
+    from verifier.execution.judger_packets.prefetch import PREFETCH_PROTOCOL
 
     monkeypatch.setattr(offline, "pipeline_fingerprint", lambda: "fixed")
     default = offline.config_fields(seats="codex")

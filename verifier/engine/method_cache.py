@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional
 
 from ..core.model import OUTCOME_HOLDS, OUTCOME_REFUTED, content_hash
 from ..core.world import MODE_LIVE, load_world_view
+from ..llm.identity import backend_identity, role_identity
 from ..llm.runtime import (
     REUSE_IDENTITY_FIELDS, capabilities_of, runtime_identity_type,
 )
@@ -101,52 +102,6 @@ def _authority_identity(state_dir: str) -> Dict[str, Any]:
             "baseline_manifest": manifest}
 
 
-def _role_identity(role) -> Dict[str, Any]:
-    def normalize(value):
-        if isinstance(value, type):
-            return f"{value.__module__}.{value.__qualname__}"
-        if isinstance(value, dict):
-            return {str(key): normalize(item)
-                    for key, item in sorted(
-                        value.items(), key=lambda pair: str(pair[0]))}
-        if isinstance(value, (list, tuple)):
-            return [normalize(item) for item in value]
-        if value is None or isinstance(value, (str, int, float, bool)):
-            return value
-        return repr(value)
-
-    return normalize({
-        "name": getattr(role, "name", ""),
-        "template": getattr(role, "template", ""),
-        "schema": getattr(role, "schema", {}),
-        "tools": getattr(role, "tools", []),
-        "model": getattr(role, "model", None),
-        "max_turns": getattr(role, "max_turns", None),
-        "system": getattr(role, "system", ""),
-    })
-
-
-def _backend_identity(backend) -> Optional[Dict[str, Any]]:
-    identity: Dict[str, Any] = {
-        "type": runtime_identity_type(backend),
-    }
-    found = False
-    declared = capabilities_of(backend).reuse_identity()
-    for name in REUSE_IDENTITY_FIELDS:
-        if name in declared:
-            value = declared[name]
-            if isinstance(value, dict):
-                value = dict(sorted(value.items()))
-            if value is None or isinstance(value, (str, int, float, bool, dict)):
-                identity[name] = value
-                found = True
-    # FixtureBackend is a deterministic test/replay seam.  Unknown custom
-    # backends without a stable semantic identity simply do not get reuse.
-    if not found and type(backend).__name__ != "FixtureBackend":
-        return None
-    return identity
-
-
 def build_method_cache_key(
     *, state_dir: str, row: Dict[str, Any], obligation, backend,
     oracles_role, judger_role, live_world: bool, adapter_catalog: str,
@@ -156,8 +111,8 @@ def build_method_cache_key(
     """Build an exact semantic key, or disable reuse on uncertain input."""
     if row.get("kind") != "final" or obligation.premise_scope:
         return None
-    backend_identity = _backend_identity(backend)
-    if backend_identity is None:
+    runtime_identity = backend_identity(backend)
+    if runtime_identity is None:
         return None
     try:
         authority = _authority_identity(os.path.abspath(state_dir))
@@ -210,9 +165,9 @@ def build_method_cache_key(
         "authority": authority,
         "world": world_identity,
         "adapter_catalog": adapter_catalog,
-        "oracles_role": _role_identity(oracles_role),
-        "judger_role": _role_identity(judger_role),
-        "backend": backend_identity,
+        "oracles_role": role_identity(oracles_role),
+        "judger_role": role_identity(judger_role),
+        "backend": runtime_identity,
     })
 
 

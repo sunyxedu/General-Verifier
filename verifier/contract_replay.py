@@ -26,7 +26,7 @@ from .engine.contract.authority_view import build_authority_compilation_view
 from .engine.contract.bundle import (
     ContractBundleIdentity, SealedContractBundle, claim_graph_sha256,
 )
-from .engine.method_cache import _backend_identity, _role_identity
+from .llm.identity import backend_identity, role_identity
 from .config import APPEND_ONLY_DELTA_PROTOCOL
 from .llm.authority_backend import authority_compilation_backend
 
@@ -194,7 +194,7 @@ def compilation_config_sha256(kernel, config: dict[str, Any]) -> str:
     # explicit false and implicit default false have one exact identity.
     semantic["append_only_deltas"] = configured_delta
     semantic["append_only_delta_protocol"] = configured_protocol
-    backend = _backend_identity(kernel.backend)
+    backend = backend_identity(kernel.backend)
     if backend is None or kernel.critic_role is None or kernel.critic_rounds < 1:
         raise ReplaySetupError("known compiler backend and independent Critic required")
     if kernel.memory is not None or kernel.memory_hits != "[]":
@@ -206,15 +206,15 @@ def compilation_config_sha256(kernel, config: dict[str, Any]) -> str:
             kernel.backend, kernel.obligations_role, kernel.critic_role) as session:
         authority = {
             "backend": copy.deepcopy(session.identity),
-            "compiler": _role_identity(session.obligations_role),
-            "critic": _role_identity(session.critic_role),
+            "compiler": role_identity(session.obligations_role),
+            "critic": role_identity(session.critic_role),
         }
         session.revalidate()
     return content_hash({
         "policy": SNAPSHOT_POLICY, "config": semantic, "backend": backend,
         "authority": authority,
-        "compiler": _role_identity(kernel.obligations_role),
-        "critic": _role_identity(kernel.critic_role),
+        "compiler": role_identity(kernel.obligations_role),
+        "critic": role_identity(kernel.critic_role),
         "critic_rounds": kernel.critic_rounds,
     })
 

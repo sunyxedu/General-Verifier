@@ -402,6 +402,15 @@ def _environment(plan):
     sys.dont_write_bytecode = True
 
 
+
+def _frozen_module(source: Path, current: str, legacy: str) -> str:
+    """The module path of a runtime part in the frozen tree: its path
+    before the refactor when only that file exists there, else its
+    current path."""
+    def present(name):
+        return source.joinpath(*name.split(".")).with_suffix(".py").is_file()
+    return legacy if present(legacy) and not present(current) else current
+
 def _load_runtime(source):
     if any(name == "verifier" or name.startswith("verifier.")
            for name in sys.modules):
@@ -414,19 +423,21 @@ def _load_runtime(source):
     sys.path.insert(0, str(source))
     modules = {
         "offline": importlib.import_module("verifier.offline"),
-        "backend": importlib.import_module(
-            "verifier.llm.codex.runtime"
-            if (source / "verifier" / "llm" / "codex" / "runtime.py").is_file()
-            # a frozen tree from before the Codex runtime became a package
-            else "verifier.llm.codex_backend"),
+        "backend": importlib.import_module(_frozen_module(
+            source, "verifier.llm.codex.runtime",
+            "verifier.llm.codex_backend")),
         "mcp": importlib.import_module("verifier.mcp_server"),
-        "assembly": importlib.import_module("verifier.app.assembly"),
+        # the composition root; a tree before it had one assembles the
+        # kernel in the MCP server
+        "assembly": importlib.import_module(_frozen_module(
+            source, "verifier.app.assembly", "verifier.mcp_server")),
         "certificate": importlib.import_module("verifier.engine.certificate"),
         "store": importlib.import_module("verifier.core.store"),
         "typed_judger_backend": importlib.import_module(
             "verifier.llm.typed_judger_backend"),
-        "typed_judger_packet": importlib.import_module(
-            "verifier.engine.typed_judger_packet"),
+        "typed_judger_packet": importlib.import_module(_frozen_module(
+            source, "verifier.execution.judger_packets.typed",
+            "verifier.engine.typed_judger_packet")),
     }
     for name, module in list(sys.modules.items()):
         if name == "verifier" or name.startswith("verifier."):
@@ -783,7 +794,10 @@ def _execute_live_chain(modules, state: Path, backend, projection,
                         source_fingerprint: str) -> dict:
     """Execute the production live chain; this helper adds no verifier stage."""
     def factory(service):
-        return modules["assembly"].build_kernel(
+        assembly = modules["assembly"]
+        build = getattr(assembly, "build_kernel", None) \
+            or assembly._default_kernel
+        return build(
             service, RUNTIME["model"], backend=backend, critic_rounds=3,
             parallel_obligations=4, parallel_claims=1,
             # this audit pins the separate final path's stage sequence

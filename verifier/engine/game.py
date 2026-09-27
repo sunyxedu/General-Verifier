@@ -83,7 +83,7 @@ from ..llm.schema import RoleError
 from ..llm.typed_judger_backend import restricted_typed_judger_backend
 from .gates import below_decisive_reason, preflight_defect
 from .method_cache import AcceptedMethod, build_method_cache_key
-from .judger_prefetch import build_judger_evidence_packet
+from ..execution.judger_packets.prefetch import build_judger_evidence_packet
 from ..execution.record_shape import record_shape_json
 
 
@@ -94,7 +94,7 @@ class _RecordLedger:
 
     def __init__(self, path: str):
         self.path = path
-from .typed_judger_packet import build_typed_adapter_judger_packet
+from ..execution.judger_packets.typed import build_typed_adapter_judger_packet
 from .source_evidence import bind_source_evidence_variables
 from ..config import (
     APPEND_ONLY_DELTA_PROTOCOL,

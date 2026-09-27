@@ -23,7 +23,7 @@ from dataclasses import replace
 from functools import partial
 from typing import Any, Iterator, Mapping
 
-from ..engine.typed_judger_packet import (
+from ..execution.judger_packets.typed import (
     TYPED_JUDGER_PACKET_PROTOCOL,
     TypedAdapterJudgerPacket,
 )

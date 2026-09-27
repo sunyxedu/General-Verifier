@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from verifier.core.events import EventLog
-from verifier.engine.judger_prefetch import build_judger_evidence_packet
-from verifier.engine.method_cache import _backend_identity
+from verifier.execution.judger_packets.prefetch import build_judger_evidence_packet
+from verifier.llm.identity import backend_identity
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.codex import command as codex_command
 from verifier.llm.codex import runtime as cb
@@ -301,11 +301,11 @@ def test_disabled_identity_unchanged_and_enabled_identity_captured(monkeypatch):
         (codex_command._ARTIFACT_ADDRESS_NOTE + codex_command._ORACLE_COMPILE_NOTE).encode()
     ).hexdigest()
     enabled = cb.CodexRuntime(judger_prefetch=True)
-    identity = _backend_identity(enabled)
-    assert identity != _backend_identity(base)
+    identity = backend_identity(enabled)
+    assert identity != backend_identity(base)
     monkeypatch.setattr(codex_command, "_JUDGER_PREFETCH_NOTE", "changed instructions")
-    assert _backend_identity(enabled) == identity
-    assert _backend_identity(cb.CodexRuntime(judger_prefetch=True)) != identity
+    assert backend_identity(enabled) == identity
+    assert backend_identity(cb.CodexRuntime(judger_prefetch=True)) != identity
 
 
 @pytest.mark.parametrize("value", [None, 0, 1, "1", [], {}])

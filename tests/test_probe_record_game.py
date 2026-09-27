@@ -11,7 +11,7 @@ import pytest
 from experiments.terminal_bench import probe_record_game as probe
 from test_contract_replay import source_state
 from verifier.core.model import content_hash
-from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
+from verifier.execution.judger_packets.typed import TYPED_JUDGER_PACKET_PROTOCOL
 from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 from verifier.llm.oracle_execution import raise_oracle_execution_payload

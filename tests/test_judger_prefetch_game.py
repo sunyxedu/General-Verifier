@@ -11,7 +11,7 @@ from verifier.core.events import EventLog
 from verifier.core.model import BASIS_RECORD, Obligation
 from verifier.engine import game as game_module
 from verifier.engine.game import Attempt, BindingGame
-from verifier.engine.judger_prefetch import JudgerEvidencePacket
+from verifier.execution.judger_packets.prefetch import JudgerEvidencePacket
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.schema import FixtureBackend, RoleError

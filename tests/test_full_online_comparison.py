@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from experiments.terminal_bench import run_full_online_comparison as comparison
-from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
+from verifier.execution.judger_packets.typed import TYPED_JUDGER_PACKET_PROTOCOL
 from verifier.llm.typed_judger_backend import TYPED_JUDGER_BOUNDARY_VERSION
 
 

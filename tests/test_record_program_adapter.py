@@ -9,7 +9,7 @@ import pytest
 import verifier.execution.record_program as record_program
 from verifier.core.events import EventLog
 from verifier.core.model import BASIS_RECORD, BASIS_WORLD, OUTCOME_HOLDS, Obligation
-from verifier.engine.typed_judger_packet import (
+from verifier.execution.judger_packets.typed import (
     build_typed_adapter_judger_packet,
 )
 from verifier.execution.adapters import AdapterRoutingDischarger, default_adapter_registry

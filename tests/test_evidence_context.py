@@ -11,7 +11,7 @@ import pytest
 from verifier.execution import discharge as discharge_module
 from verifier.core.events import EventLog
 from verifier.core.model import Obligation
-from verifier.engine.judger_prefetch import build_judger_evidence_packet
+from verifier.execution.judger_packets.prefetch import build_judger_evidence_packet
 from verifier.execution.discharge import (
     SNAPSHOT_MAX_FILES,
     SNAPSHOT_MAX_TOTAL_CHARS,

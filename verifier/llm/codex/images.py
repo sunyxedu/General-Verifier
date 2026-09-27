@@ -242,7 +242,7 @@ class CapturedImages:
         """Admit a Judger evidence packet and the images it transports:
         ``(images, packet, image_packet_digest)``, the packet None when it
         is not attached."""
-        from ...engine.judger_prefetch import JudgerEvidencePacket
+        from ...execution.judger_packets.prefetch import JudgerEvidencePacket
         packet = None
         image_packet_digest = None
         if type(candidate) is JudgerEvidencePacket:

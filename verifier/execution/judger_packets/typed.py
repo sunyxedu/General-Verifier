@@ -22,8 +22,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
-from ..core.model import Obligation, canonical, content_hash
-from ..execution.adapters import (
+from ...core.model import Obligation, canonical, content_hash
+from ..adapters import (
     AdapterInvocation,
     AdapterRegistry,
     AdapterRoutingDischarger,
@@ -37,17 +37,17 @@ from ..execution.adapters import (
     LedgerToolCallStringAdapterV2,
     TextValueAdapter,
 )
-from ..execution.discharge import DischargeResult
-from ..execution.evidence_program import (
+from ..discharge import DischargeResult
+from ..evidence_program import (
     EvidenceProgramAdapter,
     LANGUAGE as EVIDENCE_PROGRAM_LANGUAGE,
 )
-from ..execution.evidence_program import (
+from ..evidence_program import (
     MAX_CUMULATIVE_ALLOCATION_BYTES as EVIDENCE_PROGRAM_MAX_ALLOCATION,
 )
-from ..execution.evidence_program import MAX_FUEL as EVIDENCE_PROGRAM_MAX_FUEL
-from ..execution.instruments import authoritative_task_context
-from .judger_prefetch import (
+from ..evidence_program import MAX_FUEL as EVIDENCE_PROGRAM_MAX_FUEL
+from ..instruments import authoritative_task_context
+from .prefetch import (
     JudgerEvidencePacket,
     build_judger_evidence_packet,
 )
@@ -86,11 +86,11 @@ def _shipped_adapter_type(identity: tuple[str, int]) -> type | None:
     """Return the verifier-owned class for one restricted transport identity."""
     if identity == ("record.query", 1):
         # Keep the record normalizer and query algebra lazy at this boundary.
-        from ..execution.record_query import RecordQueryAdapter
+        from ..record_query import RecordQueryAdapter
         return RecordQueryAdapter
     if identity in {("ledger.sequence", 1), ("ledger.sequence", 2)}:
         # Keep the larger ledger module lazy at this import boundary.
-        from ..execution.ledger_sequence import (
+        from ..ledger_sequence import (
             LedgerSequenceAdapter,
             LedgerSequenceCompleteAuditAdapter,
         )
@@ -148,13 +148,13 @@ def _adapter_specific_gate(invocation: AdapterInvocation, evidence: dict,
     if identity in {("ledger.sequence", 1), ("ledger.sequence", 2)}:
         # Lazy import avoids a module cycle: the adapter itself reuses the
         # registry protocol defined in adapters.py.
-        from ..execution.ledger_sequence import (
+        from ..ledger_sequence import (
             typed_sequence_observation_is_complete,
         )
         return typed_sequence_observation_is_complete(
             invocation, evidence, result_identity)
     if identity == ("record.query", 1):
-        from ..execution.record_query import (
+        from ..record_query import (
             typed_record_query_observation_is_complete,
         )
         return typed_record_query_observation_is_complete(

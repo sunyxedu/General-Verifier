@@ -398,7 +398,7 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         "certificate_scope": certificate_scope,
     }
     if judger_prefetch:
-        from .engine.judger_prefetch import PREFETCH_PROTOCOL
+        from .execution.judger_packets.prefetch import PREFETCH_PROTOCOL
         fields["judger_prefetch_protocol"] = PREFETCH_PROTOCOL
     else:
         fields["judger_prefetch_protocol"] = None
@@ -417,7 +417,7 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
     fields["typed_adapter_judger_packet"] = extensions.typed_judger_packet
     extensions.require_consistent()
     if fields["typed_adapter_judger_packet"]:
-        from .engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
+        from .execution.judger_packets.typed import TYPED_JUDGER_PACKET_PROTOCOL
         fields["typed_adapter_judger_packet_protocol"] = (
             TYPED_JUDGER_PACKET_PROTOCOL)
     else:
