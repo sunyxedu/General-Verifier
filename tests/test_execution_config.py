@@ -4,14 +4,15 @@ from __future__ import annotations
 import pytest
 
 from verifier.core.model import Obligation
-from verifier.execution.config import (
+from verifier.config import (
     typed_adapters_enabled,
     typed_judger_packet_enabled,
 )
 from verifier.execution.discharge import AgentDischarger
 from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.schema import FixtureBackend
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 from verifier import offline
 
 
@@ -52,7 +53,7 @@ def test_disabled_kernel_keeps_agent_discharge_and_removes_method_cache(
     service = Service(
         str(tmp_path / "gv"), kernel_factory=lambda _service: object())
 
-    kernel = _default_kernel(
+    kernel = build_kernel(
         service, model=None, backend=FixtureBackend({}), critic_rounds=0)
 
     assert isinstance(kernel.discharger, AgentDischarger)
@@ -67,7 +68,7 @@ def test_enabled_kernel_packet_seam_disables_method_cache(tmp_path, monkeypatch)
     service = Service(
         str(tmp_path / "gv"), kernel_factory=lambda _service: object())
 
-    kernel = _default_kernel(
+    kernel = build_kernel(
         service, model=None, backend=FixtureBackend({}), critic_rounds=0)
 
     assert kernel.binder.typed_adapter_judger_packet is True
@@ -94,7 +95,7 @@ def test_packet_mode_is_stamped_and_cannot_run_without_typed_adapters(
     service = Service(
         str(tmp_path / "gv"), kernel_factory=lambda _service: object())
     with pytest.raises(ValueError, match="requires typed adapters"):
-        _default_kernel(
+        build_kernel(
             service, model=None, backend=FixtureBackend({}), critic_rounds=0)
 
 

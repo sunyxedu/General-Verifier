@@ -7,10 +7,11 @@ import json
 import pytest
 
 from verifier import offline
-from verifier.execution.config import sufficiency_preaudit_enabled
+from verifier.config import sufficiency_preaudit_enabled
 from verifier.llm.agents import SUFFICIENCY_AGENT
 from verifier.llm.schema import FixtureBackend
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 from test_certificate_scope import _fixtures, _service as _scoped_service
 
 

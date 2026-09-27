@@ -17,6 +17,7 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
+from ..config import script_timeout_seconds
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
 from ..llm.prompts.discharge import DISCHARGE_REPAIR_CONTEXT
 from .instruments import (
@@ -101,7 +102,6 @@ class DischargeResult:
 # a mechanically executed method: the exact script that ran and what it
 # left behind. Read by the script judger; nothing else interprets it.
 SCRIPT_OUTPUT_CAP = 24_000
-SCRIPT_TIMEOUT_DEFAULT = 300   # the oracle is told "a few minutes"
 
 
 @dataclass(frozen=True)
@@ -589,11 +589,7 @@ class AgentDischarger:
             "GV_LEDGER": (os.path.join(self.state_dir, "events.jsonl")
                           if self.state_dir else ""),
         })
-        try:
-            timeout = float(os.environ.get("GV_SCRIPT_TIMEOUT",
-                                           SCRIPT_TIMEOUT_DEFAULT))
-        except ValueError:
-            timeout = float(SCRIPT_TIMEOUT_DEFAULT)
+        timeout = script_timeout_seconds()
         started = _time.time()
         ran = None
         exit_code: Optional[int] = None

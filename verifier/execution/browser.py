@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Protocol
 
+from ..config import browser_observer_settings
+
 
 BROWSER_REQUEST_SCHEMA = "gv-browser-observer-request-v1"
 BROWSER_RESPONSE_SCHEMA = "gv-browser-observer-response-v1"
@@ -270,18 +272,7 @@ def configured_browser_observer(
     environ: Optional[Mapping[str, str]] = None,
 ) -> Optional[BrowserObserver]:
     """Return an explicitly configured observer; never auto-discover one."""
-    values = os.environ if environ is None else environ
-    path = values.get("GV_BROWSER_OBSERVER")
-    digest = values.get("GV_BROWSER_OBSERVER_SHA256")
-    browser_path = values.get("GV_BROWSER_EXECUTABLE")
-    browser_digest = values.get("GV_BROWSER_EXECUTABLE_SHA256")
-    configured = (path, digest, browser_path, browser_digest)
-    if all(item is None for item in configured):
+    configured = browser_observer_settings(environ)
+    if configured is None:
         return None
-    if not all(configured):
-        raise ValueError(
-            "GV_BROWSER_OBSERVER, GV_BROWSER_OBSERVER_SHA256, "
-            "GV_BROWSER_EXECUTABLE, and GV_BROWSER_EXECUTABLE_SHA256 must "
-            "be set together")
-    return ProcessBrowserObserver(
-        path, digest, browser_path, browser_digest)
+    return ProcessBrowserObserver(*configured)

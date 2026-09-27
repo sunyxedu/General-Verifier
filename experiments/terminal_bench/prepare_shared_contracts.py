@@ -26,7 +26,8 @@ from verifier.core.store import TRIGGER_LAZY
 from verifier.core.model import canonical, content_hash
 from verifier.engine.method_cache import AcceptedMethodCache
 from verifier.llm.codex_backend import CodexBackend, codex_usage_ledger
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 
 
 SETUP_SCHEMA = "gv-cold-shared-contract-preparation/v1"
@@ -49,7 +50,7 @@ def codex_service(state, config):
     populated by the other arm. No shared toolchain or advisory memory.
     """
     def factory(sc):
-        kernel = _default_kernel(
+        kernel = build_kernel(
             sc, config["model"], backend=codex_backend(state, config),
             critic_rounds=config["critic_rounds"], parallel_obligations=4, parallel_claims=4)
         if kernel.binder is not None and kernel.binder.method_cache is not None:

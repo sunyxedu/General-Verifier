@@ -30,7 +30,7 @@ from experiments.terminal_bench.analyze_model_spans import MAX_LEDGER_BYTES
 from experiments.terminal_bench.validate_prepared_contract_entry import _private_read, MAX_RECEIPT_BYTES
 from verifier import offline
 from verifier.core.model import content_hash
-from verifier.execution.config import offline_runtime_read_roots
+from verifier.config import offline_runtime_read_roots
 from verifier.engine.contract_bundle import _strict_json, MAX_CONTRACT_BUNDLE_BYTES
 
 

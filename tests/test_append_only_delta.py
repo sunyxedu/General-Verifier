@@ -20,7 +20,7 @@ from verifier.core.model import CLAIM_ASSERTION, Claim, content_hash
 from verifier.core.store import ClaimStore, TRIGGER_LAZY
 from verifier.engine.contract_cache import contract_cache_key
 from verifier.engine.kernel import Kernel
-from verifier.execution.config import (
+from verifier.config import (
     APPEND_ONLY_DELTA_PROTOCOL,
     append_only_deltas_enabled,
 )

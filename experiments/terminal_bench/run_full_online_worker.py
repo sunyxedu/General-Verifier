@@ -416,6 +416,7 @@ def _load_runtime(source):
         "offline": importlib.import_module("verifier.offline"),
         "backend": importlib.import_module("verifier.llm.codex_backend"),
         "mcp": importlib.import_module("verifier.mcp_server"),
+        "assembly": importlib.import_module("verifier.app.assembly"),
         "certificate": importlib.import_module("verifier.engine.certificate"),
         "store": importlib.import_module("verifier.core.store"),
         "typed_judger_backend": importlib.import_module(
@@ -778,7 +779,7 @@ def _execute_live_chain(modules, state: Path, backend, projection,
                         source_fingerprint: str) -> dict:
     """Execute the production live chain; this helper adds no verifier stage."""
     def factory(service):
-        return modules["mcp"]._default_kernel(
+        return modules["assembly"].build_kernel(
             service, RUNTIME["model"], backend=backend, critic_rounds=3,
             parallel_obligations=4, parallel_claims=1,
             # this audit pins the separate final path's stage sequence

@@ -96,7 +96,7 @@ class _RecordLedger:
         self.path = path
 from .typed_judger_packet import build_typed_adapter_judger_packet
 from .source_evidence import bind_source_evidence_variables
-from ..execution.config import (
+from ..config import (
     APPEND_ONLY_DELTA_PROTOCOL,
     append_only_deltas_enabled,
 )

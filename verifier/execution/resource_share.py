@@ -33,11 +33,11 @@ import threading
 import time
 from typing import Optional
 
+from ..config import seat_room_mb
+
 LAUNCHED_OOM_SCORE_ADJ = 1000
 SERVER_OOM_SCORE_ADJ = 500
 LAUNCHED_NICENESS = 0      # CPU shared fairly (see above); >0 deprioritizes
-# one seat process with what it runs, plus slack for the solver's next step
-SEAT_ROOM_MB_DEFAULT = 512
 # a started process's memory shows in the envelope's counters only after
 # its start-up; until then its share is held back from the room
 STARTUP_SECONDS = 15.0
@@ -64,11 +64,7 @@ _launched_lock = threading.Lock()
 def seat_room_bytes() -> int:
     """Room a new seat process needs (GV_SEAT_ROOM_MB; <= 0 disables the
     wait)."""
-    try:
-        return int(os.environ.get("GV_SEAT_ROOM_MB",
-                                  SEAT_ROOM_MB_DEFAULT)) << 20
-    except ValueError:
-        return SEAT_ROOM_MB_DEFAULT << 20
+    return seat_room_mb() << 20
 
 
 def _read(path: str) -> Optional[str]:

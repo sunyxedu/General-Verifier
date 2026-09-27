@@ -242,7 +242,7 @@ def test_failed_fill_wakes_waiters_without_caching_failure():
 
 def test_contract_cache_flag_is_explicit_and_part_of_score_identity(
         monkeypatch):
-    from verifier.execution.config import contract_cache_enabled
+    from verifier.config import contract_cache_enabled
     from verifier.offline import config_fields
     monkeypatch.delenv("GV_CONTRACT_CACHE", raising=False)
     assert contract_cache_enabled() is False

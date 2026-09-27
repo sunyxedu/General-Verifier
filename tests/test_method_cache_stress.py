@@ -32,7 +32,8 @@ from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.agents import JUDGER_AGENT
 from verifier.llm.schema import FixtureBackend, RoleError
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 
 
 JUDGE_YES = {
@@ -149,7 +150,7 @@ def test_default_offline_services_rerun_oracle_and_judger_when_outcome_changes(
             "obligations": compile_result, "critic": CRITIC_PASS, **fixtures})
         service = Service(
             str(state), live_world=False,
-            kernel_factory=lambda sc: _default_kernel(
+            kernel_factory=lambda sc: build_kernel(
                 sc, model=None, backend=backend, critic_rounds=1,
                 parallel_obligations=1, parallel_claims=1))
         return service, backend
@@ -192,7 +193,7 @@ def test_fast_direction_audit_preserves_features_rank_and_ordered_outcome(
         })
 
         def factory(service):
-            kernel = _default_kernel(
+            kernel = build_kernel(
                 service, model=None, backend=backend, critic_rounds=1,
                 parallel_obligations=1, parallel_claims=1)
             kernel.contract_cache = None
@@ -281,7 +282,7 @@ def test_default_online_service_uses_adapter_without_executor_seat(
     })
     service = Service(
         str(state), live_world=True,
-        kernel_factory=lambda sc: _default_kernel(
+        kernel_factory=lambda sc: build_kernel(
             sc, model=None, backend=backend, critic_rounds=1,
             parallel_obligations=1, parallel_claims=1))
 

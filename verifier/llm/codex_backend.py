@@ -61,7 +61,7 @@ from .codex_service import (
 )
 from .schema import RoleError, SeatScratchExceeded, SeatTimeout, validate
 from .model_spans import model_call_span, model_span_capture
-from ..execution.config import offline_runtime_read_roots
+from ..config import offline_runtime_read_roots
 from ..execution.instruments import validated_image_info
 
 DEFAULT_MODEL = "gpt-5.6-luna"

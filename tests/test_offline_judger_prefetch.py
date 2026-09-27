@@ -59,7 +59,7 @@ def test_enabled_backend_cannot_hide_behind_sdk_config(tmp_path):
 @pytest.mark.parametrize("enabled", [False, True])
 def test_extractor_and_kernel_backends_receive_same_flag(
         tmp_path, monkeypatch, enabled):
-    from verifier import mcp_server
+    from verifier.app import assembly
 
     (tmp_path / "task.md").write_text("Report the synthetic answer.")
     (tmp_path / "final.txt").write_text("synthetic answer")
@@ -81,7 +81,7 @@ def test_extractor_and_kernel_backends_receive_same_flag(
         raise ReachedKernel()
 
     monkeypatch.setattr(cb.CodexBackend, "complete", complete)
-    monkeypatch.setattr(mcp_server, "_default_kernel", kernel)
+    monkeypatch.setattr(assembly, "build_kernel", kernel)
     with pytest.raises(ReachedKernel):
         offline.score(
             str(tmp_path), seats="codex", model="gpt-5.6-luna",
@@ -101,7 +101,7 @@ def test_extractor_and_kernel_backends_receive_same_flag(
 
 def test_only_kernel_backend_receives_restricted_judger_cwd(
         tmp_path, monkeypatch):
-    from verifier import mcp_server
+    from verifier.app import assembly
 
     state = tmp_path / "state"
     state.mkdir()
@@ -129,7 +129,7 @@ def test_only_kernel_backend_receives_restricted_judger_cwd(
     monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
     monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "1")
     monkeypatch.setattr(cb.CodexBackend, "complete", complete)
-    monkeypatch.setattr(mcp_server, "_default_kernel", kernel)
+    monkeypatch.setattr(assembly, "build_kernel", kernel)
     with pytest.raises(ReachedKernel):
         offline.score(
             str(state), seats="codex", model="gpt-5.6-luna",

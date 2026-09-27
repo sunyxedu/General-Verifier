@@ -12,7 +12,8 @@ from verifier.engine.certificate import (
 )
 from verifier.core.store import TRIGGER_LAZY
 from verifier.llm.schema import FixtureBackend
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 from test_frozen_record import _fixtures as _record_fixtures
 
 
@@ -44,7 +45,7 @@ def _service(tmp_path, backend, monkeypatch):
             "tool": "bash", "tool_use_id": "call-1", "excerpt": ""}}) + "\n")
     service = Service(
         str(state), live_world=False, trigger=TRIGGER_LAZY,
-        kernel_factory=lambda sc: _default_kernel(sc, None, backend=backend),
+        kernel_factory=lambda sc: build_kernel(sc, None, backend=backend),
     )
     service.drain_hooks()
     service.commit("s1", "assertion", "one command ran", ["effect:2"])

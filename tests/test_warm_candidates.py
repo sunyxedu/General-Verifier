@@ -12,7 +12,8 @@ from verifier.engine.certificate import CERTIFICATE_SCOPE_FINAL, request_certifi
 from verifier.engine import contract_cache as contract_cache_module
 from verifier.engine import method_cache as method_cache_module
 from verifier.llm.schema import FixtureBackend
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 
 
 PASS = {"verdict": "pass", "counterexample_world": "n/a",
@@ -60,7 +61,7 @@ def _candidate(root, name, backend):
             "tool": "bash", "tool_use_id": "call-1", "excerpt": ""}}) + "\n")
     service = Service(
         str(state), live_world=False, trigger=TRIGGER_LAZY,
-        kernel_factory=lambda sc: _default_kernel(sc, None, backend=backend),
+        kernel_factory=lambda sc: build_kernel(sc, None, backend=backend),
     )
     service.drain_hooks()
     service.commit("f", "final", f"{name} finished the task", ["effect:2"])

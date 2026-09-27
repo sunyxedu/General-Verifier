@@ -24,7 +24,7 @@ from typing import Dict, List, Optional
 
 from ..execution.discharge import AgentDischarger, DischargeResult
 from ..execution.resource_share import warmup_launches
-from ..execution.config import (
+from ..config import (
     APPEND_ONLY_DELTA_PROTOCOL,
     append_only_deltas_enabled,
 )

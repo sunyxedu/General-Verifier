@@ -11,9 +11,10 @@ from verifier.core.store import TRIGGER_LAZY
 from verifier.engine.certificate import CERTIFICATE_SCOPE_FINAL, request_certificate
 from verifier.engine.kernel import compile_roles_for_backend
 from verifier.engine.precompile import PrecompiledFinalContract
-from verifier.execution.config import final_contract_precompile_enabled
+from verifier.config import final_contract_precompile_enabled
 from verifier.llm.schema import FixtureBackend, RoleError
-from verifier.mcp_server import Service, _default_kernel, harness_roles
+from verifier.app.assembly import build_kernel, harness_roles
+from verifier.mcp_server import Service
 from test_certificate_scope import _fixtures
 
 
@@ -44,7 +45,7 @@ def _service(state, backend, monkeypatch, handle=None, *, critic_rounds=3):
     service = Service(
         str(state), live_world=False, trigger=TRIGGER_LAZY,
         critic_rounds=critic_rounds,
-        kernel_factory=lambda sc: _default_kernel(
+        kernel_factory=lambda sc: build_kernel(
             sc, None, backend=backend, critic_rounds=critic_rounds),
     )
     if handle is not None:

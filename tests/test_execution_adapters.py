@@ -48,7 +48,8 @@ from verifier.llm.agents import AgentBackend, AgentRole
 from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.schema import FixtureBackend
 from verifier.llm.schema import RoleError
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 
 
 ROW = {"id": "c1", "kind": "final", "text": "the task is complete"}
@@ -1433,7 +1434,7 @@ def test_default_online_and_offline_kernel_path_installs_adapter_router(
         tmp_path):
     service = Service(
         str(tmp_path / "gv"), kernel_factory=lambda _service: object())
-    kernel = _default_kernel(
+    kernel = build_kernel(
         service, model=None, backend=FixtureBackend({}), critic_rounds=0)
 
     assert isinstance(kernel.discharger, AdapterRoutingDischarger)

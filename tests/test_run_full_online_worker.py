@@ -14,6 +14,7 @@ from verifier.core.model import content_hash
 from verifier.engine import certificate
 from verifier.llm.schema import FixtureBackend
 from verifier import mcp_server, offline
+from verifier.app import assembly
 from verifier.core import store
 
 
@@ -78,8 +79,8 @@ def _plan(root: Path):
 
 def _modules():
     return {
-        "offline": offline, "mcp": mcp_server, "certificate": certificate,
-        "store": store,
+        "offline": offline, "mcp": mcp_server, "assembly": assembly,
+        "certificate": certificate, "store": store,
     }
 
 

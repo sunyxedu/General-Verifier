@@ -3,6 +3,7 @@
 import sys
 
 from verifier import mcp_server
+from verifier.app import assembly
 from verifier.llm import provider
 from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.direct_backend import OpenAIChatTransport, RoutingBackend
@@ -38,7 +39,7 @@ def test_codex_mcp_routes_tool_free_roles_to_dotenv_openrouter(
     })
     monkeypatch.setattr(mcp_server, "Service", FakeService)
     monkeypatch.setattr(mcp_server, "build_server", lambda service: FakeServer())
-    monkeypatch.setattr(mcp_server, "_default_kernel",
+    monkeypatch.setattr(assembly, "build_kernel",
                         lambda sc, model, *, backend: backend)
     # the real one ends the process once the server returns
     monkeypatch.setattr(mcp_server, "terminate", lambda service: None)

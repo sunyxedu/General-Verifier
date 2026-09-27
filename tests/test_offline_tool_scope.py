@@ -11,7 +11,8 @@ from verifier.execution.discharge import AgentDischarger
 from verifier.llm.authority_backend import _AuthorityCodexBackend
 from verifier.llm.codex_backend import CodexBackend
 from verifier.llm.schema import FixtureBackend, RoleError
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 from verifier import offline
 
 
@@ -162,7 +163,7 @@ def test_offline_kernel_rejects_service_backend_scope_mismatch(tmp_path):
     )
 
     with pytest.raises(RoleError, match="Service toolchain does not match"):
-        _default_kernel(service, model=None, backend=backend, critic_rounds=0)
+        build_kernel(service, model=None, backend=backend, critic_rounds=0)
 
 
 def test_offline_kernel_rejects_service_backend_state_mismatch(tmp_path):
@@ -175,7 +176,7 @@ def test_offline_kernel_rejects_service_backend_state_mismatch(tmp_path):
     backend = CodexBackend(cwd=os.fspath(backend_state))
 
     with pytest.raises(RoleError, match="state does not match"):
-        _default_kernel(service, model=None, backend=backend, critic_rounds=0)
+        build_kernel(service, model=None, backend=backend, critic_rounds=0)
 
 
 def test_offline_score_rejects_unbound_shared_scope_before_model_call(
@@ -216,7 +217,7 @@ def test_offline_kernel_gives_discharger_the_exact_bound_scope(tmp_path):
         offline_shared_cache_dir=os.fspath(cache),
     )
 
-    kernel = _default_kernel(
+    kernel = build_kernel(
         service, model=None, backend=backend, critic_rounds=0)
     discharger = kernel.discharger
     if isinstance(discharger, AdapterRoutingDischarger):
@@ -239,7 +240,7 @@ def test_custom_backend_keeps_existing_service_scope_contract(tmp_path):
         kernel_factory=lambda _service: object(),
     )
 
-    kernel = _default_kernel(
+    kernel = build_kernel(
         service, model=None, backend=FixtureBackend({}), critic_rounds=0)
     discharger = kernel.discharger
     if isinstance(discharger, AdapterRoutingDischarger):

@@ -16,7 +16,8 @@ import pytest
 
 from verifier.core.events import RECORD_DIRECTORY, EventLog
 from verifier.llm.schema import FixtureBackend
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 
 
 def _ledger(tmp_path, count):
@@ -121,7 +122,7 @@ def _service(tmp_path, backend, monkeypatch):
             "tool": "bash", "tool_use_id": "call-1", "excerpt": ""}}) + "\n")
     return Service(
         str(state), live_world=False,
-        kernel_factory=lambda sc: _default_kernel(sc, None, backend=backend),
+        kernel_factory=lambda sc: build_kernel(sc, None, backend=backend),
     )
 
 

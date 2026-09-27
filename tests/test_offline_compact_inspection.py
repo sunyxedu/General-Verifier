@@ -57,7 +57,7 @@ def test_injected_backend_profile_mismatch_fails_before_call(tmp_path, enabled):
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_extractor_and_kernel_receive_same_explicit_profile(tmp_path, monkeypatch, enabled):
-    from verifier import mcp_server
+    from verifier.app import assembly
 
     (tmp_path / "task.md").write_text("Report the synthetic answer.")
     (tmp_path / "final.txt").write_text("synthetic answer")
@@ -79,7 +79,7 @@ def test_extractor_and_kernel_receive_same_explicit_profile(tmp_path, monkeypatc
         raise ReachedKernel()
 
     monkeypatch.setattr(cb.CodexBackend, "complete", complete)
-    monkeypatch.setattr(mcp_server, "_default_kernel", kernel)
+    monkeypatch.setattr(assembly, "build_kernel", kernel)
     with pytest.raises(ReachedKernel):
         offline.score(str(tmp_path), seats="codex", model="gpt-5.6-luna",
                       effort="medium", service_tier="standard", critic_rounds=2,

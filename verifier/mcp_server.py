@@ -40,11 +40,14 @@ from collections import deque
 from typing import Any, Dict, List, Optional
 
 from verifier.core.model import CLAIM_FINAL, CLAIM_KINDS
+from .app import assembly
+from .config import (
+    OnlineConfig, launch_settings, server_lock_wait_seconds,
+)
 from .stream.builder import Builder, TraceError, UnresolvedCommit
 from .engine.certificate import request_certificate
 from .core.events import EventLog
 from .execution.instruments import ArtifactStore
-from .engine.kernel import Kernel
 from .llm.schema import RoleError
 from .core.store import (
     ClaimStore, UnknownDependency, TRIGGER_ON_COMMIT, TRIGGERS,
@@ -228,7 +231,7 @@ class Service:
         self.log.subscribe(self._observe)
 
         if kernel_factory is None:
-            kernel_factory = lambda sc: _default_kernel(  # noqa: E731
+            kernel_factory = lambda sc: assembly.build_kernel(  # noqa: E731
                 sc, model=model, critic_rounds=critic_rounds,
                 parallel_obligations=parallel_obligations,
                 parallel_claims=parallel_claims)
@@ -245,7 +248,7 @@ class Service:
         # still waits for its checks, and the certificate waits for every
         # check in its slice. GV_BACKGROUND_CHECKS=0 restores blocking commits.
         self.background_checks = (
-            live_world and os.environ.get("GV_BACKGROUND_CHECKS", "1") != "0")
+            live_world and OnlineConfig.from_env().background_checks)
         self._news_lock = threading.Lock()
         # the solver cannot see the ledger's sequence numbers, and cited the
         # wrong effects when it guessed them (or counted lines of the hook
@@ -376,8 +379,7 @@ class Service:
         shares modules with the MCP server's, and two threads importing
         the same package concurrently deadlock the import lock — which
         killed the server at startup on some hosts."""
-        if not self.live_world \
-                or os.environ.get("GV_FINAL_PRECOMPILE", "1") == "0":
+        if not self.live_world or not OnlineConfig.from_env().final_precompile:
             return False
         start = getattr(self.kernel, "start_final_precompile", None)
         return bool(start is not None and start())
@@ -850,19 +852,13 @@ class Service:
         checking = getattr(self.kernel, "checking", None)
         return bool(checking is not None and checking(claim_id))
 
-SECRET_MARKS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH")
-
-
 def launch_identity(args: argparse.Namespace,
-                    environ=os.environ) -> Dict[str, Any]:
+                    environ=None) -> Dict[str, Any]:
     """What decides how this server verifies: its arguments, the verifier's
     own settings in the environment (never a credential's value), and a
     digest of its code and shipped configuration."""
-    env = {k: v for k, v in environ.items()
-           if (k.startswith("GV_") or k == "CODEX_HOME")
-           and not any(m in k.upper() for m in SECRET_MARKS)}
     return {"args": {k: v for k, v in sorted(vars(args).items())},
-            "env": dict(sorted(env.items())),
+            "env": launch_settings(environ),
             "code": _code_digest()}
 
 
@@ -962,9 +958,6 @@ def hold_server_lock(state_dir: str, wait: float = 0.0):
             "this process exits without touching the state") from None
 
 
-# seconds a starting server waits for the state lock a previous server of
-# the same client may still hold while it exits
-SERVER_LOCK_WAIT = 30.0
 RECENT_EFFECTS = 8           # tool results a gv response lists at most
 # recorded tool results named in an unresolved commit's known_references
 # and in the all-labels status map
@@ -992,177 +985,6 @@ def _excerpt(value: Any, cap: int = EFFECT_EXCERPT_CHARS) -> str:
         return text
     half = (cap - 3) // 2
     return text[:half] + " … " + text[-half:]
-
-
-def _parallel_default(name: str, fallback: int) -> int:
-    """Per-trial parallelism defaults: GV_PARALLEL_OBLIGATIONS (discharges
-    concurrent within one claim) and GV_PARALLEL_CLAIMS (claims of a
-    certificate slice verified concurrently; offline only)."""
-    try:
-        return max(1, int(os.environ.get(name, fallback)))
-    except ValueError:
-        return fallback
-
-
-def harness_roles(state_dir: str) -> Dict[str, Any]:
-    """The role registry a state's kernel seats: the mounting harness's
-    ground truth (task.md / baseline/) is the toggle; when present
-    (experiment mounts write it; the interactive mount does not), the
-    obligation compiler is told to compile against it."""
-    from dataclasses import replace
-
-    from .llm import prompts
-    from .llm.agents import ALL_AGENT_ROLES, COMPILE_OBLIGATIONS_AGENT
-
-    obligations = COMPILE_OBLIGATIONS_AGENT
-    if os.path.exists(os.path.join(state_dir, "task.md")) or \
-            os.path.isdir(os.path.join(state_dir, "baseline")):
-        obligations = replace(
-            obligations, system=obligations.system + "\n"
-            + prompts.OBLIGATIONS_HARNESS_ADDENDUM)
-    return dict(ALL_AGENT_ROLES, obligations=obligations)
-
-
-def _default_kernel(sc: Service, model, backend=None,
-                    critic_rounds: Optional[int] = None,
-                    parallel_obligations: Optional[int] = None,
-                    parallel_claims: Optional[int] = None,
-                    unify_final: Optional[bool] = None) -> Kernel:
-    from .llm.agents import AgentBackend, SCREENER_AGENT
-    from .execution.config import (
-        contract_cache_enabled,
-        method_cache_enabled,
-        sufficiency_preaudit_enabled,
-        typed_adapters_enabled,
-        typed_judger_packet_enabled,
-    )
-    from .execution.discharge import AgentDischarger
-    from .engine.game import BindingGame
-
-    # The backend resolves roles by name, so the harness-swapped role must
-    # go into its registry too, not just into the Kernel.
-    roles = harness_roles(sc.state_dir)
-    obligations = roles["obligations"]
-    if backend is None:
-        # the agent backend, with the tool-free roles seated on a direct
-        # model call when the configuration carries an API key
-        from .llm.direct_backend import build_backend
-        backend = build_backend(roles, cwd=sc.state_dir, model=model)
-    else:
-        # an injected backend (e.g. CodexBackend) still needs the
-        # harness-swapped role registry — same double-registration rule
-        backend.roles = roles
-    validate_tool_scope = getattr(
-        backend, "validate_offline_tool_scope", None)
-    if not sc.live_world and validate_tool_scope is not None:
-        validate_tool_scope(
-            sc.state_dir, sc.toolchain_dir,
-            getattr(sc, "shared_cache_dir", None))
-    agent_discharger = AgentDischarger(
-        backend, sc.artifacts,
-        workdir_base=os.path.join(sc.state_dir, "work"),
-        cleanup=True,   # snapshots are the evidence; workdirs are scratch
-        toolchain_dir=sc.toolchain_dir,
-        shared_cache_dir=getattr(sc, "shared_cache_dir", None),
-        state_dir=sc.state_dir,
-        live_world=sc.live_world,
-        store=sc.store,   # evidence-workspace index over the claim graph
-        log=sc.log)
-    # Process-local, explicit opt-in reuse across the candidates of one task
-    # scored in this process.  Off by default: every candidate then follows
-    # the fresh Compiler/Critic/Oracle/executor/Judger sequence.
-    method_cache = None
-    if method_cache_enabled():
-        from .engine.method_cache import default_accepted_method_cache
-        method_cache = default_accepted_method_cache()
-    contract_cache = None
-    if contract_cache_enabled():
-        from .engine.contract_cache import (
-            default_compiled_final_contract_cache,
-        )
-        contract_cache = default_compiled_final_contract_cache()
-    typed_adapters = typed_adapters_enabled()
-    typed_judger_packet = typed_judger_packet_enabled()
-    if typed_judger_packet and not typed_adapters:
-        raise ValueError("typed-adapter Judger packet requires typed adapters")
-    if typed_adapters:
-        from .execution.adapters import (
-            AdapterRoutingDischarger, default_adapter_registry,
-        )
-
-        discharger = AdapterRoutingDischarger(
-            agent_discharger, default_adapter_registry(), sc.artifacts, sc.log,
-            sc.state_dir, live_world=sc.live_world)
-    else:
-        discharger = agent_discharger
-    binder = BindingGame(backend, sc.artifacts, sc.log, discharger,
-                         memory=sc.memory, live_world=sc.live_world,
-                         method_cache=method_cache,
-                         typed_adapter_judger_packet=typed_judger_packet,
-                         sufficiency_role=(
-                             roles["sufficiency"]
-                             if sufficiency_preaudit_enabled() else None),
-                         packet_method_reuse=method_cache is not None)
-    if parallel_obligations is None:
-        parallel_obligations = getattr(sc, "parallel_obligations", None)
-    if parallel_claims is None:
-        parallel_claims = getattr(sc, "parallel_claims", None)
-    if parallel_obligations is None:
-        # a compound claim can compile to dozens of obligations; with the
-        # executable-form path most of them are a short script plus one
-        # no-tools reading, so eight in flight is well inside the seat gate
-        parallel_obligations = _parallel_default("GV_PARALLEL_OBLIGATIONS", 8)
-    if parallel_claims is None:
-        # online (live world): one claim at a time as commits arrive
-        parallel_claims = (1 if sc.live_world
-                           else _parallel_default("GV_PARALLEL_CLAIMS", 4))
-    # the admission screener is an ONLINE economy: with a live world the
-    # solver waits on every commit, and a claim the record already settles
-    # is assumed rather than checked. Offline scoring seats none — every
-    # claim in a scored slice gets its check. GV_SCREENER=0 disables it.
-    screener = (SCREENER_AGENT
-                if sc.live_world and os.environ.get("GV_SCREENER", "1") != "0"
-                else None)
-    # online, the task contract lives at the final, which keeps the full
-    # adversarial game; a non-final decomposition is the compiler's own by
-    # default (GV_CRITIC_ROUNDS_NONFINAL=0). A positive budget seats an
-    # ADVISORY review: that many rounds, the last repair standing. Offline
-    # scoring keeps the full game everywhere. (An advisory repair was
-    # observed to replace a concrete obligation with a vaguer, costlier
-    # one; the solver's intermediate feedback is better served by the
-    # compiler's decomposition, gated by the same evidence axioms.)
-    nonfinal_rounds = None
-    if sc.live_world:
-        try:
-            nonfinal_rounds = max(
-                0, int(os.environ.get("GV_CRITIC_ROUNDS_NONFINAL", "0")))
-        except ValueError:
-            nonfinal_rounds = 0
-    return Kernel(sc.store, sc.log, backend, sc.artifacts,
-                  obligations_role=obligations,
-                  discharger=discharger, binder=binder,
-                  memory=sc.memory, live_world=sc.live_world,
-                  record_boundary=sc.builder.commit_seq.get,
-                  critic_rounds=critic_rounds,
-                  contract_cache=contract_cache,
-                  parallel_obligations=parallel_obligations,
-                  parallel_claims=parallel_claims,
-                  screener_role=screener,
-                  critic_rounds_nonfinal=nonfinal_rounds,
-                  # online, the final takes the path of any claim (screened,
-                  # non-final critic budget) with its contract still
-                  # compiled from the task statement; GV_UNIFY_FINAL=0
-                  # restores the separate final path
-                  unify_final=(
-                      unify_final if unify_final is not None else (
-                          sc.live_world
-                          and os.environ.get("GV_UNIFY_FINAL", "1") != "0")),
-                  # online: overlap the critic's review with the checks
-                  # (GV_SPECULATIVE_DISCHARGE=0 disables)
-                  speculative_discharge=(
-                      sc.live_world
-                      and os.environ.get("GV_SPECULATIVE_DISCHARGE", "1")
-                      != "0"))
 
 
 # MCP wiring
@@ -1279,24 +1101,19 @@ def main() -> None:
     try:
         server_lock = hold_server_lock(
             args.state_dir,
-            wait=float(os.environ.get("GV_SERVER_LOCK_WAIT", SERVER_LOCK_WAIT)))
+            wait=server_lock_wait_seconds())
     except StateBusy as busy:
         print(f"gv-mcp-server: {busy}", file=sys.stderr)
         sys.exit(3)
     kernel_factory = None
     if args.seats == "codex":
-        from .llm.codex_backend import CodexBackend
-        from .llm.direct_backend import build_backend
-        codex = CodexBackend(cwd=args.state_dir, model=args.model,
-                             effort=args.effort,
-                             service_tier=args.service_tier,
-                             seat_search=args.seat_search == "on")
-        backend = build_backend(harness_roles(args.state_dir),
-                                cwd=args.state_dir, model=args.model,
-                                agent=codex)
+        backend = assembly.build_online_codex_backend(
+            args.state_dir, args.model, effort=args.effort,
+            service_tier=args.service_tier,
+            seat_search=args.seat_search == "on")
 
         def kernel_factory(sc):
-            return _default_kernel(sc, args.model, backend=backend)
+            return assembly.build_kernel(sc, args.model, backend=backend)
     service = Service(args.state_dir, kernel_factory=kernel_factory,
                       model=args.model,
                       memory_dir=args.memory_dir,
@@ -1323,7 +1140,7 @@ def terminate(service: Service, exit=os._exit) -> None:
     """The client is gone: end the process now. Left to the interpreter,
     shutdown joined the worker threads still inside seat calls (up to half
     an hour) while this process held the state lock, and the client's
-    restarted server gave up on the lock after SERVER_LOCK_WAIT. The seat
+    restarted server gave up on the lock after GV_SERVER_LOCK_WAIT. The seat
     and script processes the verifier launched are killed, the ledger is
     closed to further appends (each append is written and closed under the
     log's lock, so holding it means none is half-written), the lock is

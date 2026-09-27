@@ -34,6 +34,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from ..config import max_concurrent_seats
 from . import prompts
 from .model_spans import (
     role_attempt, role_span, seat_acquired, seat_released,
@@ -126,10 +127,7 @@ def _seat_limit() -> int:
     """Process-wide cap on in-flight seat calls, whatever the nesting of
     trial x claim x obligation parallelism above it. Env
     GV_MAX_CONCURRENT_SEATS (default 12); <= 0 disables the cap."""
-    try:
-        return int(os.environ.get("GV_MAX_CONCURRENT_SEATS", "12"))
-    except ValueError:
-        return 12
+    return max_concurrent_seats()
 
 
 class _SeatGate:

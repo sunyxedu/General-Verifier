@@ -30,7 +30,8 @@ from verifier.core.model import CLAIM_FINAL
 from verifier.core.store import TRIGGER_LAZY
 from verifier.llm.codex_backend import CodexBackend, codex_usage_ledger
 from verifier.llm.model_spans import model_scope, span_sidecar_path, submit_with_context
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 
 
 SCHEMA = "gv-compile-oracle-plan-probe/v1"
@@ -176,7 +177,7 @@ def run_probe(
             cwd=os.fspath(state), compact_inspection=True, **RUNTIME)
 
         def factory(sc):
-            return _default_kernel(
+            return build_kernel(
                 sc, RUNTIME["model"], backend=backend, critic_rounds=3,
                 parallel_obligations=4, parallel_claims=4)
 

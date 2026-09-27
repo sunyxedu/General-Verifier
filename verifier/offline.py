@@ -406,20 +406,16 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
     # machine state.  Stamp the pinned public identity (never its host path)
     # so score resumption cannot mix runs with different browser observers.
     from .execution.browser import configured_browser_observer
-    from .execution.config import (
+    from .config import (
         APPEND_ONLY_DELTA_PROTOCOL,
-        append_only_deltas_enabled,
+        ExtensionConfig,
         offline_runtime_read_roots,
-        sufficiency_preaudit_enabled,
-        typed_adapters_enabled,
-        typed_judger_packet_enabled,
     )
-    fields["typed_adapters"] = typed_adapters_enabled()
-    fields["sufficiency_preaudit"] = sufficiency_preaudit_enabled()
-    fields["typed_adapter_judger_packet"] = typed_judger_packet_enabled()
-    if fields["typed_adapter_judger_packet"] and not fields["typed_adapters"]:
-        raise ValueError(
-            "typed-adapter Judger packet requires typed adapters")
+    extensions = ExtensionConfig.from_env()
+    fields["typed_adapters"] = extensions.typed_adapters
+    fields["sufficiency_preaudit"] = extensions.sufficiency_preaudit
+    fields["typed_adapter_judger_packet"] = extensions.typed_judger_packet
+    extensions.require_consistent()
     if fields["typed_adapter_judger_packet"]:
         from .engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
         fields["typed_adapter_judger_packet_protocol"] = (
@@ -427,10 +423,9 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
     else:
         fields["typed_adapter_judger_packet_protocol"] = None
     # Process-local reuse across candidates of one task, explicit opt-in.
-    from .execution.config import contract_cache_enabled, method_cache_enabled
-    fields["contract_cache"] = contract_cache_enabled()
-    fields["method_cache"] = method_cache_enabled()
-    fields["append_only_deltas"] = append_only_deltas_enabled()
+    fields["contract_cache"] = extensions.contract_cache
+    fields["method_cache"] = extensions.method_cache
+    fields["append_only_deltas"] = extensions.append_only_deltas
     fields["append_only_delta_protocol"] = (
         APPEND_ONLY_DELTA_PROTOCOL
         if fields["append_only_deltas"] else None
@@ -903,22 +898,20 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
     come from GV_PARALLEL_OBLIGATIONS (8), GV_PARALLEL_CLAIMS (4), and
     GV_SHARED_DIR (none).
     """
-    def _env_int(name: str, fallback: int) -> int:
-        try:
-            return max(1, int(os.environ.get(name, fallback)))
-        except ValueError:
-            return fallback
+    from .app import assembly
+    from .config import ParallelismConfig
+    schedule = ParallelismConfig.from_env()
     if parallel_obligations is None:
         # A final contract commonly has five to eight obligations; with
         # typed adapters most finish in seconds, so eight slots keep the
         # agent-executed ones from queueing behind them.
-        parallel_obligations = _env_int("GV_PARALLEL_OBLIGATIONS", 8)
+        parallel_obligations = schedule.parallel_obligations
     if parallel_claims is None:
-        parallel_claims = _env_int("GV_PARALLEL_CLAIMS", 4)
+        parallel_claims = schedule.parallel_claims
     if shared_dir is None:
-        shared_dir = os.environ.get("GV_SHARED_DIR") or None
+        shared_dir = schedule.shared_dir
     if certificate_scope is None:
-        certificate_scope = (os.environ.get("GV_CERTIFICATE_SCOPE")
+        certificate_scope = (schedule.certificate_scope
                              or CERTIFICATE_SCOPE_FULL)
     toolchain_dir = cache_dir = None
     if shared_dir:
@@ -969,14 +962,9 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             # earlier stage a handle to the operator-bound Judger-only
             # scratch directory; the Kernel backend below binds it when the
             # fresh independent Judger can actually be selected.
-            backend = CodexBackend(cwd=state_dir, model=model,
-                                   effort=cfg["effort"],
-                                   service_tier=cfg["service_tier"],
-                                   compact_inspection=cfg["compact_inspection"],
-                                   judger_prefetch=cfg["judger_prefetch"],
-                                   offline_toolchain_dir=toolchain_dir,
-                                   offline_shared_cache_dir=cache_dir,
-                                   restricted_judger_cwd=None)
+            backend = assembly.build_offline_codex_backend(
+                state_dir, model, cfg, toolchain_dir, cache_dir,
+                restricted_judger_cwd=None)
         elif (isinstance(backend, CodexBackend)
               and backend.service_tier != cfg["service_tier"]):
             raise ValueError(
@@ -1041,57 +1029,25 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         if kernel_factory is None:
             # One kernel backend for the whole run: the concurrent final
             # contract precompile and the kernel must share its identity.
-            kernel_backend = CodexBackend(
-                cwd=state_dir, model=model,
-                effort=cfg["effort"],
-                service_tier=cfg["service_tier"],
-                compact_inspection=cfg["compact_inspection"],
-                judger_prefetch=cfg["judger_prefetch"],
-                offline_toolchain_dir=toolchain_dir,
-                offline_shared_cache_dir=cache_dir,
+            kernel_backend = assembly.build_offline_codex_backend(
+                state_dir, model, cfg, toolchain_dir, cache_dir,
                 restricted_judger_cwd=restricted_judger_cwd)
 
             def kernel_factory(sc):
-                from .mcp_server import _default_kernel
-                return _default_kernel(
+                return assembly.build_kernel(
                     sc, model, backend=kernel_backend,
                     critic_rounds=critic_rounds,
                     parallel_obligations=parallel_obligations,
                     parallel_claims=parallel_claims)
 
-            from .execution.config import (
-                contract_cache_enabled, final_contract_precompile_enabled,
-            )
-            # With the process-local contract cache the thread compiles only
-            # for the task's first candidate (a key nobody has published or
-            # started); later candidates' kernels hit the published entry.
+            from .config import final_contract_precompile_enabled
             if (final_contract_precompile_enabled()
                     and not _has_commits(
                         os.path.join(state_dir, "events.jsonl"))):
-                from .engine.precompile import PrecompiledFinalContract
-                from .engine.kernel import compile_roles_for_backend
-                from .execution.config import (
-                    APPEND_ONLY_DELTA_PROTOCOL, append_only_deltas_enabled,
-                )
-                from .mcp_server import harness_roles
-                roles = harness_roles(state_dir)
-                compile_role, critic_role = compile_roles_for_backend(
-                    kernel_backend, roles["obligations"], roles["critic"])
-                deltas = append_only_deltas_enabled()
-                contract_cache = None
-                if contract_cache_enabled():
-                    from .engine.contract_cache import (
-                        default_compiled_final_contract_cache,
-                    )
-                    contract_cache = default_compiled_final_contract_cache()
                 # Started before extraction so the candidate-blind contract
-                # and the Extractor run side by side; adopted by the kernel
-                # only under an identical contract key.
-                precompile = PrecompiledFinalContract.start(
-                    state_dir, kernel_backend, compile_role, critic_role,
-                    critic_rounds, deltas,
-                    APPEND_ONLY_DELTA_PROTOCOL if deltas else None,
-                    contract_cache=contract_cache)
+                # and the Extractor run side by side.
+                precompile = assembly.start_offline_final_precompile(
+                    state_dir, kernel_backend, critic_rounds)
 
     def run_verification() -> Dict[str, Any]:
         nonlocal extract_rounds

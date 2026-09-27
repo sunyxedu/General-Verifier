@@ -27,7 +27,7 @@ from .engine.contract_bundle import (
     ContractBundleIdentity, SealedContractBundle, claim_graph_sha256,
 )
 from .engine.method_cache import _backend_identity, _role_identity
-from .execution.config import APPEND_ONLY_DELTA_PROTOCOL
+from .config import APPEND_ONLY_DELTA_PROTOCOL
 from .llm.authority_backend import authority_compilation_backend
 
 

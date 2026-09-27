@@ -16,14 +16,13 @@ import os
 import threading
 from typing import Callable, Optional
 
+from ..config import scratch_cap_gb
+
 POLL_SECONDS = 10.0
 
 
 def scratch_cap_bytes() -> int:
-    try:
-        gb = float(os.environ.get("GV_SCRATCH_CAP_GB", "6"))
-    except ValueError:
-        gb = 6.0
+    gb = scratch_cap_gb()
     return int(gb * (1 << 30)) if gb > 0 else 0
 
 

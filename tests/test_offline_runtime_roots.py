@@ -7,7 +7,7 @@ import tomllib
 
 import pytest
 
-from verifier.execution.config import (
+from verifier.config import (
     OFFLINE_RUNTIME_READ_ROOTS_ENV,
     offline_runtime_read_roots,
 )

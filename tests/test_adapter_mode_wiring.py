@@ -14,7 +14,8 @@ from verifier.execution.adapters import (
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.schema import FixtureBackend
-from verifier.mcp_server import Service, _default_kernel
+from verifier.app.assembly import build_kernel
+from verifier.mcp_server import Service
 
 
 JUDGE_YES = {
@@ -90,10 +91,10 @@ def test_online_and_offline_default_kernels_publish_the_same_adapter_catalog(
         str(offline_state), live_world=False,
         kernel_factory=lambda _service: object())
 
-    online_kernel = _default_kernel(
+    online_kernel = build_kernel(
         online, model=None, backend=FixtureBackend({}), critic_rounds=0,
         parallel_obligations=1, parallel_claims=1)
-    offline_kernel = _default_kernel(
+    offline_kernel = build_kernel(
         offline, model=None, backend=FixtureBackend({}), critic_rounds=0,
         parallel_obligations=1, parallel_claims=1)
 
@@ -115,7 +116,7 @@ def test_online_and_offline_default_kernels_publish_the_same_adapter_catalog(
     assert online_kernel.contract_cache is offline_kernel.contract_cache
     assert online_kernel.contract_cache is not None
     monkeypatch.delenv("GV_CONTRACT_CACHE")
-    plain = _default_kernel(
+    plain = build_kernel(
         offline, model=None, backend=FixtureBackend({}), critic_rounds=0,
         parallel_obligations=1, parallel_claims=1)
     assert plain.contract_cache is None
