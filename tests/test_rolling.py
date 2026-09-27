@@ -142,3 +142,21 @@ def test_container_sizes_parse_docker_ps_sizes(monkeypatch):
     monkeypatch.setattr(rolling, "docker", lambda *a, **k: Out())
     sizes = rolling.container_sizes()
     assert sizes["big__a__env-main-1"] > sizes["small__b__env-main-1"] > 0
+
+
+def test_the_disk_guard_stops_the_task_holding_the_most():
+    sys.path.insert(0, os.path.dirname(ROLLING))
+    import rolling
+
+    class Run:
+        def __init__(self, name, started):
+            self.name, self.started = name, started
+
+        def container(self):
+            return self.name
+
+    old_big, new_small = Run("big", 1.0), Run("small", 2.0)
+    sizes = {"big": 10.5e9, "small": 5.8e8}
+    assert rolling.task_to_stop([old_big, new_small], sizes) is old_big
+    # with no size known, the newest goes, as before
+    assert rolling.task_to_stop([old_big, new_small], {}) is new_small

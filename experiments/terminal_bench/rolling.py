@@ -118,6 +118,15 @@ def container_sizes() -> Dict[str, float]:
     return sizes
 
 
+def task_to_stop(running, sizes: Dict[str, float]):
+    """The running task the disk guard stops: the one whose container's
+    writable layer is largest (newest first among equals, and when no size
+    is known) — stopping small tasks in turn frees little while the one
+    that grew keeps growing."""
+    return max(running, key=lambda x: (sizes.get(x.container() or "", 0.0),
+                                       x.started))
+
+
 def save_state(container: str, trial: str, name: str) -> bool:
     """/gv-state -> <trial>/artifacts/<name>, replacing the previous copy.
     A tar pipe, not docker cp: the state holds read-only directories that
@@ -320,9 +329,10 @@ def main() -> None:
 
             free = free_gb(disk_path)
 
-            # out of disk: stop the newest task, queue it again
+            # out of disk: stop the task whose container holds the most,
+            # queue it again
             if free < args.hard_free_gb and running:
-                r = max(running, key=lambda x: x.started)
+                r = task_to_stop(running, container_sizes())
                 trial, cont = r.trial(), r.container()
                 if trial and cont:
                     save_state(cont, trial, "gv-state-at-diskguard")
