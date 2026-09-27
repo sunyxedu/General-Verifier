@@ -40,10 +40,8 @@ from ..core.model import (
     CLAIM_EFFECT, CLAIM_FINAL, OBLIGATION_KINDS,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
-    STRENGTH_ANALYTIC, STRENGTH_DECISIVE, weakest_strength,
-    SEVERITY_MUST, SEVERITIES,
+    STRENGTH_DECISIVE, SEVERITY_MUST, SEVERITIES,
     TASK_BEARING_REQUIRED, TASK_BEARING_UNCLEAR,
-    WITNESS_NONE,
 )
 from ..llm import prompts
 from ..llm.agents import AgentRole, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
@@ -59,8 +57,11 @@ from .contract_cache import (
 from .source_evidence import bind_source_evidence_variables
 from ..core.world import world_epoch
 from .quoted_identities import recorded_identities, restore
+from .excerpts import bounded_context_value
+from .fold import fold
+from .screening import Screener
 from .gates import (
-    GateScope, admissible_refutation, apply_backstop, transferable_refutation,
+    GateScope, apply_backstop, transferable_refutation,
 )
 
 # attack rounds on a decomposition before the claim fails closed: each round
@@ -246,6 +247,11 @@ class Kernel:
         # refuted settles the claim and the formal checks are skipped.
         # None -> every claim is checked.
         self.screener_role = screener_role
+        self.screener = None if screener_role is None else Screener(
+            screener_role, backend, store, log,
+            report_status=self._report_status,
+            current_epoch=self._current_epoch,
+            candidate_stamp=self._candidate_stamp)
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),
@@ -584,179 +590,6 @@ class Kernel:
             return hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
 
     # screening
-    # a high-confidence screener verdict -> (status, strength): supported
-    # is verified below decisive strength (the certificate reads it out
-    # as supported); a screener refutation is decisive or it is nothing —
-    # nothing below decisive may refute
-    SCREEN_SETTLES = {"verified": (STATUS_VERIFIED, STRENGTH_DECISIVE),
-                      "supported": (STATUS_VERIFIED, STRENGTH_ANALYTIC),
-                      "refuted": (STATUS_REFUTED, STRENGTH_DECISIVE)}
-
-    def _screen(self, row: Dict) -> bool:
-        """Read the claim's verdict off the retained record before any
-        instrument is spent. A high-confidence verified, supported, or
-        refuted becomes the claim's status and the formal checks are
-        skipped. Returns True when the screener settled the claim (or the
-        claim moved under it) and verification must stop here."""
-        state = os.path.dirname(os.path.abspath(self.log.path))
-        premises = []
-        for pid in self.store.parents(row["id"]):
-            prow = self.store.get(pid)
-            eff = self.store.effective(pid)
-            premises.append({
-                "id": pid[:12],
-                "text": ("[a tool-execution record]"
-                         if prow["kind"] == CLAIM_EFFECT else prow["text"]),
-                "status": eff["effective_status"],
-                "screened": bool(prow.get("confident")),
-            })
-        cited, index, recent = self._record_excerpt(row)
-        variables = {
-            "task_context": authoritative_task_context(state),
-            "claim_text": row["text"],
-            "claim_kind": row["kind"],
-            "premises": json.dumps(premises, ensure_ascii=False),
-            "cited_events": json.dumps(cited, ensure_ascii=False),
-            "call_index": json.dumps(index, ensure_ascii=False),
-            "recent_events": json.dumps(recent, ensure_ascii=False),
-            "graph": json.dumps(self.store.graph_snapshot(exclude=row["id"]),
-                                ensure_ascii=False),
-        }
-        try:
-            verdict = self.screener_role.call(self.backend, variables)
-        except Exception as err:  # noqa: BLE001 - screening is advisory
-            # a screener failure never blocks: the claim takes the full
-            # pipeline exactly as if no screener were seated
-            self.log.append("claim_screened",
-                            {"claim": row["id"], "confidence": "error",
-                             "error": str(err)[:300]})
-            return False
-        witness = str(verdict.get("witness") or "")
-        witness_kind = verdict.get("witness_kind")
-        event = {"claim": row["id"], "verdict": verdict["verdict"],
-                 "confidence": verdict["confidence"],
-                 "basis": verdict["basis"],
-                 "grounds": verdict["grounds"][:1000],
-                 "reason": verdict["reason"][:500]}
-        if witness:
-            event["witness"] = witness[:1000]
-            event["witness_kind"] = witness_kind
-        settles = self.SCREEN_SETTLES.get(verdict["verdict"])
-        refused = None
-        if verdict["confidence"] != "high" or settles is None:
-            settles = None
-        elif verdict["verdict"] == "refuted" and not admissible_refutation(
-                witness, witness_kind):
-            # WITNESS AXIOM, as for any refutation: only a positive,
-            # retained observation refutes; the full checks decide instead
-            refused = ("a refutation needs a positive witness; reported "
-                       f"kind {witness_kind or WITNESS_NONE!r}")
-        elif (row["kind"] == CLAIM_FINAL
-              and settles[0] == STATUS_VERIFIED
-              and verdict["basis"] != BASIS_WORLD):
-            # the completion-claim abstention the formal fold applies: a
-            # final established on the record alone is not established
-            refused = "no world-basis evidence for a completion claim"
-        if refused:
-            event["refused"] = refused
-            settles = None
-        self.log.append("claim_screened", event)
-        if settles is None:
-            return False
-        status, strength = settles
-        basis = verdict["basis"]
-        reason = f"{verdict['reason']} — grounds: {verdict['grounds']}"
-        if status == STATUS_REFUTED:
-            reason = f"{witness} — {reason}"
-        if not self.store.set_screened(
-                row["id"], status, reason[:1000], basis=basis,
-                strength=strength,
-                generation=self._check_generation.get(row["id"])):
-            # revised or re-staled while the screener read it: the reading
-            # was about a graph that no longer stands. Nothing is settled
-            # and nothing is checked — a check begun on that graph could
-            # not settle the claim either; it stays stale for a recheck
-            self._report_status(row["id"], False, status,
-                                reason="screener verdict refused")
-            return True
-        self.store.record_evidence(
-            row["id"],
-            {"outcome": (OUTCOME_REFUTED if status == STATUS_REFUTED
-                         else OUTCOME_HOLDS),
-             "instrument": "screener", "verdict": verdict["verdict"],
-             "confidence": "high", "basis": basis, "strength": strength,
-             "grounds": verdict["grounds"], "reason": verdict["reason"],
-             "witness": witness or None,
-             "witness_kind": witness_kind if witness else None,
-             "world_epoch": self._current_epoch(),
-             **self._candidate_stamp(row)})
-        self.log.append("status_change",
-                        {"claim": row["id"], "status": status,
-                         "strength": strength, "basis": basis,
-                         "confident": True,
-                         "reason": "settled by the screener on the record"})
-        return True
-
-    # the retained record, sliced for the screener: each cited event in
-    # full (bounded), a compact index of every recorded call, and the most
-    # recent events bounded per entry — a table of contents plus the
-    # decisive pages, never the whole ledger
-    SCREEN_CITED_CHARS = 8_000
-    SCREEN_INDEX_ENTRIES = 150
-    SCREEN_RECENT_EVENTS = 24
-    SCREEN_RECENT_CHARS = 2_500
-
-    def _record_excerpt(self, row: Dict):
-        cited_seqs = set()
-        for pid in self.store.parents(row["id"]):
-            prow = self.store.get(pid)
-            if prow["kind"] != CLAIM_EFFECT:
-                continue
-            try:
-                cited_seqs.add(int(json.loads(prow["text"])["event_seq"]))
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                continue
-        calls: List[Dict] = []
-        results: List[Dict] = []
-        for event in self.log.replay():
-            if event["type"] == "tool_call":
-                calls.append(event)
-            elif event["type"] == "tool_result":
-                results.append(event)
-        call_by_id = {}
-        for c in calls:
-            cid = c["payload"].get("tool_use_id")
-            if cid:
-                call_by_id[cid] = c
-
-        def render_call(c, cap):
-            p = c["payload"]
-            return {"seq": c["seq"], "tool": p.get("tool"),
-                    "input": self._bounded_context_value(p.get("input"), cap)}
-
-        def render_result(r, cap):
-            p = r["payload"]
-            entry = {"seq": r["seq"], "tool": p.get("tool"),
-                     "excerpt": self._bounded_context_value(
-                         p.get("excerpt"), cap),
-                     "response_chars": p.get("response_chars"),
-                     "excerpt_truncated": p.get("excerpt_truncated")}
-            call = call_by_id.get(p.get("tool_use_id"))
-            if call is not None:
-                entry["call"] = render_call(call, cap)
-            return entry
-
-        cited = [render_result(r, self.SCREEN_CITED_CHARS)
-                 for r in results if r["seq"] in cited_seqs]
-        index = [{"seq": c["seq"], "tool": c["payload"].get("tool"),
-                  "input": json.dumps(c["payload"].get("input"),
-                                      ensure_ascii=False,
-                                      default=str)[:120]}
-                 for c in calls[-self.SCREEN_INDEX_ENTRIES:]]
-        recent = [render_result(r, self.SCREEN_RECENT_CHARS)
-                  for r in results[-self.SCREEN_RECENT_EVENTS:]]
-        return cited, index, recent
-
     # assertion / final
     def _verify_assertion(self, row: Dict, force: bool = False) -> None:
         # the epoch this verification began in; the claim's verdict is
@@ -813,7 +646,8 @@ class Kernel:
                                             self.backend, variables))
             pool.shutdown(wait=False)
             self.log.append("speculative_compile", {"claim": row["id"]})
-        if screen and self._screen(row):
+        if screen and self.screener.screen(
+                row, self._check_generation.get(row["id"])):
             return
 
         speculated: Dict[str, tuple] = {}
@@ -2181,25 +2015,6 @@ class Kernel:
         return merged
 
     @staticmethod
-    def _bounded_context_value(value, limit: int) -> Dict:
-        """Preserve a small value exactly; otherwise expose an auditable
-        excerpt without pretending it is complete."""
-        if isinstance(value, str):
-            rendered = value
-        else:
-            rendered = json.dumps(
-                value, ensure_ascii=False, sort_keys=True,
-                separators=(",", ":"), default=str)
-        if len(rendered) <= limit:
-            return {"value": value, "truncated": False}
-        return {
-            "excerpt": rendered[:limit],
-            "truncated": True,
-            "sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
-            "chars": len(rendered),
-        }
-
-    @staticmethod
     def _compatible_call(call: Dict, result: Dict) -> bool:
         """Use recorder metadata only to rule out a no-id candidate."""
         cp, rp = call.get("payload", {}), result.get("payload", {})
@@ -2309,13 +2124,13 @@ class Kernel:
                     }
                     continue
 
-                result_excerpt = self._bounded_context_value(
+                result_excerpt = bounded_context_value(
                     payload.get("excerpt"), REFERENT_CONTEXT_EVENT_CHARS)
                 rendered_call = None
                 call_complete = False
                 if call is not None:
                     call_payload = call.get("payload", {})
-                    call_input = self._bounded_context_value(
+                    call_input = bounded_context_value(
                         call_payload.get("input"),
                         REFERENT_CONTEXT_EVENT_CHARS)
                     rendered_call = {
@@ -2402,7 +2217,7 @@ class Kernel:
             if row["kind"] == CLAIM_EFFECT:
                 entry["effect_record"] = effect_records[cid]
             else:
-                entry["text"] = self._bounded_context_value(
+                entry["text"] = bounded_context_value(
                     row["text"], REFERENT_CONTEXT_TEXT_CHARS)
             base_entries[cid] = entry
 
@@ -2615,94 +2430,29 @@ class Kernel:
                 bases: List[str] = (),
                 strengths: List[Optional[str]] = (),
                 severities: List[str] = ()) -> bool:
-        """Fold the obligation outcomes into the claim's local verdict.
-        Returns whether the store took it: a claim revised, or
-        invalidated by a revision in its cone, while its check ran keeps
-        the status it holds, and the ledger says so (settle_refused)."""
+        """Fold the obligation outcomes into the claim's local verdict
+        (engine.fold) and apply it. Returns whether the store took it: a
+        claim revised, or invalidated by a revision in its cone, while its
+        check ran keeps the status it holds, and the ledger says so
+        (settle_refused)."""
         generation = self._check_generation.get(claim_id)
-        severities = list(severities) or [SEVERITY_MUST] * len(outcomes)
-        must_refuted = [i for i, o in enumerate(outcomes)
-                        if o == OUTCOME_REFUTED
-                        and severities[i] == SEVERITY_MUST]
-        # NECESSITY AXIOM at fold time: a refuted SHOULD obligation is a
-        # contrary signal, not a counterexample — the task did not make
-        # acceptance depend on that clause. It lowers the claim (to
-        # partial, with the violation on record) but never refutes it.
-        should_violated = [i for i, o in enumerate(outcomes)
-                           if o == OUTCOME_REFUTED
-                           and severities[i] != SEVERITY_MUST]
-        settled = [OUTCOME_UNOBTAINABLE if i in should_violated else o
-                   for i, o in enumerate(outcomes)]
-        if must_refuted:
-            # Parallel checks may finish after the refutation. Provenance
-            # belongs to the deciding check, never an unrelated later one.
-            index = must_refuted[0]
+        verdict = fold(outcomes, bases, strengths, severities,
+                       completion_claim=(self.store.get(claim_id)["kind"]
+                                         == CLAIM_FINAL))
+        if verdict.evidence is not None:
+            self.store.record_evidence(claim_id, verdict.evidence)
+        if verdict.status == STATUS_REFUTED:
             applied = self.store.set_refuted(
-                claim_id, reason="counterexample on record",
-                basis=bases[index] if bases else None,
-                strength=strengths[index] if strengths else None,
-                generation=generation)
-            new_status = STATUS_REFUTED
-        elif should_violated and all(
-                o in (OUTCOME_HOLDS, OUTCOME_UNOBTAINABLE) for o in settled):
-            self.store.record_evidence(
-                claim_id,
-                {"outcome": OUTCOME_UNOBTAINABLE,
-                 "contrary_signals": len(should_violated),
-                 "error": "advisory (should) clause violated; every "
-                          "acceptance (must) check that ran held"})
-            applied = self.store.set_partial(claim_id, generation=generation)
-            new_status = STATUS_PARTIAL
-        elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes \
-                and self.store.get(claim_id)["kind"] == CLAIM_FINAL \
-                and BASIS_WORLD not in bases:
-            # conservative ABSTENTION POLICY, not a logical theorem: an
-            # all-record final is the laundering signature (every check
-            # passed, none ever left the solver's own account), so it
-            # abstains. A purely process task could legitimately rest on
-            # record evidence alone — revisit if real false-unverifieds
-            # of that shape appear.
-            self.store.record_evidence(
-                claim_id,
-                {"outcome": OUTCOME_FAILED,
-                 "error": "no world-basis evidence for a completion claim"},
-            )
-            applied = self.store.set_unverified(
-                claim_id,
-                reason="no world-basis evidence for a completion claim",
-                generation=generation,
-            )
-            new_status = STATUS_UNVERIFIED
-        elif all(o == OUTCOME_HOLDS for o in outcomes) and outcomes:
-            # LOCAL provenance fold: world only when every obligation was
-            # world-based. This is the conditional verdict's own basis —
-            # premise taint (residual obligations may have relied on any
-            # premise) is charged at read time by store.effective, which
-            # folds every non-effect premise's effective basis into the
-            # chain. Any record component -> record: a chain of reliance
-            # must bottom out in world checks or say so.
-            basis = (BASIS_WORLD
-                     if bases and all(b == BASIS_WORLD for b in bases)
-                     else BASIS_RECORD)
-            # strength is a weakest-link fold over the obligations that
-            # settled this claim; below decisive the certificate reads
-            # the verified status out as "supported"
+                claim_id, reason=verdict.reason, basis=verdict.basis,
+                strength=verdict.strength, generation=generation)
+        elif verdict.status == STATUS_VERIFIED:
             applied = self.store.set_verified(
-                claim_id, basis=basis, strength=weakest_strength(strengths),
+                claim_id, basis=verdict.basis, strength=verdict.strength,
                 generation=generation)
-            new_status = STATUS_VERIFIED
-        elif any(o == OUTCOME_UNOBTAINABLE for o in settled) and all(
-                o in (OUTCOME_HOLDS, OUTCOME_UNOBTAINABLE)
-                for o in settled):
-            # Partial has one narrow, terminal meaning: every check that did
-            # run held, but at least one necessary check is structurally
-            # unavailable inside this fixed evidence boundary. A retryable
-            # failed check is not partial progress and takes the branch below.
+        elif verdict.status == STATUS_PARTIAL:
             applied = self.store.set_partial(claim_id, generation=generation)
-            new_status = STATUS_PARTIAL
         else:
-            applied = self.store.set_unverified(claim_id,
-                                                generation=generation)
-            new_status = STATUS_UNVERIFIED
-        self._report_status(claim_id, applied, new_status)
+            applied = self.store.set_unverified(
+                claim_id, reason=verdict.reason, generation=generation)
+        self._report_status(claim_id, applied, verdict.status)
         return applied
