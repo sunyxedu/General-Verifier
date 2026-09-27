@@ -17,7 +17,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.model import CLAIM_FINAL, content_hash
+from ..core.model import CLAIM_FINAL, STATUS_UNVERIFIED, content_hash
 from ..llm.model_spans import model_scope
 from ..llm.runtime import capabilities_of
 
@@ -53,38 +53,6 @@ class _BufferStore:
 
     def record_evidence(self, claim_id: str, evidence: Dict[str, Any]) -> None:
         self.evidence.append(dict(evidence))
-
-
-class _CritiqueContext:
-    """The slice of Kernel state the critique loop reads."""
-
-    def __init__(self, log, store, critic_rounds, append_only_deltas,
-                 append_only_delta_protocol, run_options):
-        self.log = log
-        self.store = store
-        self.run_options = run_options
-        self.critic_rounds = critic_rounds
-        self.append_only_deltas = append_only_deltas
-        self.append_only_delta_protocol = append_only_delta_protocol
-
-    def __getattr__(self, name):
-        # Helpers of the kernel's critique loop (append-guard validation and
-        # delta merging) are borrowed unchanged.  Look them up on the class
-        # dictionary so a staticmethod stays unbound: ``getattr(Kernel, ...)``
-        # would already have unwrapped it into a plain function and binding
-        # that to this context would shift its arguments.
-        from .kernel import Kernel
-        for klass in Kernel.__mro__:
-            if name in vars(klass):
-                raw = vars(klass)[name]
-                if isinstance(raw, staticmethod):
-                    return raw.__func__
-                if isinstance(raw, classmethod):
-                    return raw.__func__.__get__(Kernel, type(Kernel))
-                if callable(raw):
-                    return raw.__get__(self, _CritiqueContext)
-                return raw
-        raise AttributeError(name)
 
 
 class PrecompiledFinalContract:
@@ -131,6 +99,7 @@ class PrecompiledFinalContract:
             AuthorityViewUnavailable, build_authority_compilation_view,
         )
         from .contract_cache import contract_cache_key
+        from .contract_critic import CriticGame
         from .kernel import Kernel
 
         started = time.monotonic()
@@ -171,15 +140,24 @@ class PrecompiledFinalContract:
                     with model_scope(stage="contract_compile", round=0):
                         payload = session.obligations_role.call(
                             session.backend, variables)
-                    context = _CritiqueContext(
-                        buffer, store, self.critic_rounds,
-                        self.append_only_deltas,
-                        self.append_only_delta_protocol, self.run_options)
-                    payload = Kernel._critique(
-                        context, row, payload, variables,
-                        backend=session.backend,
+                    # the critic game writes into the buffers; a failed
+                    # review has no store row to fail, only its record
+                    def conclude_unverified(claim_id, reason):
+                        buffer.append("status_change",
+                                      {"claim": claim_id,
+                                       "status": STATUS_UNVERIFIED,
+                                       "reason": reason})
+                        return False
+
+                    payload = CriticGame(
+                        log=buffer, store=store, backend=session.backend,
                         obligations_role=session.obligations_role,
-                        critic_role=session.critic_role)
+                        critic_role=session.critic_role,
+                        critic_rounds=self.critic_rounds,
+                        run_options=self.run_options,
+                        append_only_deltas=self.append_only_deltas,
+                        conclude_unverified=conclude_unverified,
+                    ).review(row, payload, variables)
                     view.revalidate(self.state_dir)
                     session.revalidate()
                     if payload is not None:

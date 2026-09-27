@@ -17,6 +17,10 @@ from verifier.core.model import (
     canonical, Claim, CLAIM_ASSERTION, CLAIM_EFFECT, CLAIM_FINAL,
 )
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
+from verifier.engine.contract_critic import CriticGame
+from verifier.engine.referent import (
+    dependency_referent_context, effect_referent_records,
+)
 from verifier.engine.kernel import Kernel, MAX_CRITIC_ROUNDS
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
@@ -61,10 +65,7 @@ def ledger_events(log, etype):
 
 
 def referent_context(log, store, claim_id):
-    kernel = Kernel.__new__(Kernel)
-    kernel.log = log
-    kernel.store = store
-    return kernel._dependency_referent_context(claim_id)
+    return dependency_referent_context(store, log, claim_id)
 
 
 def test_pass_on_the_first_round_admits_the_decomposition(tmp_path):
@@ -472,9 +473,7 @@ def test_no_effect_context_does_not_replay_the_ledger(tmp_path):
         def replay(self):
             raise AssertionError("ledger should not be replayed")
 
-    kernel = Kernel.__new__(Kernel)
-    kernel.log = NoReplay()
-    assert kernel._effect_referent_records([]) == {}
+    assert effect_referent_records(NoReplay(), []) == {}
 
 
 def test_a_counterexample_standing_after_the_last_round_fails_closed(tmp_path):
@@ -858,8 +857,8 @@ def test_append_guard_requires_a_strict_tail_append():
         ]},
     ]
 
-    assert Kernel._append_repair_violation(previous, valid) is None
-    assert all(Kernel._append_repair_violation(previous, candidate)
+    assert CriticGame.append_repair_violation(previous, valid) is None
+    assert all(CriticGame.append_repair_violation(previous, candidate)
                for candidate in invalid)
 
 

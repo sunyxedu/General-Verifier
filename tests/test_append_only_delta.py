@@ -19,6 +19,7 @@ from verifier.core.events import EventLog
 from verifier.core.model import CLAIM_ASSERTION, Claim, content_hash
 from verifier.core.store import ClaimStore, TRIGGER_LAZY
 from verifier.engine.contract_cache import contract_cache_key
+from verifier.engine.contract_critic import CriticGame
 from verifier.engine.kernel import Kernel
 from verifier.config import (
     APPEND_ONLY_DELTA_PROTOCOL,
@@ -149,7 +150,7 @@ def test_delta_merge_deep_copies_old_and_new_payloads_across_threads():
     previous, delta = copy.deepcopy(INITIAL), copy.deepcopy(DELTA)
     with ThreadPoolExecutor(max_workers=8) as pool:
         merged = list(pool.map(
-            lambda _index: Kernel._merge_append_delta(previous, delta),
+            lambda _index: CriticGame.merge_append_delta(previous, delta),
             range(24),
         ))
 
