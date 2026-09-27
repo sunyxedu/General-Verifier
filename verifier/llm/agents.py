@@ -812,12 +812,18 @@ SCREENER_AGENT = AgentRole(
     name="screener",
     system=prompts.SCREENER_SYSTEM,
     template=prompts.SCREENER_TEMPLATE,
-    # a LEVEL, not a status: high admits the claim as confident (assumed,
-    # unverified, no instrument spent); medium/low route it through the
-    # full pipeline. The whole record excerpt is inlined so the seat needs
-    # no tools — one turn, the cheapest call in the system.
-    schema={"confidence": ("high", "medium", "low"),
-            "grounds": str, "reason": str},
+    # a VERDICT with a confidence: a high-confidence verified, supported,
+    # or refuted becomes the claim's status and no instrument is spent;
+    # anything else routes it through the full pipeline. The whole record
+    # excerpt is inlined so the seat needs no tools — one turn, the
+    # cheapest call in the system.
+    schema={"verdict": ("verified", "supported", "refuted", "open"),
+            "confidence": ("high", "medium", "low"),
+            "basis": ("world", "record"),
+            "grounds": str, "reason": str,
+            "witness?": str,
+            "witness_kind?": ("execution", "world_state",
+                              "record_contradiction", "absence", "none")},
     tools=[],
     # no tools, but a structured answer still takes the harness a turn
     # or two beyond the reply itself; a cap of two cut honest answers off

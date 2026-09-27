@@ -63,8 +63,8 @@ EVENT_TYPES = (
     "goal_released",
     "goal_hook_error",
 
-    # admission screening (online economy: a claim the record settles is
-    # assumed, not checked)
+    # screening (online economy: a claim whose verdict the retained record
+    # settles with high confidence takes that verdict, unchecked)
     "claim_screened",
 
     # final-contract precompile (online: compiled while the solver works)
@@ -116,8 +116,8 @@ EVENT_TYPES = (
     # a final a revision made stale, queued for its recheck (nothing else
     # reopens it while the solver waits on gv.status)
     "recheck_scheduled",
-    # a final the screener admitted: its task contract is checked in the
-    # background, the solver may finish on the admission
+    # legacy: a final the screener once admitted unsettled, its contract
+    # checked in the background (kept so older ledgers still replay)
     "admitted_final_check",
     # the verifier's own launches: a restart with other settings or code, or
     # a second server on the same state, voids the session's certificates

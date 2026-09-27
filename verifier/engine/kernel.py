@@ -39,7 +39,7 @@ from ..core.model import (
     CLAIM_EFFECT, CLAIM_FINAL, OBLIGATION_KINDS,
     STATUS_UNVERIFIED, STATUS_VERIFIED, STATUS_STALE, STATUS_REFUTED, STATUS_PARTIAL,
     OUTCOME_HOLDS, OUTCOME_REFUTED, OUTCOME_FAILED, OUTCOME_UNOBTAINABLE,
-    STRENGTH_DECISIVE, strength_rank, weakest_strength,
+    STRENGTH_ANALYTIC, STRENGTH_DECISIVE, strength_rank, weakest_strength,
     SEVERITY_MUST, SEVERITY_SHOULD, SEVERITIES,
     TASK_BEARING_REQUIRED, TASK_BEARING_UNCLEAR,
     WITNESS_NONE, witness_admissible, circular_inputs,
@@ -215,9 +215,10 @@ class Kernel:
         # 0 seats no critic for non-finals. None -> the full game.
         self.critic_rounds_nonfinal = critic_rounds_nonfinal
         # UNIFIED FINAL: the final takes the path of any claim — screened
-        # (an admitted final's contract is checked in the background) and
-        # reviewed on the non-final critic budget — while its contract is
-        # still compiled from the authoritative task statement.
+        # (a high-confidence screener verdict settles it like any claim)
+        # and reviewed on the non-final critic budget — while its contract,
+        # when it is compiled, still comes from the authoritative task
+        # statement.
         self.unify_final = unify_final
         # SPECULATIVE DISCHARGE: start settling the compiler's obligations
         # while the critic reviews them. Obligation nodes are
@@ -230,9 +231,10 @@ class Kernel:
         # critic's wall time simply overlaps the checks. Off by default
         # (offline scoring and tests keep the sequential order).
         self.speculative_discharge = speculative_discharge
-        # admission screener: grades a non-final claim from the retained
-        # record before any instrument is spent; `high` admits it as
-        # confident (assumed, unverified). None -> every claim is checked.
+        # screener: reads a claim's verdict off the retained record before
+        # any instrument is spent; a high-confidence verified / supported /
+        # refuted settles the claim and the formal checks are skipped.
+        # None -> every claim is checked.
         self.screener_role = screener_role
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
@@ -308,17 +310,25 @@ class Kernel:
         serialized per claim: two callers verifying the same claim
         concurrently (parallel certificate slices) do the work once.
 
-        A claim admitted confident stays assumed until it goes stale or
-        a caller asks for the check explicitly (force): the solver's
-        `verify` verb and the certificate never take the screener's word."""
+        A verdict the screener settled stands like any other until the
+        claim goes stale, except that an explicit request (force: the
+        solver's `verify` verb) reopens it for the full formal check."""
         with self._lock_for(self._claim_locks, claim_id):
+            row = self.store.get(claim_id)
+            if force and row.get("confident") \
+                    and row["status"] in (STATUS_VERIFIED, STATUS_REFUTED) \
+                    and not self.store.superseded(claim_id):
+                reason = ("explicit verify: the screener's verdict is "
+                          "reopened for the full check")
+                self.store.set_stale(claim_id, reason=reason)
+                self.log.append("status_change",
+                                {"claim": claim_id, "status": STATUS_STALE,
+                                 "reason": reason})
             # read before the row: an invalidation landing in between
             # makes the check's settlement refused, never silently wrong
             generation = self.store.generation(claim_id)
             row = self.store.get(claim_id)
             if row["status"] not in (STATUS_UNVERIFIED, STATUS_STALE):
-                return row["status"]
-            if row.get("confident") and not force:
                 return row["status"]
             if self.store.superseded(claim_id):
                 # replaced by its revision: a check would settle nothing
@@ -562,25 +572,21 @@ class Kernel:
         except OSError:
             return hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
 
-    # admission screening
-    def _check_admitted_final(self, claim_id: str) -> None:
-        """An admitted final's task contract is still checked, off the
-        solver's path: forced (the admission does not stop it), in the
-        background, settling the final as any check does."""
-        def run():
-            try:
-                self.verify(claim_id, force=True)
-            except Exception as err:  # noqa: BLE001 - background, reported
-                self._check_raised(claim_id, err)
-        self.log.append("admitted_final_check", {"claim": claim_id})
-        threading.Thread(target=run, name=f"gv-final-{claim_id[:8]}",
-                         daemon=True).start()
+    # screening
+    # a high-confidence screener verdict -> (status, strength): supported
+    # is verified below decisive strength (the certificate reads it out
+    # as supported); a screener refutation is decisive or it is nothing —
+    # nothing below decisive may refute
+    SCREEN_SETTLES = {"verified": (STATUS_VERIFIED, STRENGTH_DECISIVE),
+                      "supported": (STATUS_VERIFIED, STRENGTH_ANALYTIC),
+                      "refuted": (STATUS_REFUTED, STRENGTH_DECISIVE)}
 
     def _screen(self, row: Dict) -> bool:
-        """Grade a claim from the retained record before any
-        instrument is spent. `high` admits it as confident: assumed by
-        every consumer, unverified, no check run. Returns True when the
-        claim was admitted and verification must stop here."""
+        """Read the claim's verdict off the retained record before any
+        instrument is spent. A high-confidence verified, supported, or
+        refuted becomes the claim's status and the formal checks are
+        skipped. Returns True when the screener settled the claim (or the
+        claim moved under it) and verification must stop here."""
         state = os.path.dirname(os.path.abspath(self.log.path))
         premises = []
         for pid in self.store.parents(row["id"]):
@@ -591,7 +597,7 @@ class Kernel:
                 "text": ("[a tool-execution record]"
                          if prow["kind"] == CLAIM_EFFECT else prow["text"]),
                 "status": eff["effective_status"],
-                "confident": bool(prow.get("confident")),
+                "screened": bool(prow.get("confident")),
             })
         cited, index, recent = self._record_excerpt(row)
         variables = {
@@ -614,34 +620,70 @@ class Kernel:
                             {"claim": row["id"], "confidence": "error",
                              "error": str(err)[:300]})
             return False
-        self.log.append(
-            "claim_screened",
-            {"claim": row["id"], "confidence": verdict["confidence"],
-             "grounds": verdict["grounds"][:1000],
-             "reason": verdict["reason"][:500]})
-        if verdict["confidence"] != "high":
+        witness = str(verdict.get("witness") or "")
+        witness_kind = verdict.get("witness_kind")
+        event = {"claim": row["id"], "verdict": verdict["verdict"],
+                 "confidence": verdict["confidence"],
+                 "basis": verdict["basis"],
+                 "grounds": verdict["grounds"][:1000],
+                 "reason": verdict["reason"][:500]}
+        if witness:
+            event["witness"] = witness[:1000]
+            event["witness_kind"] = witness_kind
+        settles = self.SCREEN_SETTLES.get(verdict["verdict"])
+        refused = None
+        if verdict["confidence"] != "high" or settles is None:
+            settles = None
+        elif verdict["verdict"] == "refuted" and not (
+                witness and witness_admissible(witness_kind, False)):
+            # WITNESS AXIOM, as for any refutation: only a positive,
+            # retained observation refutes; the full checks decide instead
+            refused = ("a refutation needs a positive witness; reported "
+                       f"kind {witness_kind or WITNESS_NONE!r}")
+        elif (row["kind"] == CLAIM_FINAL
+              and settles[0] == STATUS_VERIFIED
+              and verdict["basis"] != BASIS_WORLD):
+            # the completion-claim abstention the formal fold applies: a
+            # final established on the record alone is not established
+            refused = "no world-basis evidence for a completion claim"
+        if refused:
+            event["refused"] = refused
+            settles = None
+        self.log.append("claim_screened", event)
+        if settles is None:
             return False
-        if not self.store.set_confident(
-                row["id"],
-                f"{verdict['reason']} — grounds: {verdict['grounds']}"[:1000],
+        status, strength = settles
+        basis = verdict["basis"]
+        reason = f"{verdict['reason']} — grounds: {verdict['grounds']}"
+        if status == STATUS_REFUTED:
+            reason = f"{witness} — {reason}"
+        if not self.store.set_screened(
+                row["id"], status, reason[:1000], basis=basis,
+                strength=strength,
                 generation=self._check_generation.get(row["id"])):
-            # revised or re-staled while the screener read it: the grade
-            # was about a graph that no longer stands. Nothing is admitted
+            # revised or re-staled while the screener read it: the reading
+            # was about a graph that no longer stands. Nothing is settled
             # and nothing is checked — a check begun on that graph could
             # not settle the claim either; it stays stale for a recheck
-            self._report_status(row["id"], False, STATUS_UNVERIFIED,
-                                reason="admission refused")
+            self._report_status(row["id"], False, status,
+                                reason="screener verdict refused")
             return True
         self.store.record_evidence(
             row["id"],
-            {"outcome": "admitted", "instrument": "screener",
-             "confidence": "high", "grounds": verdict["grounds"],
-             "reason": verdict["reason"]})
+            {"outcome": (OUTCOME_REFUTED if status == STATUS_REFUTED
+                         else OUTCOME_HOLDS),
+             "instrument": "screener", "verdict": verdict["verdict"],
+             "confidence": "high", "basis": basis, "strength": strength,
+             "grounds": verdict["grounds"], "reason": verdict["reason"],
+             "witness": witness or None,
+             "witness_kind": witness_kind if witness else None,
+             "world_epoch": self._current_epoch(),
+             **self._candidate_stamp(row)})
         self.log.append("status_change",
-                        {"claim": row["id"], "status": STATUS_UNVERIFIED,
-                         "confident": True, "reason": "admitted on the record"})
-        if row["kind"] == CLAIM_FINAL:
-            self._check_admitted_final(row["id"])
+                        {"claim": row["id"], "status": status,
+                         "strength": strength, "basis": basis,
+                         "confident": True,
+                         "reason": "settled by the screener on the record"})
         return True
 
     # the retained record, sliced for the screener: each cited event in
@@ -737,22 +779,20 @@ class Kernel:
             self._conclude_unverified(row["id"], "premise chain refuted")
             return
 
-        # admission screening: a claim the retained record already settles
-        # is assumed, not checked; an explicit request (force) always
-        # checks. A final is screened only when finals are handled like any
-        # claim (unify_final); one admitted this way still has its whole
-        # task contract checked, in the background (see _screen): the
-        # solver may finish on the admission, the ledger gets the verdict.
+        # screening: a claim whose verdict the retained record already
+        # settles takes that verdict, unchecked; an explicit request
+        # (force) always checks. A final is screened only when finals are
+        # handled like any claim (unify_final).
         screen = (self.screener_role is not None and not force
                   and (row["kind"] != CLAIM_FINAL
                        or getattr(self, "unify_final", False))
                   and row["status"] == STATUS_UNVERIFIED)
         compiled = None
         if screen and self.speculative_discharge:
-            # the compiler starts alongside the screener: on anything
-            # below `high` its answer is ready when the screener returns;
-            # on `high` the call is simply dropped (a spent seat, no
-            # waiting solver)
+            # the compiler starts alongside the screener: on a screen that
+            # settles nothing its answer is ready when the screener
+            # returns; on a settled verdict the call is simply
+            # dropped (a spent seat, no waiting solver)
             from concurrent.futures import ThreadPoolExecutor
             variables = self._compile_inputs(row)
             pool = ThreadPoolExecutor(max_workers=1,
@@ -1437,13 +1477,14 @@ class Kernel:
                     continue
                 if eff["effective_status"] == STATUS_VERIFIED:
                     basis = eff["effective_basis"] or BASIS_RECORD
-                    verified_deps.append(f"[{basis}-level] {prow['text']}")
-                else:
-                    tag = (" (admitted confident on the record)"
+                    tag = (", settled by the screener on the record"
                            if prow.get("confident") else "")
+                    verified_deps.append(
+                        f"[{basis}-level{tag}] {prow['text']}")
+                else:
                     pending_deps.append(
                         f"[assumed premise — status: "
-                        f"{eff['effective_status']}{tag}] {prow['text']}")
+                        f"{eff['effective_status']}] {prow['text']}")
         # a run scored after the fact (offline ORM) has no live world; the
         # harness may instead have captured the delivered tree next to the
         # ledger. Absolute, like ledger_path: the checker runs elsewhere.

@@ -80,12 +80,7 @@ def request_certificate(
 def _certify(store: ClaimStore, kernel: Kernel, log: EventLog,
              artifacts: ArtifactStore, final_id: str, scope: str) -> Dict:
     slice_ids = store.backward_slice(final_id)
-    final_row = store.get(final_id)
-    # a final the screener admitted, whose contract check is still running
-    # in the background: the certificate waits for nothing and says so
-    screened = (bool(final_row.get("confident"))
-                and final_row["status"] == STATUS_UNVERIFIED)
-    pending = [] if screened else [
+    pending = [
         cid for cid in reversed(slice_ids)
         if store.status(cid) in (STATUS_UNVERIFIED, STATUS_STALE)
         and (scope == CERTIFICATE_SCOPE_FULL or cid == final_id)]
@@ -185,10 +180,9 @@ def _certify(store: ClaimStore, kernel: Kernel, log: EventLog,
         STATUS_REFUTED: "refuted",
         STATUS_PARTIAL: "partial",
     }.get(final_row["status"], "unverified")
-    if screened and final_row["status"] == STATUS_UNVERIFIED:
-        # admitted on the retained record, contract check not done: a
-        # verdict of its own, never read as a checked one
-        verdict = "screened"
+    # a final the screener settled carries the screener's verdict like any
+    # other status; the certificate discloses where it came from
+    settled_by = "screener" if final_row.get("confident") else "checks"
 
     # the strength ladder's read-out: a final established entirely at
     # decisive strength is verified; established but resting on bounded/
@@ -214,6 +208,7 @@ def _certify(store: ClaimStore, kernel: Kernel, log: EventLog,
         "final": final_id,
         "verdict": verdict,
         "verdict_strength": verdict_strength,
+        "settled_by": settled_by,
         "integrity": integrity,
         **({"void": void} if void else {}),
         "slice": entries,

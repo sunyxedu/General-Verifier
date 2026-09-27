@@ -29,7 +29,7 @@ class FakeTransport:
 
 
 def test_tool_free_roles_route_direct_and_others_stay_on_the_agent(tmp_path):
-    transport = FakeTransport([{"confidence": "high", "grounds": "g", "reason": "r"}])
+    transport = FakeTransport([{"verdict": "open", "confidence": "high", "basis": "world", "grounds": "g", "reason": "r"}])
     direct = db.DirectBackend(transport, cwd=str(tmp_path))
     agent = FixtureBackend({"discharge": {"outcome": "holds"}})
     agent.roles = dict(ALL_AGENT_ROLES)
@@ -37,7 +37,8 @@ def test_tool_free_roles_route_direct_and_others_stay_on_the_agent(tmp_path):
 
     assert routing.routes_direct("screener") and not routing.routes_direct("discharge")
     assert routing.complete("screener", "p", {}) == {
-        "confidence": "high", "grounds": "g", "reason": "r"}
+        "verdict": "open", "confidence": "high", "basis": "world",
+        "grounds": "g", "reason": "r"}
     assert routing.complete("discharge", "p", {}) == {"outcome": "holds"}
     assert transport.calls[0]["schema"]["type"] == "object"
     assert "no tools" in transport.calls[0]["system"]
@@ -52,7 +53,7 @@ def test_direct_backend_writes_a_receipt_and_retries_transient_failures(
         tmp_path, monkeypatch):
     monkeypatch.setattr(db, "TRANSIENT_DELAYS", (0, 0, 0))
     transport = FakeTransport([db.TransientTransportError("HTTP 529"),
-                               {"confidence": "low", "grounds": "g", "reason": "r"}])
+                               {"verdict": "open", "confidence": "low", "basis": "world", "grounds": "g", "reason": "r"}])
     direct = db.DirectBackend(transport, cwd=str(tmp_path))
     role = ALL_AGENT_ROLES["screener"]
     payload = role.call(direct, {name: "" for name in _variables(role)})
@@ -63,7 +64,7 @@ def test_direct_backend_writes_a_receipt_and_retries_transient_failures(
 
 def test_schema_violations_are_fed_back_through_the_role_retry(tmp_path):
     transport = FakeTransport([{"confidence": "very", "grounds": "g", "reason": "r"},
-                               {"confidence": "medium", "grounds": "g", "reason": "r"}])
+                               {"verdict": "open", "confidence": "medium", "basis": "world", "grounds": "g", "reason": "r"}])
     direct = db.DirectBackend(transport, cwd=str(tmp_path))
     role = ALL_AGENT_ROLES["screener"]
     payload = role.call(direct, {name: "" for name in _variables(role)})
@@ -196,7 +197,7 @@ def test_empty_answer_with_exhausted_budget_retries_with_a_larger_budget(monkeyp
             return httpx.Response(200, json={"choices": [{"finish_reason": "length",
                 "message": {"content": None, "reasoning": "x" * 50}}]})
         return httpx.Response(200, json={"choices": [{"finish_reason": "stop",
-            "message": {"content": json.dumps({"confidence": "low", "grounds": "g", "reason": "r"})}}],
+            "message": {"content": json.dumps({"verdict": "open", "confidence": "low", "basis": "world", "grounds": "g", "reason": "r"})}}],
             "usage": {}})
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
@@ -213,7 +214,7 @@ def test_a_role_that_outgrew_the_budget_starts_at_the_budget_it_needed(monkeypat
     monkeypatch.setattr(db, "DEFAULT_MAX_TOKENS", db.MAX_OUTPUT_TOKENS // 4)
     calls = []
     answer = {"choices": [{"finish_reason": "stop",
-        "message": {"content": json.dumps({"confidence": "low", "grounds": "g", "reason": "r"})}}],
+        "message": {"content": json.dumps({"verdict": "open", "confidence": "low", "basis": "world", "grounds": "g", "reason": "r"})}}],
         "usage": {"completion_tokens": 40000}}
 
     def handler(request):

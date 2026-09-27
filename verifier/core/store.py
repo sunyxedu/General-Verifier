@@ -71,10 +71,10 @@ CREATE TABLE IF NOT EXISTS claims (
     -- NULL = settled outside the ladder (direct discharge, ledger checks,
     -- pre-ladder rows), read as decisive downstream.
     strength TEXT,
-    -- admission flag, ORTHOGONAL to status: the screener found the claim
-    -- settled by the retained record and the verifier assumed it without
-    -- spending a check. Status stays unverified; cleared when the claim
-    -- goes stale. Never set on a final.
+    -- provenance of a settled status: the screener read the claim's
+    -- verdict (verified / supported / refuted) off the retained record
+    -- with high confidence and the formal checks were skipped. The status
+    -- is the screener's; cleared when the claim goes stale or is reopened.
     confident INTEGER NOT NULL DEFAULT 0,
     confidence_reason TEXT,
     -- invalidation counter: bumped whenever the claim is marked stale
@@ -346,7 +346,9 @@ class ClaimStore:
                                             STATUS_PARTIAL, STATUS_UNVERIFIED,
                                             STATUS_STALE},
                                    reason=reason)
-        self.db.execute("UPDATE claims SET generation=generation+1 "
+        # a reopened verdict is no longer the screener's either
+        self.db.execute("UPDATE claims SET generation=generation+1, "
+                        "confident=0, confidence_reason=NULL "
                         "WHERE id=?", (claim_id,))
         self.db.commit()
         return applied
@@ -359,15 +361,21 @@ class ClaimStore:
                                 generation=generation)
 
     @_locked
-    def set_confident(self, claim_id: str, reason: str,
-                      generation: Optional[int] = None) -> bool:
-        """Admit an UNVERIFIED claim on the record's strength: the flag is
-        orthogonal to the status machine (the status stays unverified —
-        nothing was checked) and it clears with the claim's staleness.
+    def set_screened(self, claim_id: str, status: str, reason: str,
+                     basis: str, strength: str,
+                     generation: Optional[int] = None) -> bool:
+        """Settle an UNVERIFIED claim on the screener's high-confidence
+        reading of the retained record: the status (verified or refuted)
+        is real and every consumer relies on it; the flag records that it
+        came from the screener, not from the formal checks, and clears
+        with the claim's staleness.
 
         A claim revised or re-staled while the screener read it is not
-        admitted (returns False): the grade was about a graph that no
+        settled (returns False): the reading was about a graph that no
         longer stands, and the claim is rechecked from its stale state."""
+        if status not in (STATUS_VERIFIED, STATUS_REFUTED):
+            raise ValueError(f"the screener settles verified or refuted, "
+                             f"not {status!r}")
         if self.superseded(claim_id):
             return False
         if generation is not None and self.generation(claim_id) != generation:
@@ -377,10 +385,12 @@ class ClaimStore:
             return False
         if current != STATUS_UNVERIFIED:
             raise IllegalTransition(
-                f"confident admission requires unverified, not {current}")
+                f"a screener verdict requires unverified, not {current}")
         self.db.execute(
-            "UPDATE claims SET confident=1, confidence_reason=? WHERE id=?",
-            (reason, claim_id))
+            "UPDATE claims SET status=?, reason=?, basis=?, strength=?, "
+            "confident=1, confidence_reason=? WHERE id=?",
+            (status, reason if status == STATUS_REFUTED else None, basis,
+             strength, reason, claim_id))
         self.db.commit()
         return True
 
@@ -749,11 +759,15 @@ class ClaimStore:
         obligation node inherit the verdict of a same-text claim: the two
         live in different identity spaces (claim id hashes kind/deps
         too), so plain node dedup cannot see across. Stale and partial
-        claims never transfer; effects are ledger refs, not statements."""
+        claims never transfer, nor verdicts the screener settled; effects
+        are ledger refs, not statements."""
+        # a screener verdict settles its own claim only: carried into an
+        # obligation node it would pass the screener's reading off as a
+        # formal check of that node
         cur = self.db.execute(
             "SELECT id, status FROM claims "
             "WHERE text=? AND kind IN ('assertion', 'final') "
-            "AND status IN (?, ?) AND id != ? LIMIT 1",
+            "AND status IN (?, ?) AND confident=0 AND id != ? LIMIT 1",
             (text, STATUS_VERIFIED, STATUS_REFUTED, exclude or ""),
         )
         row = cur.fetchone()

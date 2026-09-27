@@ -50,9 +50,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-# screened: the screener admitted the final on the retained record (its
-# contract check continues in the background); it meets the default goal
-VERDICT_RANK = {"refuted": 0, "unverified": 1, "screened": 2, "partial": 2,
+VERDICT_RANK = {"refuted": 0, "unverified": 1, "partial": 2,
                 "supported": 3, "verified": 4}
 BLOCKS_FILE = "goal_blocks.json"
 # the run's block cap is this many per-final budgets: new finals refresh
@@ -406,6 +404,19 @@ def _final_findings(events: List[Dict[str, Any]], final_id: Optional[str],
             if note:
                 reasons[oid] = str(note)
     out = []
+    if not texts:
+        # a verdict the screener settled: no contract was compiled, the
+        # screener's reading of the record is the finding
+        for e in reversed(events):
+            p = e.get("payload") or {}
+            if e.get("type") == "claim_screened" \
+                    and p.get("claim") == final_id:
+                if p.get("verdict") == "refuted" and not p.get("refused"):
+                    note = p.get("witness") or p.get("reason") or ""
+                    out.append(f"  - [refuted by the screener on the record] "
+                               f"{str(note)[:400]}")
+                break
+        return out
     for oid, text in texts.items():
         p = last_outcome.get(oid)
         outcome = (p or {}).get("outcome") or "not decided"

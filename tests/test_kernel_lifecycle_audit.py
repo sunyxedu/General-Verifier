@@ -136,16 +136,20 @@ def test_settlement_refuses_a_changed_generation(tmp_path):
 
 
 # 2. admission and batch isolation
-def test_confident_admission_is_a_no_op_on_stale_or_revised(tmp_path):
+def test_a_screener_verdict_is_a_no_op_on_stale_or_revised(tmp_path):
+    def screened(cid):
+        return store.set_screened(cid, "verified", "r", basis="world",
+                                  strength="decisive")
     store = ClaimStore(trigger=TRIGGER_LAZY)
     a = store.add_claim(Claim(CLAIM_ASSERTION, "a"))
     b = store.add_claim(Claim(CLAIM_ASSERTION, "b"))
     store.set_stale(a)
-    assert store.set_confident(a, "r") is False
+    assert screened(a) is False
     store.add_claim(Claim(CLAIM_ASSERTION, "b2", revises=b))
-    assert store.set_confident(b, "r") is False
+    assert screened(b) is False
     c = store.add_claim(Claim(CLAIM_ASSERTION, "c"))
-    assert store.set_confident(c, "r") is True
+    assert screened(c) is True
+    assert store.status(c) == "verified" and store.get(c)["confident"]
 
 
 def test_a_claim_revised_during_screening_is_not_admitted(tmp_path):
@@ -155,7 +159,8 @@ def test_a_claim_revised_during_screening_is_not_admitted(tmp_path):
         # the revision lands while the screener reads the record
         holder["store"].add_claim(Claim(
             CLAIM_ASSERTION, "revised", revises=holder["claim"]))
-        return {"confidence": "high", "grounds": "seq 1", "reason": "r"}
+        return {"verdict": "verified", "confidence": "high",
+                "basis": "world", "grounds": "seq 1", "reason": "r"}
 
     gate = Gate(block=False)
     store, log, _, kernel = build(
@@ -168,7 +173,7 @@ def test_a_claim_revised_during_screening_is_not_admitted(tmp_path):
     row = store.get(a)
     assert row["status"] == "stale" and not row["confident"]
     assert gate.calls == []
-    assert changes(log, a)[-1]["reason"] == "admission refused"
+    assert changes(log, a)[-1]["reason"] == "screener verdict refused"
 
 
 def test_one_failing_check_does_not_starve_its_batch(tmp_path):

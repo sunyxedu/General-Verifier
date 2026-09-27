@@ -79,11 +79,12 @@ conclusions, not a diary**. Decide per claim, from the task itself:
 ## Reading a commit result
 
 - `verified`: independently established. Build on it.
-- `confident: true` (status stays `unverified`): the verifier's screener found the claim
-  settled by the retained record — a plain restatement of something your tool outputs
-  already show — and **admitted it without spending a check**. Build on it as you would
-  on a verified claim; the certificate lists it as `confident`, not `verified`. If you
-  want the full independent check anyway, call `gv.verify(label)`.
+- `confident: true`: the verifier's screener read the claim's verdict (`verified`,
+  `supported`, or `refuted`) straight off the retained record — what your tool outputs
+  already show — with high confidence, and **settled it without running the formal
+  checks**. The status is the claim's status like any other; on a refutation the
+  `screener` field gives the contradicting observation. If you want the full independent
+  check anyway, call `gv.verify(label)`: it reopens the verdict and checks the claim.
 - Any other status — on a final's commit, in `gv.status`, or in `news` — comes with the
   obligation that failed and its counterexample (or,
   if the claim rests on something already refuted, the fail-closed reason), plus
@@ -109,9 +110,11 @@ conclusions, not a diary**. Decide per claim, from the task itself:
   running, do not finish: wait, and poll `gv.status` until its verdict arrives. A `void`
   certificate (the verifier was restarted or reconfigured) is no verdict on your delivery;
   report it as void.
-- The verdict comes from the final claim's independently checked task contract; the final
-  is never screened and never admitted on confidence. Earlier claims remain in the
-  certificate for audit; their status does not decide the final verdict. The final admits
+- The verdict is the final claim's status: from its task contract, checked
+  independently, or — when the screener reads it off the retained record with high
+  confidence — from the screener, and the certificate's `settled_by` says which. Earlier
+  claims remain in the certificate for audit; their status does not decide the final
+  verdict. The final admits
   no assumed premises. If no `task.md` is supplied, its own wording is the available
   contract.
 - There are five verdicts: `verified` (all final obligations hold at decisive strength,

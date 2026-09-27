@@ -382,7 +382,7 @@ def test_a_raw_tls_error_is_retried_and_on_record(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "TRANSIENT_DELAYS", (0, 0, 0))
     transport = _Transport([
         ssl.SSLError("[SSL: UNEXPECTED_EOF_WHILE_READING] unexpected eof"),
-        {"confidence": "low", "grounds": "g", "reason": "r"}])
+        {"verdict": "open", "confidence": "low", "basis": "world", "grounds": "g", "reason": "r"}])
     direct = db.DirectBackend(transport, cwd=str(tmp_path))
     role = ALL_AGENT_ROLES["screener"]
     assert role.call(direct, _screener_vars(role))["confidence"] == "low"

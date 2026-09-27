@@ -144,7 +144,13 @@ def breakdown(state_dir: str) -> dict:
         elif t == "method_redo":
             current["redos"] += 1
         elif t == "claim_screened":
-            current["screened"] = p.get("confidence")
+            # a settled screen is a high-confidence verdict it did not
+            # refuse; older ledgers carry only the confidence level
+            settled = (p.get("confidence") == "high"
+                       and p.get("verdict", "verified") != "open"
+                       and not p.get("refused"))
+            current["screened"] = ("high" if settled
+                                   else p.get("confidence"))
         elif t == "contract_cache_hit":
             current["contract_cached"] = True
         elif t == "status_change" and "obligation" not in p:

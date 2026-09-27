@@ -94,6 +94,9 @@ def _residue(store, claim_id: str) -> Dict[str, Any]:
     hold with their counterexamples — or, when no obligation was ever compiled,
     the fail-closed reason (a refuted premise, say), which is otherwise
     invisible to the solver."""
+    screened = _screener_verdict(store, claim_id)
+    if screened is not None:
+        return screened
     obligations = _obligation_summary(store, claim_id)
     if obligations:
         out = {"obligations": obligations}
@@ -119,6 +122,26 @@ def _residue(store, claim_id: str) -> Dict[str, Any]:
     return {"obligations": []}
 
 
+def _screener_verdict(store, claim_id: str) -> Optional[Dict[str, Any]]:
+    """The residue of a verdict the screener settled: what it read off the
+    record and, for a refutation, the contradicting observation. None for
+    a claim the formal checks settled (or that is unsettled)."""
+    if not store.get(claim_id).get("confident"):
+        return None
+    for ev in reversed(store.evidence_for(claim_id)):
+        if ev.get("instrument") != "screener":
+            continue
+        out = {"screener": {k: ev[k] for k in
+                            ("verdict", "basis", "grounds", "reason",
+                             "witness", "witness_kind") if ev.get(k)}}
+        out["note"] = (
+            "the screener settled this verdict from the retained record "
+            "without running the formal checks; gv.verify(label) reopens "
+            "it for the full independent check")
+        return out
+    return None
+
+
 def _refutation_brief(store, claim_id: str, cap: int = 320) -> str:
     """The failing obligation of a refuted claim and its counterexample,
     bounded. A client may abandon the pending call that carried the full
@@ -135,6 +158,10 @@ def _refutation_brief(store, claim_id: str, cap: int = 320) -> str:
         return (f"{text} -- counterexample: {witness}" if witness
                 else text)[:cap]
     residue = _residue(store, claim_id)
+    screened = residue.get("screener")
+    if screened:
+        return (f"screener: {screened.get('witness') or ''} "
+                f"{screened.get('reason') or ''}").strip()[:cap]
     return str(residue.get("error") or "ask gv.status for this label")[:cap]
 
 
@@ -580,12 +607,10 @@ class Service:
             # the status stands as unverified and the solver is told why
             result["error"] = failure
         if row.get("confident"):
-            # admitted on the record: assumed by every consumer, no check
-            # run, nothing owed — the solver may build on it (and may ask
-            # for the full check with `verify` if it wants one)
+            # the screener settled the verdict on the record: it stands
+            # like any status (the solver may ask for the full check with
+            # `verify`); a refutation still owes its witness below
             result["confident"] = True
-            result["confidence_reason"] = row.get("confidence_reason")
-            return self._with_news(result)
         if kind != "effect" and status != "verified":
             # the verdict lands on the commit call now, so its residue must too
             result.update(_residue(self.store, claim_id))
@@ -715,7 +740,7 @@ class Service:
             claim_id = self.builder.resolve(label)
             self.log.append("verify_request", {"target": claim_id, "cause": "mcp"})
             # an explicit request is never answered by the screener: a
-            # confident claim gets its full check here
+            # verdict the screener settled is reopened for the full check
             status = self.kernel.verify(claim_id, force=True)
         except VERB_ERRORS as err:
             return {"error": str(err)}
@@ -748,9 +773,9 @@ class Service:
                     "gv.verify it after a change outside the files")
             if e.get("confident"):
                 entry["confident"] = True
-                slice_summary.append(entry)
-                continue
-            if e["status"] != "verified":
+            if e["status"] != "verified" and e.get("confident"):
+                entry.update(_screener_verdict(self.store, e["id"]) or {})
+            elif e["status"] != "verified":
                 obligations = [
                     {"text": o["text"], "status": o["status"],
                      **({"reason": o["reason"] or _witness(o)}
@@ -770,6 +795,7 @@ class Service:
                 self._mark_reported(e["id"], "refuted")
         result = {
             "verdict": cert["verdict"],
+            "settled_by": cert.get("settled_by", "checks"),
             "certificate_id": cert["certificate_id"],
             "slice": slice_summary,
         }
@@ -790,8 +816,7 @@ class Service:
                 result["checking"] = True
             if row.get("confident"):
                 result["confident"] = True
-                result["confidence_reason"] = row.get("confidence_reason")
-            elif row["status"] != "verified":
+            if row["status"] != "verified":
                 result.update(_residue(self.store, claim_id))
                 self._mark_reported(claim_id, row["status"])
             return self._with_news(result)
@@ -806,9 +831,7 @@ class Service:
                 effects.append(label)
                 continue
             row = self.store.get(cid)
-            if row.get("confident"):
-                out[label] = f"{row['status']} (confident)"
-            elif row["status"] == "refuted" and row["kind"] != "effect":
+            if row["status"] == "refuted" and row["kind"] != "effect":
                 out[label] = "refuted: " + _refutation_brief(self.store, cid)
                 self._mark_reported(cid, "refuted")
             elif self._checking(cid):
@@ -1195,8 +1218,8 @@ def build_server(service: Service):
     @server.tool()
     async def verify(label: str) -> str:
         """Run the full independent check on a committed claim now (also
-        for a claim that commit admitted as `confident`); returns its
-        status."""
+        for a claim whose verdict the screener settled, marked
+        `confident`: it is reopened and checked); returns its status."""
         return await off_loop(service.verify, label)
 
     @server.tool()
