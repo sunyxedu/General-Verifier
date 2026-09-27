@@ -3,7 +3,8 @@ are waited out there, never answered by the agent backend."""
 import pytest
 
 from verifier.llm import direct_backend as db
-from verifier.llm.direct_backend import DirectRuntime, RoutingRuntime
+from verifier.llm.direct_backend import DirectRuntime
+from verifier.llm.seat_runner import RoutingRuntime
 from verifier.llm.endpoints import AwaitingCredit, TransientTransportError
 from verifier.llm.schema import RoleError
 

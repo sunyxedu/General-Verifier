@@ -3,7 +3,8 @@ import json
 
 import pytest
 
-from verifier.llm import codex_backend as backend
+from verifier.llm.codex import diagnostics
+from verifier.llm.codex import usage as usage_ledger
 
 
 USAGE = {"input_tokens": 100, "cached_input_tokens": 30,
@@ -29,7 +30,7 @@ def test_counts_utf8_bytes_once_and_retains_no_private_contents():
         item(aggregated_output="\u4e2d\U0001f600", command="secret command"),
         item("agent_message", "private-answer", text="answer \u4e2d"),
         item("reasoning", "private-reasoning", text="private reasoning"))
-    result = backend._codex_execution_diagnostic(text)
+    result = diagnostics._codex_execution_diagnostic(text)
     assert result["complete"] is True
     assert result["command_output_utf8_bytes"] == 7
     assert result["max_command_output_utf8_bytes"] == 7
@@ -47,7 +48,7 @@ def test_counts_utf8_bytes_once_and_retains_no_private_contents():
 
 def test_duplicate_lifecycle_never_multiplies_output():
     command = item(aggregated_output="large" * 1000)
-    result = backend._codex_execution_diagnostic(stream(command, command))
+    result = diagnostics._codex_execution_diagnostic(stream(command, command))
     assert result["complete"] is False
     assert result["duplicate_item_lifecycle_count"] == 1
     assert result["command_output_utf8_bytes"] == 5000
@@ -56,7 +57,7 @@ def test_duplicate_lifecycle_never_multiplies_output():
 
 @pytest.mark.parametrize("value", [None, "", b"", '{"type":"thread.started"}\n'])
 def test_empty_and_partial_streams_are_not_complete(value):
-    result = backend._codex_execution_diagnostic(value)
+    result = diagnostics._codex_execution_diagnostic(value)
     assert result["complete"] is False
     assert result["internal_error"] is False
 
@@ -66,14 +67,14 @@ def test_empty_and_partial_streams_are_not_complete(value):
                                  '{"type":"error","x":NaN}'])
 def test_malformed_json_is_counted_without_internal_failure(bad):
     text = stream().replace('{"type": "turn.completed"', bad + '\n{"type": "turn.completed"')
-    result = backend._codex_execution_diagnostic(text)
+    result = diagnostics._codex_execution_diagnostic(text)
     assert result["complete"] is False
     assert result["malformed_event_count"] + result["non_object_event_count"] == 1
     assert result["internal_error"] is False
 
 
 def test_unknown_kinds_are_not_retained_as_map_keys():
-    result = backend._codex_execution_diagnostic(stream(
+    result = diagnostics._codex_execution_diagnostic(stream(
         {"type": "private-unknown-event"}, item("private-unknown-item")))
     assert result["complete"] is False
     assert result["unknown_event_count"] == 1
@@ -85,7 +86,7 @@ def test_unknown_kinds_are_not_retained_as_map_keys():
                                   item("agent_message"), item("agent_message", text=4),
                                   item(aggregated_output="\ud800")])
 def test_missing_or_invalid_observed_payload_is_not_known_zero(event):
-    result = backend._codex_execution_diagnostic(stream(event))
+    result = diagnostics._codex_execution_diagnostic(stream(event))
     assert result["complete"] is False
     assert result["malformed_item_count"] == 1
     assert result["command_output_observed_count"] == 0
@@ -94,7 +95,7 @@ def test_missing_or_invalid_observed_payload_is_not_known_zero(event):
 
 def test_invalid_utf8_and_lone_surrogate_stream_are_incomplete():
     for text in (stream().encode() + b"\xff", stream() + "\ud800"):
-        result = backend._codex_execution_diagnostic(text)
+        result = diagnostics._codex_execution_diagnostic(text)
         assert result["complete"] is False
         assert result["invalid_utf8"] is True
 
@@ -115,7 +116,7 @@ def test_invalid_lifecycle_is_never_complete(which):
         events[2:2] = [item(phase="started"), item("agent_message", text="x")]
     else:
         events.insert(1, events[0])
-    result = backend._codex_execution_diagnostic("\n".join(map(json.dumps, events)))
+    result = diagnostics._codex_execution_diagnostic("\n".join(map(json.dumps, events)))
     assert result["complete"] is False
     assert result["internal_error"] is False
 
@@ -128,9 +129,9 @@ def test_invalid_lifecycle_is_never_complete(which):
     ("MAX_ITEM_IDS", 1, "item_id_limit", False),
 ])
 def test_parser_caps_make_limits_explicit(monkeypatch, limit, amount, reason, as_bytes):
-    monkeypatch.setattr(backend, "_EXECUTION_DIAGNOSTIC_" + limit, amount)
+    monkeypatch.setattr(diagnostics, "_EXECUTION_DIAGNOSTIC_" + limit, amount)
     text = stream(item(aggregated_output="x"), item(item_id="other", aggregated_output="y"))
-    result = backend._codex_execution_diagnostic(text.encode() if as_bytes else text)
+    result = diagnostics._codex_execution_diagnostic(text.encode() if as_bytes else text)
     assert result["complete"] is False
     assert reason in result["overflow_reasons"]
     assert len(json.dumps(result)) < 2400
@@ -139,8 +140,8 @@ def test_parser_caps_make_limits_explicit(monkeypatch, limit, amount, reason, as
 def test_internal_diagnostic_error_is_content_free_and_nonfatal(monkeypatch):
     def fail(_):
         raise RuntimeError("private command and output")
-    monkeypatch.setattr(backend, "_codex_execution_diagnostic_unchecked", fail)
-    result = backend._codex_execution_diagnostic("private stream")
+    monkeypatch.setattr(diagnostics, "_codex_execution_diagnostic_unchecked", fail)
+    result = diagnostics._codex_execution_diagnostic("private stream")
     assert result["internal_error"] is True
     assert result["complete"] is False
     assert "private" not in json.dumps(result)
@@ -152,7 +153,7 @@ def test_internal_diagnostic_error_is_content_free_and_nonfatal(monkeypatch):
 def test_attempt_record_keeps_billing_independent(tmp_path, status, force_incomplete):
     path = tmp_path / "usage.jsonl"
     text = stream(item(aggregated_output="secret output"), item("agent_message", "a", text='{"ok":true}'))
-    usage = backend._record_codex_attempt(
+    usage = usage_ledger._record_codex_attempt(
         (str(path), {}), base={"role": "judger"}, attempt_id="attempt",
         attempt_index=1, started=True, attempt_status=status,
         returncode=0 if status == "succeeded" else 1,
@@ -170,9 +171,9 @@ def test_attempt_record_keeps_billing_independent(tmp_path, status, force_incomp
 def test_diagnostic_failure_does_not_erase_complete_bill(tmp_path, monkeypatch):
     def fail(_):
         raise RuntimeError("private")
-    monkeypatch.setattr(backend, "_codex_execution_diagnostic_unchecked", fail)
+    monkeypatch.setattr(diagnostics, "_codex_execution_diagnostic_unchecked", fail)
     path = tmp_path / "usage.jsonl"
-    backend._record_codex_attempt(
+    usage_ledger._record_codex_attempt(
         (str(path), {}), base={}, attempt_id="attempt", attempt_index=1,
         started=True, attempt_status="succeeded", returncode=0,
         started_at_unix_ns=0, finished_at_unix_ns=1, duration_ns=1,

@@ -9,7 +9,7 @@ from verifier.config import (
     typed_judger_packet_enabled,
 )
 from verifier.execution.discharge import AgentDischarger
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 from verifier.app.assembly import build_kernel
 from verifier.mcp_server import Service

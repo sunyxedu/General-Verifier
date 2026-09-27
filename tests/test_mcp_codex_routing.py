@@ -5,8 +5,8 @@ import sys
 from verifier import mcp_server
 from verifier.app import assembly
 from verifier import config
-from verifier.llm.codex_backend import CodexRuntime
-from verifier.llm.direct_backend import RoutingRuntime
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.seat_runner import RoutingRuntime
 from verifier.llm.endpoints import OpenAIChatEndpoint
 
 

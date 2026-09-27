@@ -6,7 +6,7 @@ import pytest
 from experiments.common import scoring
 from experiments.terminal_bench import score as tb_score
 from verifier import offline
-from verifier.llm import codex_backend as cb
+from verifier.llm.codex import runtime as cb
 
 
 def test_config_default_protocol_and_identity(monkeypatch):

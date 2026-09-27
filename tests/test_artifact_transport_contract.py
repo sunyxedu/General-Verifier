@@ -12,7 +12,8 @@ from verifier.execution import instruments as instrument_module
 from verifier.core.model import canonical, content_hash
 from verifier.engine.method_cache import _backend_identity
 from verifier.execution.instruments import ArtifactStore, validated_image_info
-from verifier.llm import codex_backend as cb
+from verifier.llm.codex import command as codex_command
+from verifier.llm.codex import runtime as cb
 
 
 VALID_PNG = base64.b64decode(
@@ -27,7 +28,7 @@ VALID_PNG = base64.b64decode(
 ])
 def test_documented_calculation_matches_real_artifact_store(tmp_path, value):
     # Evaluate only a fixed verifier-owned expression, never model/user code.
-    reference = eval(cb._ARTIFACT_DIGEST_EXPRESSION, {"__builtins__": {}},
+    reference = eval(codex_command._ARTIFACT_DIGEST_EXPRESSION, {"__builtins__": {}},
                      {"hashlib": hashlib, "json": json, "value": value})
     store = ArtifactStore(str(tmp_path / "artifacts"))
     digest = store.put(value)
@@ -94,7 +95,7 @@ def test_only_judger_receives_format_note_without_tool_or_schema_changes(tmp_pat
     monkeypatch.setattr(cb, "_run_codex_process", run)
     assert instance.complete(role_name, "fixed user content", {}) == {"ok": True}
     prompt = calls[0][-1]
-    assert (cb._ARTIFACT_ADDRESS_NOTE in prompt) is (role_name == "judger")
+    assert (codex_command._ARTIFACT_ADDRESS_NOTE in prompt) is (role_name == "judger")
     assert "fixed role rules\n\nfixed user content" in prompt
     assert "matching this JSON Schema" in prompt
     assert calls[0][calls[0].index("--model") + 1] == "gpt-5.6-luna"
@@ -106,7 +107,7 @@ def test_only_judger_receives_format_note_without_tool_or_schema_changes(tmp_pat
 def test_runtime_transport_identity_is_frozen_per_backend_and_separates_cache(monkeypatch):
     before = cb.CodexRuntime(model="gpt-5.6-luna")
     first = _backend_identity(before)
-    monkeypatch.setattr(cb, "_ARTIFACT_ADDRESS_NOTE", cb._ARTIFACT_ADDRESS_NOTE + " revision")
+    monkeypatch.setattr(codex_command, "_ARTIFACT_ADDRESS_NOTE", codex_command._ARTIFACT_ADDRESS_NOTE + " revision")
     after = cb.CodexRuntime(model="gpt-5.6-luna")
     assert _backend_identity(before) == first
     assert _backend_identity(after) != first
@@ -115,6 +116,6 @@ def test_runtime_transport_identity_is_frozen_per_backend_and_separates_cache(mo
 
 
 def test_format_note_does_not_authorize_semantic_shortcuts():
-    assert "independently audit method sufficiency" in cb._ARTIFACT_ADDRESS_NOTE
-    assert "A genuine mismatch remains a defect" in cb._ARTIFACT_ADDRESS_NOTE
-    assert "never proves semantic correctness" in cb._ARTIFACT_ADDRESS_NOTE
+    assert "independently audit method sufficiency" in codex_command._ARTIFACT_ADDRESS_NOTE
+    assert "A genuine mismatch remains a defect" in codex_command._ARTIFACT_ADDRESS_NOTE
+    assert "never proves semantic correctness" in codex_command._ARTIFACT_ADDRESS_NOTE

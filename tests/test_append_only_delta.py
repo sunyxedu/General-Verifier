@@ -26,7 +26,7 @@ from verifier.config import (
 )
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 
 

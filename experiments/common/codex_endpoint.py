@@ -38,7 +38,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from verifier.llm.codex_service import (                    # noqa: E402
+from verifier.llm.codex.service_tier import (                    # noqa: E402
     DEFAULT_SERVICE_TIER,
     SERVICE_TIERS,
     normalize_service_tier,

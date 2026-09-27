@@ -19,7 +19,10 @@ import httpx
 import pytest
 
 import verifier.execution.scratch_budget as sb
-import verifier.llm.codex_backend as cb
+import verifier.llm.codex.runtime as cb
+from verifier.llm.codex.failures import _transient_failure_reason
+from verifier.llm.codex.process import _kill_process_group
+from verifier.llm.codex.stream import extract_json
 from verifier.core.model import Obligation
 from verifier.execution import resource_share as rs
 from verifier.execution.discharge import AgentDischarger, _CappedReader
@@ -27,8 +30,8 @@ from verifier.execution.instruments import ArtifactStore
 from verifier.llm import agents
 from verifier.llm import direct_backend as db
 from verifier.llm import endpoints
-from verifier.llm.agents import ALL_AGENT_ROLES, AgentRole, SeatResourceKilled
-from verifier.llm.schema import FixtureBackend, RoleError
+from verifier.llm.agents import ALL_AGENT_ROLES, AgentRole
+from verifier.llm.schema import FixtureBackend, RoleError, SeatResourceKilled, validate
 
 MB = 1 << 20
 
@@ -198,7 +201,7 @@ def test_a_setsid_descendant_is_killed_with_the_seat(tmp_path):
             assert time.time() < deadline
             time.sleep(0.02)
         escaped = int(pidfile.read_text())
-        cb._kill_process_group(proc)
+        _kill_process_group(proc)
         proc.wait(5)
         deadline = time.time() + 5
         while time.time() < deadline:
@@ -242,27 +245,27 @@ def test_capacity_error_after_a_transcript_that_mentions_missing_files():
               "cat: x: No such file or directory\npermission denied\n"
               "ERROR: Selected model is at capacity. Please try a different "
               "model.\n")
-    assert cb._transient_failure_reason("", 1, stderr)
+    assert _transient_failure_reason("", 1, stderr)
 
 
 def test_a_seats_own_http_status_output_is_not_a_provider_failure():
     stderr = (HEADER + "exec\ncurl -si http://localhost:8080\n"
               "HTTP/1.1 503 Service Unavailable\n 503 \n"
               "ERROR: stream disconnected unexpectedly\n")
-    assert cb._transient_failure_reason("", 1, stderr) == ""
+    assert _transient_failure_reason("", 1, stderr) == ""
 
 
 def test_codex_own_auth_error_after_the_header_stays_permanent():
     stderr = (HEADER + "2026-09-24T06:22:09.977398Z ERROR codex_api::endpoint:"
               " failed to connect to websocket: HTTP error: 401 Unauthorized\n"
               "ERROR: service unavailable\n")
-    assert cb._transient_failure_reason("", 1, stderr) == ""
+    assert _transient_failure_reason("", 1, stderr) == ""
 
 
 def test_a_failure_before_any_session_is_read_whole():
-    assert cb._transient_failure_reason(
+    assert _transient_failure_reason(
         "", 1, "Error loading config.toml: unknown configuration field") == ""
-    assert cb._transient_failure_reason(
+    assert _transient_failure_reason(
         "", 1, "HTTP status 503 from provider")
 
 
@@ -330,11 +333,11 @@ def test_a_signal_death_is_a_resource_failure_not_a_bad_answer(
 def test_the_answer_is_the_last_object_and_the_one_that_validates():
     text = ('I will return {"draft": 1} shaped like {"ok": "maybe"} then\n'
             '{"ok": true, "nested": {"x": 1}}')
-    assert cb.extract_json(text) == {"ok": True, "nested": {"x": 1}}
+    assert extract_json(text) == {"ok": True, "nested": {"x": 1}}
     text = '{"ok": true} and a trailing note {"note": 1}'
-    assert cb.extract_json(text) == {"note": 1}
-    assert cb.extract_json(
-        text, accept=lambda obj: cb.validate({"ok": bool}, obj)) == {"ok": True}
+    assert extract_json(text) == {"note": 1}
+    assert extract_json(
+        text, accept=lambda obj: validate({"ok": bool}, obj)) == {"ok": True}
 
 
 # --------------------------------------------------------- role retries

@@ -9,7 +9,7 @@ import pytest
 
 from experiments.terminal_bench import probe_judger_direction as probe
 from verifier.core.events import EventLog
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 
 
@@ -57,7 +57,7 @@ def _codex_factory(monkeypatch, responses, calls, *, on_call=None,
             stderr="",
         )
 
-    monkeypatch.setattr("verifier.llm.codex_backend._run_codex_process", run)
+    monkeypatch.setattr("verifier.llm.codex.runtime._run_codex_process", run)
 
     def factory(state):
         return CodexRuntime(
@@ -106,7 +106,7 @@ def test_prefetch_profile_runs_same_real_adapter_and_records_actual_exposure(
 
 
 def test_wrong_prefetch_profile_bill_is_inconclusive(tmp_path, monkeypatch):
-    from verifier.llm import codex_backend as cb
+    from verifier.llm.codex import attempts as cb
 
     original = cb._record_codex_attempt
 

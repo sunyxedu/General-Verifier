@@ -31,7 +31,7 @@ from verifier.engine.contract_bundle import (
 )
 from verifier.engine.game import BindingGame
 from verifier.engine.method_cache import AcceptedMethodCache
-from verifier.llm.codex_backend import codex_usage_ledger
+from verifier.llm.codex.usage import codex_usage_ledger
 from verifier.llm.model_spans import span_sidecar_path
 
 

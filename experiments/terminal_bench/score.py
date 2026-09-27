@@ -400,7 +400,7 @@ def main():
     if all_jobs:
         usage_capture = contextlib.nullcontext()
         if args.seats == "codex":
-            from verifier.llm.codex_backend import codex_usage_ledger
+            from verifier.llm.codex.usage import codex_usage_ledger
 
             usage_contexts = _usage_contexts(all_jobs)
             usage_capture = codex_usage_ledger(

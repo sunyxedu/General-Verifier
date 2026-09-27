@@ -7,7 +7,6 @@ activity invalidates the generation instead of entering a shared contract.
 """
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import threading
@@ -20,11 +19,12 @@ from functools import partial
 from typing import Any
 
 from .agents import AgentRole
-from .codex_backend import (
-    _completed_response_without_usage,
-    _native_jsonl_lines,
+from .codex.policy import (
+    DISABLED_CODE_MODE_NOTICE,
     no_tools_policy_args,
+    validate_no_tools_stream,
 )
+from .codex.stream import _completed_response_without_usage
 from .policy import NO_TOOLS, NoToolsSession
 from .runtime import capabilities_of
 from .schema import AuthorityBackendUnavailable
@@ -53,60 +53,9 @@ AUTHORITY_ONLY_NOTE = (
     "Do not attempt to read local files, use tools, or search the web."
 )
 
-# Codex 0.153.4 emits this capability-disabled notice before turn.started,
-# even with code_mode=false. It contains no tool result or candidate data.
-# Unknown errors and any tool activity still reject the entire generation.
-_DISABLED_CODE_MODE_NOTICE = (
-    "Code Mode is unavailable because code-mode host is disabled. Code mode "
-    "will fail closed; enable `features.code_mode_host` and install "
-    "`codex-code-mode-host`."
-)
-
-
 def authority_policy_args(scratch_dir: str) -> list[str]:
     """The Codex CLI boundary of the authority policy in ``scratch_dir``."""
     return no_tools_policy_args(scratch_dir, AUTHORITY_POLICY)
-
-
-def validate_authority_stream(stdout: str) -> None:
-    """Only a complete, tool-free single turn can certify a cached contract."""
-    phase = "new"
-    for line in _native_jsonl_lines(stdout):
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except (ValueError, TypeError) as error:
-            raise AuthorityBackendUnavailable(
-                "authority generation emitted a non-JSON event") from error
-        if not isinstance(event, dict):
-            raise AuthorityBackendUnavailable("invalid authority event")
-        kind = event.get("type")
-        if phase == "thread" and kind == "item.completed":
-            item = event.get("item")
-            if (isinstance(item, dict) and item.get("type") == "error"
-                    and item.get("message") == _DISABLED_CODE_MODE_NOTICE
-                    and set(item) <= {"id", "type", "message"}):
-                continue
-        if kind == "thread.started" and phase == "new":
-            phase = "thread"
-        elif kind == "turn.started" and phase == "thread":
-            phase = "turn"
-        elif kind == "turn.completed" and phase == "turn":
-            phase = "complete"
-        elif phase == "turn" and kind in (
-                "item.started", "item.updated", "item.completed"):
-            item = event.get("item")
-            if not isinstance(item, dict) or item.get("type") not in (
-                    "reasoning", "agent_message"):
-                raise AuthorityBackendUnavailable(
-                    "authority generation attempted a tool or unknown item")
-        else:
-            raise AuthorityBackendUnavailable(
-                "authority generation emitted an unsupported event")
-    if phase != "complete":
-        raise AuthorityBackendUnavailable(
-            "authority generation requires exactly one complete turn")
 
 
 def authority_session(scratch_dir: str) -> NoToolsSession:
@@ -115,13 +64,13 @@ def authority_session(scratch_dir: str) -> NoToolsSession:
     return NoToolsSession(
         policy=AUTHORITY_POLICY,
         scratch=lambda: scratch_dir,
-        validate_stream=validate_authority_stream,
+        validate_stream=validate_no_tools_stream,
         # The capability validator runs first. Permit only its exact known
         # startup notice, not arbitrary errors, tool activity or a new event
         # dialect. The recovery parser still checks unique item IDs.
         recover_response=partial(
             _completed_response_without_usage,
-            permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE))
+            permitted_startup_notice=DISABLED_CODE_MODE_NOTICE))
 
 
 @dataclass(frozen=True)

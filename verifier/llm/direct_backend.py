@@ -10,8 +10,8 @@ pre-audit. Everything they may consult is already in the rendered prompt.
 
 DirectRuntime runs such a role as one structured request to a model
 endpoint (``llm/endpoints``), so the answer is the JSON the role contract
-demands and nothing else. RoutingRuntime seats the tool-free roles on it
-and leaves the tool-using roles (executor, judger over a live world,
+demands and nothing else. RoutingRuntime (``seat_runner``) seats the
+tool-free roles on it and leaves the tool-using roles (executor, judger over a live world,
 extractor over a ledger, oracle reading a catalog) on the agent runtime,
 behind the same ``complete(role_name, prompt, variables)`` interface the
 kernel already speaks. Prompts, schemas, retries and validation are
@@ -23,12 +23,10 @@ subscription login cannot call a raw model API.
 """
 from __future__ import annotations
 
-import json
-import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config import DirectSettings
 from .agents import ALL_AGENT_ROLES, AgentRole, ClaudeCodeRuntime, to_json_schema
@@ -38,8 +36,11 @@ from .endpoints import (
 )
 from .model_spans import model_call_span
 from .policy import NoToolsSession, ToolPolicy
-from .runtime import RuntimeCapabilities, capabilities_of
+from .receipts import seat_call_receipt
+from .retry import Backoff, RetryRule, retry_transient
+from .runtime import RuntimeCapabilities
 from .schema import RoleError
+from .seat_runner import RoutingRuntime
 
 try:                                    # the transports' HTTP client
     import httpx as _httpx
@@ -102,6 +103,9 @@ class DirectRuntime(RuntimeCapabilities):
     def routes_direct(self, role_name: str) -> bool:
         return True    # every role here is one HTTP request
 
+    def reuse_identity(self) -> Dict[str, Any]:
+        return {"model": self.model}
+
     def supports_policy(self, policy: ToolPolicy) -> bool:
         # a single model request has no tool to use, but no event stream
         # to audit either
@@ -122,89 +126,84 @@ class DirectRuntime(RuntimeCapabilities):
         model = role.model or self.model
         started = time.time()
         attempts: List[Dict[str, Any]] = []
-        error: Optional[str] = None
         call_id = uuid.uuid4().hex
-        try:
+        with seat_call_receipt(
+                self.cwd, lambda error: self._receipt(
+                    role, started, attempts, error, variables)):
             with model_call_span(call_id, role=role_name, model=str(model)):
                 return self._call(role, system, prompt, schema, model, attempts)
-        except Exception as err:  # noqa: BLE001 - re-raised after the receipt
-            error = str(err)[:300]
-            raise
-        finally:
-            self._receipt(role, started, attempts, error, variables)
 
     def _call(self, role: AgentRole, system: str, prompt: str,
               schema: Dict[str, Any], model: Optional[str],
               attempts: List[Dict[str, Any]]) -> Dict[str, Any]:
-        last: Optional[str] = None
         with self._budget_lock:
-            max_tokens = self._role_budget.get(role.name, DEFAULT_MAX_TOKENS)
-        transient_waits = iter(TRANSIENT_DELAYS[1:])
-        billing_waits = iter(BILLING_DELAYS)
-        while True:
-            attempt_started = time.time()
-            try:
+            budget = [self._role_budget.get(role.name, DEFAULT_MAX_TOKENS)]
+
+        def attempt() -> Dict[str, Any]:
+            # an exhausted output budget is retried at once with a larger
+            # one; the transient failures wait (below)
+            while True:
+                max_tokens = budget[0]
+                attempt_started = time.time()
                 try:
-                    payload, usage = self.endpoint.complete(
-                        system=system, prompt=prompt, schema=schema,
-                        model=model, max_tokens=max_tokens)
-                except _CONNECTION_ERRORS as err:
-                    raise TransientTransportError(
-                        f"connection: {type(err).__name__}: {err}") from err
-            except OutputBudgetExhausted as err:
-                last = str(err)
+                    try:
+                        payload, usage = self.endpoint.complete(
+                            system=system, prompt=prompt, schema=schema,
+                            model=model, max_tokens=max_tokens)
+                    except _CONNECTION_ERRORS as err:
+                        raise TransientTransportError(
+                            f"connection: {type(err).__name__}: {err}") from err
+                except OutputBudgetExhausted as err:
+                    last = str(err)
+                    attempts.append({"role": role.name, "seconds": round(
+                        time.time() - attempt_started, 3), "error": last,
+                        "max_tokens": max_tokens, "usage": err.usage or None})
+                    if max_tokens >= MAX_OUTPUT_TOKENS:
+                        raise RoleError(f"{role.name}: output budget exhausted "
+                                        f"at {max_tokens} tokens: {last}")
+                    budget[0] = min(2 * max_tokens, MAX_OUTPUT_TOKENS)
+                    with self._budget_lock:
+                        self._role_budget[role.name] = max(
+                            budget[0], self._role_budget.get(role.name, 0))
+                    continue
+                except AwaitingCredit as err:
+                    attempts.append({"role": role.name, "seconds": round(
+                        time.time() - attempt_started, 3), "error": str(err),
+                        "awaiting_credit": True})
+                    raise
+                except TransientTransportError as err:
+                    attempts.append({"role": role.name, "seconds": round(
+                        time.time() - attempt_started, 3), "error": str(err)})
+                    raise
+                except Exception as err:
+                    # any other failure still took an attempt: on record with
+                    # its error, like the retried ones
+                    attempts.append({"role": role.name, "seconds": round(
+                        time.time() - attempt_started, 3),
+                        "error": f"{type(err).__name__}: {err}"[:300]})
+                    raise
                 attempts.append({"role": role.name, "seconds": round(
-                    time.time() - attempt_started, 3), "error": last,
-                    "max_tokens": max_tokens, "usage": err.usage or None})
-                if max_tokens >= MAX_OUTPUT_TOKENS:
-                    raise RoleError(f"{role.name}: output budget exhausted "
-                                    f"at {max_tokens} tokens: {last}")
-                max_tokens = min(2 * max_tokens, MAX_OUTPUT_TOKENS)
-                with self._budget_lock:
-                    self._role_budget[role.name] = max(
-                        max_tokens, self._role_budget.get(role.name, 0))
-                continue
-            except AwaitingCredit as err:
-                last = str(err)
-                attempts.append({"role": role.name, "seconds": round(
-                    time.time() - attempt_started, 3), "error": last,
-                    "awaiting_credit": True})
-                delay = next(billing_waits, None)
-                if delay is None:
-                    raise RoleError(f"{role.name}: provider credit still "
-                                    f"exhausted after waiting: {last}")
-                time.sleep(delay)
-                continue
-            except TransientTransportError as err:
-                last = str(err)
-                attempts.append({"role": role.name, "seconds": round(
-                    time.time() - attempt_started, 3), "error": last})
-                delay = next(transient_waits, None)
-                if delay is None:
-                    raise RoleError(f"{role.name}: transient transport "
-                                    f"failure persisted: {last}")
-                time.sleep(delay)
-                continue
-            except Exception as err:
-                # any other failure still took an attempt: on record with its
-                # error, like the retried ones
-                attempts.append({"role": role.name, "seconds": round(
-                    time.time() - attempt_started, 3),
-                    "error": f"{type(err).__name__}: {err}"[:300]})
-                raise
-            attempts.append({"role": role.name, "seconds": round(
-                time.time() - attempt_started, 3), "usage": usage})
-            self.transcripts.append({"role": role.name, "usage": usage})
-            return payload
+                    time.time() - attempt_started, 3), "usage": usage})
+                self.transcripts.append({"role": role.name, "usage": usage})
+                return payload
+
+        return retry_transient(attempt, (
+            RetryRule((AwaitingCredit,), Backoff(BILLING_DELAYS),
+                      exhausted=lambda err: RoleError(
+                          f"{role.name}: provider credit still "
+                          f"exhausted after waiting: {err}")),
+            RetryRule((TransientTransportError,), Backoff(TRANSIENT_DELAYS[1:]),
+                      exhausted=lambda err: RoleError(
+                          f"{role.name}: transient transport "
+                          f"failure persisted: {err}")),
+        ), sleep=time.sleep)
 
     def _receipt(self, role: AgentRole, started: float,
                  attempts: List[Dict[str, Any]], error: Optional[str],
-                 variables: Dict[str, Any]) -> None:
+                 variables: Dict[str, Any]) -> Dict[str, Any]:
         """Same receipt row as the Claude Code runtime, with backend=direct,
         so latency and cost breakdowns see every seat call whatever ran it."""
-        if not self.cwd:
-            return
-        row = {
+        return {
             "role": role.name,
             "backend": "direct",
             "transport": getattr(self.endpoint, "name", "direct"),
@@ -220,79 +219,6 @@ class DirectRuntime(RuntimeCapabilities):
             "claim_text": str(variables.get("claim_text", ""))[:120],
             "obligation_text": str(variables.get("obligation_text", ""))[:160],
         }
-        try:
-            with open(os.path.join(self.cwd, "role_calls.jsonl"), "a",
-                      encoding="utf-8") as f:
-                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
-        except OSError:
-            pass
-
-
-class RoutingRuntime(RuntimeCapabilities):
-    """Seats each role on the runtime it needs: tool-free roles on the
-    direct model call, tool-using roles on the agent runtime. The role
-    registry and every declared capability are the agent runtime's, which
-    remains the seat of record for anything with a palette; so is any other
-    state a caller reads (model, effort, cwd, identities)."""
-
-    RUNTIME_IDENTITY = "verifier.llm.direct_backend.RoutingBackend"
-
-    def __init__(self, direct: DirectRuntime, agent, direct_roles: Iterable[str]):
-        self.direct = direct
-        self.agent = agent
-        self.direct_roles: Set[str] = set(direct_roles)
-        self.uses_role_wire_schema = True
-
-    @property
-    def roles(self) -> Dict[str, AgentRole]:
-        return self.agent.roles
-
-    @roles.setter
-    def roles(self, value: Dict[str, AgentRole]) -> None:
-        self.agent.roles = value
-        self.direct.roles = dict(value)
-
-    def routes_direct(self, role_name: str) -> bool:
-        return role_name in self.direct_roles
-
-    def complete(self, role_name: str, prompt: str,
-                 variables: Dict[str, Any]) -> Any:
-        if self.routes_direct(role_name):
-            # A direct seat runs on the direct provider only — never
-            # silently on the agent runtime, which is a different model
-            # call with a different cost and latency profile. Outages and
-            # exhausted credit are waited out inside the direct call.
-            return self.direct.complete(role_name, prompt, variables)
-        return self.agent.complete(role_name, prompt, variables)
-
-    def seat_runtime(self, role_names: Iterable[str]):
-        names = list(role_names)
-        if all(self.routes_direct(name) for name in names):
-            return self.direct
-        return self.agent
-
-    @property
-    def run_options(self):
-        return capabilities_of(self.agent).run_options
-
-    def allows_lazy_oracle_catalog(self, role_name: str,
-                                   variables: Dict[str, Any]) -> bool:
-        if self.routes_direct(role_name):
-            return False
-        return bool(capabilities_of(self.agent).allows_lazy_oracle_catalog(
-            role_name, variables))
-
-    def allows_compact_source_evidence(self, role_name: str,
-                                       variables: Dict[str, Any]):
-        return capabilities_of(self.agent).allows_compact_source_evidence(
-            role_name, variables)
-
-    def captured_images(self, role_name: str, variables: Dict[str, Any]):
-        return capabilities_of(self.agent).captured_images(role_name, variables)
-
-    def __getattr__(self, name: str) -> Any:
-        # seat-of-record state lives on the agent side
-        return getattr(self.agent, name)
 
 
 def direct_seat_roles(environ: Optional[Dict[str, str]] = None) -> Set[str]:

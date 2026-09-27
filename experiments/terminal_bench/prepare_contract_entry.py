@@ -28,7 +28,7 @@ from verifier.engine.contract_bundle import (
     ContractBundleIdentity, contract_record_sha256, passed_contract_entry,
 )
 from verifier.engine.contract_cache import CompiledFinalContractCache
-from verifier.llm.codex_backend import codex_usage_ledger
+from verifier.llm.codex.usage import codex_usage_ledger
 from verifier.llm.model_spans import model_scope, span_sidecar_path
 
 

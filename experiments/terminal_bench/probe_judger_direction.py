@@ -40,7 +40,8 @@ from verifier.execution.adapters import (
     default_adapter_registry,
 )
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.codex.usage import codex_usage_ledger
 from verifier.llm.runtime import capabilities_of
 from verifier.llm.model_spans import model_scope, span_sidecar_path
 

@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from verifier.engine.method_cache import _backend_identity
-from verifier.llm import codex_backend as cb
+from verifier.llm.codex import command as codex_command
+from verifier.llm.codex import runtime as cb
 
 
 def _runner(calls):
@@ -44,19 +45,19 @@ def test_opt_in_compacts_reports_and_all_post_extract_roles_get_inspection_note(
         assert backend.complete(role_name, "exact role input", {
             "world_mode": world_mode, "basis": "record"}) == {"ok": True}
     (base, base_args), (opt, opt_args) = calls
-    assert cb._COMPACT_INSPECTION_NOTE not in base[-1]
-    assert cb._COMPACT_REPORT_NOTE not in base[-1]
-    assert cb._PLAN_FIRST_EXECUTION_NOTE not in base[-1]
-    assert (cb._ORACLE_COMPILE_NOTE in base[-1]) is (role_name == "oracles")
-    assert (cb._ORACLE_COMPILE_NOTE in opt[-1]) is (role_name == "oracles")
+    assert codex_command._COMPACT_INSPECTION_NOTE not in base[-1]
+    assert codex_command._COMPACT_REPORT_NOTE not in base[-1]
+    assert codex_command._PLAN_FIRST_EXECUTION_NOTE not in base[-1]
+    assert (codex_command._ORACLE_COMPILE_NOTE in base[-1]) is (role_name == "oracles")
+    assert (codex_command._ORACLE_COMPILE_NOTE in opt[-1]) is (role_name == "oracles")
     expected = role_name not in {"extract", "oracles"}
-    assert (cb._COMPACT_INSPECTION_NOTE in opt[-1]) is expected
-    assert cb._COMPACT_REPORT_NOTE in opt[-1]
-    assert (cb._PLAN_FIRST_EXECUTION_NOTE in opt[-1]) is (
+    assert (codex_command._COMPACT_INSPECTION_NOTE in opt[-1]) is expected
+    assert codex_command._COMPACT_REPORT_NOTE in opt[-1]
+    assert (codex_command._PLAN_FIRST_EXECUTION_NOTE in opt[-1]) is (
         role_name == "discharge")
-    assert opt[-1].replace(cb._COMPACT_INSPECTION_NOTE, "").replace(
-        cb._COMPACT_REPORT_NOTE, "").replace(
-        cb._PLAN_FIRST_EXECUTION_NOTE, "") == base[-1]
+    assert opt[-1].replace(codex_command._COMPACT_INSPECTION_NOTE, "").replace(
+        codex_command._COMPACT_REPORT_NOTE, "").replace(
+        codex_command._PLAN_FIRST_EXECUTION_NOTE, "") == base[-1]
     # The only command difference is prompt text and the fresh output path.
     def command_contract(command):
         command = list(command[:-1])
@@ -73,11 +74,11 @@ def test_default_keeps_previous_identity_and_profiles_never_share(monkeypatch):
     opt = cb.CodexRuntime(compact_inspection=True)
     assert base.compact_inspection is False
     assert base.runtime_instruction_identity == hashlib.sha256(
-        (cb._ARTIFACT_ADDRESS_NOTE + cb._ORACLE_COMPILE_NOTE).encode()
+        (codex_command._ARTIFACT_ADDRESS_NOTE + codex_command._ORACLE_COMPILE_NOTE).encode()
     ).hexdigest()
     assert _backend_identity(base) != _backend_identity(opt)
     before = _backend_identity(opt)
-    monkeypatch.setattr(cb, "_COMPACT_INSPECTION_NOTE", "changed runtime note")
+    monkeypatch.setattr(codex_command, "_COMPACT_INSPECTION_NOTE", "changed runtime note")
     assert _backend_identity(opt) == before
     assert _backend_identity(cb.CodexRuntime(compact_inspection=True)) != before
 
@@ -111,7 +112,7 @@ def test_attempt_bill_records_actual_profile_without_changing_usage(
 
 
 def test_note_preserves_full_evidence_and_no_historical_reexecution():
-    note = cb._COMPACT_INSPECTION_NOTE
+    note = codex_command._COMPACT_INSPECTION_NOTE
     for invariant in (
         "existing role and tool permissions",
         "required input must still be inspected completely",
@@ -125,7 +126,7 @@ def test_note_preserves_full_evidence_and_no_historical_reexecution():
 
 
 def test_compact_report_note_preserves_every_role_gate_and_failure():
-    note = cb._COMPACT_REPORT_NOTE
+    note = codex_command._COMPACT_REPORT_NOTE
     for invariant in (
         "perform every analysis",
         "Preserve every required output item",
@@ -140,7 +141,7 @@ def test_compact_report_note_preserves_every_role_gate_and_failure():
 
 
 def test_plan_first_note_preserves_method_and_unavailability_contracts():
-    note = cb._PLAN_FIRST_EXECUTION_NOTE
+    note = codex_command._PLAN_FIRST_EXECUTION_NOTE
     for invariant in (
         "ordering only",
         "Explicit bridges remain assumptions",

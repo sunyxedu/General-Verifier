@@ -12,6 +12,10 @@ the answer a runtime that does not declare it gives. The engine and the
 seats ask through these members only; ``capabilities_of`` reads a duck-typed
 backend (a test double, an experiment's wrapper) with the same defaults.
 
+A ``RuntimeDecorator`` stands in front of the runtime that is its seat of
+record: the stages of a seat call below the role (dispatch of each seat to
+the runtime it needs, admission of a restricted call) are decorators.
+
 The boundary members (``supports_policy``, ``no_tools_runtime``,
 ``no_tools_identity``, ``judger_scratch``, ``replays_fixtures``) are not
 inherited: a subclass may change any hook a boundary relies on, so it must
@@ -47,6 +51,18 @@ class BoundScratch(Protocol):
 
 _BOUNDARY_MEMBERS = ("supports_policy", "no_tools_runtime",
                      "no_tools_identity", "judger_scratch", "replays_fixtures")
+
+# The seat settings a runtime's reuse keys are made of, in key order.
+REUSE_IDENTITY_FIELDS = ("model", "model_overrides", "effort", "service_tier",
+                         "permission_mode", "runtime_instruction_identity")
+
+
+def _present_identity_fields(backend: Any) -> Dict[str, Any]:
+    """The reuse-identity fields ``backend`` happens to have: the identity
+    of a backend that declares none (a fixture a test configured, a
+    duck-typed wrapper)."""
+    return {name: getattr(backend, name) for name in REUSE_IDENTITY_FIELDS
+            if hasattr(backend, name)}
 
 
 class RuntimeCapabilities:
@@ -128,6 +144,51 @@ class RuntimeCapabilities:
         None (a fresh temporary directory is used)."""
         return None
 
+    def reuse_identity(self) -> Dict[str, Any]:
+        """The seat settings (``REUSE_IDENTITY_FIELDS``) that distinguish
+        this runtime's answers in reuse keys. A runtime that does not
+        declare them is read for the ones it has."""
+        return _present_identity_fields(self)
+
+
+class RuntimeDecorator(RuntimeCapabilities):
+    """A runtime in front of ``seat_of_record``, the runtime whose role
+    registry, run options, source-evidence opinion and instruction identity
+    it carries. ``complete`` hands each call to ``seat_for(role_name)``."""
+
+    @property
+    def seat_of_record(self) -> Any:
+        raise NotImplementedError
+
+    def seat_for(self, role_name: str) -> Any:
+        """The runtime that runs this seat."""
+        return self.seat_of_record
+
+    @property
+    def roles(self) -> Dict[str, Any]:
+        return self.seat_of_record.roles
+
+    @roles.setter
+    def roles(self, value: Dict[str, Any]) -> None:
+        self.seat_of_record.roles = value
+
+    @property
+    def runtime_instruction_identity(self) -> str:
+        return self.seat_of_record.runtime_instruction_identity
+
+    @property
+    def run_options(self) -> RunOptions:
+        return capabilities_of(self.seat_of_record).run_options
+
+    def allows_compact_source_evidence(self, role_name, variables):
+        return capabilities_of(
+            self.seat_of_record).allows_compact_source_evidence(
+                role_name, variables)
+
+    def complete(self, role_name: str, prompt: str,
+                 variables: Dict[str, Any]) -> Any:
+        return self.seat_for(role_name).complete(role_name, prompt, variables)
+
 
 class _DuckCapabilities(RuntimeCapabilities):
     """A backend that does not derive from RuntimeCapabilities, read with
@@ -176,6 +237,9 @@ class _DuckCapabilities(RuntimeCapabilities):
 
     def seat_runtime(self, role_names):
         return self._backend
+
+    def reuse_identity(self):
+        return _present_identity_fields(self._backend)
 
 
 def capabilities_of(backend: Any) -> RuntimeCapabilities:

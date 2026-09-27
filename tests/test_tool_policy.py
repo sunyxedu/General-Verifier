@@ -7,11 +7,13 @@ import pytest
 
 from verifier.config import RunOptions
 from verifier.llm import authority_backend as ab
-from verifier.llm import codex_backend as cb
+from verifier.llm.codex import runtime as cb
 from verifier.llm import typed_judger_backend as tjb
 from verifier.llm.agents import ALL_AGENT_ROLES, ClaudeCodeRuntime
-from verifier.llm.codex_backend import CodexRuntime, no_tools_policy_args
-from verifier.llm.direct_backend import DirectRuntime, RoutingRuntime
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.codex.policy import no_tools_policy_args
+from verifier.llm.direct_backend import DirectRuntime
+from verifier.llm.seat_runner import RoutingRuntime
 from verifier.llm.policy import NO_TOOLS, NoToolsSession, ToolPolicy
 from verifier.llm.runtime import (
     RuntimeCapabilities, capabilities_of, runtime_identity_type,

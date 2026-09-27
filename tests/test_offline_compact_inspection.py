@@ -10,7 +10,8 @@ from verifier.core.store import ClaimStore
 from verifier.engine.kernel import Kernel
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm import prompts
-from verifier.llm import codex_backend as cb
+from verifier.llm.codex import command as codex_command
+from verifier.llm.codex import runtime as cb
 from verifier.llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
 from verifier.llm.authority_backend import authority_compilation_backend
 from verifier.llm.schema import FixtureBackend
@@ -98,8 +99,8 @@ def test_extractor_and_kernel_receive_same_explicit_profile(tmp_path, monkeypatc
 def test_authority_clone_preserves_profile_and_frozen_identity(tmp_path, monkeypatch, enabled):
     backend = cb.CodexRuntime(cwd=str(tmp_path), compact_inspection=enabled)
     identity = backend.runtime_instruction_identity
-    monkeypatch.setattr(cb, "_COMPACT_INSPECTION_NOTE", "later module default")
-    monkeypatch.setattr(cb, "_ARTIFACT_ADDRESS_NOTE", "later artifact note")
+    monkeypatch.setattr(codex_command, "_COMPACT_INSPECTION_NOTE", "later module default")
+    monkeypatch.setattr(codex_command, "_ARTIFACT_ADDRESS_NOTE", "later artifact note")
     monkeypatch.setattr(cb.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="codex-cli test"))
     with authority_compilation_backend(backend, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT) as session:
         assert session.backend.compact_inspection is enabled

@@ -25,8 +25,8 @@ from experiments.terminal_bench.eval_offline_policy import (
     plan_eval_offline_policy,
     plan_eval_online_policy,
 )
-from verifier.llm import codex_backend
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex import runtime as codex_runtime
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import RoleError
 
 
@@ -93,13 +93,13 @@ def test_plan_is_read_only_and_records_source_method_and_binding_identity(
     state.mkdir()
     binding = _binding(state)
 
-    plan = plan_eval_offline_policy(codex_backend, bindings=[binding])
+    plan = plan_eval_offline_policy(codex_runtime, bindings=[binding])
 
     assert not (state / "work").exists()
     identity = plan.identity
     assert identity["schema"] == POLICY_IDENTITY_SCHEMA
     assert identity["protocol"] == POLICY_PROTOCOL
-    assert identity["backend_module"] == codex_backend.__name__
+    assert identity["backend_module"] == codex_runtime.__name__
     assert identity["scope"] == "exact-class-offline-only"
     assert identity["binding_count"] == 1
     for key in (
@@ -138,7 +138,7 @@ def test_current_backend_cold_policy_has_byte_for_byte_parity(
     backend = CodexRuntime(cwd=os.fspath(state))
     expected = backend._execution_policy_args(role, dict(variables))
     plan = plan_eval_offline_policy(
-        codex_backend, bindings=[_binding(state)])
+        codex_runtime, bindings=[_binding(state)])
 
     with apply_eval_offline_policy(plan):
         actual = backend._execution_policy_args(role, dict(variables))
@@ -179,7 +179,7 @@ def test_current_external_roots_workspace_and_dynamic_workdir_have_parity(
         runtime_read_roots=(os.fspath(runtime_bin),),
     )
 
-    with eval_offline_policy(codex_backend, bindings=[binding]):
+    with eval_offline_policy(codex_runtime, bindings=[binding]):
         actual = backend._execution_policy_args("discharge", variables)
 
     assert actual == expected
@@ -195,7 +195,7 @@ def test_legacy_and_current_modules_receive_the_same_overlay_policy(
     variables = {} if role == "extract" else {"world_mode": "captured"}
     binding = _binding(state)
     current = CodexRuntime(cwd=os.fspath(state))
-    with eval_offline_policy(codex_backend, bindings=[binding]):
+    with eval_offline_policy(codex_runtime, bindings=[binding]):
         current_args = current._execution_policy_args(role, variables)
 
     legacy = _legacy_module(tmp_path)
@@ -216,7 +216,7 @@ def test_role_permissions_match_current_cold_contract(tmp_path, monkeypatch):
     backend = CodexRuntime(cwd=os.fspath(state))
     toolchain = os.fspath(state / "work" / "_toolchains")
 
-    with eval_offline_policy(codex_backend, bindings=[_binding(state)]):
+    with eval_offline_policy(codex_runtime, bindings=[_binding(state)]):
         discharge = _config(backend._execution_policy_args(
             "discharge", {"world_mode": "captured"}))
         judger = _config(backend._execution_policy_args(
@@ -263,7 +263,7 @@ def test_external_cache_is_discharge_only_and_runtime_is_read_only(
         offline_shared_cache_dir=os.fspath(cache),
     )
 
-    with eval_offline_policy(codex_backend, bindings=[binding]):
+    with eval_offline_policy(codex_runtime, bindings=[binding]):
         policies = {
             role: _config(backend._execution_policy_args(
                 role, {"world_mode": "captured"}))
@@ -297,7 +297,7 @@ def test_candidate_cannot_replace_operator_roots(tmp_path, monkeypatch, key):
     replacement.mkdir()
     backend = CodexRuntime(cwd=os.fspath(state))
 
-    with eval_offline_policy(codex_backend, bindings=[_binding(state)]):
+    with eval_offline_policy(codex_runtime, bindings=[_binding(state)]):
         with pytest.raises(RoleError, match="operator binding"):
             backend._execution_policy_args("discharge", {
                 "world_mode": "captured", key: os.fspath(replacement),
@@ -314,7 +314,7 @@ def test_candidate_workspace_must_be_exact_but_workdir_may_vary_under_work(
     workdir = state / "work" / "claim" / "attempt"
     workspace = state / "workspace"
 
-    with eval_offline_policy(codex_backend, bindings=[_binding(state)]):
+    with eval_offline_policy(codex_runtime, bindings=[_binding(state)]):
         config = _config(backend._execution_policy_args("discharge", {
             "world_mode": "captured",
             "workdir": os.fspath(workdir),
@@ -345,7 +345,7 @@ def test_live_unknown_state_cwdless_and_subclass_fail_before_policy_output(
     state.mkdir()
     other.mkdir()
     plan = plan_eval_offline_policy(
-        codex_backend, bindings=[_binding(state)])
+        codex_runtime, bindings=[_binding(state)])
 
     class Child(CodexRuntime):
         pass
@@ -376,7 +376,7 @@ def test_current_constructor_roots_must_match_overlay_binding(
     backend = CodexRuntime(
         cwd=os.fspath(state), offline_toolchain_dir=os.fspath(external))
 
-    with eval_offline_policy(codex_backend, bindings=[_binding(state)]):
+    with eval_offline_policy(codex_runtime, bindings=[_binding(state)]):
         with pytest.raises(RoleError, match="backend toolchain disagrees"):
             backend._execution_policy_args(
                 "discharge", {"world_mode": "captured"})
@@ -389,7 +389,7 @@ def test_overlay_restores_original_and_refuses_nested_install(
     state = tmp_path / "state"
     state.mkdir()
     plan = plan_eval_offline_policy(
-        codex_backend, bindings=[_binding(state)])
+        codex_runtime, bindings=[_binding(state)])
     original = CodexRuntime.__dict__["_execution_policy_args"]
 
     with apply_eval_offline_policy(plan):
@@ -413,7 +413,7 @@ def test_body_exception_is_preserved_and_method_is_restored(
     original = CodexRuntime.__dict__["_execution_policy_args"]
 
     with pytest.raises(KeyboardInterrupt, match="operator stop"):
-        with eval_offline_policy(codex_backend, bindings=[_binding(state)]):
+        with eval_offline_policy(codex_runtime, bindings=[_binding(state)]):
             raise KeyboardInterrupt("operator stop")
 
     assert CodexRuntime.__dict__["_execution_policy_args"] is original
@@ -424,7 +424,7 @@ def test_plan_rejects_method_changed_before_install(tmp_path, monkeypatch):
     state = tmp_path / "state"
     state.mkdir()
     plan = plan_eval_offline_policy(
-        codex_backend, bindings=[_binding(state)])
+        codex_runtime, bindings=[_binding(state)])
     original = CodexRuntime.__dict__["_execution_policy_args"]
 
     def replacement(self, role_name, variables):
@@ -490,7 +490,7 @@ def test_online_plan_is_explicit_read_only_and_has_distinct_identity(
     state.mkdir()
 
     plan = plan_eval_online_policy(
-        codex_backend, bindings=[_binding(state)])
+        codex_runtime, bindings=[_binding(state)])
 
     assert isinstance(plan, EvalOnlinePolicyPlan)
     assert not (state / "work").exists()
@@ -523,10 +523,10 @@ def test_online_and_offline_entry_points_render_the_same_isolation_bytes(
     binding = _binding(state)
     backend = CodexRuntime(cwd=os.fspath(state))
 
-    with eval_offline_policy(codex_backend, bindings=[binding]) as offline_plan:
+    with eval_offline_policy(codex_runtime, bindings=[binding]) as offline_plan:
         offline = backend._execution_policy_args(
             role, {"world_mode": "captured"})
-    with eval_online_policy(codex_backend, bindings=[binding]) as online_plan:
+    with eval_online_policy(codex_runtime, bindings=[binding]) as online_plan:
         online = backend._execution_policy_args(role, {"world_mode": "live"})
 
     assert offline == online
@@ -554,7 +554,7 @@ def test_online_api_requires_exact_live_world_mode(
     state.mkdir()
     backend = CodexRuntime(cwd=os.fspath(state))
 
-    with eval_online_policy(codex_backend, bindings=[_binding(state)]):
+    with eval_online_policy(codex_runtime, bindings=[_binding(state)]):
         with pytest.raises(RoleError, match="requires world_mode='live'"):
             backend._execution_policy_args("critic", variables)
 
@@ -568,7 +568,7 @@ def test_online_api_rejects_string_subclass_world_mode(tmp_path, monkeypatch):
     class Live(str):
         pass
 
-    with eval_online_policy(codex_backend, bindings=[_binding(state)]):
+    with eval_online_policy(codex_runtime, bindings=[_binding(state)]):
         with pytest.raises(RoleError, match="requires world_mode='live'"):
             backend._execution_policy_args(
                 "critic", {"world_mode": Live("live")})
@@ -583,7 +583,7 @@ def test_online_api_requires_bound_exact_backend_and_cwd(
     state.mkdir()
     other.mkdir()
     plan = plan_eval_online_policy(
-        codex_backend, bindings=[_binding(state)])
+        codex_runtime, bindings=[_binding(state)])
 
     class Child(CodexRuntime):
         pass
@@ -611,7 +611,7 @@ def test_online_candidate_cannot_replace_operator_roots(
     replacement.mkdir()
     backend = CodexRuntime(cwd=os.fspath(state))
 
-    with eval_online_policy(codex_backend, bindings=[_binding(state)]):
+    with eval_online_policy(codex_runtime, bindings=[_binding(state)]):
         with pytest.raises(RoleError, match="operator binding"):
             backend._execution_policy_args("discharge", {
                 "world_mode": "live", key: os.fspath(replacement),
@@ -632,7 +632,7 @@ def test_offline_api_still_rejects_live_after_online_api_is_added(
     backend = CodexRuntime(cwd=os.fspath(state))
     original = CodexRuntime.__dict__["_execution_policy_args"]
 
-    with eval_offline_policy(codex_backend, bindings=[_binding(state)]):
+    with eval_offline_policy(codex_runtime, bindings=[_binding(state)]):
         with pytest.raises(RoleError, match="refuses live"):
             backend._execution_policy_args("critic", {"world_mode": "live"})
 
@@ -646,7 +646,7 @@ def test_online_overlay_restores_after_body_exception(tmp_path, monkeypatch):
     original = CodexRuntime.__dict__["_execution_policy_args"]
 
     with pytest.raises(KeyboardInterrupt, match="operator stop"):
-        with eval_online_policy(codex_backend, bindings=[_binding(state)]):
+        with eval_online_policy(codex_runtime, bindings=[_binding(state)]):
             assert CodexRuntime.__dict__["_execution_policy_args"] is not original
             raise KeyboardInterrupt("operator stop")
 

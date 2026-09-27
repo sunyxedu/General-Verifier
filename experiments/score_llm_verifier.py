@@ -58,7 +58,7 @@ import llm_verifier
 import llm_verifier.fine_grained_reward as fine_reward
 
 from experiments.common import candidate_seal
-from verifier.llm.codex_service import (
+from verifier.llm.codex.service_tier import (
     DEFAULT_SERVICE_TIER,
     SERVICE_TIERS,
     normalize_service_tier,
@@ -661,8 +661,8 @@ def scorer_source_hash():
         "experiments/score_llm_verifier.py": file_digest(Path(__file__).resolve()),
         "experiments/common/codex_endpoint.py": file_digest(
             HERE / "common" / "codex_endpoint.py"),
-        "verifier/llm/codex_service.py": file_digest(
-            REPO_ROOT / "verifier" / "llm" / "codex_service.py"),
+        "verifier/llm/codex/service_tier.py": file_digest(
+            REPO_ROOT / "verifier" / "llm" / "codex" / "service_tier.py"),
     }
     for path in sorted(package_root.rglob("*.py")):
         relative = path.relative_to(package_root).as_posix()

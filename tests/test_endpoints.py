@@ -4,7 +4,7 @@ import pytest
 from verifier import config
 from verifier.config import DirectSettings, ProviderSettings
 from verifier.llm import endpoints
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.endpoints import presets
 from verifier.llm.endpoints.presets import (
     AGENT_PROVIDERS, PROVIDERS, AgentProvider, default_model,

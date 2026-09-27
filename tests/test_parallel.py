@@ -292,7 +292,7 @@ def test_verify_is_serialized_per_claim(tmp_path):
 # ---- shared toolchain and caches through the codex sandbox -------------------
 
 def test_codex_policy_grants_shared_roots_and_points_caches_at_them(tmp_path):
-    from verifier.llm.codex_backend import CodexRuntime
+    from verifier.llm.codex.runtime import CodexRuntime
     state = tmp_path / "state"
     work = state / "work"
     work.mkdir(parents=True)
@@ -323,7 +323,7 @@ def test_codex_policy_grants_shared_roots_and_points_caches_at_them(tmp_path):
 
 
 def test_codex_policy_without_shared_dirs_is_unchanged(tmp_path):
-    from verifier.llm.codex_backend import CodexRuntime
+    from verifier.llm.codex.runtime import CodexRuntime
     state = tmp_path / "state"
     (state / "work").mkdir(parents=True)
     backend = CodexRuntime(cwd=str(state), model="m")

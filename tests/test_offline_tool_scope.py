@@ -9,7 +9,7 @@ import pytest
 from verifier.execution.adapters import AdapterRoutingDischarger
 from verifier.execution.discharge import AgentDischarger
 from verifier.llm.authority_backend import authority_session
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import FixtureBackend, RoleError
 from verifier.app.assembly import build_kernel
 from verifier.mcp_server import Service

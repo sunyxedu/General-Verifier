@@ -26,13 +26,11 @@ from verifier.execution.adapters import (
     default_adapter_registry,
 )
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm import codex_backend as cb
+from verifier.llm.codex import runtime as cb
 from verifier.llm import typed_judger_backend as tjb
 from verifier.llm.agents import AgentRole
-from verifier.llm.codex_backend import (
-    CodexRuntime,
-    _typed_judger_attempt_scope,
-)
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.codex.usage import _typed_judger_attempt_scope
 from verifier.llm.schema import RoleError
 from verifier.llm.typed_judger_backend import (
     TYPED_JUDGER_POLICY,

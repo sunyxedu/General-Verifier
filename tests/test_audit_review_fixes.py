@@ -26,7 +26,7 @@ from verifier.core.events import EventLog
 from verifier.core.model import Claim, CLAIM_ASSERTION, CLAIM_FINAL
 from verifier.core.store import TRIGGER_LAZY
 from verifier.execution import resource_share as rs
-from verifier.llm import agents
+from verifier.llm import agents, seat_runner
 from verifier.mcp_server import HOOK_FEED, SERVER_LOCK, Service
 
 from test_kernel_lifecycle_audit import Gate, build
@@ -367,7 +367,7 @@ def test_a_warmup_queues_in_arrival_order_once_the_review_is_done(
 def test_a_seat_waiting_for_room_gives_its_permit_back(fresh_slots,
                                                        monkeypatch):
     monkeypatch.setenv("GV_MAX_CONCURRENT_SEATS", "1")
-    gate = agents._SeatGate()
+    gate = seat_runner._SeatGate()
     opened, holding = threading.Event(), threading.Event()
     release = threading.Event()
     room = lambda: 8192 * MB if opened.is_set() else 0  # noqa: E731

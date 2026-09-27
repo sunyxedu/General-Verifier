@@ -27,7 +27,9 @@ from typing import Any, Dict, Optional
 
 from ..core.model import OUTCOME_HOLDS, OUTCOME_REFUTED, content_hash
 from ..core.world import MODE_LIVE, load_world_view
-from ..llm.runtime import runtime_identity_type
+from ..llm.runtime import (
+    REUSE_IDENTITY_FIELDS, capabilities_of, runtime_identity_type,
+)
 
 
 _IDENTITY_FILE_CAP = 128 * 1024 * 1024
@@ -129,10 +131,10 @@ def _backend_identity(backend) -> Optional[Dict[str, Any]]:
         "type": runtime_identity_type(backend),
     }
     found = False
-    for name in ("model", "model_overrides", "effort", "service_tier",
-                 "permission_mode", "runtime_instruction_identity"):
-        if hasattr(backend, name):
-            value = getattr(backend, name)
+    declared = capabilities_of(backend).reuse_identity()
+    for name in REUSE_IDENTITY_FIELDS:
+        if name in declared:
+            value = declared[name]
             if isinstance(value, dict):
                 value = dict(sorted(value.items()))
             if value is None or isinstance(value, (str, int, float, bool, dict)):

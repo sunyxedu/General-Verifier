@@ -28,7 +28,8 @@ from verifier.contract_replay import clone_sealed_inputs, fresh_graph_snapshot
 from verifier.core.events import EventLog
 from verifier.core.model import CLAIM_FINAL
 from verifier.core.store import TRIGGER_LAZY
-from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.codex.usage import codex_usage_ledger
 from verifier.llm.model_spans import model_scope, span_sidecar_path, submit_with_context
 from verifier.app.assembly import build_kernel
 from verifier.mcp_server import Service

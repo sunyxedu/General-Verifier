@@ -414,7 +414,11 @@ def _load_runtime(source):
     sys.path.insert(0, str(source))
     modules = {
         "offline": importlib.import_module("verifier.offline"),
-        "backend": importlib.import_module("verifier.llm.codex_backend"),
+        "backend": importlib.import_module(
+            "verifier.llm.codex.runtime"
+            if (source / "verifier" / "llm" / "codex" / "runtime.py").is_file()
+            # a frozen tree from before the Codex runtime became a package
+            else "verifier.llm.codex_backend"),
         "mcp": importlib.import_module("verifier.mcp_server"),
         "assembly": importlib.import_module("verifier.app.assembly"),
         "certificate": importlib.import_module("verifier.engine.certificate"),

@@ -330,7 +330,7 @@ def run_codex(work: str, prompt: str, model: str | None = None,
     if model:
         cmd[2:2] = ["-m", model]
     if service_tier:
-        from verifier.llm.codex_service import service_tier_cli_args
+        from verifier.llm.codex.service_tier import service_tier_cli_args
         cmd[2:2] = service_tier_cli_args(service_tier)
     env = None
     if codex_home:

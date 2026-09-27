@@ -11,7 +11,7 @@ import time
 import pytest
 
 import verifier.execution.scratch_budget as sb
-import verifier.llm.codex_backend as cb
+import verifier.llm.codex.process as cb
 from verifier.core.model import Obligation
 from verifier.execution.discharge import AgentDischarger
 from verifier.execution.instruments import ArtifactStore

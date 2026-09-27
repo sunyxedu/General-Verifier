@@ -221,9 +221,9 @@ def test_run_canary_uses_real_direct_roles_with_local_process_stub(
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.subprocess.run", version)
+        "verifier.llm.codex.runtime.subprocess.run", version)
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", run)
+        "verifier.llm.codex.runtime._run_codex_process", run)
     config = canary.runtime_config()
     result = canary.run_canary(
         tmp_path / "canary",

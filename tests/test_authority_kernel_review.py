@@ -27,9 +27,9 @@ from verifier.llm.agents import (
 from verifier.llm.authority_backend import (
     AuthorityBackendUnavailable,
     authority_compilation_backend,
-    validate_authority_stream,
 )
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.policy import validate_no_tools_stream
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import FixtureBackend, RoleError
 
 
@@ -383,4 +383,4 @@ def test_authority_stream_requires_one_ordered_turn(events):
     }
     raw = "\n".join(json.dumps(mapping[name]) for name in events)
     with pytest.raises(AuthorityBackendUnavailable):
-        validate_authority_stream(raw)
+        validate_no_tools_stream(raw)

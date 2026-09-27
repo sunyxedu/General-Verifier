@@ -26,30 +26,22 @@ be a hard boundary.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import os
-import threading
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
-from ..config import max_concurrent_seats
 from . import prompts
-from .model_spans import (
-    role_attempt, role_span, seat_acquired, seat_released,
-    seat_wait_started, submit_with_context,
-)
+from .model_spans import submit_with_context
 from .policy import NoToolsSession, ToolPolicy
-from .runtime import RuntimeCapabilities, capabilities_of
-from .schema import RoleError, SeatTimeout, validate, field_name, optional_key
+from .receipts import seat_call_receipt
+from .retry import Backoff, RetryRule, retry_transient_async
+from .runtime import RuntimeCapabilities
+from .schema import RoleError, validate, field_name, optional_key
+from .seat_runner import SEAT_RUNNER
 from .oracle_execution import (
     ORACLE_EXECUTION_WIRE_SCHEMA,
     lower_oracle_execution_payload,
-)
-from ..engine.source_evidence import (
-    SourceEvidenceView,
-    refresh_source_evidence_variables,
 )
 # The Claude Agent SDK backs the DEFAULT runtime only; alternate runtimes
 # (CodexRuntime) never touch it. Imported lazily so that a seats=codex run
@@ -62,6 +54,11 @@ def _sdk():
 
 class _TransientSDKError(RuntimeError):
     """Infrastructure failure worth backing off and retrying (internal)."""
+
+
+async def _sleep_unless_zero(delay: float) -> None:
+    if delay:
+        await asyncio.sleep(delay)
 
 
 # Raster formats the CLI's Read tool renders as image content blocks. On a
@@ -125,62 +122,6 @@ def to_json_schema(spec: Any) -> Dict[str, Any]:
     raise ValueError(f"unsupported schema spec: {spec!r}")
 
 
-def _seat_limit() -> int:
-    """Process-wide cap on in-flight seat calls, whatever the nesting of
-    trial x claim x obligation parallelism above it. Env
-    GV_MAX_CONCURRENT_SEATS (default 12); <= 0 disables the cap."""
-    return max_concurrent_seats()
-
-
-class _SeatGate:
-    """A bounded semaphore sized lazily from the env, shared by every role
-    in the process; ``slot()`` yields one in-flight permit. Every seat —
-    a direct HTTP call or a launched process — holds one, so the cap bounds
-    them all together; a seat whose process waits for the envelope's
-    memory gives its permit back while it waits (resource_share
-    hold_permit_while_waiting), so seats that need no memory of their own
-    never queue behind seats that are waiting for memory."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._sem: Optional[threading.BoundedSemaphore] = None
-        self._size = 0
-
-    def _current(self) -> Optional[threading.BoundedSemaphore]:
-        limit = _seat_limit()
-        if limit <= 0:
-            return None
-        with self._lock:
-            if self._sem is None or self._size != limit:
-                self._sem = threading.BoundedSemaphore(limit)
-                self._size = limit
-            return self._sem
-
-    @contextlib.contextmanager
-    def slot(self):
-        sem = self._current()
-        if sem is None:
-            yield
-            return
-        from ..execution.resource_share import hold_permit_while_waiting
-        sem.acquire()
-        try:
-            with hold_permit_while_waiting(sem.release, sem.acquire):
-                yield
-        finally:
-            sem.release()
-
-
-SEAT_GATE = _SeatGate()
-
-
-class SeatResourceKilled(RoleError):
-    """A seat's process was killed by a signal the verifier did not send —
-    in a small container, the kernel's out-of-memory killer. The answer was
-    never malformed, so the role's retry carries no feedback to the model;
-    its launch waits for room like any other."""
-
-
 @dataclass
 class AgentRole:
     """A verifier role: generic prompt + output contract + permitted palette."""
@@ -204,167 +145,9 @@ class AgentRole:
         return self.template.format(**variables)
 
     def call(self, backend, variables: Dict[str, Any]) -> Dict[str, Any]:
-        """Two attempts (schema error fed back once), then RoleError."""
-        last_error: Optional[RoleError] = None
-        retry_feedback = ""
-        oracle_catalog_force_baseline = False
-        # Start before acquiring SEAT_GATE: queueing is part of end-to-end
-        # role latency, while each schema retry remains separately visible.
-        with role_span(self.name):
-            for attempt_index in range(1, 3):
-                try:
-                    with role_attempt(attempt_index):
-                        wait_started = seat_wait_started()
-                        with SEAT_GATE.slot():
-                            acquired = seat_acquired(wait_started)
-                            try:
-                                # Bind after queueing: a view captured before
-                                # the seat gate could go stale while waiting
-                                # and waste a complete paid backend call.
-                                attempt_variables = dict(variables)
-                                source_view = attempt_variables.get(
-                                    "_source_evidence_view")
-                                mixed_ledger_path = attempt_variables.get(
-                                    "_mixed_ledger_path")
-                                runtime = capabilities_of(backend)
-                                compact_source_allowed = None
-                                if type(source_view) is SourceEvidenceView:
-                                    try:
-                                        compact_source_allowed = \
-                                            runtime.allows_compact_source_evidence(
-                                                self.name,
-                                                attempt_variables,
-                                            )
-                                    except Exception:
-                                        # An absent or faulty optional
-                                        # capability cannot change the
-                                        # established evidence transport.
-                                        compact_source_allowed = None
-                                valid_mixed_path = False
-                                if (type(source_view) is SourceEvidenceView
-                                        and isinstance(
-                                            mixed_ledger_path, str)
-                                        and os.path.isabs(mixed_ledger_path)):
-                                    try:
-                                        valid_mixed_path = (
-                                            mixed_ledger_path
-                                            == os.path.abspath(
-                                                source_view._log.path))
-                                    except (AttributeError, OSError,
-                                            TypeError, ValueError):
-                                        valid_mixed_path = False
-                                if (compact_source_allowed is False
-                                        and valid_mixed_path):
-                                    # Some runtimes mutate filesystem metadata
-                                    # merely by reading a directory. Respect
-                                    # an explicit opt-out before paying for a
-                                    # call whose immutable-view postcheck could
-                                    # therefore never succeed.
-                                    attempt_variables["ledger_path"] = \
-                                        mixed_ledger_path
-                                    attempt_variables.pop(
-                                        "_source_evidence_view", None)
-                                else:
-                                    attempt_variables = \
-                                        refresh_source_evidence_variables(
-                                            variables)
-                                catalog_snapshot = None
-                                if self.name == "oracles":
-                                    from ..execution.adapters import \
-                                        OracleCatalogView
-                                    catalog_view = attempt_variables.get(
-                                        "adapter_catalog")
-                                    if type(catalog_view) is OracleCatalogView:
-                                        try:
-                                            permits_lazy_catalog = \
-                                                runtime.allows_lazy_oracle_catalog(
-                                                    self.name,
-                                                    attempt_variables,
-                                                ) is True
-                                        except Exception:
-                                            permits_lazy_catalog = False
-                                        if (oracle_catalog_force_baseline
-                                                or not permits_lazy_catalog):
-                                            attempt_variables = dict(
-                                                attempt_variables)
-                                            attempt_variables["adapter_catalog"] = \
-                                                catalog_view.fallback_catalog()
-                                        else:
-                                            catalog_snapshot = \
-                                                catalog_view.snapshot()
-                                            if catalog_snapshot is None:
-                                                oracle_catalog_force_baseline = \
-                                                    True
-                                                attempt_variables = dict(
-                                                    attempt_variables)
-                                                attempt_variables[
-                                                    "adapter_catalog"] = \
-                                                    catalog_view.fallback_catalog()
-                                source_view = attempt_variables.get(
-                                    "_source_evidence_view")
-                                if (type(source_view) is SourceEvidenceView
-                                        and not source_view.revalidate()):
-                                    # The optimization is optional. A race in
-                                    # publication must expose the original
-                                    # full ledger, not consume a model retry.
-                                    attempt_variables = dict(attempt_variables)
-                                    attempt_variables["ledger_path"] = \
-                                        attempt_variables["_mixed_ledger_path"]
-                                    attempt_variables.pop(
-                                        "_source_evidence_view", None)
-                                    source_view = None
-                                catalog_changed = False
-                                try:
-                                    prompt = (self.render(attempt_variables)
-                                              + retry_feedback)
-                                    payload = backend.complete(
-                                        self.name, prompt, attempt_variables)
-                                finally:
-                                    if catalog_snapshot is not None:
-                                        catalog_changed = not \
-                                            catalog_snapshot.revalidate()
-                                        catalog_snapshot.close()
-                                        if catalog_changed:
-                                            oracle_catalog_force_baseline = True
-                                if catalog_changed:
-                                    raise RoleError(
-                                        "oracles: adapter catalog changed "
-                                        "during audit")
-                            finally:
-                                seat_released(acquired)
-                        if (type(source_view) is SourceEvidenceView
-                                and not source_view.revalidate()):
-                            raise RoleError(
-                                f"{self.name}: source evidence changed during audit")
-                        use_wire = (
-                            self.wire_schema is not None
-                            and capabilities_of(
-                                backend).uses_role_wire_schema is True
-                        )
-                        if use_wire:
-                            validate(self.wire_schema, payload)
-                            if self.wire_lower is None:
-                                raise RoleError(
-                                    f"{self.name}: wire schema has no lowerer",
-                                )
-                            payload = self.wire_lower(payload)
-                        validate(self.schema, payload)
-                    return payload
-                except SeatTimeout:
-                    # a spent time budget is not something the retry's
-                    # feedback can fix: rerunning the same prompt spends it
-                    # again (a 30-minute executor timeout became an hour)
-                    raise
-                except SeatResourceKilled as err:
-                    # retried as it was asked: "fix it" would send the model
-                    # looking for a fault in an answer it never gave
-                    last_error = err
-                except RoleError as err:
-                    last_error = err
-                    retry_feedback = (
-                        f"\n\n[previous attempt failed; fix it and retry] {err}"
-                    )
-            raise RoleError(f"{self.name}: failed twice: {last_error}")
+        """Two attempts (schema error fed back once), then RoleError; the
+        seat chain (``seat_runner``) runs each on ``backend``."""
+        return SEAT_RUNNER.call(self, backend, variables)
 
 
 class ClaudeCodeRuntime(RuntimeCapabilities):
@@ -399,6 +182,9 @@ class ClaudeCodeRuntime(RuntimeCapabilities):
         # the tool palette is a hard boundary, but the SDK does not report
         # a session's events for a stream audit
         return policy.no_tools and not policy.stream_audit
+
+    def reuse_identity(self) -> Dict[str, Any]:
+        return {"model": self.model, "permission_mode": self.permission_mode}
 
     def no_tools_runtime(self, roles: Dict[str, AgentRole],
                          session: NoToolsSession) -> "ClaudeCodeRuntime":
@@ -435,8 +221,9 @@ class ClaudeCodeRuntime(RuntimeCapabilities):
             raise RoleError(f"unknown agent role: {role_name}")
         started = time.time()
         attempts: List[Dict[str, Any]] = []   # this call's SDK attempts only
-        error: Optional[str] = None
-        try:
+        with seat_call_receipt(
+                self.cwd, lambda error: self._receipt(
+                    role, started, attempts, error, variables)):
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
@@ -447,21 +234,13 @@ class ClaudeCodeRuntime(RuntimeCapabilities):
                 return submit_with_context(
                     pool, asyncio.run,
                     self.run(role, prompt, attempts)).result()
-        except Exception as err:  # noqa: BLE001 - re-raised after the receipt
-            error = str(err)[:300]
-            raise
-        finally:
-            self._receipt(role, started, attempts, error, variables)
 
     def _receipt(self, role: AgentRole, started: float,
                  attempts: List[Dict[str, Any]],
-                 error: Optional[str], variables: Dict[str, Any]) -> None:
-        """One JSONL row per seat call in <cwd>/role_calls.jsonl: role,
-        wall time, turns and usage of every SDK attempt. Pure telemetry
-        for latency/cost breakdowns; never read by any seat."""
-        if not self.cwd:
-            return
-        row = {
+                 error: Optional[str], variables: Dict[str, Any]) -> Dict[str, Any]:
+        """The receipt row of one seat call: role, wall time, turns and
+        usage of every SDK attempt."""
+        return {
             "role": role.name,
             "started": started,
             "finished": time.time(),
@@ -475,12 +254,6 @@ class ClaudeCodeRuntime(RuntimeCapabilities):
             "claim_text": str(variables.get("claim_text", ""))[:120],
             "obligation_text": str(variables.get("obligation_text", ""))[:160],
         }
-        try:
-            with open(os.path.join(self.cwd, "role_calls.jsonl"), "a",
-                      encoding="utf-8") as f:
-                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
-        except OSError:
-            pass
 
     # statuses worth waiting out (rate limit / overload / gateway); the CLI
     # sometimes reports these only as the opaque "error result: success"
@@ -497,15 +270,21 @@ class ClaudeCodeRuntime(RuntimeCapabilities):
         retry exists for GENERATION failures); infrastructure failures back
         off and retry here, and only then surface as RoleError.
         """
-        last: Optional[str] = None
-        for delay in self.transient_delays:
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                return await self._attempt(role, prompt, attempts)
-            except _TransientSDKError as err:
-                last = str(err)
-        raise RoleError(f"{role.name}: transient sdk failure persisted: {last}")
+        delays = tuple(self.transient_delays)
+
+        def exhausted(error: BaseException) -> RoleError:
+            return RoleError(
+                f"{role.name}: transient sdk failure persisted: {error}")
+
+        if not delays:
+            raise RoleError(f"{role.name}: transient sdk failure persisted: None")
+        # each delay is waited before its attempt, a zero one not at all
+        await _sleep_unless_zero(delays[0])
+        return await retry_transient_async(
+            lambda: self._attempt(role, prompt, attempts),
+            (RetryRule((_TransientSDKError,), Backoff(delays[1:]),
+                       exhausted=exhausted),),
+            sleep=_sleep_unless_zero)
 
     async def _attempt(self, role: AgentRole, prompt: str,
                        attempts: Optional[List[Dict[str, Any]]] = None

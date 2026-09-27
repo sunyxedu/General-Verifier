@@ -6,7 +6,8 @@ import pytest
 
 from verifier.llm.agents import AgentRole
 from verifier.llm.authority_backend import authority_compilation_backend
-from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.codex.usage import codex_usage_ledger
 
 
 @pytest.mark.skipif(os.environ.get("GV_TEST_LIVE_CODEX") != "1",

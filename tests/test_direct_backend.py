@@ -10,6 +10,7 @@ from verifier.llm import direct_backend as db
 from verifier.llm import endpoints
 from verifier.llm.agents import ALL_AGENT_ROLES, AgentRole
 from verifier.llm.schema import FixtureBackend, RoleError
+from verifier.llm.seat_runner import RoutingRuntime
 
 
 class FakeTransport:
@@ -34,7 +35,7 @@ def test_tool_free_roles_route_direct_and_others_stay_on_the_agent(tmp_path):
     direct = db.DirectRuntime(transport, cwd=str(tmp_path))
     agent = FixtureBackend({"discharge": {"outcome": "holds"}})
     agent.roles = dict(ALL_AGENT_ROLES)
-    routing = db.RoutingRuntime(direct, agent, db.DEFAULT_DIRECT_ROLES)
+    routing = RoutingRuntime(direct, agent, db.DEFAULT_DIRECT_ROLES)
 
     assert routing.routes_direct("screener") and not routing.routes_direct("discharge")
     assert routing.complete("screener", "p", {}) == {
@@ -180,7 +181,7 @@ def test_build_backend_wraps_an_injected_agent_backend(monkeypatch):
     codex_like.roles = dict(ALL_AGENT_ROLES)
     backend = db.build_backend(dict(ALL_AGENT_ROLES), cwd=None, model="m",
                                environ=env, agent=codex_like)
-    assert isinstance(backend, db.RoutingRuntime) and backend.agent is codex_like
+    assert isinstance(backend, RoutingRuntime) and backend.agent is codex_like
     assert backend.routes_direct("critic") and not backend.routes_direct("discharge")
     plain = db.build_backend(dict(ALL_AGENT_ROLES), cwd=None, model="m",
                              environ={"GV_DIRECT_SEATS": "off"}, agent=codex_like)
@@ -265,7 +266,7 @@ def test_authority_compilation_runs_on_the_direct_transport_of_a_routing_backend
     transport = FakeTransport([])
     direct = db.DirectRuntime(transport, cwd=str(tmp_path))
     agent = FixtureBackend({}); agent.roles = dict(ALL_AGENT_ROLES)
-    routing = db.RoutingRuntime(direct, agent, db.DEFAULT_DIRECT_ROLES)
+    routing = RoutingRuntime(direct, agent, db.DEFAULT_DIRECT_ROLES)
     with authority_compilation_backend(routing, ALL_AGENT_ROLES["obligations"],
                                        ALL_AGENT_ROLES["critic"]) as session:
         assert isinstance(session.backend, db.DirectRuntime)

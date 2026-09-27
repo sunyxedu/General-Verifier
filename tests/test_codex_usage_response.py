@@ -8,12 +8,12 @@ import pytest
 from experiments.terminal_bench.analyze_model_spans import analyze
 from verifier.llm.agents import AgentRole
 from verifier.llm.authority_backend import (
-    AuthorityBackendUnavailable, _DISABLED_CODE_MODE_NOTICE, authority_session,
+    AuthorityBackendUnavailable, authority_session,
 )
-from verifier.llm.codex_backend import (
-    CodexRuntime, _attempt_usage, _completed_response_without_usage,
-    codex_usage_ledger,
-)
+from verifier.llm.codex.policy import DISABLED_CODE_MODE_NOTICE
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.codex.usage import _attempt_usage, codex_usage_ledger
+from verifier.llm.codex.stream import _completed_response_without_usage
 from verifier.llm.model_spans import model_scope
 from verifier.llm.schema import RoleError
 
@@ -164,7 +164,7 @@ def setup_call(tmp_path, monkeypatch, stream, file_text='{"ok": true}', *, autho
             path.write_text(file_text)
         return SimpleNamespace(returncode=0, stdout=stream, stderr="")
 
-    monkeypatch.setattr("verifier.llm.codex_backend._run_codex_process", run)
+    monkeypatch.setattr("verifier.llm.codex.runtime._run_codex_process", run)
     return role, backend, calls
 
 
@@ -370,7 +370,7 @@ def test_authority_capability_policy_is_independent_of_billing_fallback(tmp_path
         rows.insert(2, {"type": "item.completed", "item": {"id": "cmd", "type": "command_execution"}})
     if startup_notice:
         rows.insert(1, {"type": "item.completed", "item": {
-            "id": "notice", "type": "error", "message": _DISABLED_CODE_MODE_NOTICE}})
+            "id": "notice", "type": "error", "message": DISABLED_CODE_MODE_NOTICE}})
     _, backend, _ = setup_call(tmp_path, monkeypatch, encoded(rows), authority=True)
     ledger = tmp_path / "usage.jsonl"
     with codex_usage_ledger(str(ledger), {str(tmp_path): {}}):
@@ -460,7 +460,7 @@ def test_recovery_preserves_a_valid_negative_role_response(tmp_path, monkeypatch
 @pytest.mark.parametrize("change", ["duplicate", "duplicate_new_id", "missing_id", "changed_message"])
 def test_authority_recovery_accepts_only_one_exact_identified_startup_notice(tmp_path, monkeypatch, change):
     rows = events()
-    item = {"id": "notice", "type": "error", "message": _DISABLED_CODE_MODE_NOTICE}
+    item = {"id": "notice", "type": "error", "message": DISABLED_CODE_MODE_NOTICE}
     if change == "missing_id":
         item.pop("id")
     elif change == "changed_message":

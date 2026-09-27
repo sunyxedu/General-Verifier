@@ -21,24 +21,22 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import replace
 from functools import partial
-from typing import Any, Dict, Iterator, Mapping
+from typing import Any, Iterator, Mapping
 
 from ..engine.typed_judger_packet import (
     TYPED_JUDGER_PACKET_PROTOCOL,
     TypedAdapterJudgerPacket,
 )
-from .authority_backend import (
-    _DISABLED_CODE_MODE_NOTICE,
-    AUTHORITY_POLICY,
-    validate_authority_stream,
-)
-from .codex_backend import (
-    _completed_response_without_usage,
-    _typed_judger_attempt_scope,
+from .authority_backend import AUTHORITY_POLICY
+from .codex.policy import (
+    DISABLED_CODE_MODE_NOTICE,
     no_tools_policy_args,
+    validate_no_tools_stream,
 )
+from .codex.stream import _completed_response_without_usage
+from .codex.usage import _typed_judger_attempt_scope
 from .policy import NoToolsSession
-from .runtime import RuntimeCapabilities, capabilities_of
+from .runtime import RuntimeDecorator, capabilities_of
 from .schema import AuthorityBackendUnavailable, RoleError
 
 
@@ -106,7 +104,7 @@ TYPED_JUDGER_POLICY_IDENTITY = _typed_judger_policy_identity()
 def validate_typed_judger_stream(stdout: str) -> str:
     """Return the final message of one fresh tool-free, complete turn."""
     try:
-        validate_authority_stream(stdout)
+        validate_no_tools_stream(stdout)
     except (AuthorityBackendUnavailable, ValueError, TypeError,
             UnicodeError, RecursionError, OverflowError) as error:
         raise TypedJudgerTransportError(
@@ -119,7 +117,7 @@ def validate_typed_judger_stream(stdout: str) -> str:
     # message is the role response and must also equal the CLI output file.
     response = _completed_response_without_usage(
         stdout,
-        permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE,
+        permitted_startup_notice=DISABLED_CODE_MODE_NOTICE,
         allow_message_sequence=True,
     )
     if response is None:
@@ -153,7 +151,7 @@ def typed_judger_session(scratch) -> NoToolsSession:
         bound_response=validate_typed_judger_stream,
         recover_response=partial(
             _completed_response_without_usage,
-            permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE,
+            permitted_startup_notice=DISABLED_CODE_MODE_NOTICE,
             allow_message_sequence=True),
         instruction_identity=_typed_judger_instruction_identity,
         # The ordinary prefetch object, if enabled independently, must not
@@ -161,7 +159,7 @@ def typed_judger_session(scratch) -> NoToolsSession:
         evidence_prefetch=False)
 
 
-class TypedJudgerSeat(RuntimeCapabilities):
+class TypedJudgerSeat(RuntimeDecorator):
     """The Judger seat of one typed-packet call: packet admission in front
     of a fresh no-tools session of the ordinary runtime. Its only evidence
     attachment is the typed packet."""
@@ -172,20 +170,8 @@ class TypedJudgerSeat(RuntimeCapabilities):
             runtime).uses_role_wire_schema
 
     @property
-    def roles(self) -> Dict[str, Any]:
-        return self.runtime.roles
-
-    @property
-    def runtime_instruction_identity(self) -> str:
-        return self.runtime.runtime_instruction_identity
-
-    @property
-    def run_options(self):
-        return capabilities_of(self.runtime).run_options
-
-    def allows_compact_source_evidence(self, role_name, variables):
-        return capabilities_of(self.runtime).allows_compact_source_evidence(
-            role_name, variables)
+    def seat_of_record(self) -> Any:
+        return self.runtime
 
     def complete(self, role_name: str, prompt: str,
                  variables: Mapping[str, Any]) -> Any:
@@ -217,7 +203,7 @@ class TypedJudgerSeat(RuntimeCapabilities):
         try:
             with _typed_judger_attempt_scope(
                     TYPED_JUDGER_PACKET_PROTOCOL, packet_sha256):
-                return self.runtime.complete(
+                return super().complete(
                     role_name, prompt + _TYPED_JUDGER_NOTE + body,
                     call_variables)
         except OSError as error:

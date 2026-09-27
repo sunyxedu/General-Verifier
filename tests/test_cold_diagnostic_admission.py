@@ -16,7 +16,7 @@ from test_replay_prepared_contracts import (
 )
 from verifier import offline
 from verifier.core.model import content_hash
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 
 
 def _feature(*, verdict="verified", status="verified", reason="first wording"):
@@ -166,7 +166,7 @@ def _recorded_replay(tmp_path, monkeypatch):
     executors = []
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.subprocess.run",
+        "verifier.llm.codex.runtime.subprocess.run",
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0, stdout="codex-cli 0.153.4"),
     )
@@ -192,7 +192,7 @@ def _recorded_replay(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", process)
+        "verifier.llm.codex.runtime._run_codex_process", process)
     factory = _service_factory(
         lambda state: CodexRuntime(
             cwd=str(state), model="gpt-5.6-luna", effort="medium",

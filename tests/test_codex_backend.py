@@ -16,13 +16,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from verifier.llm.codex_backend import (
-    CodexRuntime,
-    _run_codex_process,
-    codex_usage_ledger,
-    extract_json,
-    service_tier_cli_args,
-)
+from verifier.llm.codex.runtime import CodexRuntime
+
+from verifier.llm.codex.process import _run_codex_process
+
+from verifier.llm.codex.usage import codex_usage_ledger
+
+from verifier.llm.codex.stream import extract_json
+
+from verifier.llm.codex.service_tier import service_tier_cli_args
 from verifier.llm.schema import RoleError
 
 
@@ -163,7 +165,7 @@ def test_codex_runner_cleans_group_when_communicate_is_interrupted(
         return proc
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.subprocess.Popen", interrupted_popen)
+        "verifier.llm.codex.process.subprocess.Popen", interrupted_popen)
     pgid = None
     try:
         with open(os.devnull) as devnull:
@@ -235,7 +237,7 @@ def test_failed_process_cannot_return_a_valid_seat_answer(tmp_path, monkeypatch)
                                stdout='{"type":"thread.started","thread_id":"t1"}\n')
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fail_after_output)
+        "verifier.llm.codex.runtime._run_codex_process", fail_after_output)
     with pytest.raises(RoleError, match="codex exec failed"):
         backend.complete("critic", "prompt", {})
 
@@ -256,8 +258,8 @@ def test_retry_cannot_reuse_an_earlier_attempts_output(tmp_path, monkeypatch):
         return SimpleNamespace(returncode=0, stderr="", stdout="")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", retry_without_output)
-    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _: None)
+        "verifier.llm.codex.runtime._run_codex_process", retry_without_output)
+    monkeypatch.setattr("verifier.llm.codex.runtime.time.sleep", lambda _: None)
     with pytest.raises(RoleError, match="produced no output"):
         backend.complete("critic", "prompt", {})
     assert len(attempts) == 2
@@ -283,9 +285,9 @@ def test_unknown_or_config_no_thread_failure_does_not_backoff(
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", config_failure)
+        "verifier.llm.codex.runtime._run_codex_process", config_failure)
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.time.sleep", sleeps.append)
+        "verifier.llm.codex.runtime.time.sleep", sleeps.append)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-config"}},
     ):
@@ -322,9 +324,9 @@ def test_explicit_no_thread_provider_failure_retries(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process",
+        "verifier.llm.codex.runtime._run_codex_process",
         transient_then_success)
-    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _: None)
+    monkeypatch.setattr("verifier.llm.codex.runtime.time.sleep", lambda _: None)
 
     assert backend.complete("critic", "prompt", {}) == {"ok": True}
     assert len(calls) == 2
@@ -347,7 +349,7 @@ def test_auth_failure_saying_try_again_does_not_retry(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", auth_failure)
+        "verifier.llm.codex.runtime._run_codex_process", auth_failure)
     with pytest.raises(RoleError, match="codex exec failed"):
         backend.complete("critic", "prompt", {})
 
@@ -392,7 +394,7 @@ def test_usage_ledger_records_exact_repeated_seat_calls(
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     context = {
         "job": "rec-codex-terra",
         "task": "task-a",
@@ -465,7 +467,7 @@ def test_oracle_gets_compile_boundary_instead_of_execution_inspection(
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     assert backend.complete("oracles", "prompt", {}) == {"ok": True}
     assert backend.complete("discharge", "prompt", {}) == {"ok": True}
 
@@ -535,7 +537,7 @@ def test_usage_ledger_counts_schema_failed_call_once(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-bad-json"}},
     ):
@@ -607,7 +609,7 @@ def test_usage_ledger_rejects_missing_or_partial_usage(
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-a"}},
     ):
@@ -657,8 +659,8 @@ def test_usage_ledger_records_internal_provider_retry(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
-    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _: None)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
+    monkeypatch.setattr("verifier.llm.codex.runtime.time.sleep", lambda _: None)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-retry"}},
     ):
@@ -693,9 +695,9 @@ def test_usage_ledger_records_exhausted_provider_retry(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
-    monkeypatch.setattr("verifier.llm.codex_backend.TRANSIENT_RETRIES", 1)
-    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _: None)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
+    monkeypatch.setattr("verifier.llm.codex.failures.TRANSIENT_RETRIES", 1)
+    monkeypatch.setattr("verifier.llm.codex.runtime.time.sleep", lambda _: None)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-exhausted"}},
     ):
@@ -725,7 +727,7 @@ def test_usage_ledger_records_nonzero_exit_without_fake_tokens(
         )
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-nonzero"}},
     ):
@@ -756,7 +758,7 @@ def test_usage_ledger_timeout_never_trusts_partial_terminal_usage(
         raise error
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-timeout"}},
     ):
@@ -781,7 +783,7 @@ def test_usage_ledger_distinguishes_launch_failure(tmp_path, monkeypatch):
         raise FileNotFoundError("sensitive executable path")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-launch"}},
     ):
@@ -810,7 +812,7 @@ def test_usage_ledger_records_started_process_interruption(
         raise error
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-interrupt"}},
     ):
@@ -841,9 +843,9 @@ def test_usage_ledger_records_output_processing_interruption(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     monkeypatch.setattr(
-        "verifier.llm.codex_backend.extract_json", interrupt_extract)
+        "verifier.llm.codex.attempts.extract_json", interrupt_extract)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-postprocess"}},
     ):
@@ -888,7 +890,7 @@ def test_capability_hooks_force_json_and_validate_before_return(
             returncode=0, stderr="", stdout=_complete_usage_stream())
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with pytest.raises(RoleError, match="stream policy rejected"):
         backend.complete("critic", "prompt", {})
 
@@ -916,7 +918,7 @@ def test_stream_policy_failure_has_one_output_error_attempt(
             returncode=0, stderr="", stdout=_complete_usage_stream())
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(tmp_path): {"trial": "trial-policy"}},
     ):
@@ -1117,7 +1119,7 @@ def test_offline_execution_keeps_state_cwd_but_only_work_is_writable(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     assert backend.complete(
         "critic", "return ok", {"world_mode": "captured"},
     ) == {"ok": True}
@@ -1196,7 +1198,7 @@ def test_world_image_bytes_are_shared_by_discharge_and_judger(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     common = _image_variables(
         world, manifest, reference="decide /app/board.png exactly")
     backend.complete("discharge", "executor prompt", common)
@@ -1316,7 +1318,8 @@ def test_a_long_instruction_travels_through_stdin(tmp_path, monkeypatch):
     """A prompt longer than one command-line argument may hold is fed to
     codex on stdin (prompt `-`), so a large authoritative task context
     never dies of "Argument list too long"; a short one stays positional."""
-    from verifier.llm import codex_backend as cb
+    from verifier.llm.codex import runtime as cb
+    from verifier.llm.codex.command import ARGV_INSTRUCTION_LIMIT
     role = SimpleNamespace(system="", schema={"ok": bool})
     backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path),
                            model="gpt-5.6-luna")
@@ -1329,7 +1332,7 @@ def test_a_long_instruction_travels_through_stdin(tmp_path, monkeypatch):
         return SimpleNamespace(returncode=0, stderr="", stdout="")
 
     monkeypatch.setattr(cb, "_run_codex_process", fake_run)
-    long_prompt = "x" * (cb.ARGV_INSTRUCTION_LIMIT + 10)
+    long_prompt = "x" * (ARGV_INSTRUCTION_LIMIT + 10)
     assert backend.complete("critic", long_prompt, {}) == {"ok": True}
     cmd, fed = seen[-1]
     assert cmd[-2:] == ["--", "-"]

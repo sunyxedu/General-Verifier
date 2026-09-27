@@ -375,7 +375,7 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         from .llm.endpoints.presets import default_model
         model = default_model("codex")
     if seats == "codex":
-        from .llm.codex_service import normalize_service_tier
+        from .llm.codex.service_tier import normalize_service_tier
         resolved_service_tier = normalize_service_tier(service_tier)
     else:
         if service_tier not in (None, "standard"):

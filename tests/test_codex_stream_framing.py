@@ -5,12 +5,9 @@ import json
 
 import pytest
 
-from verifier.llm.codex_backend import (
-    _attempt_usage,
-    _parse_exec_accounting,
-    _parse_exec_telemetry,
-    _usage_event_type_or_full_parse,
-)
+from verifier.llm.codex.usage import _attempt_usage
+
+from verifier.llm.codex.stream import _parse_exec_accounting, _parse_exec_telemetry, _usage_event_type_or_full_parse
 from verifier.llm.schema import RoleError
 
 

@@ -192,7 +192,7 @@ def build_online_codex_backend(state_dir: str, model: Optional[str],
                                seat_search: bool):
     """The MCP server's Codex seats: the Codex CLI for tool-using roles,
     with the tool-free roles on a direct model call when configured."""
-    from ..llm.codex_backend import CodexRuntime
+    from ..llm.codex.runtime import CodexRuntime
     from ..llm.direct_backend import build_backend
     codex = CodexRuntime(cwd=state_dir, model=model, effort=effort,
                          service_tier=service_tier, seat_search=seat_search)
@@ -207,7 +207,7 @@ def build_offline_codex_backend(state_dir: str, model: Optional[str],
                                 restricted_judger_cwd: Optional[str]):
     """An offline scoring run's Codex seats, bound to the run's resolved
     config fields (effort, service tier, evidence presentation)."""
-    from ..llm.codex_backend import CodexRuntime
+    from ..llm.codex.runtime import CodexRuntime
     return CodexRuntime(cwd=state_dir, model=model,
                         effort=fields["effort"],
                         service_tier=fields["service_tier"],

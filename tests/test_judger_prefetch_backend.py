@@ -11,7 +11,8 @@ from verifier.core.events import EventLog
 from verifier.engine.judger_prefetch import build_judger_evidence_packet
 from verifier.engine.method_cache import _backend_identity
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm import codex_backend as cb
+from verifier.llm.codex import command as codex_command
+from verifier.llm.codex import runtime as cb
 from verifier.llm.agents import AgentRole
 
 
@@ -214,7 +215,7 @@ def test_captured_and_discharge_images_fall_back_to_captured_only(
 
     assert calls[0]["images"] == [captured_raw]
     assert packet.render() not in calls[0]["instruction"]
-    assert cb._JUDGER_PREFETCH_NOTE not in calls[0]["instruction"]
+    assert codex_command._JUDGER_PREFETCH_NOTE not in calls[0]["instruction"]
 
 
 def test_failed_raw_image_transport_is_not_reused_by_role_retry(
@@ -267,10 +268,10 @@ def test_only_judger_receives_exact_packet_without_policy_change(
             "world_mode": world_mode, "basis": "record",
             "_judger_evidence_packet": packet}) == {"ok": True}
     (base, base_kw), (enabled, enabled_kw) = calls
-    assert cb._JUDGER_PREFETCH_NOTE not in base[-1]
+    assert codex_command._JUDGER_PREFETCH_NOTE not in base[-1]
     if role_name == "judger":
         assert packet.render() in enabled[-1]
-        assert cb._JUDGER_PREFETCH_NOTE in enabled[-1]
+        assert codex_command._JUDGER_PREFETCH_NOTE in enabled[-1]
     else:
         assert enabled[-1] == base[-1]
     for command in (base, enabled):
@@ -297,12 +298,12 @@ def test_disabled_identity_unchanged_and_enabled_identity_captured(monkeypatch):
     base = cb.CodexRuntime()
     assert base.judger_prefetch is False
     assert base.runtime_instruction_identity == hashlib.sha256(
-        (cb._ARTIFACT_ADDRESS_NOTE + cb._ORACLE_COMPILE_NOTE).encode()
+        (codex_command._ARTIFACT_ADDRESS_NOTE + codex_command._ORACLE_COMPILE_NOTE).encode()
     ).hexdigest()
     enabled = cb.CodexRuntime(judger_prefetch=True)
     identity = _backend_identity(enabled)
     assert identity != _backend_identity(base)
-    monkeypatch.setattr(cb, "_JUDGER_PREFETCH_NOTE", "changed instructions")
+    monkeypatch.setattr(codex_command, "_JUDGER_PREFETCH_NOTE", "changed instructions")
     assert _backend_identity(enabled) == identity
     assert _backend_identity(cb.CodexRuntime(judger_prefetch=True)) != identity
 
@@ -344,7 +345,7 @@ def test_authority_clone_preserves_captured_profile(tmp_path, monkeypatch, enabl
 
     backend = cb.CodexRuntime(cwd=str(tmp_path), judger_prefetch=enabled)
     identity = backend.runtime_instruction_identity
-    monkeypatch.setattr(cb, "_JUDGER_PREFETCH_NOTE", "later module value")
+    monkeypatch.setattr(codex_command, "_JUDGER_PREFETCH_NOTE", "later module value")
     monkeypatch.setattr(cb.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="codex-cli test"))
     with ab.authority_compilation_backend(
             backend, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT) as session:

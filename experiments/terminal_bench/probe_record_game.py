@@ -36,7 +36,8 @@ from verifier.engine.judger_prefetch import PREFETCH_PROTOCOL
 from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
 from verifier.execution.discharge import AgentDischarger
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.codex.usage import codex_usage_ledger
 from verifier.llm.runtime import capabilities_of
 from verifier.llm.model_spans import span_sidecar_path
 

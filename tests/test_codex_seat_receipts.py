@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import verifier.llm.codex_backend as cb
+import verifier.llm.codex.runtime as cb
 
 
 def rows(tmp_path):

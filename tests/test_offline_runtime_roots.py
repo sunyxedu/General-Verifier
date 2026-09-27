@@ -12,7 +12,7 @@ from verifier.config import (
     offline_runtime_read_roots,
 )
 from verifier.llm.authority_backend import authority_session
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import RoleError
 
 

@@ -34,6 +34,13 @@ class SeatScratchExceeded(SeatTimeout):
     seat was stopped. A budget, like time: not retried with the same prompt."""
 
 
+class SeatResourceKilled(RoleError):
+    """A seat's process was killed by a signal the verifier did not send —
+    in a small container, the kernel's out-of-memory killer. The answer was
+    never malformed, so the role's retry carries no feedback to the model;
+    its launch waits for room like any other."""
+
+
 # Minimal schema validation (no external deps).
 # schema: {"field": type} where type in {str, bool, int, float, list, dict},
 # {"field": [element_spec]} for a list (elements may be any spec, e.g. [str]

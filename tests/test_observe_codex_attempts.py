@@ -678,7 +678,7 @@ def test_actual_profile_never_parses_prompt_tokens_as_options(tmp_path):
 def test_current_backend_and_native_usage_capture_integrate_without_process(
         tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from verifier.llm import codex_backend as current
+    from verifier.llm.codex import runtime as current
 
     state = _state(tmp_path)
     observer_ledger = tmp_path / "observer.jsonl"

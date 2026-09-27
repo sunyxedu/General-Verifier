@@ -12,7 +12,7 @@ from experiments.terminal_bench import probe_record_game as probe
 from test_contract_replay import source_state
 from verifier.core.model import content_hash
 from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 from verifier.llm.oracle_execution import raise_oracle_execution_payload
 
@@ -84,7 +84,7 @@ def _backend_factory(monkeypatch, responses, calls, *, compact_inspection=False,
                                stdout="\n".join(map(json.dumps, stream)),
                                stderr="")
 
-    monkeypatch.setattr("verifier.llm.codex_backend._run_codex_process", run)
+    monkeypatch.setattr("verifier.llm.codex.runtime._run_codex_process", run)
 
     def factory(state):
         return CodexRuntime(cwd=str(state), model="gpt-5.6-luna",

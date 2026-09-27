@@ -8,7 +8,8 @@ from verifier.llm.authority_backend import (
     AuthorityBackendUnavailable,
     authority_session,
 )
-from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.codex.usage import codex_usage_ledger
 
 
 def _stream(*items, message='{"ok": true}'):
@@ -61,7 +62,7 @@ def test_forced_json_falls_back_to_validated_agent_message_without_ledger(
         return SimpleNamespace(returncode=0, stderr="", stdout=_stream())
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
 
     assert backend.complete("obligations", "authority only", {}) == {"ok": True}
     assert "--json" in observed["cmd"]
@@ -84,7 +85,7 @@ def test_valid_output_file_cannot_bypass_stream_gate(tmp_path, monkeypatch):
         }))
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
 
     with pytest.raises(
         AuthorityBackendUnavailable, match="tool or unknown item",
@@ -112,7 +113,7 @@ def test_rejected_stream_is_charged_against_original_usage_context(
         }))
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
         str(usage_path), {str(original): {"trial": "trial-authority"}},
     ):
@@ -146,7 +147,7 @@ def test_authority_command_and_prompt_do_not_enable_or_advertise_web(
         return SimpleNamespace(returncode=0, stderr="", stdout=_stream())
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
 
     assert backend.complete("obligations", "authority only", {}) == {"ok": True}
     command = observed["cmd"]

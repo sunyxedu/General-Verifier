@@ -45,7 +45,7 @@ from verifier.execution.browser import (
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.agents import ClaudeCodeRuntime, AgentRole
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 from verifier.llm.schema import RoleError
 from verifier.app.assembly import build_kernel

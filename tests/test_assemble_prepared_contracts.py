@@ -10,7 +10,7 @@ from verifier.contract_replay import (
     attach_replay_contracts, clone_extracted_inputs, compile_input_digests, load_replay_contracts,
 )
 from verifier.engine.contract_bundle import SealedContractBundle
-from verifier.llm.codex_backend import CodexRuntime
+from verifier.llm.codex.runtime import CodexRuntime
 
 
 def group(tmp_path, monkeypatch):

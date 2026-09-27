@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from verifier.llm.agents import AgentRole, JUDGER_AGENT
-from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
+from verifier.llm.codex.runtime import CodexRuntime
+from verifier.llm.codex.usage import codex_usage_ledger
 from verifier.core.events import EventLog
 from verifier.core.model import Obligation
 from verifier.engine.game import Attempt, BindingGame
@@ -68,7 +69,7 @@ def test_role_span_covers_gate_and_separates_schema_attempts(
         assert records[-2]["record_type"] == "seat_acquired"
         assert not any(r["record_type"] == "role_span_finished" for r in records)
 
-    monkeypatch.setattr("verifier.llm.agents.SEAT_GATE.slot", checked_slot)
+    monkeypatch.setattr("verifier.llm.seat_runner.SEAT_GATE.slot", checked_slot)
     role = AgentRole("critic", "payload={payload}", {"ok": bool})
     with codex_usage_ledger(str(usage), {}):
         with model_scope(
@@ -118,8 +119,8 @@ def test_codex_provider_retries_share_one_call_span(tmp_path, monkeypatch):
             returncode=0, stdout=_usage_stream(), stderr="")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
-    monkeypatch.setattr("verifier.llm.codex_backend.time.sleep", lambda _n: None)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
+    monkeypatch.setattr("verifier.llm.codex.runtime.time.sleep", lambda _n: None)
     with codex_usage_ledger(
             str(usage), {str(tmp_path): {"trial": "t1"}}):
         with model_scope(
@@ -161,7 +162,7 @@ def test_direct_codex_call_is_explicitly_unattributed(tmp_path, monkeypatch):
             returncode=0, stdout=_usage_stream(), stderr="")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
             str(usage), {str(tmp_path): {"trial": "direct"}}):
         assert backend.complete("critic", "opaque prompt", {
@@ -319,7 +320,7 @@ def test_base_exception_closes_role_and_model_call_without_raw_error(
         raise error
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", interrupted)
+        "verifier.llm.codex.runtime._run_codex_process", interrupted)
     with codex_usage_ledger(
             str(usage), {str(tmp_path): {"trial": "interrupt"}}):
         with pytest.raises(KeyboardInterrupt):
@@ -356,7 +357,7 @@ def test_interrupted_scopes_reset_before_following_direct_call(
             returncode=0, stdout=_usage_stream("second"), stderr="")
 
     monkeypatch.setattr(
-        "verifier.llm.codex_backend._run_codex_process", fake_run)
+        "verifier.llm.codex.runtime._run_codex_process", fake_run)
     with codex_usage_ledger(
             str(usage), {str(tmp_path): {"trial": "reset"}}):
         with pytest.raises(KeyboardInterrupt):
