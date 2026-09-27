@@ -359,7 +359,7 @@ def gv_outcome(work: str):
     # the last one committed. `LIMIT 1` returned the FIRST final, which for
     # a solver the verifier talked out of a wrong answer is exactly the
     # refuted one — and a correct run was scored wrong.
-    final_ids, cert_final, cert_verdict = [], None, None
+    cert_final, cert_verdict = None, None
     ev = os.path.join(state, "events.jsonl")
     if os.path.exists(ev):
         for line in open(ev, encoding="utf-8"):
@@ -372,14 +372,10 @@ def gv_outcome(work: str):
             except ValueError:
                 continue
             p = e.get("payload") or {}
-            if e.get("type") == "commit" and p.get("kind") == "final" \
-                    and p.get("claim"):
-                final_ids.append(p["claim"])
-            elif e.get("type") == "certificate":
+            if e.get("type") == "certificate":
                 cert_final, cert_verdict = p.get("final"), p.get("verdict")
-    out["finals"] = len(dict.fromkeys(final_ids))
     out["certificate"] = cert_verdict
-    chosen = cert_final or (final_ids[-1] if final_ids else None)
+    chosen = cert_final
     db_path = os.path.join(state, "claims.sqlite")
     if os.path.exists(db_path):
         db = sqlite3.connect(db_path)
@@ -387,12 +383,16 @@ def gv_outcome(work: str):
         if chosen:
             row = db.execute("SELECT id, text, status FROM claims WHERE id=?",
                              (chosen,)).fetchone()
-        if row is None:     # no ledger: the most recently stored final
+        if row is None:     # no certificate: the most recently stored final
             row = db.execute("SELECT id, text, status FROM claims "
                              "WHERE kind='final' ORDER BY rowid DESC LIMIT 1"
                              ).fetchone()
         if row:
             out["final_id"], out["final_text"], out["verdict"] = row
+        # the ledger's commit events carry no claim id, so the finals the
+        # solver committed are counted where the claims are stored
+        (out["finals"],) = db.execute(
+            "SELECT COUNT(*) FROM claims WHERE kind='final'").fetchone()
         (out["refuted_claims"],) = db.execute(
             "SELECT COUNT(*) FROM claims WHERE status='refuted' "
             "AND kind != 'obligation'").fetchone()
