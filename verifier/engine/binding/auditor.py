@@ -109,7 +109,7 @@ class Auditor:
             # and the shared workspace — a judger that read a cut snapshot
             # as the file itself declared a valid certificate invalid
             "snapshot_per_file_cap": snapshot_per_file_cap(),
-            "workspace_dir": discharger_workspace(self.host.discharger),
+            "workspace_dir": self.host.executor.workspace_dir,
         }
         variables = bind_source_evidence_variables(
             self.host.log,
@@ -357,16 +357,3 @@ class Auditor:
 def snapshot_per_file_cap() -> int:
     from ...execution.discharge import SNAPSHOT_PER_FILE_CAP
     return SNAPSHOT_PER_FILE_CAP
-
-
-def discharger_workspace(discharger) -> str:
-    """The executor's durable workspace, through any routing wrapper."""
-    seen = set()
-    node = discharger
-    while node is not None and id(node) not in seen:
-        seen.add(id(node))
-        value = getattr(node, "workspace_dir", None)
-        if isinstance(value, str) and value:
-            return value
-        node = getattr(node, "inner", None) or getattr(node, "agent", None)
-    return ""

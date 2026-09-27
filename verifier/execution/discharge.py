@@ -17,6 +17,7 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
+from .discharger import Discharger
 from ..config import RunOptions, script_timeout_seconds
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
 from ..llm.runtime import capabilities_of
@@ -184,7 +185,7 @@ def _bounded(text: str, cap: int = SCRIPT_OUTPUT_CAP):
             True)
 
 
-class AgentDischarger:
+class AgentDischarger(Discharger):
     """
     Discharge agent executes the check itself; we snapshot its workdir.
 
@@ -192,6 +193,8 @@ class AgentDischarger:
     """
 
     instrument = "agent:discharge"
+
+    runs_scripts = True
 
     def __init__(self, backend, artifacts: ArtifactStore,
                  role: AgentRole = DISCHARGE_AGENT,

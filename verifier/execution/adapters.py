@@ -55,6 +55,7 @@ from ..core.world import (
     load_world_view,
 )
 from .discharge import DischargeResult
+from .discharger import Discharger
 from .browser import (
     BROWSER_DOCUMENT_POLICY,
     BROWSER_NETWORK_POLICY,
@@ -3880,8 +3881,11 @@ class OracleCatalogView(str):
         return snapshot if recognized else None
 
 
-class AdapterRoutingDischarger:
+class AdapterRoutingDischarger(Discharger):
     """Try a typed adapter, otherwise preserve the existing executor path."""
+
+    runs_scripts = True
+    reuses_adapters = True
 
     def __init__(self, fallback, registry: AdapterRegistry,
                  artifacts: ArtifactStore, log: EventLog,

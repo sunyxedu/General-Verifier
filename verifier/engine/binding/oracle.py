@@ -139,17 +139,15 @@ class MethodSource:
                 return served
         registry = (self.host.memory.registry_summary()
                     if self.host.memory is not None else self.host.registry)
-        catalog = getattr(self.host.discharger, "adapter_catalog", lambda: "[]")()
+        catalog = self.host.executor.adapter_catalog()
         oracle_catalog = catalog
-        catalog_view = getattr(
-            self.host.discharger, "oracle_adapter_catalog", None)
-        if callable(catalog_view):
-            try:
-                candidate = catalog_view(catalog, obligation.required_basis)
-                if isinstance(candidate, str):
-                    oracle_catalog = candidate
-            except Exception:
-                oracle_catalog = catalog
+        try:
+            candidate = self.host.executor.oracle_adapter_catalog(
+                catalog, obligation.required_basis)
+            if isinstance(candidate, str):
+                oracle_catalog = candidate
+        except Exception:
+            oracle_catalog = catalog
         state = os.path.dirname(os.path.abspath(self.host.log.path))
         world_mode, world, manifest = world_evidence_context(
             state, live_world=self.host.live_world)
@@ -183,8 +181,8 @@ class MethodSource:
                 enabled=self.host.run_options.compact_inspection,
             )
             payload = self.host.oracles_role.call(self.host.backend, variables)
-        prepare = getattr(self.host.discharger, "prepare_method", lambda method: method)
-        methods = [prepare(method) for method in payload["methods"]]
+        methods = [self.host.executor.prepare_method(method)
+                   for method in payload["methods"]]
         event = {
             "claim": row["id"],
             "obligation": obligation.id,

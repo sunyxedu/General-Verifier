@@ -271,19 +271,17 @@ class MethodReuse:
             row, obligation, accepted, fresh, key=key, waited=waited)
 
     def execute_cached_method(self, row, obligation, accepted, *, key):
-        adapter_only = getattr(
-            self.host.discharger, "discharge_adapter_only", None)
-        if adapter_only is None:
+        if not self.host.executor.reuses_adapters:
             return None, "discharger has no authenticated adapter-only path"
         method = accepted.method
-        if not getattr(self.host.discharger, "supports_method_reuse",
-                       lambda _method: False)(method):
+        if not self.host.executor.supports_method_reuse(method):
             return None, "adapter requires a fresh independent Judger audit"
         if not self.cacheable_signature(method, {
                 "sufficient": "yes", "faithful": "yes",
                 "degradation": "n/a"}):
             return None, "cached MethodIR no longer meets reuse policy"
-        result, reason = adapter_only(row, obligation, method)
+        result, reason = self.host.executor.discharge_adapter_only(
+            row, obligation, method)
         if result is None:
             return None, reason
         if result.outcome not in (OUTCOME_HOLDS, OUTCOME_REFUTED):
@@ -313,8 +311,7 @@ class MethodReuse:
                 "fresh adapter outcome changed direction: "
                 f"source={accepted.source_outcome}, fresh={result.outcome}"
             )
-        if not getattr(self.host.discharger, "supports_method_reuse",
-                       lambda _method: False)(method):
+        if not self.host.executor.supports_method_reuse(method):
             return None, "adapter requires a fresh independent Judger audit"
         if not self.cacheable_signature(method, {
                 "sufficient": "yes", "faithful": "yes",
@@ -446,8 +443,7 @@ class MethodReuse:
                 return None, "method signature is not reusable (needs a typed " \
                     "world-basis decisive adapter with delivered subjects and " \
                     "a yes/yes/n/a audit)"
-            if not getattr(self.host.discharger, "supports_method_reuse",
-                           lambda _method: False)(method):
+            if not self.host.executor.supports_method_reuse(method):
                 return None, "adapter does not accept method reuse"
             discharge_digest = bound.get("discharge_artifact")
             evidence = self.host.artifacts.get(discharge_digest)
@@ -462,9 +458,8 @@ class MethodReuse:
                 witness_kind=execution.get("witness_kind"),
                 inputs=tuple(execution.get("declared_inputs") or ()),
             )
-            validator = getattr(
-                getattr(self.host.discharger, "registry", None),
-                "validate_evidence", None)
+            validator = getattr(self.host.executor.registry,
+                                "validate_evidence", None)
             if validator is None:
                 return None, "discharger has no evidence validator"
             valid, reason = validator(

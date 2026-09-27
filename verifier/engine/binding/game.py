@@ -76,6 +76,7 @@ from ...llm.model_spans import model_scope
 from ...llm.runtime import capabilities_of
 from ...llm.schema import RoleError
 from ..gates import below_decisive_reason, preflight_defect
+from ...execution.discharger import discharger_of
 from .auditor import Auditor
 from .method_cache import build_method_cache_key
 from .methods import (
@@ -127,6 +128,10 @@ class BindingGame:
         self.artifacts = artifacts
         self.log = log
         self.discharger = discharger
+        # what the game may ask the discharger, declared (the discharger
+        # itself is kept: the typed judger packet admits only the exact
+        # shipped executor types)
+        self.executor = discharger_of(discharger)
         self.oracles_role = oracles_role
         self.judger_role = judger_role
         # the reader of a method in EXECUTABLE FORM (a script the executor
@@ -189,7 +194,7 @@ class BindingGame:
                      or self.typed_adapter_judger_packet)):
             return None
         state = os.path.dirname(os.path.abspath(self.log.path))
-        catalog = getattr(self.discharger, "adapter_catalog", lambda: "[]")()
+        catalog = self.executor.adapter_catalog()
         return build_method_cache_key(
             state_dir=state,
             row=row,
@@ -418,7 +423,7 @@ class BindingGame:
             attempts.append(attempt)
 
             if method.get("script") and self.script_judger_role is not None \
-                    and hasattr(self.discharger, "run_script"):
+                    and self.executor.runs_scripts:
                 # EXECUTABLE FORM: the script runs verbatim (no agent, so
                 # fidelity holds by construction and there is no redo
                 # loop); the script judger signs sufficiency and reads
@@ -897,14 +902,9 @@ class BindingGame:
         with model_scope(
                 stage="discharge", method_attempt=method_attempt,
                 redo=round_no):
-            repair = getattr(self.discharger, "discharge_with_repair", None)
-            if callable(repair):
-                result = repair(
-                    row, obligation, method=method_fb, tag="bound-redo",
-                    previous_artifact=previous_artifact)
-            else:
-                result = self.discharger.discharge(
-                    row, obligation, method=method_fb, tag="bound-redo")
+            result = self.executor.discharge_with_repair(
+                row, obligation, method=method_fb, tag="bound-redo",
+                previous_artifact=previous_artifact)
         attempt.redos[-1]["outcome"] = result.outcome
         attempt.redos[-1]["artifact"] = result.artifact
         return result
