@@ -215,7 +215,7 @@ def test_a_node_wait_does_not_freeze_the_world_epoch(tmp_path):
     gate = Gate()
     store, log, _, kernel = build(tmp_path, gate, live_world=True)
     waiting = threading.Event()
-    real_lock_for = kernel._lock_for
+    real_lock_for = kernel.settler.lock_for
 
     class Announcing:
         def __init__(self, lock):
@@ -231,9 +231,9 @@ def test_a_node_wait_does_not_freeze_the_world_epoch(tmp_path):
 
     def lock_for(table, key):
         lock = real_lock_for(table, key)
-        return Announcing(lock) if table is kernel._node_locks else lock
+        return Announcing(lock) if table is kernel.settler.node_locks else lock
 
-    kernel._lock_for = lock_for
+    kernel.settler.lock_for = lock_for
     first = store.add_claim(Claim(CLAIM_ASSERTION, "first"))
     second = store.add_claim(Claim(CLAIM_ASSERTION, "second"))
     t1 = in_thread(kernel.verify, first)
@@ -319,7 +319,7 @@ def test_the_same_candidate_reuses_its_verdict(tmp_path):
     one = store.add_claim(Claim(CLAIM_FINAL, "the answer is 15"))
     assert kernel.verify(one) == "verified"
     oid = store.obligation_children(one)[0]["id"]
-    assert kernel._settle_one(store.get(one),
+    assert kernel.settler.settle_one(store.get(one),
                               kernel_module.Obligation(one, "the file holds 15",
                                                        "world"))[0] == "holds"
     assert len(gate.calls) == 1

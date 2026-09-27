@@ -298,10 +298,10 @@ def test_seat_failures_are_noted_as_appended(tmp_path):
                                       "prewarm": True})
     log.append("judger_call_failed", {"obligation": "o3"})
     log.replay = None                       # never scanned
-    assert not kernel._seat_failure("o1", since)
-    assert not kernel._seat_failure("o2", since)
-    assert kernel._seat_failure("o3", since)
-    assert not kernel._seat_failure("o3", log.last_seq())
+    assert not kernel.settler.seat_failure("o1", since)
+    assert not kernel.settler.seat_failure("o2", since)
+    assert kernel.settler.seat_failure("o3", since)
+    assert not kernel.settler.seat_failure("o3", log.last_seq())
 
 
 # 8. a draft prewarm's launches queue behind the review's
