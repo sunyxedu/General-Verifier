@@ -9,8 +9,8 @@ import pytest
 
 from verifier.core.events import EventLog
 from verifier.core.model import BASIS_RECORD, Obligation
-from verifier.engine import game as game_module
-from verifier.engine.game import Attempt, BindingGame
+from verifier.engine.binding import auditor as auditor_module
+from verifier.engine.binding.game import Attempt, BindingGame
 from verifier.execution.judger_packets.prefetch import JudgerEvidencePacket
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
@@ -91,7 +91,7 @@ def _judge(tmp_path, backend, *, retries=1, live_world=False):
         discharge_artifact=result.artifact,
         discharge_outcome=result.outcome,
     )
-    verdict = game._judge(
+    verdict = game.auditor.judge(
         obligation, _method(), result, attempt,
         method_attempt=1, independent_judger=True)
     return verdict, attempt, log, artifacts, result
@@ -122,7 +122,7 @@ def test_default_off_preserves_the_original_variables_path(tmp_path, monkeypatch
         raise AssertionError("disabled prefetch must not inspect source files")
 
     monkeypatch.setattr(
-        game_module, "build_judger_evidence_packet", forbidden)
+        auditor_module, "build_judger_evidence_packet", forbidden)
     verdict, attempt, _log, _artifacts, _result = _judge(tmp_path, backend)
 
     assert verdict == YES and attempt.audit == YES
@@ -171,7 +171,7 @@ def test_changed_packet_is_discarded_then_retry_builds_a_fresh_packet(
     attempt = Attempt(_method(), discharge_artifact=result.artifact,
                       discharge_outcome=result.outcome)
 
-    verdict = game._judge(
+    verdict = game.auditor.judge(
         obligation, _method(), result, attempt,
         method_attempt=1, independent_judger=True)
 
@@ -212,7 +212,7 @@ def test_changed_packet_with_no_existing_retry_fails_closed(tmp_path):
     attempt = Attempt(_method(), discharge_artifact=result.artifact,
                       discharge_outcome=result.outcome)
 
-    verdict = game._judge(
+    verdict = game.auditor.judge(
         obligation, _method(), result, attempt,
         method_attempt=1, independent_judger=True)
 
@@ -233,7 +233,7 @@ def test_build_failure_uses_original_path_without_spending_retry(
         return None
 
     monkeypatch.setattr(
-        game_module, "build_judger_evidence_packet", unavailable)
+        auditor_module, "build_judger_evidence_packet", unavailable)
     verdict, _attempt, _log, _artifacts, _result = _judge(tmp_path, backend)
 
     assert verdict == YES and len(calls) == 1
@@ -260,7 +260,7 @@ def test_each_game_level_judger_retry_builds_and_revalidates_fresh_packet(
     tmp_path, monkeypatch,
 ):
     backend = _FailOneLogicalCallBackend(enabled=True)
-    original_build = game_module.build_judger_evidence_packet
+    original_build = auditor_module.build_judger_evidence_packet
     built = []
 
     def build(*args):
@@ -268,7 +268,7 @@ def test_each_game_level_judger_retry_builds_and_revalidates_fresh_packet(
         built.append(packet)
         return packet
 
-    monkeypatch.setattr(game_module, "build_judger_evidence_packet", build)
+    monkeypatch.setattr(auditor_module, "build_judger_evidence_packet", build)
     verdict, attempt, log, _artifacts, _result = _judge(
         tmp_path, backend, retries=1)
 
@@ -331,7 +331,7 @@ def test_only_literal_true_enables_prefetch(tmp_path, truthy, monkeypatch):
         called = True
         return None
 
-    monkeypatch.setattr(game_module, "build_judger_evidence_packet", spy)
+    monkeypatch.setattr(auditor_module, "build_judger_evidence_packet", spy)
     verdict, _attempt, _log, _artifacts, _result = _judge(tmp_path, backend)
     assert verdict == YES and called is False
     assert backend.calls[0]["packet"] is None

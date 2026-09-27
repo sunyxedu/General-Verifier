@@ -34,7 +34,7 @@ from verifier.core.model import (
     Obligation,
     content_hash,
 )
-from verifier.engine.game import Attempt, BindingGame
+from verifier.engine.binding.game import Attempt, BindingGame
 from verifier.execution.adapters import (
     AdapterContext,
     default_adapter_registry,
@@ -326,7 +326,7 @@ def run_probe(
                 claim_id=row["id"], claim_kind=row["kind"],
                 locus="support", obligation_id=obligation.id,
             ):
-                verdict = game._judge(
+                verdict = game.auditor.judge(
                     obligation, method, result, attempt,
                     method_attempt=1, independent_judger=True,
                 )

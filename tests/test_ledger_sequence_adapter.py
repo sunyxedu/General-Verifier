@@ -16,7 +16,7 @@ from verifier.core.model import (
     WITNESS_NONE,
     Obligation,
 )
-from verifier.engine.game import BindingGame
+from verifier.engine.binding.game import BindingGame
 from verifier.execution.judger_packets.typed import (
     TypedAdapterJudgerPacket,
     build_typed_adapter_judger_packet,

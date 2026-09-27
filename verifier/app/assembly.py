@@ -70,7 +70,7 @@ def build_kernel(sc: KernelHost, model, backend=None,
     game and the executor all carry them."""
     from ..llm.agents import SCREENER_AGENT
     from ..execution.discharge import AgentDischarger
-    from ..engine.game import BindingGame
+    from ..engine.binding.game import BindingGame
 
     # The backend resolves roles by name, so the harness-swapped role must
     # go into its registry too, not just into the Kernel.
@@ -109,7 +109,7 @@ def build_kernel(sc: KernelHost, model, backend=None,
     # the fresh Compiler/Critic/Oracle/executor/Judger sequence.
     method_cache = None
     if extensions.method_cache:
-        from ..engine.method_cache import default_accepted_method_cache
+        from ..engine.binding.method_cache import default_accepted_method_cache
         method_cache = default_accepted_method_cache()
     contract_cache = final_contract_cache(extensions)
     extensions.require_consistent()

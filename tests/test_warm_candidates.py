@@ -10,7 +10,7 @@ from verifier import offline
 from verifier.core.store import TRIGGER_LAZY
 from verifier.engine.certificate import CERTIFICATE_SCOPE_FINAL, request_certificate
 from verifier.engine.contract import cache as contract_cache_module
-from verifier.engine import method_cache as method_cache_module
+from verifier.engine.binding import method_cache as method_cache_module
 from verifier.llm.schema import FixtureBackend
 from verifier.app.assembly import build_kernel
 from verifier.mcp_server import Service

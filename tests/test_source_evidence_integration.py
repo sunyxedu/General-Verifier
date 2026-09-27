@@ -6,7 +6,7 @@ from pathlib import Path
 from verifier.core.events import EventLog
 from verifier.core.model import Claim, Obligation, CLAIM_ASSERTION
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
-from verifier.engine.game import BindingGame
+from verifier.engine.binding.game import BindingGame
 from verifier.engine.kernel import Kernel
 from verifier.engine.source_evidence import (
     SourceEvidenceView,

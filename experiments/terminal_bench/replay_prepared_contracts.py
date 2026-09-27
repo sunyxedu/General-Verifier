@@ -29,8 +29,8 @@ from verifier.engine.certificate import request_certificate
 from verifier.engine.contract.bundle import (
     MAX_CONTRACT_BUNDLE_BYTES, ContractBundleIdentity,
 )
-from verifier.engine.game import BindingGame
-from verifier.engine.method_cache import AcceptedMethodCache
+from verifier.engine.binding.game import BindingGame
+from verifier.engine.binding.method_cache import AcceptedMethodCache
 from verifier.llm.codex.usage import codex_usage_ledger
 from verifier.llm.model_spans import span_sidecar_path
 

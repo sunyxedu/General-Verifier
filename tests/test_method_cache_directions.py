@@ -17,8 +17,8 @@ from verifier.core.model import (
     OUTCOME_REFUTED,
     Obligation,
 )
-from verifier.engine.game import BindingGame
-from verifier.engine.method_cache import AcceptedMethod, AcceptedMethodCache
+from verifier.engine.binding.game import BindingGame
+from verifier.engine.binding.method_cache import AcceptedMethod, AcceptedMethodCache
 from verifier.execution.adapters import (
     AdapterRoutingDischarger,
     default_adapter_registry,
@@ -520,7 +520,7 @@ def test_authority_mutation_before_direction_acquire_never_seeds_old_key(
     game, _, log, _ = _game(
         tmp_path, "mutation-opposite", backend, cache, prepare("wrong"))
     row, obligation = _row("opposite"), _obligation("opposite")
-    old_key = game._method_cache_key(row, obligation)
+    old_key = game.method_cache_key(row, obligation)
     original = game.discharger.discharge_adapter_only
 
     def execute_then_mutate(*args, **kwargs):
@@ -534,7 +534,7 @@ def test_authority_mutation_before_direction_acquire_never_seeds_old_key(
     game.discharger.discharge_adapter_only = execute_then_mutate
     assert game.run(row, obligation).outcome == OUTCOME_REFUTED
 
-    assert game._method_cache_key(row, obligation) != old_key
+    assert game.method_cache_key(row, obligation) != old_key
     assert len(cache) == 1
     assert [entry.source_outcome
             for entry in cache.acquire(old_key).entries] == [OUTCOME_HOLDS]
@@ -587,9 +587,9 @@ def test_authority_mutation_during_direction_audit_never_seeds_old_key(
         tmp_path, f"{mutation_stage}-opposite", backend, cache,
         prepare("wrong"))
     row, obligation = _row("opposite"), _obligation("opposite")
-    old_key = game._method_cache_key(row, obligation)
+    old_key = game.method_cache_key(row, obligation)
     if mutation_stage == "before-publish":
-        original_accept = game._accepted_method
+        original_accept = game.reuse.accepted_method
         accept_calls = 0
 
         def accept_then_mutate(*args, **kwargs):
@@ -603,11 +603,11 @@ def test_authority_mutation_during_direction_audit_never_seeds_old_key(
                 )
             return accepted
 
-        game._accepted_method = accept_then_mutate
+        game.reuse.accepted_method = accept_then_mutate
 
     assert game.run(row, obligation).outcome == OUTCOME_REFUTED
 
-    assert game._method_cache_key(row, obligation) != old_key
+    assert game.method_cache_key(row, obligation) != old_key
     assert [call["role"] for call in backend.calls] == [
         "judger", "oracles", "judger",
     ]
@@ -767,7 +767,7 @@ def test_keyboard_interrupt_after_direction_judger_releases_flight(
         def interrupt_accept(*_args, **_kwargs):
             raise KeyboardInterrupt
 
-        interrupted._accepted_method = interrupt_accept
+        interrupted.reuse.accepted_method = interrupt_accept
 
     with pytest.raises(KeyboardInterrupt):
         interrupted.run(_row("interrupt"), _obligation("interrupt"))

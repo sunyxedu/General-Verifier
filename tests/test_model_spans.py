@@ -13,7 +13,7 @@ from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.codex.usage import codex_usage_ledger
 from verifier.core.events import EventLog
 from verifier.core.model import Obligation
-from verifier.engine.game import Attempt, BindingGame
+from verifier.engine.binding.game import Attempt, BindingGame
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.model_spans import (
@@ -236,7 +236,7 @@ def test_outer_judger_retry_is_distinct_from_role_schema_retry(tmp_path):
     )
     with codex_usage_ledger(str(usage), {}):
         with model_scope(claim_id="claim", obligation_id=obligation.id):
-            verdict = game._judge(
+            verdict = game.auditor.judge(
                 obligation, attempt.method, result, attempt,
                 method_attempt=4)
     assert verdict["faithful"] == "yes"

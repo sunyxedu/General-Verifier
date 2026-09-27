@@ -19,7 +19,7 @@ import time
 from verifier.core.events import EventLog
 from verifier.core.model import Claim, CLAIM_ASSERTION, Obligation
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
-from verifier.engine.game import (
+from verifier.engine.binding.game import (
     Attempt, BindingGame, MOVED_RETRIES, prior_attempt_briefing,
 )
 from verifier.engine.kernel import Kernel

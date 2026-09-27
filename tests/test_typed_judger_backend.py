@@ -14,8 +14,8 @@ import pytest
 
 from verifier.core.events import EventLog
 from verifier.core.model import BASIS_WORLD, Obligation
-from verifier.engine import game as game_module
-from verifier.engine.game import Attempt, BindingGame
+from verifier.engine.binding import auditor as auditor_module
+from verifier.engine.binding.game import Attempt, BindingGame
 from verifier.execution.judger_packets.typed import (
     TYPED_JUDGER_PACKET_PROTOCOL,
     TypedAdapterJudgerPacket,
@@ -639,14 +639,14 @@ def test_default_off_codex_path_is_exactly_the_existing_backend(
 
     monkeypatch.setattr(CodexRuntime, "_complete", fake_complete)
     monkeypatch.setattr(
-        game_module, "restricted_typed_judger_backend", forbidden)
+        auditor_module, "restricted_typed_judger_backend", forbidden)
     game = BindingGame(
         backend, artifacts, log, route, live_world=True,
         typed_adapter_judger_packet=False)
     attempt = Attempt(
         method, discharge_artifact=result.artifact,
         discharge_outcome=result.outcome)
-    assert game._judge(obligation, method, result, attempt) == YES
+    assert game.auditor.judge(obligation, method, result, attempt) == YES
     assert calls == [ORDINARY]
 
 
@@ -662,7 +662,7 @@ def test_semantic_no_is_final_and_never_falls_back_to_toolful(tmp_path, monkeypa
 
     monkeypatch.setattr(CodexRuntime, "_complete", fake_complete)
     game, obligation, method, result, attempt = _game(fixture, backend)
-    assert game._judge(obligation, method, result, attempt) == NO
+    assert game.auditor.judge(obligation, method, result, attempt) == NO
     assert [kind for kind, _variables in calls] == [RESTRICTED]
 
 
@@ -682,7 +682,7 @@ def test_tool_attempt_uses_only_existing_retry_for_toolful_fallback(
 
     monkeypatch.setattr(CodexRuntime, "_complete", fake_complete)
     game, obligation, method, result, attempt = _game(fixture, backend)
-    assert game._judge(obligation, method, result, attempt) == YES
+    assert game.auditor.judge(obligation, method, result, attempt) == YES
     # AgentRole retains its pre-existing one schema/role retry inside the
     # first Judger call; BindingGame then spends its one existing call retry.
     assert [kind for kind, _variables in calls] == [
@@ -708,10 +708,10 @@ def test_pre_call_replay_failure_falls_back_without_accepting_packet(
         return dict(YES)
 
     monkeypatch.setattr(
-        game_module, "build_typed_adapter_judger_packet", stale_packet)
+        auditor_module, "build_typed_adapter_judger_packet", stale_packet)
     monkeypatch.setattr(CodexRuntime, "_complete", fake_complete)
     game, obligation, method, result, attempt = _game(fixture, backend)
-    assert game._judge(obligation, method, result, attempt) == YES
+    assert game.auditor.judge(obligation, method, result, attempt) == YES
     # The stale packet is rejected before a restricted model process starts;
     # the next outer call is the unchanged toolful Judger.
     assert calls == [ORDINARY]
@@ -729,7 +729,7 @@ def test_no_retry_budget_fails_closed_after_restricted_transport_error(
     monkeypatch.setattr(CodexRuntime, "_complete", failed_transport)
     game, obligation, method, result, attempt = _game(
         fixture, backend, retries=0)
-    verdict = game._judge(obligation, method, result, attempt)
+    verdict = game.auditor.judge(obligation, method, result, attempt)
     assert verdict["sufficient"] == "unknown"
     assert verdict["faithful"] == "no"
     assert verdict["_infra"] is True

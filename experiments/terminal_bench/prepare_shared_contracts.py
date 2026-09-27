@@ -24,7 +24,7 @@ from verifier.contract_replay import (
 )
 from verifier.core.store import TRIGGER_LAZY
 from verifier.core.model import canonical, content_hash
-from verifier.engine.method_cache import AcceptedMethodCache
+from verifier.engine.binding.method_cache import AcceptedMethodCache
 from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.codex.usage import codex_usage_ledger
 from verifier.app.assembly import build_kernel

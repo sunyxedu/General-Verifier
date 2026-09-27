@@ -7,8 +7,8 @@ import pytest
 
 from verifier.core.events import EventLog
 from verifier.core.model import BASIS_WORLD, Obligation
-from verifier.engine import game as game_module
-from verifier.engine.game import Attempt, BindingGame
+from verifier.engine.binding import auditor as auditor_module
+from verifier.engine.binding.game import Attempt, BindingGame
 from verifier.execution.judger_packets import typed as packet_module
 from verifier.execution.adapters import (
     AdapterRoutingDischarger,
@@ -550,8 +550,8 @@ def test_binding_game_default_off_and_image_fallback_preserve_original_path(
         raise AssertionError("default-off game must not build a typed packet")
 
     monkeypatch.setattr(
-        game_module, "build_typed_adapter_judger_packet", forbidden)
-    verdict = game._judge(obligation, method, result, attempt)
+        auditor_module, "build_typed_adapter_judger_packet", forbidden)
+    verdict = game.auditor.judge(obligation, method, result, attempt)
     assert verdict == YES
     assert backend.calls[0]["packet"] is None
 
@@ -562,7 +562,7 @@ def test_binding_game_default_off_and_image_fallback_preserve_original_path(
         typed_adapter_judger_packet=True)
     attempt2 = Attempt(method, discharge_artifact=result.artifact,
                        discharge_outcome=result.outcome)
-    assert game2._judge(obligation, method, result, attempt2) == YES
+    assert game2.auditor.judge(obligation, method, result, attempt2) == YES
     assert backend2.calls[0]["packet"] is None
 
 
@@ -578,11 +578,11 @@ def test_enabled_game_attaches_private_packet_and_disables_method_reuse(tmp_path
     game = BindingGame(
         backend, artifacts, log, route, live_world=True,
         method_cache=_ExplodingCache(), typed_adapter_judger_packet=True)
-    assert game._method_cache_key(
+    assert game.method_cache_key(
         {"id": obligation.claim_id}, obligation) is None
     attempt = Attempt(method, discharge_artifact=result.artifact,
                       discharge_outcome=result.outcome)
-    assert game._judge(obligation, method, result, attempt) == YES
+    assert game.auditor.judge(obligation, method, result, attempt) == YES
     assert type(backend.calls[0]["packet"]) \
         is packet_module.TypedAdapterJudgerPacket
 
@@ -598,7 +598,7 @@ def test_post_call_replay_change_uses_existing_judger_retry(tmp_path):
     attempt = Attempt(method, discharge_artifact=result.artifact,
                       discharge_outcome=result.outcome)
 
-    assert game._judge(obligation, method, result, attempt) == YES
+    assert game.auditor.judge(obligation, method, result, attempt) == YES
     assert len(backend.calls) == 2
     assert type(backend.calls[0]["packet"]) \
         is packet_module.TypedAdapterJudgerPacket

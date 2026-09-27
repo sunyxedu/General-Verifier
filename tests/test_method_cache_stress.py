@@ -17,9 +17,9 @@ from verifier.core.model import (
     OUTCOME_REFUTED,
     Obligation,
 )
-from verifier.engine.game import BindingGame
+from verifier.engine.binding.game import BindingGame
 from verifier.engine.certificate import request_certificate
-from verifier.engine.method_cache import (
+from verifier.engine.binding.method_cache import (
     AcceptedMethod,
     AcceptedMethodCache,
     default_accepted_method_cache,

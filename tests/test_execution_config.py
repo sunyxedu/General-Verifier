@@ -72,7 +72,7 @@ def test_enabled_kernel_packet_seam_disables_method_cache(tmp_path, monkeypatch)
         service, model=None, backend=FixtureBackend({}), critic_rounds=0)
 
     assert kernel.binder.typed_adapter_judger_packet is True
-    assert kernel.binder._method_cache_key(
+    assert kernel.binder.method_cache_key(
         {"id": "claim"},
         Obligation("claim", "fixture"),
     ) is None

@@ -18,8 +18,8 @@ from verifier.core.model import (
     Obligation,
     content_hash,
 )
-from verifier.engine.game import BindingGame
-from verifier.engine.method_cache import AcceptedMethodCache
+from verifier.engine.binding.game import BindingGame
+from verifier.engine.binding.method_cache import AcceptedMethodCache
 from verifier.execution.adapters import (
     AdapterNotApplicable,
     AdapterRegistry,

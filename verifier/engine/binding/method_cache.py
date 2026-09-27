@@ -25,12 +25,9 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from ..core.model import OUTCOME_HOLDS, OUTCOME_REFUTED, content_hash
-from ..core.world import MODE_LIVE, load_world_view
-from ..llm.identity import backend_identity, role_identity
-from ..llm.runtime import (
-    REUSE_IDENTITY_FIELDS, capabilities_of, runtime_identity_type,
-)
+from ...core.model import OUTCOME_HOLDS, OUTCOME_REFUTED, content_hash
+from ...core.world import MODE_LIVE, load_world_view
+from ...llm.identity import backend_identity, role_identity
 
 
 _IDENTITY_FILE_CAP = 128 * 1024 * 1024

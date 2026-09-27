@@ -31,7 +31,7 @@ from verifier.contract_replay import ReplaySetupError, clone_sealed_inputs
 from verifier.core.events import EventLog
 from verifier.core.model import Obligation, content_hash
 from verifier.engine.contract.bundle import _strict_json
-from verifier.engine.game import BindingGame
+from verifier.engine.binding.game import BindingGame
 from verifier.execution.judger_packets.prefetch import PREFETCH_PROTOCOL
 from verifier.execution.judger_packets.typed import TYPED_JUDGER_PACKET_PROTOCOL
 from verifier.execution.discharge import AgentDischarger

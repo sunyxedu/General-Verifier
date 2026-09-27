@@ -6,7 +6,7 @@ from test_method_cache_directions import _game, _row, _obligation
 from verifier.contract_replay import compilation_config_sha256, ReplaySetupError
 from verifier.core.store import ClaimStore, TRIGGER_LAZY
 from verifier.engine.kernel import Kernel
-from verifier.engine.method_cache import AcceptedMethodCache
+from verifier.engine.binding.method_cache import AcceptedMethodCache
 from verifier.llm.schema import FixtureBackend
 
 
@@ -14,15 +14,15 @@ def test_method_keys_separate_protocols_and_ignore_later_environment_mutation(tm
     backend = FixtureBackend({})
     monkeypatch.setenv("GV_APPEND_ONLY_DELTAS", "0")
     off, *_ = _game(tmp_path, "off", backend, AcceptedMethodCache(), lambda _world: None)
-    off_key = off._method_cache_key(_row("same"), _obligation("same"))
+    off_key = off.method_cache_key(_row("same"), _obligation("same"))
     monkeypatch.setenv("GV_APPEND_ONLY_DELTAS", "1")
     on, *_ = _game(tmp_path, "on", backend, AcceptedMethodCache(), lambda _world: None)
-    on_key = on._method_cache_key(_row("same"), _obligation("same"))
+    on_key = on.method_cache_key(_row("same"), _obligation("same"))
     assert off_key is not None and on_key is not None
     assert off_key != on_key
-    assert off._method_cache_key(_row("same"), _obligation("same")) == off_key
+    assert off.method_cache_key(_row("same"), _obligation("same")) == off_key
     monkeypatch.setenv("GV_APPEND_ONLY_DELTAS", "0")
-    assert on._method_cache_key(_row("same"), _obligation("same")) == on_key
+    assert on.method_cache_key(_row("same"), _obligation("same")) == on_key
 
 
 def test_kernel_refuses_binder_with_a_different_frozen_protocol(tmp_path, monkeypatch):

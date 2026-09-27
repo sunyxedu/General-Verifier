@@ -112,7 +112,7 @@ def _enumerate_one(kernel, row, obligation) -> dict:
         claim_id=row["id"], claim_kind=row["kind"], locus="final_task",
         obligation_id=obligation.id,
     ):
-        methods = kernel.binder._enumerate(row, obligation)
+        methods = kernel.binder.oracle.enumerate(row, obligation)
     binding = []
     registry = getattr(kernel.binder.discharger, "registry", None)
     for method in methods:

@@ -12,9 +12,9 @@ from experiments.terminal_bench import replay_prepared_contracts as replay
 from test_contract_replay import fixture_bundle, snapshot, source_state
 from verifier.contract_replay import ReplaySetupError, replay_identity
 from verifier.core.store import TRIGGER_LAZY
-from verifier.engine.game import BindingGame
+from verifier.engine.binding.game import BindingGame
 from verifier.engine.kernel import Kernel
-from verifier.engine.method_cache import AcceptedMethodCache
+from verifier.engine.binding.method_cache import AcceptedMethodCache
 from verifier.execution.discharge import DischargeResult
 from verifier.llm.codex.runtime import CodexRuntime
 from verifier.llm.schema import FixtureBackend

@@ -12,7 +12,7 @@ import os
 
 from verifier.core.events import EventLog
 from verifier.core.model import BASIS_WORLD, Obligation, content_hash
-from verifier.engine.game import BindingGame
+from verifier.engine.binding.game import BindingGame
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.schema import FixtureBackend, RoleError

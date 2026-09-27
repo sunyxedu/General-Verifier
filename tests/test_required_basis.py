@@ -16,7 +16,7 @@ from verifier.core.model import (
     Obligation,
 )
 from verifier.core.store import ClaimStore, TRIGGER_ON_COMMIT
-from verifier.engine.game import BindingGame
+from verifier.engine.binding.game import BindingGame
 from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore

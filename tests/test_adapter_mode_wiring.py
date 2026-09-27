@@ -5,8 +5,8 @@ import json
 
 from verifier.core.events import EventLog
 from verifier.core.model import BASIS_RECORD, OUTCOME_HOLDS, Obligation
-from verifier.engine.game import BindingGame
-from verifier.engine.method_cache import AcceptedMethodCache
+from verifier.engine.binding.game import BindingGame
+from verifier.engine.binding.method_cache import AcceptedMethodCache
 from verifier.execution.adapters import (
     AdapterRoutingDischarger,
     default_adapter_registry,
