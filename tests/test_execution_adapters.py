@@ -44,8 +44,8 @@ from verifier.execution.browser import (
 )
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm.agents import AgentBackend, AgentRole
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.agents import ClaudeCodeRuntime, AgentRole
+from verifier.llm.codex_backend import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 from verifier.llm.schema import RoleError
 from verifier.app.assembly import build_kernel
@@ -364,7 +364,7 @@ def test_codex_catalog_uses_inline_baseline_without_changing_call_count(
     else:
         state, _world, artifacts, log, _fallback, routing = captured(tmp_path)
 
-    class RecordingCodexBackend(CodexBackend):
+    class RecordingCodexBackend(CodexRuntime):
         def __init__(self, cwd):
             super().__init__(cwd=cwd)
             self.observed_calls = []
@@ -393,10 +393,10 @@ def test_codex_catalog_uses_inline_baseline_without_changing_call_count(
 
 
 def test_agent_backend_lazy_catalog_capability_checks_actual_tool_palette():
-    backend = AgentBackend()
+    backend = ClaudeCodeRuntime()
     assert backend.allows_lazy_oracle_catalog("oracles", {}) is True
 
-    unsafe = AgentBackend(roles={
+    unsafe = ClaudeCodeRuntime(roles={
         "oracles": AgentRole(
             name="oracles", template="{adapter_catalog}",
             schema={"methods": [str]}, tools=["Read", "Write"],

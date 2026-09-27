@@ -26,7 +26,7 @@ from verifier.config import (
 )
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.codex_backend import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 
 
@@ -322,7 +322,7 @@ def test_local_codex_delta_prepare_and_independent_consumer_round_trip(
     def factory(state):
         sc = service(
             state,
-            CodexBackend(cwd=str(state), model="gpt-5.6-luna"),
+            CodexRuntime(cwd=str(state), model="gpt-5.6-luna"),
         )
         services.append(sc)
         return sc

@@ -2,9 +2,10 @@
 
 This module changes neither the Judger role nor its decision.  It gives the
 same role, model, prompt template, schema, effort, and service tier one
-complete verifier-built packet in a new Codex session with no tools.  Only
-the exact built-in Codex backend qualifies; every other backend keeps the
-ordinary Judger path.
+complete verifier-built packet in a new session of the same runtime under a
+no-tools policy that also demands a stream audit.  Only a runtime that
+declares it can honour that policy (the shipped Codex runtime, not a
+subclass) qualifies; every other backend keeps the ordinary Judger path.
 
 The caller owns retries.  A packet, replay, process, stream-policy, or schema
 failure therefore returns to the existing toolful Judger only when the
@@ -18,7 +19,9 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
-from typing import Any, Iterator, Mapping
+from dataclasses import replace
+from functools import partial
+from typing import Any, Dict, Iterator, Mapping
 
 from ..engine.typed_judger_packet import (
     TYPED_JUDGER_PACKET_PROTOCOL,
@@ -26,16 +29,17 @@ from ..engine.typed_judger_packet import (
 )
 from .authority_backend import (
     _DISABLED_CODE_MODE_NOTICE,
-    AuthorityBackendUnavailable,
-    authority_policy_args,
+    AUTHORITY_POLICY,
     validate_authority_stream,
 )
 from .codex_backend import (
-    CodexBackend,
     _completed_response_without_usage,
     _typed_judger_attempt_scope,
+    no_tools_policy_args,
 )
-from .schema import RoleError
+from .policy import NoToolsSession
+from .runtime import RuntimeCapabilities, capabilities_of
+from .schema import AuthorityBackendUnavailable, RoleError
 
 
 TYPED_JUDGER_BOUNDARY_VERSION = "gv-typed-judger-no-tools-v2"
@@ -66,20 +70,23 @@ class TypedJudgerTransportError(RoleError):
     """The restricted transport failed without producing a usable verdict."""
 
 
+# The authority compiler already owns the strictest shipped policy: an empty
+# scratch cwd, root-deny filesystem, no shell/code mode/images, no
+# web/network/apps/plugins/MCP/browser/CUA, and an empty environment. Sharing
+# that mechanical policy does not share either role or session. The typed
+# Judger additionally closes the newer integration gates and requires a
+# runtime whose event stream proves no tool ran.
+# Its policy admits no image input either: packet admission already excluded
+# raw image inputs, and the restricted command stays incapable of acquiring
+# one even if a future caller supplies image-looking variables.
+TYPED_JUDGER_POLICY = replace(
+    AUTHORITY_POLICY, denied_integrations=_ADDITIONAL_DISABLED_FEATURES,
+    stream_audit=True)
+
+
 def typed_judger_policy_args(scratch_dir: str) -> list[str]:
     """Return the audited root-deny, network-off, no-tools Codex policy."""
-    # The authority compiler already owns the strictest shipped Codex policy:
-    # an empty scratch cwd, root-deny filesystem, no shell/code mode/images,
-    # no web/network/apps/plugins/MCP/browser/CUA, and an empty environment.
-    # Sharing that mechanical policy does not share either role or session.
-    return [
-        *authority_policy_args(scratch_dir),
-        *[
-            item
-            for feature in _ADDITIONAL_DISABLED_FEATURES
-            for item in ("-c", f"features.{feature}=false")
-        ],
-    ]
+    return no_tools_policy_args(scratch_dir, TYPED_JUDGER_POLICY)
 
 
 def _typed_judger_policy_identity() -> str:
@@ -121,57 +128,64 @@ def validate_typed_judger_stream(stdout: str) -> str:
     return response
 
 
-class _TypedJudgerCodexBackend(CodexBackend):
-    """One-use Codex backend whose only evidence attachment is a typed packet."""
+def _typed_judger_instruction_identity(original: str) -> str:
+    """The session's instruction identity: the runtime's own, bound to this
+    boundary, its policy and its packet note."""
+    identity = json.dumps({
+        "base_runtime_instruction_identity": original,
+        "boundary": TYPED_JUDGER_BOUNDARY_VERSION,
+        "no_tools_policy_identity": TYPED_JUDGER_POLICY_IDENTITY,
+        "typed_judger_note_sha256": hashlib.sha256(
+            _TYPED_JUDGER_NOTE.encode("utf-8")).hexdigest(),
+    }, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(
+        identity.encode("utf-8")
+    ).hexdigest()
 
-    def _current_typed_judger_scratch(self):
-        source = getattr(self, "_typed_judger_source_backend", None)
-        if source is not None:
-            return source._restricted_judger_execution_cwd()
-        return self._typed_judger_scratch
 
-    def _execution_policy_args(self, role_name, variables):
-        return typed_judger_policy_args(self._current_typed_judger_scratch())
+def typed_judger_session(scratch) -> NoToolsSession:
+    """One fresh typed-Judger session; ``scratch`` returns its empty
+    directory (re-validated on each launch when operator-bound)."""
+    return NoToolsSession(
+        policy=TYPED_JUDGER_POLICY,
+        scratch=scratch,
+        validate_stream=validate_typed_judger_stream,
+        bound_response=validate_typed_judger_stream,
+        recover_response=partial(
+            _completed_response_without_usage,
+            permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE,
+            allow_message_sequence=True),
+        instruction_identity=_typed_judger_instruction_identity,
+        # The ordinary prefetch object, if enabled independently, must not
+        # become a second evidence channel in this no-tools transport.
+        evidence_prefetch=False)
 
-    def _execution_cwd(self, role_name, variables):
-        return self._current_typed_judger_scratch()
 
-    def _search_enabled(self, role_name):
-        return False
+class TypedJudgerSeat(RuntimeCapabilities):
+    """The Judger seat of one typed-packet call: packet admission in front
+    of a fresh no-tools session of the ordinary runtime. Its only evidence
+    attachment is the typed packet."""
 
-    def _requires_json(self):
-        return True
+    def __init__(self, runtime: Any):
+        self.runtime = runtime
+        self.uses_role_wire_schema = capabilities_of(
+            runtime).uses_role_wire_schema
 
-    def _captured_images(self, role_name, variables):
-        # Packet admission already excluded raw image inputs.  Keep the
-        # restricted command incapable of acquiring one even if a future
-        # caller supplies image-looking variables.
-        return ()
-
-    def _validate_attempt_stream(self, stdout):
-        validate_typed_judger_stream(stdout)
-
-    def _validated_stream_response(self, stdout):
-        return validate_typed_judger_stream(stdout)
-
-    def _recover_completed_response(self, stdout):
-        return _completed_response_without_usage(
-            stdout, permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE,
-            allow_message_sequence=True)
+    @property
+    def roles(self) -> Dict[str, Any]:
+        return self.runtime.roles
 
     @property
     def runtime_instruction_identity(self) -> str:
-        original = super().runtime_instruction_identity
-        identity = json.dumps({
-            "base_runtime_instruction_identity": original,
-            "boundary": TYPED_JUDGER_BOUNDARY_VERSION,
-            "no_tools_policy_identity": TYPED_JUDGER_POLICY_IDENTITY,
-            "typed_judger_note_sha256": hashlib.sha256(
-                _TYPED_JUDGER_NOTE.encode("utf-8")).hexdigest(),
-        }, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        return hashlib.sha256(
-            identity.encode("utf-8")
-        ).hexdigest()
+        return self.runtime.runtime_instruction_identity
+
+    @property
+    def run_options(self):
+        return capabilities_of(self.runtime).run_options
+
+    def allows_compact_source_evidence(self, role_name, variables):
+        return capabilities_of(self.runtime).allows_compact_source_evidence(
+            role_name, variables)
 
     def complete(self, role_name: str, prompt: str,
                  variables: Mapping[str, Any]) -> Any:
@@ -194,10 +208,8 @@ class _TypedJudgerCodexBackend(CodexBackend):
             raise TypedJudgerTransportError(
                 "typed-adapter Judger packet could not be rendered") from error
 
-        # The ordinary prefetch object, if enabled independently, must not
-        # become a second evidence channel in this no-tools transport. Drop
-        # both trusted Python handles after rendering: only inert packet text
-        # crosses the model boundary.
+        # Drop both trusted Python handles after rendering: only inert
+        # packet text crosses the model boundary.
         call_variables = dict(variables)
         call_variables.pop("_judger_evidence_packet", None)
         call_variables.pop("_typed_adapter_judger_packet", None)
@@ -205,7 +217,7 @@ class _TypedJudgerCodexBackend(CodexBackend):
         try:
             with _typed_judger_attempt_scope(
                     TYPED_JUDGER_PACKET_PROTOCOL, packet_sha256):
-                return super().complete(
+                return self.runtime.complete(
                     role_name, prompt + _TYPED_JUDGER_NOTE + body,
                     call_variables)
         except OSError as error:
@@ -217,23 +229,23 @@ class _TypedJudgerCodexBackend(CodexBackend):
 def restricted_typed_judger_backend(
     backend: Any,
 ) -> Iterator[Any]:
-    """Yield a new restricted seat for the exact shipped Codex backend.
+    """Yield a new restricted seat on a runtime that honours the typed
+    Judger policy.
 
     Unknown, SDK, fixture, and subclassed backends retain their established
-    behavior; the private packet remains inert to them.  Exact-type admission
-    prevents a duck-typed backend from claiming this capability boundary.
+    behavior; the private packet remains inert to them.  The policy is a
+    capability a runtime class declares for itself, never inherits, so a
+    duck-typed backend cannot claim this boundary.
     """
-    if type(backend) is not CodexBackend:
+    runtime = capabilities_of(backend)
+    if not runtime.supports_policy(TYPED_JUDGER_POLICY):
         yield backend
         return
-    if getattr(CodexBackend, "AUTHORITY_HOOKS_VERSION", None) != 1:
-        raise TypedJudgerTransportError(
-            "Codex no-tools hooks are unavailable")
-    bound_scratch = backend.restricted_judger_cwd is not None
+    bound = runtime.judger_scratch()
 
     @contextmanager
     def scratch_directory():
-        if not bound_scratch:
+        if bound is None:
             try:
                 temporary = tempfile.TemporaryDirectory(
                     prefix="gv-typed-judger-")
@@ -242,7 +254,8 @@ def restricted_typed_judger_backend(
                     "restricted typed Judger scratch is unavailable") from error
             active_error = False
             try:
-                yield os.path.realpath(temporary.name)
+                path = os.path.realpath(temporary.name)
+                yield lambda: path
             except BaseException:
                 active_error = True
                 raise
@@ -256,48 +269,27 @@ def restricted_typed_judger_backend(
                         ) from error
             return
         try:
-            scratch = backend._restricted_judger_execution_cwd()
+            bound.execution_dir()
         except RoleError as error:
             raise TypedJudgerTransportError(
                 "restricted typed Judger scratch is unavailable") from error
         active_error = False
         try:
-            yield scratch
+            # every launch re-validates and enters the bound directory
+            yield bound.execution_dir
         except BaseException:
             active_error = True
             raise
         finally:
             try:
-                backend._revalidate_restricted_judger_cwd()
+                bound.revalidate()
             except RoleError as error:
                 if not active_error:
                     raise TypedJudgerTransportError(
                         "restricted typed Judger scratch changed") from error
 
     with scratch_directory() as scratch:
-        model_spec = backend.model + "".join(
-            f";{name}={model}" for name, model in
-            sorted(backend.model_overrides.items()))
-        isolated = _TypedJudgerCodexBackend(
-            roles=backend.roles,
-            # Keep observer usage at the original verifier state while
-            # _execution_cwd places the new process in empty scratch.
-            cwd=backend.cwd,
-            model=model_spec,
-            effort=backend.effort,
-            timeout=backend.timeout,
-            service_tier=backend.service_tier,
-            compact_inspection=backend.compact_inspection,
-            judger_prefetch=False,
-        )
-        # Clone captured run instructions rather than mutable module defaults.
-        # The packet note is the sole new instruction channel.
-        isolated._artifact_address_note = backend._artifact_address_note
-        isolated._compact_inspection_note = backend._compact_inspection_note
-        isolated._compact_report_note = backend._compact_report_note
-        isolated._judger_prefetch_note = ""
-        isolated._judger_prefetch_protocol = None
-        isolated._typed_judger_scratch = scratch
-        isolated._typed_judger_source_backend = (
-            backend if bound_scratch else None)
-        yield isolated
+        # Keep observer usage at the original verifier state while the
+        # session places the new process in empty scratch.
+        yield TypedJudgerSeat(runtime.no_tools_runtime(
+            backend.roles, typed_judger_session(scratch)))

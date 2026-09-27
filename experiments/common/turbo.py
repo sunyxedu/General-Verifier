@@ -21,6 +21,7 @@ import sys
 import time
 import urllib.request
 
+from verifier.config import cfg
 from verifier.llm import provider   # DeepSeek wiring (single source of truth)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -134,7 +135,7 @@ class Proxy:
 def check_keys():
     provider.validate_configuration()
     os.environ.setdefault(provider.KEY_ENV, provider.API_KEY)
-    vertex = provider.cfg("VERTEX_API_KEY")
+    vertex = cfg("VERTEX_API_KEY")
     if vertex:
         os.environ.setdefault("VERTEX_API_KEY", vertex)
     if not os.environ.get("VERTEX_API_KEY"):

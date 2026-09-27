@@ -695,7 +695,7 @@ def test_current_backend_and_native_usage_capture_integrate_without_process(
             cmd, 0, _stream(cache_write=0), "")
 
     monkeypatch.setattr(current, "_run_codex_process", fake_process)
-    backend = current.CodexBackend(
+    backend = current.CodexRuntime(
         roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
         cwd=str(state), model="gpt-5.6-luna", effort="medium",
         service_tier="standard",

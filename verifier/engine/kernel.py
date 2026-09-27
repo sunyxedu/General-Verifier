@@ -26,6 +26,7 @@ from ..execution.discharge import AgentDischarger, DischargeResult
 from ..execution.resource_share import warmup_launches
 from ..config import (
     APPEND_ONLY_DELTA_PROTOCOL,
+    RunOptions,
     append_only_deltas_enabled,
 )
 from ..core.events import EventLog
@@ -47,6 +48,7 @@ from ..core.model import (
 from ..llm import prompts
 from ..llm.agents import AgentRole, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
 from ..llm.model_spans import model_scope, submit_with_context
+from ..llm.runtime import capabilities_of
 from ..core.store import ClaimStore
 from .authority_view import (
     AuthorityViewUnavailable, build_authority_compilation_view,
@@ -104,7 +106,7 @@ def _repair_oscillation(history: List[Dict]) -> bool:
     return False
 
 
-def compile_roles_for_backend(backend, obligations_role, critic_role):
+def compile_roles_for_run(run_options, obligations_role, critic_role):
     """Treatment-only prompt specialization of the contract seats.
 
     Clone (never mutate) the compiler and Critic seats, retaining their
@@ -114,7 +116,7 @@ def compile_roles_for_backend(backend, obligations_role, critic_role):
     concurrent final-contract precompile applies the identical rule so its
     contract key can match the kernel's.
     """
-    if getattr(backend, "compact_inspection", False) is True:
+    if run_options.compact_inspection is True:
         if (type(obligations_role) is AgentRole
                 and obligations_role.name == "obligations"):
             obligations_role = replace(
@@ -163,6 +165,7 @@ class Kernel:
         critic_rounds_nonfinal: Optional[int] = None,
         speculative_discharge: bool = False,
         unify_final: bool = False,
+        run_options: Optional[RunOptions] = None,
     ):
         # parallelism is an execution strategy, not a judgment: the same
         # obligations get the same evidence, only the schedule changes.
@@ -183,6 +186,10 @@ class Kernel:
         self.store = store
         self.log = log
         self.backend = backend
+        # The run's evidence-presentation options; a kernel built without
+        # them runs with the options its runtime declares.
+        self.run_options = (run_options if run_options is not None
+                            else capabilities_of(backend).run_options)
         self.artifacts = artifacts
         self.ledger = LedgerInstrument(log)
         # claim id -> ledger seq at which the claim was made (the Builder
@@ -200,8 +207,8 @@ class Kernel:
         self.append_only_deltas = append_only_deltas_enabled()
         self.append_only_delta_protocol = (
             APPEND_ONLY_DELTA_PROTOCOL if self.append_only_deltas else None)
-        self.obligations_role, self.critic_role = compile_roles_for_backend(
-            backend, obligations_role or COMPILE_OBLIGATIONS_AGENT,
+        self.obligations_role, self.critic_role = compile_roles_for_run(
+            self.run_options, obligations_role or COMPILE_OBLIGATIONS_AGENT,
             critic_role)   # critic None -> no adversarial review
         # A final contract compiled concurrently with extraction; adopted
         # only under an identical contract key (see engine.precompile).
@@ -239,7 +246,8 @@ class Kernel:
         self.discharger = discharger or AgentDischarger(
             backend, artifacts,
             state_dir=os.path.dirname(os.path.abspath(log.path)),
-            live_world=live_world, store=store, log=log)
+            live_world=live_world, store=store, log=log,
+            run_options=self.run_options)
         self.binder = binder      # binding game; None -> direct discharge (tests)
         if binder is not None:
             binder_delta = getattr(
@@ -1372,8 +1380,7 @@ class Kernel:
         return bind_source_evidence_variables(
             self.log,
             self._obligation_compile_variables(row),
-            enabled=(getattr(self.backend, "compact_inspection", False)
-                     is True),
+            enabled=self.run_options.compact_inspection,
         )
 
     def _compile_obligation_payload(self, row: Dict, speculate=None,
@@ -1911,8 +1918,7 @@ class Kernel:
                         variables["dependency_referent_context"],
                     "game_history": json.dumps(history, ensure_ascii=False),
                     },
-                    enabled=(getattr(backend, "compact_inspection", False)
-                             is True),
+                    enabled=self.run_options.compact_inspection,
                 )
                 verdict = critic_role.call(
                     backend,

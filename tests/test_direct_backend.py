@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from verifier.llm import direct_backend as db
+from verifier.llm import endpoints
 from verifier.llm.agents import ALL_AGENT_ROLES, AgentRole
 from verifier.llm.schema import FixtureBackend, RoleError
 
@@ -30,10 +31,10 @@ class FakeTransport:
 
 def test_tool_free_roles_route_direct_and_others_stay_on_the_agent(tmp_path):
     transport = FakeTransport([{"verdict": "open", "confidence": "high", "basis": "world", "grounds": "g", "reason": "r"}])
-    direct = db.DirectBackend(transport, cwd=str(tmp_path))
+    direct = db.DirectRuntime(transport, cwd=str(tmp_path))
     agent = FixtureBackend({"discharge": {"outcome": "holds"}})
     agent.roles = dict(ALL_AGENT_ROLES)
-    routing = db.RoutingBackend(direct, agent, db.DEFAULT_DIRECT_ROLES)
+    routing = db.RoutingRuntime(direct, agent, db.DEFAULT_DIRECT_ROLES)
 
     assert routing.routes_direct("screener") and not routing.routes_direct("discharge")
     assert routing.complete("screener", "p", {}) == {
@@ -52,9 +53,9 @@ def test_tool_free_roles_route_direct_and_others_stay_on_the_agent(tmp_path):
 def test_direct_backend_writes_a_receipt_and_retries_transient_failures(
         tmp_path, monkeypatch):
     monkeypatch.setattr(db, "TRANSIENT_DELAYS", (0, 0, 0))
-    transport = FakeTransport([db.TransientTransportError("HTTP 529"),
+    transport = FakeTransport([endpoints.TransientTransportError("HTTP 529"),
                                {"verdict": "open", "confidence": "low", "basis": "world", "grounds": "g", "reason": "r"}])
-    direct = db.DirectBackend(transport, cwd=str(tmp_path))
+    direct = db.DirectRuntime(transport, cwd=str(tmp_path))
     role = ALL_AGENT_ROLES["screener"]
     payload = role.call(direct, {name: "" for name in _variables(role)})
     assert payload["confidence"] == "low"
@@ -65,7 +66,7 @@ def test_direct_backend_writes_a_receipt_and_retries_transient_failures(
 def test_schema_violations_are_fed_back_through_the_role_retry(tmp_path):
     transport = FakeTransport([{"confidence": "very", "grounds": "g", "reason": "r"},
                                {"verdict": "open", "confidence": "medium", "basis": "world", "grounds": "g", "reason": "r"}])
-    direct = db.DirectBackend(transport, cwd=str(tmp_path))
+    direct = db.DirectRuntime(transport, cwd=str(tmp_path))
     role = ALL_AGENT_ROLES["screener"]
     payload = role.call(direct, {name: "" for name in _variables(role)})
     assert payload["confidence"] == "medium"
@@ -87,7 +88,7 @@ def test_anthropic_transport_forces_the_emit_tool_and_reads_its_input(monkeypatc
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
         transport=httpx.MockTransport(handler), **kw))
-    transport = db.AnthropicMessagesTransport("key", "m", base_url="https://x.test")
+    transport = endpoints.AnthropicMessagesEndpoint("key", "m", base_url="https://x.test")
     payload, usage = transport.complete(system="s", prompt="p",
                                         schema={"type": "object"})
     assert payload == {"ok": True} and usage["input_tokens"] == 3
@@ -102,8 +103,8 @@ def test_anthropic_transport_classifies_statuses(monkeypatch):
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
         transport=httpx.MockTransport(handler), **kw))
-    transport = db.AnthropicMessagesTransport("key", "m", base_url="https://x.test")
-    with pytest.raises(db.TransientTransportError):
+    transport = endpoints.AnthropicMessagesEndpoint("key", "m", base_url="https://x.test")
+    with pytest.raises(endpoints.TransientTransportError):
         transport.complete(system="s", prompt="p", schema={"type": "object"})
 
 
@@ -118,12 +119,12 @@ def test_login_only_credentials_offer_no_direct_transport(monkeypatch):
     from verifier.llm import provider
     monkeypatch.setattr(provider, "PROVIDER", "anthropic")
     monkeypatch.setattr(provider, "API_KEY", None)
-    assert db.direct_transport({}) is None
+    assert db.direct_endpoint({}) is None
     monkeypatch.setattr(provider, "API_KEY", "sk-test")
     monkeypatch.setattr(provider, "ANTHROPIC_BASE_URL", None)
     monkeypatch.setattr(provider, "MODEL", "claude-sonnet-5")
-    transport = db.direct_transport({})
-    assert isinstance(transport, db.AnthropicMessagesTransport)
+    transport = db.direct_endpoint({})
+    assert isinstance(transport, endpoints.AnthropicMessagesEndpoint)
     assert transport.model == "claude-sonnet-5"
 
 
@@ -138,7 +139,7 @@ def test_openai_chat_transport_asks_for_strict_json_and_parses_it(monkeypatch):
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
         transport=httpx.MockTransport(handler), **kw))
-    transport = db.OpenAIChatTransport("or-key", "openai/gpt-5.6-luna",
+    transport = endpoints.OpenAIChatEndpoint("or-key", "openai/gpt-5.6-luna",
                                        base_url="https://router.test/api",
                                        reasoning_effort="medium")
     payload, usage = transport.complete(system="s", prompt="p",
@@ -151,26 +152,26 @@ def test_openai_chat_transport_asks_for_strict_json_and_parses_it(monkeypatch):
 
 
 def test_openrouter_direct_transport_from_env():
-    transport = db.direct_transport({"GV_DIRECT_PROVIDER": "openrouter",
+    transport = db.direct_endpoint({"GV_DIRECT_PROVIDER": "openrouter",
                                      "OPENROUTER_API_KEY": "k",
                                      "GV_DIRECT_MODEL": "openai/gpt-5.6-luna"})
-    assert isinstance(transport, db.OpenAIChatTransport)
+    assert isinstance(transport, endpoints.OpenAIChatEndpoint)
     assert transport.model == "openai/gpt-5.6-luna"
-    assert db.direct_transport({"GV_DIRECT_PROVIDER": "openrouter"}) is None
+    assert db.direct_endpoint({"GV_DIRECT_PROVIDER": "openrouter"}) is None
 
 
 def test_strict_schema_round_trips_optional_keys():
     from verifier.llm.agents import to_json_schema
     role = ALL_AGENT_ROLES["oracles"]
     schema = to_json_schema(role.wire_schema or role.schema)
-    strict = db.strict_schema(schema)
+    strict = endpoints.strict_schema(schema)
     method = strict["properties"]["methods"]["items"]
     assert "script" in method["required"]
     assert {"type": "null"} in method["properties"]["script"]["anyOf"]
     payload = {"methods": [{"procedure": "p", "script": None}]}
-    assert db.strip_optional_nulls(payload, schema) == {"methods": [{"procedure": "p"}]}
+    assert endpoints.strip_optional_nulls(payload, schema) == {"methods": [{"procedure": "p"}]}
     kept = {"methods": [{"procedure": "p", "script": "echo"}]}
-    assert db.strip_optional_nulls(kept, schema) == kept
+    assert endpoints.strip_optional_nulls(kept, schema) == kept
 
 
 def test_build_backend_wraps_an_injected_agent_backend(monkeypatch):
@@ -179,7 +180,7 @@ def test_build_backend_wraps_an_injected_agent_backend(monkeypatch):
     codex_like.roles = dict(ALL_AGENT_ROLES)
     backend = db.build_backend(dict(ALL_AGENT_ROLES), cwd=None, model="m",
                                environ=env, agent=codex_like)
-    assert isinstance(backend, db.RoutingBackend) and backend.agent is codex_like
+    assert isinstance(backend, db.RoutingRuntime) and backend.agent is codex_like
     assert backend.routes_direct("critic") and not backend.routes_direct("discharge")
     plain = db.build_backend(dict(ALL_AGENT_ROLES), cwd=None, model="m",
                              environ={"GV_DIRECT_SEATS": "off"}, agent=codex_like)
@@ -202,8 +203,8 @@ def test_empty_answer_with_exhausted_budget_retries_with_a_larger_budget(monkeyp
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
         transport=httpx.MockTransport(handler), **kw))
-    transport = db.OpenAIChatTransport("k", "m", base_url="https://x.test")
-    direct = db.DirectBackend(transport)
+    transport = endpoints.OpenAIChatEndpoint("k", "m", base_url="https://x.test")
+    direct = db.DirectRuntime(transport)
     role = ALL_AGENT_ROLES["screener"]
     out = role.call(direct, {name: "" for name in _variables(role)})
     assert out["confidence"] == "low"
@@ -226,8 +227,8 @@ def test_a_role_that_outgrew_the_budget_starts_at_the_budget_it_needed(monkeypat
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
         transport=httpx.MockTransport(handler), **kw))
-    transport = db.OpenAIChatTransport("k", "m", base_url="https://x.test")
-    direct = db.DirectBackend(transport, cwd=str(tmp_path))
+    transport = endpoints.OpenAIChatEndpoint("k", "m", base_url="https://x.test")
+    direct = db.DirectRuntime(transport, cwd=str(tmp_path))
     role = ALL_AGENT_ROLES["screener"]
     variables = {name: "" for name in _variables(role)}
     role.call(direct, variables)
@@ -251,7 +252,7 @@ def test_a_call_starts_at_the_model_ceiling_and_a_truncation_there_is_final(monk
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
         transport=httpx.MockTransport(handler), **kw))
-    direct = db.DirectBackend(db.OpenAIChatTransport("k", "m", base_url="https://x.test"))
+    direct = db.DirectRuntime(endpoints.OpenAIChatEndpoint("k", "m", base_url="https://x.test"))
     role = ALL_AGENT_ROLES["screener"]
     with pytest.raises(RoleError, match="output budget exhausted"):
         role.call(direct, {name: "" for name in _variables(role)})
@@ -262,13 +263,13 @@ def test_a_call_starts_at_the_model_ceiling_and_a_truncation_there_is_final(monk
 def test_authority_compilation_runs_on_the_direct_transport_of_a_routing_backend(tmp_path):
     from verifier.llm.authority_backend import authority_compilation_backend
     transport = FakeTransport([])
-    direct = db.DirectBackend(transport, cwd=str(tmp_path))
+    direct = db.DirectRuntime(transport, cwd=str(tmp_path))
     agent = FixtureBackend({}); agent.roles = dict(ALL_AGENT_ROLES)
-    routing = db.RoutingBackend(direct, agent, db.DEFAULT_DIRECT_ROLES)
+    routing = db.RoutingRuntime(direct, agent, db.DEFAULT_DIRECT_ROLES)
     with authority_compilation_backend(routing, ALL_AGENT_ROLES["obligations"],
                                        ALL_AGENT_ROLES["critic"]) as session:
-        assert isinstance(session.backend, db.DirectBackend)
-        assert session.backend.transport is transport
+        assert isinstance(session.backend, db.DirectRuntime)
+        assert session.backend.endpoint is transport
         assert session.obligations_role.tools == [] and "obligations" in session.backend.roles
 
 

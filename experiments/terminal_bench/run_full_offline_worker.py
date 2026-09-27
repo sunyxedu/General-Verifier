@@ -223,7 +223,7 @@ def preflight(plan):
         policy.OfflinePolicyBinding(
             state_dir=plan["input_source"],
             runtime_read_roots=tuple(plan["runtime_read_roots"])),))
-    if not callable(getattr(backend.CodexBackend, "_is_offline_execution", None)):
+    if not callable(getattr(policy.codex_class(backend), "_is_offline_execution", None)):
         raise ValueError("selected backend lacks the required offline classification hook")
     return {"schema": SCHEMA, "preflight_complete": True, "model_calls": 0,
             "source_fingerprint": plan["source_fingerprint"],

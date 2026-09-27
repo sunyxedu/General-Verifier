@@ -149,9 +149,9 @@ def main():
     # recorded so results rows never claim a codex run used sonnet
     codex_model, effective_model = None, args.model
     if args.arm in ("codex", "gv-codex"):
-        from verifier.llm.codex_backend import DEFAULT_MODEL
+        from verifier.llm.endpoints.presets import default_model
         codex_model = None if args.model == "sonnet" else args.model
-        effective_model = codex_model or DEFAULT_MODEL
+        effective_model = codex_model or default_model("codex")
 
     proxy_url = None
     if args.arm == "turbo":

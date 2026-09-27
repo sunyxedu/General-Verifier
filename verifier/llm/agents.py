@@ -31,7 +31,7 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
 from ..config import max_concurrent_seats
@@ -40,6 +40,8 @@ from .model_spans import (
     role_attempt, role_span, seat_acquired, seat_released,
     seat_wait_started, submit_with_context,
 )
+from .policy import NoToolsSession, ToolPolicy
+from .runtime import RuntimeCapabilities, capabilities_of
 from .schema import RoleError, SeatTimeout, validate, field_name, optional_key
 from .oracle_execution import (
     ORACLE_EXECUTION_WIRE_SCHEMA,
@@ -49,8 +51,8 @@ from ..engine.source_evidence import (
     SourceEvidenceView,
     refresh_source_evidence_variables,
 )
-# The Claude Agent SDK backs the DEFAULT backend only; alternate backends
-# (CodexBackend) never touch it. Imported lazily so that a seats=codex run
+# The Claude Agent SDK backs the DEFAULT runtime only; alternate runtimes
+# (CodexRuntime) never touch it. Imported lazily so that a seats=codex run
 # does not depend on the SDK's import chain (mcp -> pydantic -> native
 # extensions) even loading — the palette of the active backend, not the
 # default one, should decide what must be importable.
@@ -224,20 +226,12 @@ class AgentRole:
                                     "_source_evidence_view")
                                 mixed_ledger_path = attempt_variables.get(
                                     "_mixed_ledger_path")
-                                try:
-                                    allows_compact_source = getattr(
-                                        backend,
-                                        "allows_compact_source_evidence",
-                                        None,
-                                    )
-                                except Exception:
-                                    allows_compact_source = None
+                                runtime = capabilities_of(backend)
                                 compact_source_allowed = None
-                                if (type(source_view) is SourceEvidenceView
-                                        and callable(allows_compact_source)):
+                                if type(source_view) is SourceEvidenceView:
                                     try:
                                         compact_source_allowed = \
-                                            allows_compact_source(
+                                            runtime.allows_compact_source_evidence(
                                                 self.name,
                                                 attempt_variables,
                                             )
@@ -281,21 +275,14 @@ class AgentRole:
                                     catalog_view = attempt_variables.get(
                                         "adapter_catalog")
                                     if type(catalog_view) is OracleCatalogView:
-                                        permits_lazy_catalog = False
-                                        capability = getattr(
-                                            backend,
-                                            "allows_lazy_oracle_catalog",
-                                            None,
-                                        )
-                                        if callable(capability):
-                                            try:
-                                                permits_lazy_catalog = \
-                                                    capability(
-                                                        self.name,
-                                                        attempt_variables,
-                                                    ) is True
-                                            except Exception:
-                                                permits_lazy_catalog = False
+                                        try:
+                                            permits_lazy_catalog = \
+                                                runtime.allows_lazy_oracle_catalog(
+                                                    self.name,
+                                                    attempt_variables,
+                                                ) is True
+                                        except Exception:
+                                            permits_lazy_catalog = False
                                         if (oracle_catalog_force_baseline
                                                 or not permits_lazy_catalog):
                                             attempt_variables = dict(
@@ -351,9 +338,8 @@ class AgentRole:
                                 f"{self.name}: source evidence changed during audit")
                         use_wire = (
                             self.wire_schema is not None
-                            and getattr(
-                                backend, "uses_role_wire_schema", False,
-                            ) is True
+                            and capabilities_of(
+                                backend).uses_role_wire_schema is True
                         )
                         if use_wire:
                             validate(self.wire_schema, payload)
@@ -381,7 +367,7 @@ class AgentRole:
             raise RoleError(f"{self.name}: failed twice: {last_error}")
 
 
-class AgentBackend:
+class ClaudeCodeRuntime(RuntimeCapabilities):
     """
     Runs AgentRoles through the Claude Agent SDK.
 
@@ -392,6 +378,8 @@ class AgentBackend:
     (a permission prompt would silently deny). This is safe to the extent the
     palette is: restriction lives in `tools`, not in permissions.
     """
+
+    RUNTIME_IDENTITY = "verifier.llm.agents.AgentBackend"
 
     def __init__(
         self,
@@ -406,6 +394,20 @@ class AgentBackend:
         self.permission_mode = permission_mode
         self.uses_role_wire_schema = True
         self.transcripts: List[Dict[str, Any]] = []
+
+    def supports_policy(self, policy: ToolPolicy) -> bool:
+        # the tool palette is a hard boundary, but the SDK does not report
+        # a session's events for a stream audit
+        return policy.no_tools and not policy.stream_audit
+
+    def no_tools_runtime(self, roles: Dict[str, AgentRole],
+                         session: NoToolsSession) -> "ClaudeCodeRuntime":
+        """No tools translates to an empty palette."""
+        return ClaudeCodeRuntime(
+            roles={name: role if not role.tools else replace(role, tools=[])
+                   for name, role in roles.items()},
+            cwd=session.scratch(), model=self.model,
+            permission_mode=self.permission_mode)
 
     def allows_lazy_oracle_catalog(
         self, role_name: str, variables: Dict[str, Any],
@@ -423,7 +425,7 @@ class AgentBackend:
 
     def complete(self, role_name: str, prompt: str, variables: Dict[str, Any]) -> Any:
         """
-        Backend entry point (same signature as FixtureBackend.complete).
+        Runtime entry point (same signature as FixtureBackend.complete).
 
         Loop-safe sync wrapper: callable from plain sync code AND from code executing inside a running event loop (e.g. an MCP tool handler in the MCP server).
         In the latter case the coroutine runs on a private loop in a worker thread, because asyncio.run would raise on a running loop.

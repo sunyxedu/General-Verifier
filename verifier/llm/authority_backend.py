@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import tempfile
 import threading
 import time
@@ -17,18 +16,24 @@ import uuid
 import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any
 
-from .agents import AgentBackend, AgentRole
+from .agents import AgentRole
 from .codex_backend import (
-    CodexBackend,
     _completed_response_without_usage,
     _native_jsonl_lines,
+    no_tools_policy_args,
 )
-from .schema import FixtureBackend, RoleError
+from .policy import NO_TOOLS, NoToolsSession
+from .runtime import capabilities_of
+from .schema import AuthorityBackendUnavailable
 
 
 AUTHORITY_BOUNDARY_VERSION = "gv-authority-no-tools-v1"
+# the session's policy: nothing to use but the inlined prompt; a runtime
+# whose palette is a hard boundary qualifies without a stream audit
+AUTHORITY_POLICY = NO_TOOLS
 _FIXTURE_SCOPES = weakref.WeakKeyDictionary()
 _FIXTURE_SCOPES_LOCK = threading.Lock()
 AUTHORITY_ONLY_NOTE = (
@@ -48,14 +53,6 @@ AUTHORITY_ONLY_NOTE = (
     "Do not attempt to read local files, use tools, or search the web."
 )
 
-_DISABLED_FEATURES = (
-    "shell_tool", "unified_exec", "shell_snapshot", "apps", "plugins",
-    "remote_plugin", "multi_agent", "memories", "browser_use",
-    "browser_use_external", "browser_use_full_cdp_access", "computer_use",
-    "in_app_browser", "workspace_dependencies", "code_mode_host", "hooks",
-    "skill_search", "skill_mcp_dependency_install", "image_generation",
-    "view_image", "sleep_tool", "goals",
-)
 # Codex 0.153.4 emits this capability-disabled notice before turn.started,
 # even with code_mode=false. It contains no tool result or candidate data.
 # Unknown errors and any tool activity still reject the entire generation.
@@ -66,43 +63,9 @@ _DISABLED_CODE_MODE_NOTICE = (
 )
 
 
-class AuthorityBackendUnavailable(RoleError):
-    """The backend cannot provide the required authority-only boundary."""
-
-
 def authority_policy_args(scratch_dir: str) -> list[str]:
-    """Permissions apply to command tools; feature gates cover other tools.
-
-    References: learn.chatgpt.com/docs/permissions and
-    learn.chatgpt.com/docs/config-file/config-reference. Permission profiles
-    must not be combined with legacy --sandbox/YOLO flags.
-    """
-    scratch = os.path.realpath(scratch_dir)
-    filesystem = json.dumps({":root": "deny", ":minimal": "read",
-                             scratch: "read"}, separators=(",", ":"))
-    # TOML inline tables use '=' rather than JSON's ':'. Quote keys/values
-    # independently, never interpolate task-controlled strings as TOML.
-    filesystem = "{" + ",".join(
-        json.dumps(key) + "=" + json.dumps(value)
-        for key, value in json.loads(filesystem).items()) + "}"
-    values = [
-        'approval_policy="never"',
-        'default_permissions="gv-authority"',
-        'permissions.gv-authority.extends=":read-only"',
-        f"permissions.gv-authority.filesystem={filesystem}",
-        'permissions.gv-authority.network.enabled=false',
-        'web_search="disabled"', 'tools.web_search=false',
-        'features.code_mode=false',
-        'features.skip_host_skill_discovery=true',
-        'suppress_unstable_features_warning=true',
-        'project_doc_max_bytes=0', 'mcp_servers={}',
-        'shell_environment_policy.inherit="none"',
-        'shell_environment_policy.experimental_use_profile=false',
-        *[f"features.{name}=false" for name in _DISABLED_FEATURES],
-    ]
-    return ["--ignore-user-config", "--ignore-rules", "--strict-config",
-            "--ephemeral", *[
-        item for value in values for item in ("-c", value)]]
+    """The Codex CLI boundary of the authority policy in ``scratch_dir``."""
+    return no_tools_policy_args(scratch_dir, AUTHORITY_POLICY)
 
 
 def validate_authority_stream(stdout: str) -> None:
@@ -146,28 +109,19 @@ def validate_authority_stream(stdout: str) -> None:
             "authority generation requires exactly one complete turn")
 
 
-class _AuthorityCodexBackend(CodexBackend):
-    def _execution_policy_args(self, role_name, variables):
-        return authority_policy_args(self._authority_scratch)
-
-    def _execution_cwd(self, role_name, variables):
-        return self._authority_scratch
-
-    def _search_enabled(self, role_name):
-        return False
-
-    def _requires_json(self):
-        return True
-
-    def _validate_attempt_stream(self, stdout):
-        validate_authority_stream(stdout)
-
-    def _recover_completed_response(self, stdout):
-        # The existing capability validator runs first. Permit only its exact
-        # known startup notice, not arbitrary errors, tool activity or a new
-        # event dialect. The recovery parser still checks unique item IDs.
-        return _completed_response_without_usage(
-            stdout, permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE)
+def authority_session(scratch_dir: str) -> NoToolsSession:
+    """One authority-only session in the empty ``scratch_dir``: only a
+    complete, tool-free single turn is accepted."""
+    return NoToolsSession(
+        policy=AUTHORITY_POLICY,
+        scratch=lambda: scratch_dir,
+        validate_stream=validate_authority_stream,
+        # The capability validator runs first. Permit only its exact known
+        # startup notice, not arbitrary errors, tool activity or a new event
+        # dialect. The recovery parser still checks unique item IDs.
+        recover_response=partial(
+            _completed_response_without_usage,
+            permitted_startup_notice=_DISABLED_CODE_MODE_NOTICE))
 
 
 @dataclass(frozen=True)
@@ -208,9 +162,11 @@ def authority_compilation_backend(backend, obligations_role, critic_role):
                 # process surviving midnight must not reuse yesterday's
                 # interpretation of a relative-date authority.
                 "calendar_epoch": _calendar_epoch()}
-    # This exact built-in type is an explicit deterministic test seam, not a
-    # promise that arbitrary duck-typed backends cannot inspect candidates.
-    if type(backend) is FixtureBackend:
+    runtime = capabilities_of(backend)
+    # A fixture runtime is an explicit deterministic test seam (declared by
+    # the fixture class itself, never inherited), not a promise that
+    # arbitrary duck-typed backends cannot inspect candidates.
+    if runtime.replays_fixtures:
         # Object ids can be reused after GC while a cache entry survives.
         with _FIXTURE_SCOPES_LOCK:
             if backend not in _FIXTURE_SCOPES:
@@ -218,57 +174,16 @@ def authority_compilation_backend(backend, obligations_role, critic_role):
             identity["fixture_scope"] = _FIXTURE_SCOPES[backend]
         yield AuthorityBackendSession(backend, *roles, identity)
         return
-    # a routing backend seats the compiler and critic on its direct
+    # a routing runtime seats the compiler and critic on its direct
     # transport; the authority-only session runs on that transport alone
     # (a single model call sees only its prompt: nothing to inspect)
-    from .direct_backend import DirectBackend, RoutingBackend
-    if type(backend) is RoutingBackend:
-        if not (backend.routes_direct(obligations_role.name)
-                and backend.routes_direct(critic_role.name)):
-            backend = backend.agent
-        else:
-            backend = backend.direct
-    if type(backend) not in (CodexBackend, AgentBackend, DirectBackend):
+    seat = capabilities_of(runtime.seat_runtime(
+        (obligations_role.name, critic_role.name)))
+    if not seat.supports_policy(AUTHORITY_POLICY):
         raise AuthorityBackendUnavailable("unsupported authority-only backend")
-    if type(backend) is CodexBackend and getattr(
-            CodexBackend, "AUTHORITY_HOOKS_VERSION", None) != 1:
-        raise AuthorityBackendUnavailable("Codex authority hooks unavailable")
-    if type(backend) is CodexBackend:
-        try:
-            version = subprocess.run(
-                ["codex", "--version"], check=True, capture_output=True,
-                text=True, timeout=10).stdout.strip()
-        except (OSError, subprocess.SubprocessError) as error:
-            raise AuthorityBackendUnavailable("Codex runtime identity unavailable") from error
-        if not version.startswith("codex-cli ") or len(version) > 100:
-            raise AuthorityBackendUnavailable("invalid Codex runtime identity")
-        identity["runtime"] = version
+    identity.update(seat.no_tools_identity(
+        AUTHORITY_POLICY, "/AUTHORITY_SCRATCH"))
     with tempfile.TemporaryDirectory(prefix="gv-authority-") as scratch:
         scratch = os.path.realpath(scratch)
-        if type(backend) is CodexBackend:
-            model_spec = backend.model + "".join(
-                f";{name}={model}" for name, model in
-                sorted(backend.model_overrides.items()))
-            isolated = _AuthorityCodexBackend(
-                roles=registry, cwd=backend.cwd, model=model_spec,
-                effort=backend.effort, timeout=backend.timeout,
-                service_tier=backend.service_tier,
-                compact_inspection=backend.compact_inspection,
-                judger_prefetch=backend.judger_prefetch)
-            # Clone the captured instructions, not potentially changed module
-            # defaults: the session identity above describes this exact backend.
-            isolated._artifact_address_note = backend._artifact_address_note
-            isolated._compact_inspection_note = backend._compact_inspection_note
-            isolated._compact_report_note = backend._compact_report_note
-            isolated._judger_prefetch_note = backend._judger_prefetch_note
-            isolated._judger_prefetch_protocol = backend._judger_prefetch_protocol
-            isolated._authority_scratch = scratch
-            identity["policy"] = authority_policy_args("/AUTHORITY_SCRATCH")
-        elif type(backend) is DirectBackend:
-            isolated = DirectBackend(backend.transport, roles=registry,
-                                     cwd=scratch, model=backend.model)
-        else:
-            isolated = AgentBackend(
-                roles=registry, cwd=scratch, model=backend.model,
-                permission_mode=backend.permission_mode)
+        isolated = seat.no_tools_runtime(registry, authority_session(scratch))
         yield AuthorityBackendSession(isolated, *roles, identity)

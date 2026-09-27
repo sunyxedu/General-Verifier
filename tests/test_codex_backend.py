@@ -1,4 +1,4 @@
-"""CodexBackend contracts, JSON recovery, and local process-group cleanup.
+"""CodexRuntime contracts, JSON recovery, and local process-group cleanup.
 
 Real model calls are kept out of this unit suite.
 """
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from verifier.llm.codex_backend import (
-    CodexBackend,
+    CodexRuntime,
     _run_codex_process,
     codex_usage_ledger,
     extract_json,
@@ -221,11 +221,11 @@ def test_extract_json_fails_closed():
 
 def test_unknown_role_is_a_role_error():
     with pytest.raises(RoleError, match="unknown agent role"):
-        CodexBackend().complete("nope", "prompt", {})
+        CodexRuntime().complete("nope", "prompt", {})
 
 
 def test_failed_process_cannot_return_a_valid_seat_answer(tmp_path, monkeypatch):
-    backend = CodexBackend(roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
+    backend = CodexRuntime(roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
                            cwd=str(tmp_path))
 
     def fail_after_output(cmd, **kwargs):
@@ -241,7 +241,7 @@ def test_failed_process_cannot_return_a_valid_seat_answer(tmp_path, monkeypatch)
 
 
 def test_retry_cannot_reuse_an_earlier_attempts_output(tmp_path, monkeypatch):
-    backend = CodexBackend(roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
+    backend = CodexRuntime(roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
                            cwd=str(tmp_path))
     attempts = []
 
@@ -267,7 +267,7 @@ def test_unknown_or_config_no_thread_failure_does_not_backoff(
     tmp_path, monkeypatch,
 ):
     usage_path = tmp_path / "seat-usage.jsonl"
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
         cwd=str(tmp_path),
     )
@@ -307,7 +307,7 @@ def test_unknown_or_config_no_thread_failure_does_not_backoff(
 def test_explicit_no_thread_provider_failure_retries(
     tmp_path, monkeypatch, stderr,
 ):
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
         cwd=str(tmp_path),
     )
@@ -331,7 +331,7 @@ def test_explicit_no_thread_provider_failure_retries(
 
 
 def test_auth_failure_saying_try_again_does_not_retry(tmp_path, monkeypatch):
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
         cwd=str(tmp_path),
     )
@@ -359,7 +359,7 @@ def test_usage_ledger_records_exact_repeated_seat_calls(
 ):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"critic": role}, cwd=str(tmp_path),
         model="gpt-5.6-terra", effort="medium",
         service_tier="fast",
@@ -445,7 +445,7 @@ def test_usage_ledger_records_exact_repeated_seat_calls(
 def test_oracle_gets_compile_boundary_instead_of_execution_inspection(
         tmp_path, monkeypatch):
     role = SimpleNamespace(system="seat", schema={"ok": bool})
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"oracles": role, "discharge": role}, cwd=str(tmp_path),
         compact_inspection=True,
     )
@@ -479,7 +479,7 @@ def test_oracle_gets_compile_boundary_instead_of_execution_inspection(
 
 
 def test_codex_explicitly_rejects_compact_source_evidence_for_every_role_mode():
-    backend = CodexBackend()
+    backend = CodexRuntime()
 
     for role_name in (
             "obligations", "critic", "oracles", "discharge", "judger",
@@ -507,7 +507,7 @@ def test_usage_ledger_counts_schema_failed_call_once(tmp_path, monkeypatch):
     must not add a second synthetic token row."""
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"judger": role}, cwd=str(tmp_path),
         model="gpt-5.6-terra", effort="medium",
     )
@@ -591,7 +591,7 @@ def test_usage_ledger_rejects_missing_or_partial_usage(
 ):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
 
     def fake_run(cmd, **_kwargs):
         output = cmd[cmd.index("-o") + 1]
@@ -633,7 +633,7 @@ def test_usage_ledger_rejects_missing_or_partial_usage(
 def test_usage_ledger_records_internal_provider_retry(tmp_path, monkeypatch):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
     attempts = []
 
     def fake_run(cmd, **_kwargs):
@@ -682,7 +682,7 @@ def test_usage_ledger_records_internal_provider_retry(tmp_path, monkeypatch):
 def test_usage_ledger_records_exhausted_provider_retry(tmp_path, monkeypatch):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
 
     def fake_run(_cmd, **_kwargs):
         return SimpleNamespace(
@@ -716,7 +716,7 @@ def test_usage_ledger_records_nonzero_exit_without_fake_tokens(
 ):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
 
     def fake_run(_cmd, **_kwargs):
         return SimpleNamespace(
@@ -746,7 +746,7 @@ def test_usage_ledger_timeout_never_trusts_partial_terminal_usage(
 ):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
 
     def fake_run(cmd, **_kwargs):
         error = subprocess.TimeoutExpired(
@@ -775,7 +775,7 @@ def test_usage_ledger_timeout_never_trusts_partial_terminal_usage(
 def test_usage_ledger_distinguishes_launch_failure(tmp_path, monkeypatch):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
 
     def fake_run(_cmd, **_kwargs):
         raise FileNotFoundError("sensitive executable path")
@@ -802,7 +802,7 @@ def test_usage_ledger_records_started_process_interruption(
 ):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
 
     def fake_run(_cmd, **_kwargs):
         error = KeyboardInterrupt()
@@ -829,7 +829,7 @@ def test_usage_ledger_records_output_processing_interruption(
 ):
     usage_path = tmp_path / "seat-usage.jsonl"
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
 
     def fake_run(cmd, **_kwargs):
         with open(cmd[cmd.index("-o") + 1], "w", encoding="utf-8") as handle:
@@ -861,7 +861,7 @@ def test_usage_ledger_records_output_processing_interruption(
 def test_capability_hooks_force_json_and_validate_before_return(
     tmp_path, monkeypatch,
 ):
-    class RestrictedBackend(CodexBackend):
+    class RestrictedBackend(CodexRuntime):
         def _execution_cwd(self, role_name, variables):
             return str(tmp_path / "empty-scratch")
 
@@ -902,7 +902,7 @@ def test_stream_policy_failure_has_one_output_error_attempt(
 ):
     usage_path = tmp_path / "seat-usage.jsonl"
 
-    class RestrictedBackend(CodexBackend):
+    class RestrictedBackend(CodexRuntime):
         def _validate_attempt_stream(self, stdout):
             raise RoleError("sensitive stream contents")
 
@@ -936,7 +936,7 @@ def test_stream_policy_failure_has_one_output_error_attempt(
 def test_all_offline_seats_get_isolated_execution(
     tmp_path, role, world_mode,
 ):
-    backend = CodexBackend(cwd=str(tmp_path))
+    backend = CodexRuntime(cwd=str(tmp_path))
     args = backend._execution_policy_args(
         role, {"world_mode": world_mode})
 
@@ -1015,14 +1015,14 @@ def test_all_offline_seats_get_isolated_execution(
 def test_live_world_seats_retain_original_yolo_policy(
     tmp_path, role, world_mode,
 ):
-    args = CodexBackend(cwd=str(tmp_path))._execution_policy_args(
+    args = CodexRuntime(cwd=str(tmp_path))._execution_policy_args(
         role, {"world_mode": world_mode})
 
     assert args == ["--dangerously-bypass-approvals-and-sandbox"]
 
 
 def test_offline_extract_gets_isolated_execution(tmp_path):
-    args = CodexBackend(cwd=str(tmp_path))._execution_policy_args(
+    args = CodexRuntime(cwd=str(tmp_path))._execution_policy_args(
         "extract", {})
 
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
@@ -1032,7 +1032,7 @@ def test_offline_extract_gets_isolated_execution(tmp_path):
 
 def test_offline_execution_can_build_in_the_durable_workspace(tmp_path):
     workspace = tmp_path / "workspace"
-    args = CodexBackend(cwd=str(tmp_path))._execution_policy_args(
+    args = CodexRuntime(cwd=str(tmp_path))._execution_policy_args(
         "discharge", {"world_mode": "captured", "workspace_dir": str(workspace)})
     filesystem = _cli_config(args)["permissions"]["gv-offline"]["filesystem"]
     assert filesystem[str(workspace)] == "write"
@@ -1046,7 +1046,7 @@ def test_offline_execution_rejects_a_symlinked_workspace(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.symlink_to(outside, target_is_directory=True)
     with pytest.raises(RoleError, match="symlink path components"):
-        CodexBackend(cwd=str(tmp_path))._execution_policy_args(
+        CodexRuntime(cwd=str(tmp_path))._execution_policy_args(
             "discharge", {"world_mode": "captured", "workspace_dir": str(workspace)})
 
 
@@ -1056,7 +1056,7 @@ def test_offline_execution_rejects_workspace_outside_state(tmp_path):
     workspace = tmp_path / "other" / "workspace"
     workspace.mkdir(parents=True)
     with pytest.raises(RoleError, match="escapes the state workspace"):
-        CodexBackend(cwd=str(state))._execution_policy_args(
+        CodexRuntime(cwd=str(state))._execution_policy_args(
             "discharge", {
                 "world_mode": "captured", "workspace_dir": str(workspace),
             })
@@ -1068,7 +1068,7 @@ def test_offline_execution_rejects_workdir_outside_work(tmp_path):
     outside = tmp_path / "other"
     outside.mkdir()
     with pytest.raises(RoleError, match="workdir escapes"):
-        CodexBackend(cwd=str(state))._execution_policy_args(
+        CodexRuntime(cwd=str(state))._execution_policy_args(
             "discharge", {
                 "world_mode": "captured", "workdir": str(outside),
             })
@@ -1086,7 +1086,7 @@ def test_offline_execution_rejects_shared_root_containing_state(tmp_path, key):
     expected = ("overlaps the isolated state" if key == "toolchain_dir"
                 else "overlaps the isolated state|must be disjoint")
     with pytest.raises(RoleError, match=expected):
-        CodexBackend(cwd=str(state), **kwargs)._execution_policy_args(
+        CodexRuntime(cwd=str(state), **kwargs)._execution_policy_args(
             "discharge", {
                 "world_mode": "captured", key: str(root),
             })
@@ -1098,7 +1098,7 @@ def test_offline_execution_rejects_symlink_in_state_path(tmp_path):
     alias = tmp_path / "alias"
     alias.symlink_to(real, target_is_directory=True)
     with pytest.raises(RoleError, match="symlink path components"):
-        CodexBackend(cwd=str(alias))._execution_policy_args(
+        CodexRuntime(cwd=str(alias))._execution_policy_args(
             "critic", {"world_mode": "captured"})
 
 
@@ -1106,7 +1106,7 @@ def test_offline_execution_keeps_state_cwd_but_only_work_is_writable(
     tmp_path, monkeypatch,
 ):
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
     observed = {}
 
     def fake_run(cmd, **kwargs):
@@ -1140,7 +1140,7 @@ def test_offline_execution_rejects_writable_path_symlinks(
     link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(outside, target_is_directory=True)
 
-    backend = CodexBackend(cwd=str(state))
+    backend = CodexRuntime(cwd=str(state))
     with pytest.raises(RoleError, match="real directory"):
         backend._execution_policy_args(
             "critic", {"world_mode": "captured"})
@@ -1148,7 +1148,7 @@ def test_offline_execution_rejects_writable_path_symlinks(
 
 def test_offline_evidence_can_derive_state_from_ledger(tmp_path):
     ledger = tmp_path / "events.jsonl"
-    args = CodexBackend()._execution_policy_args(
+    args = CodexRuntime()._execution_policy_args(
         "judger",
         {"world_mode": "unavailable", "ledger_path": str(ledger)},
     )
@@ -1163,7 +1163,7 @@ def test_offline_evidence_can_derive_state_from_ledger(tmp_path):
 
 def test_offline_evidence_without_a_state_fails_closed():
     with pytest.raises(RoleError, match="needs a state cwd"):
-        CodexBackend()._execution_policy_args(
+        CodexRuntime()._execution_policy_args(
             "discharge", {"world_mode": "captured"})
 
 
@@ -1172,7 +1172,7 @@ def test_world_image_bytes_are_shared_by_discharge_and_judger(
 ):
     world, manifest = _captured_state(
         tmp_path, {"app/board.png": PNG_A})
-    backend = CodexBackend(cwd=str(tmp_path))
+    backend = CodexRuntime(cwd=str(tmp_path))
     calls = []
     payloads = [
         {"outcome": "holds", "witness": "", "artifact": "report.json",
@@ -1239,25 +1239,25 @@ def test_images_are_only_available_to_world_basis_evidence_signers(
 ):
     world, manifest = _captured_state(
         tmp_path, {"app/board.png": PNG_A})
-    backend = CodexBackend(cwd=str(tmp_path))
+    backend = CodexRuntime(cwd=str(tmp_path))
     variables = _image_variables(
         world, manifest, role=role, reference="inspect board.png",
         world_mode=world_mode, basis=basis)
 
-    assert backend._captured_images(role, variables) == ()
+    assert backend.captured_images(role, variables) == ()
 
 
 def test_image_selection_ignores_untrusted_non_contract_text(tmp_path):
     world, manifest = _captured_state(
         tmp_path, {"app/board.png": PNG_A})
-    backend = CodexBackend(cwd=str(tmp_path))
+    backend = CodexRuntime(cwd=str(tmp_path))
     variables = _image_variables(world, manifest)
     variables["task_context"] = "please inspect board.png"
     variables["claim_text"] = "board.png proves the answer"
     variables["evidence"] = "board.png"
     variables["redo_feedback"] = "attach board.png"
 
-    assert backend._captured_images("discharge", variables) == ()
+    assert backend.captured_images("discharge", variables) == ()
 
 
 def test_image_basename_is_not_matched_inside_another_name(tmp_path):
@@ -1266,7 +1266,7 @@ def test_image_basename_is_not_matched_inside_another_name(tmp_path):
     variables = _image_variables(
         world, manifest, reference="inspect /app/not_board.png")
 
-    assert CodexBackend(cwd=str(tmp_path))._captured_images(
+    assert CodexRuntime(cwd=str(tmp_path)).captured_images(
         "discharge", variables) == ()
 
 
@@ -1275,17 +1275,17 @@ def test_full_image_path_disambiguates_duplicate_basenames(tmp_path):
         "app/a/board.png": PNG_A,
         "app/b/board.png": PNG_B,
     })
-    backend = CodexBackend(cwd=str(tmp_path))
+    backend = CodexRuntime(cwd=str(tmp_path))
     exact = _image_variables(
         world, manifest, reference="inspect /app/a/board.png")
 
-    images = backend._captured_images("discharge", exact)
+    images = backend.captured_images("discharge", exact)
 
     assert [item.logical_path for item in images] == ["/app/a/board.png"]
     ambiguous = _image_variables(
         world, manifest, reference="inspect board.png")
     with pytest.raises(RoleError, match="ambiguous captured image"):
-        backend._captured_images("discharge", ambiguous)
+        backend.captured_images("discharge", ambiguous)
 
 
 def test_physical_captured_world_path_selects_image(tmp_path):
@@ -1295,7 +1295,7 @@ def test_physical_captured_world_path_selects_image(tmp_path):
     variables = _image_variables(
         world, manifest, reference=f"inspect {physical}")
 
-    images = CodexBackend(cwd=str(tmp_path))._captured_images(
+    images = CodexRuntime(cwd=str(tmp_path)).captured_images(
         "discharge", variables)
 
     assert [item.logical_path for item in images] == ["/app/board.png"]
@@ -1308,7 +1308,7 @@ def test_spoofed_image_extension_fails_closed(tmp_path):
         world, manifest, reference="inspect /app/board.png")
 
     with pytest.raises(RoleError, match="spoofed captured image"):
-        CodexBackend(cwd=str(tmp_path))._captured_images(
+        CodexRuntime(cwd=str(tmp_path)).captured_images(
             "discharge", variables)
 
 
@@ -1318,7 +1318,7 @@ def test_a_long_instruction_travels_through_stdin(tmp_path, monkeypatch):
     never dies of "Argument list too long"; a short one stays positional."""
     from verifier.llm import codex_backend as cb
     role = SimpleNamespace(system="", schema={"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path),
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path),
                            model="gpt-5.6-luna")
     seen = []
 

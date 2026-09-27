@@ -9,7 +9,7 @@ from verifier.config import (
     typed_judger_packet_enabled,
 )
 from verifier.execution.discharge import AgentDischarger
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.codex_backend import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 from verifier.app.assembly import build_kernel
 from verifier.mcp_server import Service
@@ -132,7 +132,7 @@ def test_restricted_judger_cwd_rejects_unbound_injected_backend(
     scratch.mkdir(mode=0o500)
     monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
     monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "1")
-    backend = CodexBackend(cwd=str(tmp_path))
+    backend = CodexRuntime(cwd=str(tmp_path))
 
     with pytest.raises(ValueError, match="exact restricted Judger cwd"):
         offline.score(
@@ -149,7 +149,7 @@ def test_injected_backend_cannot_hide_restricted_judger_cwd(
     scratch.mkdir(mode=0o500)
     monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
     monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "1")
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=str(state), restricted_judger_cwd=str(scratch))
 
     with pytest.raises(ValueError, match="exact restricted Judger cwd"):

@@ -178,9 +178,9 @@ def _aggregate_agent_usage(path: Path, run_id: str, work_id: str) -> dict[str, A
 @contextmanager
 def _agent_usage_ledger(path: Path, run_id: str):
     """Persist every SDK attempt and attach per-trace aggregates to features."""
-    from verifier.llm.agents import AgentBackend
+    from verifier.llm.agents import ClaudeCodeRuntime
 
-    original_attempt = AgentBackend._attempt
+    original_attempt = ClaudeCodeRuntime._attempt
     original_score = offline.score
 
     async def tracked_attempt(backend, role, prompt):
@@ -201,13 +201,13 @@ def _agent_usage_ledger(path: Path, run_id: str):
             "llm_usage": _aggregate_agent_usage(path, run_id, work_id),
         }
 
-    AgentBackend._attempt = tracked_attempt
+    ClaudeCodeRuntime._attempt = tracked_attempt
     offline.score = tracked_score
     try:
         yield
     finally:
         offline.score = original_score
-        AgentBackend._attempt = original_attempt
+        ClaudeCodeRuntime._attempt = original_attempt
 
 
 class DatasetError(ValueError):

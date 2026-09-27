@@ -533,14 +533,14 @@ def test_config_identity_separates_codex_service_tiers():
 
 
 def test_score_rejects_a_backend_tier_that_disagrees_with_its_stamp(tmp_path):
-    from verifier.llm.codex_backend import CodexBackend
+    from verifier.llm.codex_backend import CodexRuntime
 
     with pytest.raises(ValueError, match="does not match"):
         offline.score(
             str(tmp_path),
             seats="codex",
             service_tier="standard",
-            backend=CodexBackend(cwd=str(tmp_path), service_tier="fast"),
+            backend=CodexRuntime(cwd=str(tmp_path), service_tier="fast"),
         )
 
 

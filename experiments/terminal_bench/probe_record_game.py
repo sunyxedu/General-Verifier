@@ -36,7 +36,8 @@ from verifier.engine.judger_prefetch import PREFETCH_PROTOCOL
 from verifier.engine.typed_judger_packet import TYPED_JUDGER_PACKET_PROTOCOL
 from verifier.execution.discharge import AgentDischarger
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm.codex_backend import CodexBackend, codex_usage_ledger
+from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
+from verifier.llm.runtime import capabilities_of
 from verifier.llm.model_spans import span_sidecar_path
 
 
@@ -245,16 +246,16 @@ def run_probe(
         log = EventLog(str(state / "events.jsonl"))
         offline.ingest_feed(str(state / "hook_feed.jsonl"), log)
         backend = (backend_factory(state) if backend_factory is not None else
-                   CodexBackend(cwd=str(state), **RUNTIME,
+                   CodexRuntime(cwd=str(state), **RUNTIME,
                                 compact_inspection=compact_inspection,
                                 judger_prefetch=judger_prefetch))
-        if getattr(backend, "compact_inspection", False) is not compact_inspection:
+        options = capabilities_of(backend).run_options
+        if options.compact_inspection is not compact_inspection:
             raise ReplaySetupError("backend differs from inspection profile")
-        if getattr(backend, "judger_prefetch", False) is not judger_prefetch:
+        if options.judger_prefetch is not judger_prefetch:
             raise ReplaySetupError("backend differs from prefetch profile")
-        validate = getattr(backend, "validate_offline_tool_scope", None)
-        if callable(validate):
-            validate(str(state), None, None)
+        capabilities_of(backend).validate_offline_tool_scope(
+            str(state), None, None)
         game = _build_game(
             state, typed_adapters, backend,
             typed_judger_packet=typed_judger_packet)

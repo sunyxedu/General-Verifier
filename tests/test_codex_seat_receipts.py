@@ -19,7 +19,7 @@ def rows(tmp_path):
 
 def backend(tmp_path, monkeypatch, fail=False):
     role = SimpleNamespace(system="fixed role rules", schema={"ok": bool})
-    instance = cb.CodexBackend(roles={"judger": role}, cwd=str(tmp_path), model="gpt-5.6-luna")
+    instance = cb.CodexRuntime(roles={"judger": role}, cwd=str(tmp_path), model="gpt-5.6-luna")
 
     def run(command, **kwargs):
         if fail:

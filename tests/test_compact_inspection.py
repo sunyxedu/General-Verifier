@@ -36,7 +36,7 @@ def test_opt_in_compacts_reports_and_all_post_extract_roles_get_inspection_note(
     role = SimpleNamespace(system="fixed system", schema={"ok": bool})
     calls = []
     monkeypatch.setattr(cb, "_run_codex_process", _runner(calls))
-    backends = [cb.CodexBackend(
+    backends = [cb.CodexRuntime(
         roles={role_name: role}, cwd=str(tmp_path), model="gpt-5.6-luna",
         effort="medium", service_tier="standard", compact_inspection=enabled)
         for enabled in (False, True)]
@@ -69,8 +69,8 @@ def test_opt_in_compacts_reports_and_all_post_extract_roles_get_inspection_note(
 
 
 def test_default_keeps_previous_identity_and_profiles_never_share(monkeypatch):
-    base = cb.CodexBackend()
-    opt = cb.CodexBackend(compact_inspection=True)
+    base = cb.CodexRuntime()
+    opt = cb.CodexRuntime(compact_inspection=True)
     assert base.compact_inspection is False
     assert base.runtime_instruction_identity == hashlib.sha256(
         (cb._ARTIFACT_ADDRESS_NOTE + cb._ORACLE_COMPILE_NOTE).encode()
@@ -79,13 +79,13 @@ def test_default_keeps_previous_identity_and_profiles_never_share(monkeypatch):
     before = _backend_identity(opt)
     monkeypatch.setattr(cb, "_COMPACT_INSPECTION_NOTE", "changed runtime note")
     assert _backend_identity(opt) == before
-    assert _backend_identity(cb.CodexBackend(compact_inspection=True)) != before
+    assert _backend_identity(cb.CodexRuntime(compact_inspection=True)) != before
 
 
 @pytest.mark.parametrize("invalid", [None, 0, 1, "1", [], {}])
 def test_profile_requires_explicit_bool(invalid):
     with pytest.raises(ValueError, match="must be a bool"):
-        cb.CodexBackend(compact_inspection=invalid)
+        cb.CodexRuntime(compact_inspection=invalid)
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -94,7 +94,7 @@ def test_attempt_bill_records_actual_profile_without_changing_usage(
     calls = []
     monkeypatch.setattr(cb, "_run_codex_process", _runner(calls))
     role = SimpleNamespace(system="fixed", schema={"ok": bool})
-    backend = cb.CodexBackend(roles={"judger": role}, cwd=str(tmp_path),
+    backend = cb.CodexRuntime(roles={"judger": role}, cwd=str(tmp_path),
                               compact_inspection=enabled)
     usage = tmp_path / "usage.jsonl"
     with cb.codex_usage_ledger(str(usage), {str(tmp_path): {"fixture": True}}):

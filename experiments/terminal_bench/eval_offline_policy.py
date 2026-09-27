@@ -2,7 +2,8 @@
 
 This module is an evaluation overlay, not part of the verifier runtime and
 not a claim that a baseline is pristine.  It temporarily replaces only a
-selected source tree's ``CodexBackend._execution_policy_args`` method.  Role
+selected source tree's Codex class ``_execution_policy_args`` method
+(``CodexRuntime`` in current trees, ``CodexBackend`` in frozen ones).  Role
 prompts, tools, models, retry budgets, and response handling remain owned by
 that source tree.
 
@@ -315,6 +316,16 @@ class EvalOnlinePolicyPlan:
         return dict(self._identity)
 
 
+def codex_class(module: types.ModuleType) -> Any:
+    """The selected tree's Codex class: ``CodexRuntime`` in current source
+    trees, ``CodexBackend`` in frozen ones."""
+    for name in ("CodexRuntime", "CodexBackend"):
+        value = getattr(module, name, None)
+        if value is not None:
+            return value
+    return None
+
+
 def plan_eval_offline_policy(
     module: types.ModuleType,
     *,
@@ -323,7 +334,7 @@ def plan_eval_offline_policy(
     """Build an immutable plan without creating or changing directories."""
     if not isinstance(module, types.ModuleType):
         raise EvalOfflinePolicyError("module must be an imported Python module")
-    backend_class = getattr(module, "CodexBackend", None)
+    backend_class = codex_class(module)
     if not isinstance(backend_class, type):
         raise EvalOfflinePolicyError("module must expose CodexBackend")
     if backend_class.__module__ != module.__name__:
@@ -382,7 +393,7 @@ def plan_eval_online_policy(
     """
     if not isinstance(module, types.ModuleType):
         raise EvalOfflinePolicyError("module must be an imported Python module")
-    backend_class = getattr(module, "CodexBackend", None)
+    backend_class = codex_class(module)
     if not isinstance(backend_class, type):
         raise EvalOfflinePolicyError("module must expose CodexBackend")
     if backend_class.__module__ != module.__name__:

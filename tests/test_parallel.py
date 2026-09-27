@@ -292,7 +292,7 @@ def test_verify_is_serialized_per_claim(tmp_path):
 # ---- shared toolchain and caches through the codex sandbox -------------------
 
 def test_codex_policy_grants_shared_roots_and_points_caches_at_them(tmp_path):
-    from verifier.llm.codex_backend import CodexBackend
+    from verifier.llm.codex_backend import CodexRuntime
     state = tmp_path / "state"
     work = state / "work"
     work.mkdir(parents=True)
@@ -301,7 +301,7 @@ def test_codex_policy_grants_shared_roots_and_points_caches_at_them(tmp_path):
     cache = shared / "cache"
     toolchain.mkdir(parents=True)
     cache.mkdir(parents=True)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=str(state), model="m",
         offline_toolchain_dir=str(toolchain),
         offline_shared_cache_dir=str(cache),
@@ -323,10 +323,10 @@ def test_codex_policy_grants_shared_roots_and_points_caches_at_them(tmp_path):
 
 
 def test_codex_policy_without_shared_dirs_is_unchanged(tmp_path):
-    from verifier.llm.codex_backend import CodexBackend
+    from verifier.llm.codex_backend import CodexRuntime
     state = tmp_path / "state"
     (state / "work").mkdir(parents=True)
-    backend = CodexBackend(cwd=str(state), model="m")
+    backend = CodexRuntime(cwd=str(state), model="m")
     args = backend._execution_policy_args("discharge", {
         "world_mode": "captured", "workdir": str(state / "work" / "w")})
     joined = "\n".join(args)

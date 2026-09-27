@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from verifier.llm.authority_backend import (
-    _AuthorityCodexBackend,
     AuthorityBackendUnavailable,
+    authority_session,
 )
-from verifier.llm.codex_backend import codex_usage_ledger
+from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
 
 
 def _stream(*items, message='{"ok": true}'):
@@ -30,12 +30,12 @@ def _stream(*items, message='{"ok": true}'):
 
 
 def _backend(original_cwd, scratch):
-    backend = _AuthorityCodexBackend(
+    backend = CodexRuntime(
         roles={"obligations": SimpleNamespace(
             system="", schema={"ok": bool})},
         cwd=str(original_cwd),
+        session=authority_session(str(scratch)),
     )
-    backend._authority_scratch = str(scratch)
     return backend
 
 

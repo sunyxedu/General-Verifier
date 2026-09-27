@@ -10,7 +10,7 @@ from verifier.contract_replay import (
     attach_replay_contracts, clone_extracted_inputs, compile_input_digests, load_replay_contracts,
 )
 from verifier.engine.contract_bundle import SealedContractBundle
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.codex_backend import CodexRuntime
 
 
 def group(tmp_path, monkeypatch):
@@ -98,7 +98,7 @@ def test_validated_full_bundle_loads_into_two_fresh_diagnostic_arms(tmp_path, mo
     for name in ("control", "treatment"):
         state = tmp_path / name
         clone_extracted_inputs(local.source, state)
-        sc = service(state, CodexBackend(cwd=str(state), model="gpt-5.6-luna"))
+        sc = service(state, CodexRuntime(cwd=str(state), model="gpt-5.6-luna"))
         provider = load_replay_contracts(
             sc.kernel, sc.builder.finals[-1], config, result["bundle_bytes"],
             expected_sha256=result["bundle_sha256"])

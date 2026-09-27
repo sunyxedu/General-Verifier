@@ -11,8 +11,8 @@ from verifier.config import (
     OFFLINE_RUNTIME_READ_ROOTS_ENV,
     offline_runtime_read_roots,
 )
-from verifier.llm.authority_backend import _AuthorityCodexBackend
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.authority_backend import authority_session
+from verifier.llm.codex_backend import CodexRuntime
 from verifier.llm.schema import RoleError
 
 
@@ -124,7 +124,7 @@ def test_offline_policy_grants_only_configured_roots_and_pins_path(
     toolchain.mkdir(parents=True)
     _set_roots(monkeypatch, runtime, runtime_bin)
 
-    args = CodexBackend(
+    args = CodexRuntime(
         cwd=os.fspath(state),
         offline_toolchain_dir=os.fspath(toolchain),
     )._execution_policy_args(
@@ -154,7 +154,7 @@ def test_offline_policy_rejects_runtime_overlap_with_state(
     _set_roots(monkeypatch, tmp_path)
 
     with pytest.raises(RoleError, match="overlaps the isolated state"):
-        CodexBackend(cwd=os.fspath(state))._execution_policy_args(
+        CodexRuntime(cwd=os.fspath(state))._execution_policy_args(
             "critic", {"world_mode": "captured"})
 
 
@@ -166,7 +166,7 @@ def test_state_local_toolchain_stays_first_on_path(tmp_path, monkeypatch):
     toolchain = state / "work" / "toolchain"
     _set_roots(monkeypatch, runtime_bin)
 
-    args = CodexBackend(
+    args = CodexRuntime(
         cwd=os.fspath(state),
         offline_toolchain_dir=os.fspath(toolchain),
     )._execution_policy_args(
@@ -192,7 +192,7 @@ def test_offline_policy_rejects_runtime_overlap_with_writable_toolchain(
     _set_roots(monkeypatch, runtime)
 
     with pytest.raises(RoleError, match="overlaps a writable root"):
-        CodexBackend(
+        CodexRuntime(
             cwd=os.fspath(state),
             offline_toolchain_dir=os.fspath(toolchain),
         )._execution_policy_args(
@@ -207,7 +207,7 @@ def test_live_policy_does_not_consume_offline_runtime_configuration(
 ):
     monkeypatch.setenv(OFFLINE_RUNTIME_READ_ROOTS_ENV, "not-json")
 
-    assert CodexBackend(cwd=os.fspath(tmp_path))._execution_policy_args(
+    assert CodexRuntime(cwd=os.fspath(tmp_path))._execution_policy_args(
         "critic", {"world_mode": "live"},
     ) == ["--dangerously-bypass-approvals-and-sandbox"]
 
@@ -220,8 +220,8 @@ def test_authority_policy_never_inherits_offline_runtime_roots(
     runtime.mkdir()
     scratch.mkdir()
     _set_roots(monkeypatch, runtime)
-    backend = _AuthorityCodexBackend(cwd=os.fspath(tmp_path))
-    backend._authority_scratch = os.fspath(scratch)
+    backend = CodexRuntime(cwd=os.fspath(tmp_path),
+                           session=authority_session(os.fspath(scratch)))
 
     config = _cli_config(backend._execution_policy_args("obligations", {}))
     filesystem = config["permissions"]["gv-authority"]["filesystem"]

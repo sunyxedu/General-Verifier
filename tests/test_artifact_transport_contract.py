@@ -85,7 +85,7 @@ def test_blob_publication_pins_directories_during_a_path_swap(
 @pytest.mark.parametrize("role_name", ["judger", "oracles", "discharge", "critic", "obligations"])
 def test_only_judger_receives_format_note_without_tool_or_schema_changes(tmp_path, monkeypatch, role_name):
     role = SimpleNamespace(system="fixed role rules", schema={"ok": bool})
-    instance = cb.CodexBackend(roles={role_name: role}, cwd=str(tmp_path), model="gpt-5.6-luna")
+    instance = cb.CodexRuntime(roles={role_name: role}, cwd=str(tmp_path), model="gpt-5.6-luna")
     calls = []
     def run(command, **kwargs):
         calls.append(command)
@@ -104,10 +104,10 @@ def test_only_judger_receives_format_note_without_tool_or_schema_changes(tmp_pat
 
 
 def test_runtime_transport_identity_is_frozen_per_backend_and_separates_cache(monkeypatch):
-    before = cb.CodexBackend(model="gpt-5.6-luna")
+    before = cb.CodexRuntime(model="gpt-5.6-luna")
     first = _backend_identity(before)
     monkeypatch.setattr(cb, "_ARTIFACT_ADDRESS_NOTE", cb._ARTIFACT_ADDRESS_NOTE + " revision")
-    after = cb.CodexBackend(model="gpt-5.6-luna")
+    after = cb.CodexRuntime(model="gpt-5.6-luna")
     assert _backend_identity(before) == first
     assert _backend_identity(after) != first
     assert set(_backend_identity(after)) == set(first)

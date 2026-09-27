@@ -12,9 +12,10 @@ Agents ll take their provider env from here:
 
 Experiments import it through the installed `verifier` package; gv_agent.py file-loads it from GV_ROOT.
 
-Configuration (.env, or real environment variables. The real environment wins; see .env.example for the full reference):
+Configuration (.env, or real environment variables. The real environment wins; see .env.example for the full reference;
+parsed by verifier.config.ProviderSettings, defaults from the preset table llm/endpoints/presets.py):
   GV_PROVIDER = deepseek (default) | anthropic | openrouter | custom
-  GV_MODEL    = model id on that provider (defaults below)
+  GV_MODEL    = model id on that provider (default: the provider preset)
   DEEPSEEK_API_KEY / OPENROUTER_API_KEY = the key for the chosen provider.
   GV_ANTHROPIC_BASE_URL / GV_API_KEY / GV_LITELLM_MODEL = everything explicit, for GV_PROVIDER=custom.
   CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY, or the interactive login) for GV_PROVIDER=anthropic.
@@ -26,88 +27,56 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    from .. import config as _config
+    from .endpoints import presets as _presets
+except ImportError:
+    # File-loaded under a harness's own Python (terminal_bench/gv_agent.py),
+    # where the verifier package is not installed: its two stdlib-only
+    # dependencies are loaded by path the same way.
+    import importlib.util as _importlib_util
 
-def _load_dotenv(path):
-    """Minimal .env parser: KEY=VALUE lines, #-comments, optional quotes."""
-    conf = {}
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                v = v.strip().strip("'\"")
-                conf[k.strip()] = v
-    except OSError:
-        pass
-    return conf
+    def _load_sibling(name, *path):
+        spec = _importlib_util.spec_from_file_location(
+            name, os.path.join(ROOT, "verifier", *path))
+        module = _importlib_util.module_from_spec(spec)
+        sys.modules[name] = module   # dataclasses resolve their module
+        spec.loader.exec_module(module)
+        return module
 
+    _config = _load_sibling("gv_config", "config.py")
+    _presets = _load_sibling("gv_endpoint_presets",
+                             "llm", "endpoints", "presets.py")
 
-_DOTENV = _load_dotenv(os.path.join(ROOT, ".env"))
+SETTINGS = _config.ProviderSettings.from_env()
+# unknown provider names fail here, at import, as they always did
+AGENT = _presets.resolve_agent_provider(SETTINGS)
 
-
-def cfg(name, default=None):
-    """Real environment > .env file > baked-in default."""
-    v = os.environ.get(name)
-    if v is None:
-        v = _DOTENV.get(name)
-    return v if v not in (None, "") else default
-
-
-PROVIDER = (cfg("GV_PROVIDER", "deepseek") or "deepseek").lower()
-
-if PROVIDER == "anthropic":
-    # First-party Claude: the CLI's own login. Credentials come from, in
-    # order, CLAUDE_CODE_OAUTH_TOKEN (a `claude setup-token` token, also the
-    # form Harbor forwards into task containers under CLAUDE_FORCE_OAUTH),
-    # ANTHROPIC_API_KEY / GV_API_KEY, or the interactive login's
-    # .credentials.json in the config dir. No base-URL override.
-    MODEL = cfg("GV_MODEL", "claude-sonnet-5")
-    ANTHROPIC_BASE_URL = None
-    OAUTH_TOKEN = cfg("CLAUDE_CODE_OAUTH_TOKEN")
-    API_KEY = cfg("GV_API_KEY") or cfg("ANTHROPIC_API_KEY")
-    KEY_ENV = "ANTHROPIC_API_KEY"
-    LITELLM_MODEL = f"anthropic/{MODEL}"
-    _X_API_KEY = API_KEY
-elif PROVIDER == "deepseek":
-    MODEL = cfg("GV_MODEL", "deepseek-v4-flash")
-    ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
-    API_KEY = cfg("DEEPSEEK_API_KEY")
-    KEY_ENV = "DEEPSEEK_API_KEY"
-    LITELLM_MODEL = f"deepseek/{MODEL}"
-    _X_API_KEY = API_KEY
-elif PROVIDER == "openrouter":
-    MODEL = cfg("GV_MODEL", "deepseek/deepseek-v4-flash")
-    ANTHROPIC_BASE_URL = "https://openrouter.ai/api"
-    API_KEY = cfg("OPENROUTER_API_KEY")
-    KEY_ENV = "OPENROUTER_API_KEY"
-    LITELLM_MODEL = f"openrouter/{MODEL}"
-    _X_API_KEY = ""    # MUST be explicitly blank: Bearer-only auth, and a
-                       # non-empty x-api-key makes claude fall back to it
-elif PROVIDER == "custom":
-    MODEL = cfg("GV_MODEL")
-    ANTHROPIC_BASE_URL = cfg("GV_ANTHROPIC_BASE_URL")
-    API_KEY = cfg("GV_API_KEY")
-    KEY_ENV = "GV_API_KEY"
-    LITELLM_MODEL = cfg("GV_LITELLM_MODEL", MODEL)
-    _X_API_KEY = API_KEY
-else:
-    raise RuntimeError(f"unknown GV_PROVIDER: {PROVIDER!r} "
-                       "(expected anthropic | deepseek | openrouter | custom)")
-
-if PROVIDER != "anthropic":
-    OAUTH_TOKEN = None
+PROVIDER = AGENT.name
+# First-party Claude (anthropic) uses the CLI's own login. Credentials come
+# from, in order, CLAUDE_CODE_OAUTH_TOKEN (a `claude setup-token` token, also
+# the form Harbor forwards into task containers under CLAUDE_FORCE_OAUTH),
+# ANTHROPIC_API_KEY / GV_API_KEY, or the interactive login's
+# .credentials.json in the config dir. No base-URL override.
+MODEL = AGENT.model
+ANTHROPIC_BASE_URL = AGENT.base_url
+OAUTH_TOKEN = AGENT.oauth_token
+API_KEY = AGENT.api_key
+KEY_ENV = AGENT.key_env
+LITELLM_MODEL = AGENT.litellm_model
+# MUST be explicitly blank on a Bearer-only provider (openrouter): a
+# non-empty x-api-key makes claude fall back to it
+_X_API_KEY = AGENT.x_api_key
 
 # Kept for backward reference; prefer API_KEY.
 DEEPSEEK_API_KEY = API_KEY if PROVIDER == "deepseek" else \
-    cfg("DEEPSEEK_API_KEY")
+    SETTINGS.value("DEEPSEEK_API_KEY")
 
 if PROVIDER == "anthropic" and not (OAUTH_TOKEN or API_KEY):
     # credentials live in the interactive login's config dir; an explicit
     # override lets a harness point at a staged copy
-    CONFIG_DIR = (cfg("GV_CLAUDE_CONFIG_DIR")
-                  or os.environ.get("CLAUDE_CONFIG_DIR")
+    CONFIG_DIR = (SETTINGS.claude_config_dir
+                  or SETTINGS.inherited_config_dir
                   or os.path.expanduser("~/.claude"))
 else:
     # token/key auth needs no login state: an isolated, hook-free config
@@ -117,7 +86,7 @@ else:
 # Text-only provider: the model cannot accept image content blocks.
 # Set GV_TEXT_ONLY=1 (env or .env) for models like deepseek-v4-flash;
 # SDK seats then refuse to Read raster images into context (agents.py).
-TEXT_ONLY = (cfg("GV_TEXT_ONLY", "") == "1")
+TEXT_ONLY = SETTINGS.text_only
 
 CLAUDE_ENV = {
     "ANTHROPIC_MODEL": MODEL,
@@ -143,6 +112,15 @@ else:
     CLAUDE_ENV["ANTHROPIC_AUTH_TOKEN"] = API_KEY
     CLAUDE_ENV["ANTHROPIC_API_KEY"] = _X_API_KEY
     CLAUDE_ENV[KEY_ENV] = API_KEY
+
+
+def agent_provider():
+    """The Claude Code seats' provider as this module currently holds it
+    (a harness or a test may rebind the module's values after import)."""
+    return _presets.AgentProvider(
+        name=PROVIDER, model=MODEL, base_url=ANTHROPIC_BASE_URL,
+        api_key=API_KEY, key_env=KEY_ENV, litellm_model=LITELLM_MODEL,
+        x_api_key=_X_API_KEY, oauth_token=OAUTH_TOKEN)
 
 
 def _keychain_login():

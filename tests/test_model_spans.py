@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from verifier.llm.agents import AgentRole, JUDGER_AGENT
-from verifier.llm.codex_backend import CodexBackend, codex_usage_ledger
+from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
 from verifier.core.events import EventLog
 from verifier.core.model import Obligation
 from verifier.engine.game import Attempt, BindingGame
@@ -104,7 +104,7 @@ def test_role_span_covers_gate_and_separates_schema_attempts(
 def test_codex_provider_retries_share_one_call_span(tmp_path, monkeypatch):
     usage = tmp_path / "usage.jsonl"
     role = AgentRole("critic", "prompt", {"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
     calls = []
 
     def fake_run(cmd, **_kwargs):
@@ -149,7 +149,7 @@ def test_codex_provider_retries_share_one_call_span(tmp_path, monkeypatch):
 
 def test_direct_codex_call_is_explicitly_unattributed(tmp_path, monkeypatch):
     usage = tmp_path / "usage.jsonl"
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"critic": SimpleNamespace(system="", schema={"ok": bool})},
         cwd=str(tmp_path),
     )
@@ -311,7 +311,7 @@ def test_base_exception_closes_role_and_model_call_without_raw_error(
         tmp_path, monkeypatch):
     usage = tmp_path / "usage.jsonl"
     role = AgentRole("critic", "fixed", {"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
 
     def interrupted(_cmd, **_kwargs):
         error = KeyboardInterrupt("sensitive interrupt body")
@@ -340,7 +340,7 @@ def test_interrupted_scopes_reset_before_following_direct_call(
         tmp_path, monkeypatch):
     usage = tmp_path / "usage.jsonl"
     role = AgentRole("critic", "fixed", {"ok": bool})
-    backend = CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    backend = CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
     calls = 0
 
     def fake_run(cmd, **_kwargs):

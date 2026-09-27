@@ -43,12 +43,12 @@ def test_profile_cannot_be_advertised_for_sdk():
 
 def test_injected_backend_cannot_hide_enabled_profile_behind_sdk_stamp(tmp_path):
     with pytest.raises(ValueError, match="compact_inspection does not match"):
-        offline.score(str(tmp_path), backend=cb.CodexBackend(compact_inspection=True))
+        offline.score(str(tmp_path), backend=cb.CodexRuntime(compact_inspection=True))
 
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_injected_backend_profile_mismatch_fails_before_call(tmp_path, enabled):
-    backend = cb.CodexBackend(cwd=str(tmp_path), compact_inspection=not enabled)
+    backend = cb.CodexRuntime(cwd=str(tmp_path), compact_inspection=not enabled)
     with pytest.raises(ValueError, match="compact_inspection does not match"):
         offline.score(str(tmp_path), seats="codex", backend=backend,
                       compact_inspection=enabled)
@@ -78,7 +78,7 @@ def test_extractor_and_kernel_receive_same_explicit_profile(tmp_path, monkeypatc
         assert kwargs["critic_rounds"] == 2
         raise ReachedKernel()
 
-    monkeypatch.setattr(cb.CodexBackend, "complete", complete)
+    monkeypatch.setattr(cb.CodexRuntime, "complete", complete)
     monkeypatch.setattr(assembly, "build_kernel", kernel)
     with pytest.raises(ReachedKernel):
         offline.score(str(tmp_path), seats="codex", model="gpt-5.6-luna",
@@ -96,13 +96,11 @@ def test_extractor_and_kernel_receive_same_explicit_profile(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_authority_clone_preserves_profile_and_frozen_identity(tmp_path, monkeypatch, enabled):
-    import verifier.llm.authority_backend as ab
-
-    backend = cb.CodexBackend(cwd=str(tmp_path), compact_inspection=enabled)
+    backend = cb.CodexRuntime(cwd=str(tmp_path), compact_inspection=enabled)
     identity = backend.runtime_instruction_identity
     monkeypatch.setattr(cb, "_COMPACT_INSPECTION_NOTE", "later module default")
     monkeypatch.setattr(cb, "_ARTIFACT_ADDRESS_NOTE", "later artifact note")
-    monkeypatch.setattr(ab.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="codex-cli test"))
+    monkeypatch.setattr(cb.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="codex-cli test"))
     with authority_compilation_backend(backend, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT) as session:
         assert session.backend.compact_inspection is enabled
         assert session.backend.runtime_instruction_identity == identity

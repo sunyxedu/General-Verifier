@@ -19,7 +19,7 @@ from verifier.engine.kernel import Kernel
 from verifier.execution.discharge import DischargeResult
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm.agents import (
-    AgentBackend,
+    ClaudeCodeRuntime,
     AgentRole,
     COMPILE_OBLIGATIONS_AGENT,
     CRITIC_AGENT,
@@ -29,7 +29,7 @@ from verifier.llm.authority_backend import (
     authority_compilation_backend,
     validate_authority_stream,
 )
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.codex_backend import CodexRuntime
 from verifier.llm.schema import FixtureBackend, RoleError
 
 
@@ -294,7 +294,7 @@ def test_builtin_sessions_are_toolless_scratch_scoped_and_preserve_models(tmp_pa
     candidate_cwd = tmp_path / "candidate-secret-directory"
     candidate_cwd.mkdir()
 
-    codex = CodexBackend(
+    codex = CodexRuntime(
         cwd=str(candidate_cwd),
         model="base-model;obligations=compile-model;critic=review-model",
     )
@@ -315,13 +315,13 @@ def test_builtin_sessions_are_toolless_scratch_scoped_and_preserve_models(tmp_pa
     assert not os.path.exists(scratch)
     assert COMPILE_OBLIGATIONS_AGENT.tools == original_tools
 
-    agent = AgentBackend(
+    agent = ClaudeCodeRuntime(
         cwd=str(candidate_cwd), model="fixed-agent-model",
         permission_mode="default",
     )
     with authority_compilation_backend(
             agent, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT) as session:
-        assert type(session.backend) is AgentBackend
+        assert type(session.backend) is ClaudeCodeRuntime
         scratch = session.backend.cwd
         assert scratch != str(candidate_cwd)
         assert os.path.isdir(scratch)

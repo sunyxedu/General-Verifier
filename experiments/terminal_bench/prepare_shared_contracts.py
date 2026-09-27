@@ -25,7 +25,7 @@ from verifier.contract_replay import (
 from verifier.core.store import TRIGGER_LAZY
 from verifier.core.model import canonical, content_hash
 from verifier.engine.method_cache import AcceptedMethodCache
-from verifier.llm.codex_backend import CodexBackend, codex_usage_ledger
+from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
 from verifier.app.assembly import build_kernel
 from verifier.mcp_server import Service
 
@@ -37,7 +37,7 @@ _RUNTIME = {"model": "gpt-5.6-luna", "seats": "codex", "effort": "medium", "serv
 
 
 def codex_backend(state, config):
-    backend = CodexBackend(cwd=str(state), model=config["model"],
+    backend = CodexRuntime(cwd=str(state), model=config["model"],
                            effort=config["effort"], service_tier=config["service_tier"])
     backend.validate_offline_tool_scope(str(state), None, None)
     return backend

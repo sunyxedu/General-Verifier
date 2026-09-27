@@ -15,7 +15,7 @@ from experiments.terminal_bench import prepare_contract_entry as producer
 from test_contract_replay import source_state, service, snapshot
 from verifier.contract_replay import ReplaySetupError, compile_input_digests, replay_identity
 from verifier.core.model import content_hash
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.codex_backend import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 
 
@@ -37,7 +37,7 @@ def harness(tmp_path, monkeypatch, responses=None, *, usage=None, fixture=False)
         assert cmd == ["codex", "--version"]
         return SimpleNamespace(stdout="codex-cli 0.153.4", returncode=0)
 
-    monkeypatch.setattr("verifier.llm.authority_backend.subprocess.run", version)
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.run", version)
 
     def run(cmd, **kwargs):
         prompt = kwargs["stdin"].read()
@@ -60,7 +60,7 @@ def harness(tmp_path, monkeypatch, responses=None, *, usage=None, fixture=False)
     services = []
 
     def factory(state):
-        sc = service(state, backend or CodexBackend(cwd=str(state), model="gpt-5.6-luna"))
+        sc = service(state, backend or CodexRuntime(cwd=str(state), model="gpt-5.6-luna"))
         services.append(sc)
         return sc
 

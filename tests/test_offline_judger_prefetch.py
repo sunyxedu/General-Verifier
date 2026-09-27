@@ -43,7 +43,7 @@ def test_enabled_profile_requires_codex_seats():
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_injected_backend_mismatch_fails_before_scoring(tmp_path, enabled):
-    backend = cb.CodexBackend(cwd=str(tmp_path), judger_prefetch=not enabled)
+    backend = cb.CodexRuntime(cwd=str(tmp_path), judger_prefetch=not enabled)
     with pytest.raises(ValueError, match="judger_prefetch does not match"):
         offline.score(str(tmp_path), seats="codex", backend=backend,
                       judger_prefetch=enabled)
@@ -51,7 +51,7 @@ def test_injected_backend_mismatch_fails_before_scoring(tmp_path, enabled):
 
 
 def test_enabled_backend_cannot_hide_behind_sdk_config(tmp_path):
-    backend = cb.CodexBackend(cwd=str(tmp_path), judger_prefetch=True)
+    backend = cb.CodexRuntime(cwd=str(tmp_path), judger_prefetch=True)
     with pytest.raises(ValueError, match="judger_prefetch does not match"):
         offline.score(str(tmp_path), backend=backend)
 
@@ -80,7 +80,7 @@ def test_extractor_and_kernel_backends_receive_same_flag(
         seen.append(kwargs["backend"])
         raise ReachedKernel()
 
-    monkeypatch.setattr(cb.CodexBackend, "complete", complete)
+    monkeypatch.setattr(cb.CodexRuntime, "complete", complete)
     monkeypatch.setattr(assembly, "build_kernel", kernel)
     with pytest.raises(ReachedKernel):
         offline.score(
@@ -128,7 +128,7 @@ def test_only_kernel_backend_receives_restricted_judger_cwd(
 
     monkeypatch.setenv("GV_TYPED_ADAPTERS", "1")
     monkeypatch.setenv("GV_TYPED_JUDGER_PACKET", "1")
-    monkeypatch.setattr(cb.CodexBackend, "complete", complete)
+    monkeypatch.setattr(cb.CodexRuntime, "complete", complete)
     monkeypatch.setattr(assembly, "build_kernel", kernel)
     with pytest.raises(ReachedKernel):
         offline.score(

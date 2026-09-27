@@ -125,7 +125,7 @@ def test_executor_png_raw_bytes_are_attached_only_to_fresh_judger(
                                stdout="\n".join(map(json.dumps, events)))
 
     monkeypatch.setattr(cb, "_run_codex_process", run)
-    backend = cb.CodexBackend(
+    backend = cb.CodexRuntime(
         roles={"judger": role, "critic": role}, cwd=str(tmp_path),
         judger_prefetch=True)
     variables = {
@@ -151,7 +151,7 @@ def test_ineligible_retained_png_is_prefetched_as_a_locator_not_attached(
     monkeypatch.setattr(cb, "_run_codex_process", runner(calls))
     role = SimpleNamespace(system="fixed", schema={"ok": bool})
 
-    backend = cb.CodexBackend(
+    backend = cb.CodexRuntime(
         roles={"judger": role}, cwd=str(tmp_path), judger_prefetch=True)
     assert backend.complete("judger", "fixed", {
         "world_mode": "unavailable", "basis": "world",
@@ -200,7 +200,7 @@ def test_captured_and_discharge_images_fall_back_to_captured_only(
 
     monkeypatch.setattr(cb, "_run_codex_process", run)
     role = SimpleNamespace(system="fixed", schema={"ok": bool})
-    backend = cb.CodexBackend(
+    backend = cb.CodexRuntime(
         roles={"judger": role}, cwd=str(tmp_path), judger_prefetch=True)
 
     assert backend.complete("judger", "fixed", {
@@ -238,7 +238,7 @@ def test_failed_raw_image_transport_is_not_reused_by_role_retry(
 
     monkeypatch.setattr(cb, "_run_codex_process", run)
     role = AgentRole("judger", "fixed", {"ok": bool}, system="fixed")
-    backend = cb.CodexBackend(
+    backend = cb.CodexRuntime(
         roles={"judger": role}, cwd=str(tmp_path), judger_prefetch=True)
 
     assert role.call(backend, {
@@ -261,7 +261,7 @@ def test_only_judger_receives_exact_packet_without_policy_change(
     calls = []
     monkeypatch.setattr(cb, "_run_codex_process", runner(calls))
     for enabled in (False, True):
-        backend = cb.CodexBackend(roles={role_name: role}, cwd=str(tmp_path),
+        backend = cb.CodexRuntime(roles={role_name: role}, cwd=str(tmp_path),
                                   judger_prefetch=enabled)
         assert backend.complete(role_name, "fixed prompt", {
             "world_mode": world_mode, "basis": "record",
@@ -287,30 +287,30 @@ def test_missing_or_forged_packet_leaves_original_prompt(tmp_path, monkeypatch, 
     monkeypatch.setattr(cb, "_run_codex_process", runner(calls))
     role = SimpleNamespace(system="fixed", schema={"ok": bool})
     for flag in (False, True):
-        backend = cb.CodexBackend(roles={"judger": role}, cwd=str(tmp_path),
+        backend = cb.CodexRuntime(roles={"judger": role}, cwd=str(tmp_path),
                                   judger_prefetch=flag)
         backend.complete("judger", "fixed", {"_judger_evidence_packet": value})
     assert calls[0][0][-1] == calls[1][0][-1]
 
 
 def test_disabled_identity_unchanged_and_enabled_identity_captured(monkeypatch):
-    base = cb.CodexBackend()
+    base = cb.CodexRuntime()
     assert base.judger_prefetch is False
     assert base.runtime_instruction_identity == hashlib.sha256(
         (cb._ARTIFACT_ADDRESS_NOTE + cb._ORACLE_COMPILE_NOTE).encode()
     ).hexdigest()
-    enabled = cb.CodexBackend(judger_prefetch=True)
+    enabled = cb.CodexRuntime(judger_prefetch=True)
     identity = _backend_identity(enabled)
     assert identity != _backend_identity(base)
     monkeypatch.setattr(cb, "_JUDGER_PREFETCH_NOTE", "changed instructions")
     assert _backend_identity(enabled) == identity
-    assert _backend_identity(cb.CodexBackend(judger_prefetch=True)) != identity
+    assert _backend_identity(cb.CodexRuntime(judger_prefetch=True)) != identity
 
 
 @pytest.mark.parametrize("value", [None, 0, 1, "1", [], {}])
 def test_prefetch_requires_explicit_bool(value):
     with pytest.raises(ValueError, match="judger_prefetch must be a bool"):
-        cb.CodexBackend(judger_prefetch=value)
+        cb.CodexRuntime(judger_prefetch=value)
 
 
 def test_schema_retry_bills_include_actual_prefetch_identity(tmp_path, monkeypatch):
@@ -318,7 +318,7 @@ def test_schema_retry_bills_include_actual_prefetch_identity(tmp_path, monkeypat
     calls = []
     monkeypatch.setattr(cb, "_run_codex_process", runner(calls, [{"bad": True}, {"ok": True}]))
     role = AgentRole("judger", "fixed prompt", {"ok": bool}, system="fixed")
-    backend = cb.CodexBackend(roles={"judger": role}, cwd=str(tmp_path),
+    backend = cb.CodexRuntime(roles={"judger": role}, cwd=str(tmp_path),
                               judger_prefetch=True)
     usage = tmp_path / "usage.jsonl"
     with cb.codex_usage_ledger(str(usage), {str(tmp_path): {"fixture": True}}):
@@ -342,10 +342,10 @@ def test_authority_clone_preserves_captured_profile(tmp_path, monkeypatch, enabl
     from verifier.llm import authority_backend as ab
     from verifier.llm.agents import COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT
 
-    backend = cb.CodexBackend(cwd=str(tmp_path), judger_prefetch=enabled)
+    backend = cb.CodexRuntime(cwd=str(tmp_path), judger_prefetch=enabled)
     identity = backend.runtime_instruction_identity
     monkeypatch.setattr(cb, "_JUDGER_PREFETCH_NOTE", "later module value")
-    monkeypatch.setattr(ab.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="codex-cli test"))
+    monkeypatch.setattr(cb.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="codex-cli test"))
     with ab.authority_compilation_backend(
             backend, COMPILE_OBLIGATIONS_AGENT, CRITIC_AGENT) as session:
         assert session.backend.judger_prefetch is enabled

@@ -372,8 +372,8 @@ def config_fields(model: Optional[str] = None, seats: Optional[str] = None,
         raise ValueError(
             f"certificate_scope must be one of {CERTIFICATE_SCOPES}")
     if not model and seats == "codex":
-        from .llm.codex_backend import DEFAULT_MODEL
-        model = DEFAULT_MODEL
+        from .llm.endpoints.presets import default_model
+        model = default_model("codex")
     if seats == "codex":
         from .llm.codex_service import normalize_service_tier
         resolved_service_tier = normalize_service_tier(service_tier)
@@ -596,8 +596,8 @@ def extract(state_dir: str, backend=None, model: Optional[str] = None,
     `stamp` (e.g. the caller's config id) is merged into it.
     """
     if backend is None:
-        from .llm.agents import AgentBackend
-        backend = AgentBackend(cwd=state_dir, model=model)
+        from .llm.agents import ClaudeCodeRuntime
+        backend = ClaudeCodeRuntime(cwd=state_dir, model=model)
     from .llm.agents import EXTRACT_CLAIMS_AGENT
 
     input_seal = ((stamp or {}).get("immutable_input_seal")
@@ -944,19 +944,21 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
         raise ImmutableInputError(
             "diagnostic-only offline state cannot be scored normally; "
             "create a fresh state from sealed immutable inputs")
-    if (backend is not None
-            and getattr(backend, "compact_inspection", False) is not compact_inspection):
+    from .llm.runtime import capabilities_of
+    injected_options = (capabilities_of(backend).run_options
+                        if backend is not None else None)
+    if (injected_options is not None
+            and injected_options.compact_inspection is not compact_inspection):
         raise ValueError(
             "provided backend compact_inspection does not match the "
             "offline scoring config")
-    if (backend is not None
-            and getattr(backend, "judger_prefetch", False) is not judger_prefetch):
+    if (injected_options is not None
+            and injected_options.judger_prefetch is not judger_prefetch):
         raise ValueError(
             "provided backend judger_prefetch does not match the "
             "offline scoring config")
     backend_was_injected = backend is not None
     if seats == "codex":
-        from .llm.codex_backend import CodexBackend
         if backend is None:
             # The extraction backend never runs a Judger.  Do not give that
             # earlier stage a handle to the operator-bound Judger-only
@@ -965,17 +967,15 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             backend = assembly.build_offline_codex_backend(
                 state_dir, model, cfg, toolchain_dir, cache_dir,
                 restricted_judger_cwd=None)
-        elif (isinstance(backend, CodexBackend)
-              and backend.service_tier != cfg["service_tier"]):
-            raise ValueError(
-                "provided CodexBackend service_tier does not match the "
-                "offline scoring config")
+        else:
+            capabilities_of(backend).check_service_tier(cfg["service_tier"])
         expected_restricted_cwd = (
             os.path.abspath(os.fspath(restricted_judger_cwd))
             if restricted_judger_cwd is not None else None)
+        judger_scratch = capabilities_of(backend).judger_scratch()
         actual_restricted_cwd = (
-            backend._revalidate_restricted_judger_cwd()
-            if type(backend) is CodexBackend else None)
+            judger_scratch.revalidate() if judger_scratch is not None
+            else None)
         # An injected backend is an operator authority and must still carry
         # the exact declared binding.  An internally-created extraction
         # backend is deliberately unbound; the built-in Kernel factory is
@@ -986,9 +986,8 @@ def score(state_dir: str, model: Optional[str] = None, kernel_factory=None,
             raise ValueError(
                 "provided backend does not carry the exact restricted "
                 "Judger cwd binding")
-        if isinstance(backend, CodexBackend):
-            backend.validate_offline_tool_scope(
-                state_dir, toolchain_dir, cache_dir)
+        capabilities_of(backend).validate_offline_tool_scope(
+            state_dir, toolchain_dir, cache_dir)
 
     # A formal adapter publishes a durable anchor before exposing its
     # ``.sanitized`` marker.  Legacy/direct callers do not have such an

@@ -8,10 +8,10 @@ import pytest
 from experiments.terminal_bench.analyze_model_spans import analyze
 from verifier.llm.agents import AgentRole
 from verifier.llm.authority_backend import (
-    _AuthorityCodexBackend, AuthorityBackendUnavailable, _DISABLED_CODE_MODE_NOTICE,
+    AuthorityBackendUnavailable, _DISABLED_CODE_MODE_NOTICE, authority_session,
 )
 from verifier.llm.codex_backend import (
-    CodexBackend, _attempt_usage, _completed_response_without_usage,
+    CodexRuntime, _attempt_usage, _completed_response_without_usage,
     codex_usage_ledger,
 )
 from verifier.llm.model_spans import model_scope
@@ -152,10 +152,9 @@ def test_billing_rejects_tampered_counter_after_ignoring_item_payload():
 
 def setup_call(tmp_path, monkeypatch, stream, file_text='{"ok": true}', *, authority=False, role_name="critic"):
     role = AgentRole(role_name, "Verify the requirement.", {"ok": bool})
-    backend_class = _AuthorityCodexBackend if authority else CodexBackend
-    backend = backend_class(roles={role_name: role}, cwd=str(tmp_path))
-    if authority:
-        backend._authority_scratch = str(tmp_path)
+    backend = CodexRuntime(
+        roles={role_name: role}, cwd=str(tmp_path),
+        session=authority_session(str(tmp_path)) if authority else None)
     calls = []
 
     def run(cmd, **kwargs):

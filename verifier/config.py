@@ -15,10 +15,16 @@ typo can never silently select a different verifier for a run. Online
 economies are off-switches (anything but ``0`` keeps them on) and numeric
 limits fall back to their default on an unparseable value.
 
-This module imports nothing from the verifier, so any layer may ask it for
-a setting without an import cycle. Provider and direct-seat settings
-(``GV_PROVIDER``, ``GV_MODEL``, ``GV_DIRECT_*``) still live with the LLM
-layer (``llm/provider.py``, ``llm/direct_backend.py``).
+Provider and direct-seat settings (``GV_PROVIDER``, ``GV_MODEL``,
+``GV_DIRECT_*`` and the provider credentials) may also come from the
+repository's shipped ``.env``: the real environment wins, then ``.env``,
+then the default. They are parsed here into ``ProviderSettings`` and
+``DirectSettings``; which endpoint those select is decided by the one
+provider preset table (``llm/endpoints/presets.py``).
+
+This module imports nothing from the verifier (only the standard library),
+so any layer may ask it for a setting without an import cycle, and a
+harness running under its own Python can load it by path.
 """
 from __future__ import annotations
 
@@ -26,7 +32,7 @@ import json
 import os
 import stat
 from dataclasses import dataclass
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Callable, Dict, FrozenSet, Mapping, Optional, Set, Tuple
 
 
 TYPED_ADAPTERS_ENV = "GV_TYPED_ADAPTERS"
@@ -444,3 +450,159 @@ def server_lock_wait_seconds() -> float:
     limits above, an unparseable value is an error at startup."""
     return float(os.environ.get(SERVER_LOCK_WAIT_ENV,
                                 SERVER_LOCK_WAIT_DEFAULT))
+
+
+# provider and direct-seat settings: environment, then the shipped .env
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DOTENV_PATH = os.path.join(ROOT, ".env")
+
+PROVIDER_ENV = "GV_PROVIDER"
+MODEL_ENV = "GV_MODEL"
+TEXT_ONLY_ENV = "GV_TEXT_ONLY"
+CLAUDE_CONFIG_DIR_ENV = "GV_CLAUDE_CONFIG_DIR"
+PROVIDER_DEFAULT = "deepseek"
+# the credentials and endpoint overrides the provider presets may name
+PROVIDER_VALUE_ENVS = (
+    "CLAUDE_CODE_OAUTH_TOKEN", "GV_API_KEY", "ANTHROPIC_API_KEY",
+    "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "GV_ANTHROPIC_BASE_URL",
+    "GV_LITELLM_MODEL",
+)
+
+DIRECT_SEATS_ENV = "GV_DIRECT_SEATS"
+DIRECT_PROVIDER_ENV = "GV_DIRECT_PROVIDER"     # anthropic | openai | openrouter
+DIRECT_MODEL_ENV = "GV_DIRECT_MODEL"
+DIRECT_EFFORT_ENV = "GV_DIRECT_EFFORT"
+DIRECT_VALUE_ENVS = (
+    "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL",
+    "OPENAI_API_KEY", "OPENAI_BASE_URL",
+)
+
+
+def _load_dotenv(path: str) -> Dict[str, str]:
+    """Minimal .env parser: KEY=VALUE lines, #-comments, optional quotes."""
+    conf: Dict[str, str] = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                v = v.strip().strip("'\"")
+                conf[k.strip()] = v
+    except OSError:
+        pass
+    return conf
+
+
+_DOTENV = _load_dotenv(DOTENV_PATH)
+
+
+def cfg(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Real environment > .env file > baked-in default (an empty value
+    counts as unset)."""
+    v = os.environ.get(name)
+    if v is None:
+        v = _DOTENV.get(name)
+    return v if v not in (None, "") else default
+
+
+Lookup = Callable[[str], Optional[str]]
+
+
+def _lookup(environ: Optional[Mapping[str, str]]) -> Lookup:
+    """``cfg`` for the process; an injected mapping stays self-contained
+    (tests and callers that supply a complete environment), with an empty
+    value read as unset like ``cfg`` does."""
+    if environ is None:
+        return cfg
+    return lambda name: environ.get(name) or None
+
+
+@dataclass(frozen=True)
+class ProviderSettings:
+    """The agent provider every Claude Code seat runs on. ``values`` holds
+    the credentials and endpoint overrides by variable name; the provider
+    preset says which of them the chosen provider reads."""
+    provider: str
+    model: Optional[str]
+    text_only: bool
+    claude_config_dir: Optional[str]
+    # the inherited CLAUDE_CONFIG_DIR: the real environment only, never .env
+    inherited_config_dir: Optional[str]
+    values: Mapping[str, Optional[str]]
+
+    def value(self, name: Optional[str]) -> Optional[str]:
+        return self.values.get(name) if name else None
+
+    @classmethod
+    def from_env(cls, environ: Optional[Mapping[str, str]] = None,
+                 ) -> "ProviderSettings":
+        setting = _lookup(environ)
+        inherited = (os.environ if environ is None else environ).get(
+            "CLAUDE_CONFIG_DIR")
+        return cls(
+            provider=(setting(PROVIDER_ENV) or PROVIDER_DEFAULT).lower(),
+            model=setting(MODEL_ENV),
+            # a text-only model cannot accept image content blocks
+            text_only=(setting(TEXT_ONLY_ENV) or "") == "1",
+            claude_config_dir=setting(CLAUDE_CONFIG_DIR_ENV),
+            inherited_config_dir=inherited,
+            values={name: setting(name) for name in PROVIDER_VALUE_ENVS},
+        )
+
+
+@dataclass(frozen=True)
+class DirectSettings:
+    """Which roles run as direct model calls and on which provider.
+    ``seats`` is the lowercased GV_DIRECT_SEATS (``default`` when unset),
+    ``provider`` the lowercased GV_DIRECT_PROVIDER ("" when unset)."""
+    seats: str
+    provider: str
+    model: Optional[str]
+    effort: Optional[str]
+    values: Mapping[str, Optional[str]]
+
+    def value(self, name: Optional[str]) -> Optional[str]:
+        return self.values.get(name) if name else None
+
+    def seat_roles(self, default_roles: FrozenSet[str]) -> Set[str]:
+        """GV_DIRECT_SEATS unset or ``default`` → the tool-free set;
+        ``0``/``off`` → none; otherwise a comma-separated list of roles."""
+        raw = self.seats
+        if raw in ("0", "off", "none", ""):
+            return set()
+        if raw in ("1", "default", "on"):
+            return set(default_roles)
+        return {part.strip() for part in raw.split(",") if part.strip()}
+
+    @classmethod
+    def from_env(cls, environ: Optional[Mapping[str, str]] = None,
+                 ) -> "DirectSettings":
+        setting = _lookup(environ)
+        return cls(
+            seats=(setting(DIRECT_SEATS_ENV) or "default").strip().lower(),
+            provider=(setting(DIRECT_PROVIDER_ENV) or "").strip().lower(),
+            model=setting(DIRECT_MODEL_ENV),
+            effort=setting(DIRECT_EFFORT_ENV),
+            values={name: setting(name) for name in DIRECT_VALUE_ENVS},
+        )
+
+
+# run options: fixed for a run by its configuration, read by the engine
+
+@dataclass(frozen=True)
+class RunOptions:
+    """Evidence-presentation options of one run (both explicit opt-in
+    experiments of the Codex seats, both part of the offline config
+    identity). The seat runtime renders their instructions; the kernel, the
+    binding game and the executor bind the evidence views they need."""
+    compact_inspection: bool = False
+    judger_prefetch: bool = False
+
+    def __post_init__(self):
+        if type(self.compact_inspection) is not bool:
+            raise ValueError("compact_inspection must be a bool")
+        if type(self.judger_prefetch) is not bool:
+            raise ValueError("judger_prefetch must be a bool")

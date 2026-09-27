@@ -1,6 +1,6 @@
 """The composition root: the one place a verifier is assembled from its
 parts. The MCP server and offline scoring both build their kernel here —
-seat backend, the discharger chain (agent executor, typed-adapter router),
+seat runtime, the discharger chain (agent executor, typed-adapter router),
 the binding game, the process-local caches, and the kernel with its online
 economies — so the two entry points cannot drift apart.
 
@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Protocol
 
 from ..engine.kernel import Kernel
 from ..config import ExtensionConfig, VerifierConfig
+from ..llm.runtime import capabilities_of
 
 
 class KernelHost(Protocol):
@@ -61,10 +62,12 @@ def build_kernel(sc: KernelHost, model, backend=None,
                  parallel_obligations: Optional[int] = None,
                  parallel_claims: Optional[int] = None,
                  unify_final: Optional[bool] = None) -> Kernel:
-    """The default kernel for a service: ``backend`` defaults to the agent
-    backend on the configured provider (tool-free roles seated on direct
-    model calls when configured); an injected backend (Codex seats, a
-    fixture) is given the same harness role registry."""
+    """The default kernel for a service: ``backend`` defaults to the Claude
+    Code runtime on the configured provider (tool-free roles seated on
+    direct model calls when configured); an injected runtime (Codex seats,
+    a fixture) is given the same harness role registry. The run options
+    are the ones the runtime was built to render; the kernel, the binding
+    game and the executor all carry them."""
     from ..llm.agents import SCREENER_AGENT
     from ..execution.discharge import AgentDischarger
     from ..engine.game import BindingGame
@@ -74,20 +77,20 @@ def build_kernel(sc: KernelHost, model, backend=None,
     roles = harness_roles(sc.state_dir)
     obligations = roles["obligations"]
     if backend is None:
-        # the agent backend, with the tool-free roles seated on a direct
-        # model call when the configuration carries an API key
+        # the Claude Code runtime, with the tool-free roles seated on a
+        # direct model call when the configuration carries an API key
         from ..llm.direct_backend import build_backend
         backend = build_backend(roles, cwd=sc.state_dir, model=model)
     else:
-        # an injected backend (e.g. CodexBackend) still needs the
+        # an injected runtime (e.g. CodexRuntime) still needs the
         # harness-swapped role registry — same double-registration rule
         backend.roles = roles
-    validate_tool_scope = getattr(
-        backend, "validate_offline_tool_scope", None)
-    if not sc.live_world and validate_tool_scope is not None:
-        validate_tool_scope(
+    runtime = capabilities_of(backend)
+    if not sc.live_world:
+        runtime.validate_offline_tool_scope(
             sc.state_dir, sc.toolchain_dir,
             getattr(sc, "shared_cache_dir", None))
+    run_options = runtime.run_options
     agent_discharger = AgentDischarger(
         backend, sc.artifacts,
         workdir_base=os.path.join(sc.state_dir, "work"),
@@ -97,7 +100,8 @@ def build_kernel(sc: KernelHost, model, backend=None,
         state_dir=sc.state_dir,
         live_world=sc.live_world,
         store=sc.store,   # evidence-workspace index over the claim graph
-        log=sc.log)
+        log=sc.log,
+        run_options=run_options)
     config = VerifierConfig.from_env()
     extensions = config.extensions
     # Process-local, explicit opt-in reuse across the candidates of one task
@@ -127,7 +131,8 @@ def build_kernel(sc: KernelHost, model, backend=None,
                          sufficiency_role=(
                              roles["sufficiency"]
                              if extensions.sufficiency_preaudit else None),
-                         packet_method_reuse=method_cache is not None)
+                         packet_method_reuse=method_cache is not None,
+                         run_options=run_options)
     if parallel_obligations is None:
         parallel_obligations = getattr(sc, "parallel_obligations", None)
     if parallel_claims is None:
@@ -178,7 +183,8 @@ def build_kernel(sc: KernelHost, model, backend=None,
                   # online: overlap the critic's review with the checks
                   # (GV_SPECULATIVE_DISCHARGE=0 disables)
                   speculative_discharge=(
-                      sc.live_world and online.speculative_discharge))
+                      sc.live_world and online.speculative_discharge),
+                  run_options=run_options)
 
 
 def build_online_codex_backend(state_dir: str, model: Optional[str],
@@ -186,9 +192,9 @@ def build_online_codex_backend(state_dir: str, model: Optional[str],
                                seat_search: bool):
     """The MCP server's Codex seats: the Codex CLI for tool-using roles,
     with the tool-free roles on a direct model call when configured."""
-    from ..llm.codex_backend import CodexBackend
+    from ..llm.codex_backend import CodexRuntime
     from ..llm.direct_backend import build_backend
-    codex = CodexBackend(cwd=state_dir, model=model, effort=effort,
+    codex = CodexRuntime(cwd=state_dir, model=model, effort=effort,
                          service_tier=service_tier, seat_search=seat_search)
     return build_backend(harness_roles(state_dir), cwd=state_dir, model=model,
                          agent=codex)
@@ -201,8 +207,8 @@ def build_offline_codex_backend(state_dir: str, model: Optional[str],
                                 restricted_judger_cwd: Optional[str]):
     """An offline scoring run's Codex seats, bound to the run's resolved
     config fields (effort, service tier, evidence presentation)."""
-    from ..llm.codex_backend import CodexBackend
-    return CodexBackend(cwd=state_dir, model=model,
+    from ..llm.codex_backend import CodexRuntime
+    return CodexRuntime(cwd=state_dir, model=model,
                         effort=fields["effort"],
                         service_tier=fields["service_tier"],
                         compact_inspection=fields["compact_inspection"],
@@ -221,15 +227,17 @@ def start_offline_final_precompile(state_dir: str, kernel_backend,
     has published or started); later candidates' kernels hit the published
     entry."""
     from ..engine.precompile import PrecompiledFinalContract
-    from ..engine.kernel import compile_roles_for_backend
+    from ..engine.kernel import compile_roles_for_run
     from ..config import APPEND_ONLY_DELTA_PROTOCOL
     roles = harness_roles(state_dir)
-    compile_role, critic_role = compile_roles_for_backend(
-        kernel_backend, roles["obligations"], roles["critic"])
+    run_options = capabilities_of(kernel_backend).run_options
+    compile_role, critic_role = compile_roles_for_run(
+        run_options, roles["obligations"], roles["critic"])
     extensions = ExtensionConfig.from_env()
     deltas = extensions.append_only_deltas
     return PrecompiledFinalContract.start(
         state_dir, kernel_backend, compile_role, critic_role,
         critic_rounds, deltas,
         APPEND_ONLY_DELTA_PROTOCOL if deltas else None,
-        contract_cache=final_contract_cache(extensions))
+        contract_cache=final_contract_cache(extensions),
+        run_options=run_options)

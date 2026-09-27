@@ -17,8 +17,9 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
-from ..config import script_timeout_seconds
+from ..config import RunOptions, script_timeout_seconds
 from ..llm.agents import DISCHARGE_AGENT, AgentRole
+from ..llm.runtime import capabilities_of
 from ..llm.prompts.discharge import DISCHARGE_REPAIR_CONTEXT
 from .instruments import (
     ArtifactStore, authoritative_task_context, image_media_type,
@@ -201,8 +202,12 @@ class AgentDischarger:
                  live_world: bool = True,
                  store=None,
                  shared_cache_dir: Optional[str] = None,
-                 log: Optional[EventLog] = None):
+                 log: Optional[EventLog] = None,
+                 run_options: Optional[RunOptions] = None):
         self.backend = backend
+        # the run's evidence-presentation options (default: the runtime's)
+        self.run_options = (run_options if run_options is not None
+                            else capabilities_of(backend).run_options)
         self.log = log if type(log) is EventLog else None
         # verifier-owned install caches shared across trials (the codex
         # backend points the executor's package caches at it and grants it
@@ -477,8 +482,7 @@ class AgentDischarger:
             variables = bind_source_evidence_variables(
                 self.log,
                 variables,
-                enabled=(getattr(self.backend, "compact_inspection", False)
-                         is True),
+                enabled=self.run_options.compact_inspection,
             )
         try:
             payload = self.role.call(self.backend, variables)

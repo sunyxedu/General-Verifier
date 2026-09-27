@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional
 
 from ..core.model import OUTCOME_HOLDS, OUTCOME_REFUTED, content_hash
 from ..core.world import MODE_LIVE, load_world_view
+from ..llm.runtime import runtime_identity_type
 
 
 _IDENTITY_FILE_CAP = 128 * 1024 * 1024
@@ -125,7 +126,7 @@ def _role_identity(role) -> Dict[str, Any]:
 
 def _backend_identity(backend) -> Optional[Dict[str, Any]]:
     identity: Dict[str, Any] = {
-        "type": f"{type(backend).__module__}.{type(backend).__qualname__}",
+        "type": runtime_identity_type(backend),
     }
     found = False
     for name in ("model", "model_overrides", "effort", "service_tier",

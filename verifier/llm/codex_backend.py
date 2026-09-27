@@ -1,8 +1,9 @@
 """Verifier seats on the Codex CLI (ChatGPT-subscription models).
 
-Same duck type as AgentBackend / FixtureBackend — `complete(role_name,
-prompt, variables) -> payload` — so every seam that accepts a backend
-(kernel seats, the extractor, tests) takes this one unchanged. Each call
+Same runtime interface as ClaudeCodeRuntime / FixtureBackend —
+`complete(role_name, prompt, variables) -> payload` — so every seam that
+accepts a runtime (kernel seats, the extractor, tests) takes this one
+unchanged. Each call
 is one `codex exec`: the role's system text and rendered template become
 the instruction, and the final assistant message must be a JSON object
 matching the role's schema; it is parsed and re-validated by the same
@@ -59,12 +60,17 @@ from .codex_service import (
     normalize_service_tier,
     service_tier_cli_args,
 )
-from .schema import RoleError, SeatScratchExceeded, SeatTimeout, validate
+from .endpoints.presets import default_model
+from .policy import NoToolsSession, ToolPolicy
+from .runtime import RuntimeCapabilities
+from .schema import (
+    AuthorityBackendUnavailable, RoleError, SeatScratchExceeded, SeatTimeout,
+    validate,
+)
 from .model_spans import model_call_span, model_span_capture
-from ..config import offline_runtime_read_roots
+from ..config import RunOptions, offline_runtime_read_roots
 from ..execution.instruments import validated_image_info
 
-DEFAULT_MODEL = "gpt-5.6-luna"
 
 _OFFLINE_WORLD_MODES = frozenset({"captured", "unavailable"})
 _OFFLINE_PROFILE = "gv-offline"
@@ -1691,10 +1697,86 @@ def extract_json(text: str, accept: Optional[Any] = None) -> Any:
     return found[-1]
 
 
-class CodexBackend:
-    """Runs verifier roles through `codex exec` on a subscription model."""
+# The no-tools policy's feature gates: every tool channel other than the
+# command tools the permission profile governs.
+_NO_TOOLS_DISABLED_FEATURES = (
+    "shell_tool", "unified_exec", "shell_snapshot", "apps", "plugins",
+    "remote_plugin", "multi_agent", "memories", "browser_use",
+    "browser_use_external", "browser_use_full_cdp_access", "computer_use",
+    "in_app_browser", "workspace_dependencies", "code_mode_host", "hooks",
+    "skill_search", "skill_mcp_dependency_install", "image_generation",
+    "view_image", "sleep_tool", "goals",
+)
 
-    AUTHORITY_HOOKS_VERSION = 1
+
+def no_tools_policy_args(scratch_dir: str, policy: ToolPolicy) -> list[str]:
+    """The Codex CLI boundary of a no-tools ``policy`` run in an empty
+    ``scratch_dir``. Permissions apply to command tools; feature gates
+    cover other tools; the policy's denied integrations are closed after
+    the shared profile.
+
+    References: learn.chatgpt.com/docs/permissions and
+    learn.chatgpt.com/docs/config-file/config-reference. Permission profiles
+    must not be combined with legacy --sandbox/YOLO flags.
+    """
+    if not policy.no_tools:
+        raise ValueError("the Codex no-tools profile needs a no-tools policy")
+    scratch = os.path.realpath(scratch_dir)
+    filesystem = json.dumps({":root": "deny", ":minimal": "read",
+                             scratch: "read"}, separators=(",", ":"))
+    # TOML inline tables use '=' rather than JSON's ':'. Quote keys/values
+    # independently, never interpolate task-controlled strings as TOML.
+    filesystem = "{" + ",".join(
+        json.dumps(key) + "=" + json.dumps(value)
+        for key, value in json.loads(filesystem).items()) + "}"
+    values = [
+        'approval_policy="never"',
+        'default_permissions="gv-authority"',
+        'permissions.gv-authority.extends=":read-only"',
+        f"permissions.gv-authority.filesystem={filesystem}",
+        'permissions.gv-authority.network.enabled=false',
+        'web_search="disabled"', 'tools.web_search=false',
+        'features.code_mode=false',
+        'features.skip_host_skill_discovery=true',
+        'suppress_unstable_features_warning=true',
+        'project_doc_max_bytes=0', 'mcp_servers={}',
+        'shell_environment_policy.inherit="none"',
+        'shell_environment_policy.experimental_use_profile=false',
+        *[f"features.{name}=false" for name in _NO_TOOLS_DISABLED_FEATURES],
+    ]
+    return ["--ignore-user-config", "--ignore-rules", "--strict-config",
+            "--ephemeral", *[
+        item for value in values for item in ("-c", value)], *[
+        item
+        for feature in policy.denied_integrations
+        for item in ("-c", f"features.{feature}=false")
+    ]]
+
+
+class _JudgerScratch:
+    """The runtime's operator-bound restricted Judger directory."""
+
+    def __init__(self, runtime: "CodexRuntime"):
+        self._runtime = runtime
+        self.path = runtime.restricted_judger_cwd
+
+    def execution_dir(self) -> str:
+        return self._runtime._restricted_judger_execution_cwd()
+
+    def revalidate(self) -> str:
+        return self._runtime._revalidate_restricted_judger_cwd()
+
+
+class CodexRuntime(RuntimeCapabilities):
+    """Runs verifier roles through `codex exec` on a subscription model.
+
+    With a ``session`` the seats run under its no-tools policy instead of
+    their ordinary palette: the empty scratch directory as cwd, the
+    root-deny no-tools profile, no web search or image inputs, a forced
+    JSON event stream that the session validates before any answer is
+    accepted."""
+
+    RUNTIME_IDENTITY = "verifier.llm.codex_backend.CodexBackend"
 
     def __init__(self, roles: Optional[Dict[str, Any]] = None,
                  cwd: Optional[str] = None, model: Optional[str] = None,
@@ -1705,11 +1787,11 @@ class CodexBackend:
                  compact_inspection: bool = False,
                  judger_prefetch: bool = False,
                  seat_search: bool = True,
-                 restricted_judger_cwd: Optional[str] = None):
-        if type(compact_inspection) is not bool:
-            raise ValueError("compact_inspection must be a bool")
-        if type(judger_prefetch) is not bool:
-            raise ValueError("judger_prefetch must be a bool")
+                 restricted_judger_cwd: Optional[str] = None,
+                 session: Optional[NoToolsSession] = None):
+        RunOptions(compact_inspection=compact_inspection,
+                   judger_prefetch=judger_prefetch)   # both must be bools
+        self._session = session
         self.roles = dict(roles) if roles is not None else dict(ALL_AGENT_ROLES)
         self.uses_role_wire_schema = True
         self.cwd = cwd
@@ -1718,7 +1800,7 @@ class CodexBackend:
         # except method synthesis. The full spec string is what config
         # fingerprints hash, so mixed-seat runs never share records or
         # derived state with single-model runs.
-        spec = model or DEFAULT_MODEL
+        spec = model or default_model("codex")
         parts = spec.split(";")
         self.model = parts[0].strip()
         self.model_overrides: Dict[str, str] = {}
@@ -1821,17 +1903,85 @@ class CodexBackend:
         return _BoundExecutionDirectory(binding.path, binding.descriptor)
 
     @property
+    def session(self) -> Optional[NoToolsSession]:
+        """The no-tools session this runtime's seats run under, if any."""
+        return self._session
+
+    def judger_scratch(self) -> Optional[_JudgerScratch]:
+        if self._restricted_judger_cwd_binding is None:
+            return None
+        return _JudgerScratch(self)
+
+    @property
     def runtime_instruction_identity(self) -> str:
-        return hashlib.sha256(
+        identity = hashlib.sha256(
             (self._artifact_address_note + self._compact_inspection_note
              + _ORACLE_COMPILE_NOTE + self._compact_report_note
              + self._plan_first_execution_note
              + self._judger_prefetch_note)
             .encode("utf-8")).hexdigest()
+        session = self._session
+        if session is not None and session.instruction_identity is not None:
+            return session.instruction_identity(identity)
+        return identity
 
     @property
     def compact_inspection(self) -> bool:
         return bool(self._compact_inspection_note)
+
+    @property
+    def run_options(self) -> RunOptions:
+        return RunOptions(compact_inspection=self.compact_inspection,
+                          judger_prefetch=self.judger_prefetch)
+
+    def check_service_tier(self, service_tier: str) -> None:
+        if self.service_tier != service_tier:
+            raise ValueError(
+                "provided CodexBackend service_tier does not match the "
+                "offline scoring config")
+
+    def supports_policy(self, policy: ToolPolicy) -> bool:
+        # the JSON event stream lets a session prove that no tool ran
+        return policy.no_tools
+
+    def no_tools_runtime(self, roles: Dict[str, Any],
+                         session: NoToolsSession) -> "CodexRuntime":
+        """A fresh runtime with this one's seat settings and captured run
+        instructions (not potentially changed module defaults), whose seats
+        run under ``session``."""
+        model_spec = self.model + "".join(
+            f";{name}={model}" for name, model in
+            sorted(self.model_overrides.items()))
+        prefetch = session.evidence_prefetch
+        isolated = CodexRuntime(
+            roles=roles, cwd=self.cwd, model=model_spec,
+            effort=self.effort, timeout=self.timeout,
+            service_tier=self.service_tier,
+            compact_inspection=self.compact_inspection,
+            judger_prefetch=self.judger_prefetch if prefetch else False,
+            session=session)
+        isolated._artifact_address_note = self._artifact_address_note
+        isolated._compact_inspection_note = self._compact_inspection_note
+        isolated._compact_report_note = self._compact_report_note
+        isolated._judger_prefetch_note = (
+            self._judger_prefetch_note if prefetch else "")
+        isolated._judger_prefetch_protocol = (
+            self._judger_prefetch_protocol if prefetch else None)
+        return isolated
+
+    def no_tools_identity(self, policy: ToolPolicy,
+                          scratch_placeholder: str) -> Dict[str, Any]:
+        try:
+            version = subprocess.run(
+                ["codex", "--version"], check=True, capture_output=True,
+                text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as error:
+            raise AuthorityBackendUnavailable(
+                "Codex runtime identity unavailable") from error
+        if not version.startswith("codex-cli ") or len(version) > 100:
+            raise AuthorityBackendUnavailable("invalid Codex runtime identity")
+        return {"runtime": version,
+                "policy": no_tools_policy_args(scratch_placeholder, policy)}
 
     def allows_compact_source_evidence(
             self, role_name: str, variables: Dict[str, Any]) -> bool:
@@ -1857,6 +2007,8 @@ class CodexBackend:
 
     def _execution_cwd(self, role_name: str,
                        variables: Mapping[str, Any]) -> Optional[str]:
+        if self._session is not None:
+            return self._session.scratch()
         if self._is_offline_execution(role_name, variables):
             return self._offline_state_dir(variables)
         return self.cwd
@@ -1907,19 +2059,30 @@ class CodexBackend:
                 "operator-owned scope")
 
     def _search_enabled(self, role_name: str) -> bool:
+        if self._session is not None:
+            return self._session.policy.web_search
         return self.seat_search and role_name in _SEARCH_ROLES
 
     def _requires_json(self) -> bool:
-        return False
+        # a session's policy is checked on its event stream
+        return self._session is not None
 
     def _validate_attempt_stream(self, stdout: str) -> None:
-        """Optional stricter stream policy for capability-limited subclasses."""
+        """The session's stream policy (none for ordinary seats)."""
+        if self._session is not None:
+            self._session.validate_stream(stdout)
 
     def _validated_stream_response(self, stdout: str) -> Optional[str]:
-        """Return a policy-bound final response, if this transport has one."""
+        """Return a policy-bound final response, if this session has one."""
+        session = self._session
+        if session is not None and session.bound_response is not None:
+            return session.bound_response(stdout)
+        return None
 
     def _recover_completed_response(self, stdout: str) -> Optional[str]:
         """Called only after the role's stream policy has passed."""
+        if self._session is not None:
+            return self._session.recover_response(stdout)
         return _completed_response_without_usage(stdout)
 
     @staticmethod
@@ -1967,13 +2130,15 @@ class CodexBackend:
         finally:
             os.close(fd)
         data = b"".join(chunks)
-        mime = CodexBackend._image_mime(data)
+        mime = CodexRuntime._image_mime(data)
         if mime is None:
             raise RoleError(f"unsupported or spoofed captured image: {path}")
         return data, mime
 
-    def _captured_images(self, role_name: str,
-                         variables: Dict[str, Any]) -> tuple[_CapturedImage, ...]:
+    def captured_images(self, role_name: str,
+                        variables: Dict[str, Any]) -> tuple[_CapturedImage, ...]:
+        if self._session is not None and not self._session.policy.images:
+            return ()
         basis_key = "declared_basis" if role_name == "discharge" else "basis"
         if (role_name not in _IMAGE_ROLES
                 or variables.get("world_mode") != "captured"
@@ -2134,6 +2299,8 @@ class CodexBackend:
     def _execution_policy_args(self, role_name: str,
                                variables: Dict[str, Any]) -> list[str]:
         """Return the CLI boundary for this seat and evidence context."""
+        if self._session is not None:
+            return self._session_policy_args()
         if not self._is_offline_execution(role_name, variables):
             return ["--dangerously-bypass-approvals-and-sandbox"]
 
@@ -2336,6 +2503,11 @@ class CodexBackend:
             "-c", f"shell_environment_policy.set={env_table}",
         ]
 
+    def _session_policy_args(self) -> list[str]:
+        """A session's CLI boundary: its no-tools policy in its scratch."""
+        return no_tools_policy_args(
+            self._session.scratch(), self._session.policy)
+
     def _model_for(self, role_name: str) -> str:
         return self.model_overrides.get(role_name, self.model)
 
@@ -2417,7 +2589,7 @@ class CodexBackend:
     def _complete(self, role_name: str, prompt: str,
                   variables: Dict[str, Any], *, role, role_model: str,
                   usage_target, call_id: str) -> Any:
-        images = self._captured_images(role_name, variables)
+        images = self.captured_images(role_name, variables)
         packet = None
         image_packet_digest = None
         prefetch_body = ""
@@ -2559,10 +2731,14 @@ class CodexBackend:
             "prompt_sha256": hashlib.sha256(
                 instruction.encode("utf-8")).hexdigest(),
         }
-        policy_args = self._execution_policy_args(role_name, variables)
+        # A session's boundary is its own: an overlay that replaces the
+        # ordinary seats' policy method never reaches it.
+        policy_args = (self._session_policy_args()
+                       if self._session is not None
+                       else self._execution_policy_args(role_name, variables))
         # The default offline hook keeps the state root as cwd: the harness
         # contract deliberately exposes ./task.md and ./baseline/ as read-only
-        # authoritative inputs. Capability-limited subclasses may narrow cwd.
+        # authoritative inputs. A no-tools session narrows cwd to its scratch.
         execution_cwd = self._execution_cwd(role_name, variables)
         out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
         out.close()
@@ -2851,7 +3027,7 @@ class CodexBackend:
                 }
                 break
 
-            # A capability-limited subclass may require JSON even without a
+            # A no-tools session requires JSON even without a
             # usage ledger. Preserve its parsed final agent message as the
             # safe fallback when the CLI's -o file is unexpectedly empty.
             telemetry = completed_attempt["usage"].telemetry

@@ -30,13 +30,14 @@ from verifier.llm import codex_backend as cb
 from verifier.llm import typed_judger_backend as tjb
 from verifier.llm.agents import AgentRole
 from verifier.llm.codex_backend import (
-    CodexBackend,
+    CodexRuntime,
     _typed_judger_attempt_scope,
 )
 from verifier.llm.schema import RoleError
 from verifier.llm.typed_judger_backend import (
+    TYPED_JUDGER_POLICY,
     TYPED_JUDGER_POLICY_IDENTITY,
-    _TypedJudgerCodexBackend,
+    TypedJudgerSeat,
     TypedJudgerTransportError,
     restricted_typed_judger_backend,
     typed_judger_policy_args,
@@ -107,6 +108,18 @@ def _fixture(tmp_path):
     return state, target, log, artifacts, route, obligation, method, result, packet
 
 
+RESTRICTED, ORDINARY = "restricted typed-Judger session", "ordinary runtime"
+
+
+def _restricted(runtime):
+    return (type(runtime) is CodexRuntime and runtime.session is not None
+            and runtime.session.policy is TYPED_JUDGER_POLICY)
+
+
+def _kind(runtime):
+    return RESTRICTED if _restricted(runtime) else ORDINARY
+
+
 def _stream(*middle):
     return "\n".join(json.dumps(event) for event in (
         {"type": "thread.started", "thread_id": "fresh-thread"},
@@ -144,7 +157,8 @@ def test_policy_denies_every_external_and_tool_channel(tmp_path, monkeypatch):
         ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     assert TYPED_JUDGER_POLICY_IDENTITY == hashlib.sha256(
         canonical_policy.encode("utf-8")).hexdigest()
-    runtime_backend = _TypedJudgerCodexBackend()
+    runtime_backend = CodexRuntime(
+        session=tjb.typed_judger_session(lambda: str(tmp_path)))
     original_runtime_identity = runtime_backend.runtime_instruction_identity
     monkeypatch.setattr(tjb, "TYPED_JUDGER_POLICY_IDENTITY", "0" * 64)
     assert runtime_backend.runtime_instruction_identity \
@@ -221,36 +235,39 @@ def test_message_sequence_rejects_ambiguity_after_first_message(middle):
 
 
 def test_context_preserves_seat_identity_and_uses_fresh_scratch(tmp_path):
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=str(tmp_path), model="gpt-5.6-luna;judger=gpt-5.6-luna",
         effort="medium", service_tier="standard", timeout=321,
         compact_inspection=True, judger_prefetch=True)
     runtime_identities = []
     execution_cwds = []
     with restricted_typed_judger_backend(backend) as restricted:
-        assert type(restricted) is _TypedJudgerCodexBackend
+        assert type(restricted) is TypedJudgerSeat
+        runtime = restricted.runtime
+        assert type(runtime) is CodexRuntime
+        assert runtime.session.policy is TYPED_JUDGER_POLICY
         assert restricted.roles == backend.roles
         assert restricted.roles["judger"] is backend.roles["judger"]
-        assert restricted.model == backend.model
-        assert restricted.model_overrides == backend.model_overrides
-        assert restricted.effort == backend.effort
-        assert restricted.service_tier == backend.service_tier
-        assert restricted._model_for("judger") == backend._model_for("judger")
-        assert restricted.timeout == backend.timeout
-        assert restricted.cwd == backend.cwd
-        assert restricted._execution_cwd("judger", {}) != backend.cwd
-        assert os.path.isdir(restricted._execution_cwd("judger", {}))
-        assert restricted.judger_prefetch is False
+        assert runtime.model == backend.model
+        assert runtime.model_overrides == backend.model_overrides
+        assert runtime.effort == backend.effort
+        assert runtime.service_tier == backend.service_tier
+        assert runtime._model_for("judger") == backend._model_for("judger")
+        assert runtime.timeout == backend.timeout
+        assert runtime.cwd == backend.cwd
+        assert runtime._execution_cwd("judger", {}) != backend.cwd
+        assert os.path.isdir(runtime._execution_cwd("judger", {}))
+        assert runtime.judger_prefetch is False
         runtime_identities.append(restricted.runtime_instruction_identity)
-        execution_cwds.append(restricted._execution_cwd("judger", {}))
+        execution_cwds.append(runtime._execution_cwd("judger", {}))
 
     with restricted_typed_judger_backend(backend) as restricted:
         runtime_identities.append(restricted.runtime_instruction_identity)
-        execution_cwds.append(restricted._execution_cwd("judger", {}))
+        execution_cwds.append(restricted.runtime._execution_cwd("judger", {}))
     assert len(set(execution_cwds)) == 2
     assert len(set(runtime_identities)) == 1
 
-    class Child(CodexBackend):
+    class Child(CodexRuntime):
         pass
 
     child = Child(cwd=str(tmp_path))
@@ -263,13 +280,13 @@ def test_operator_bound_scratch_is_exact_and_stable(tmp_path):
     state.mkdir()
     scratch = tmp_path / "typed-judger-scratch"
     scratch.mkdir(mode=0o500)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=str(state), restricted_judger_cwd=str(scratch))
 
     with restricted_typed_judger_backend(backend) as first:
-        assert first._execution_cwd("judger", {}) == str(scratch)
+        assert first.runtime._execution_cwd("judger", {}) == str(scratch)
     with restricted_typed_judger_backend(backend) as second:
-        assert second._execution_cwd("judger", {}) == str(scratch)
+        assert second.runtime._execution_cwd("judger", {}) == str(scratch)
 
 
 @pytest.mark.parametrize("defect", ["nonempty", "permissions", "symlink"])
@@ -290,7 +307,7 @@ def test_operator_bound_scratch_rejects_untrusted_directory(
             scratch.chmod(0o755)
 
     with pytest.raises(RoleError, match="restricted Judger cwd"):
-        CodexBackend(cwd=str(tmp_path), restricted_judger_cwd=str(scratch))
+        CodexRuntime(cwd=str(tmp_path), restricted_judger_cwd=str(scratch))
 
 
 def test_operator_bound_scratch_rejects_inode_replacement(tmp_path):
@@ -298,7 +315,7 @@ def test_operator_bound_scratch_rejects_inode_replacement(tmp_path):
     state.mkdir()
     scratch = tmp_path / "typed-judger-scratch"
     scratch.mkdir(mode=0o500)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=str(state), restricted_judger_cwd=str(scratch))
 
     with pytest.raises(TypedJudgerTransportError, match="scratch changed"):
@@ -312,7 +329,7 @@ def test_operator_bound_scratch_rejects_post_call_file(tmp_path):
     state.mkdir()
     scratch = tmp_path / "typed-judger-scratch"
     scratch.mkdir(mode=0o500)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=str(state), restricted_judger_cwd=str(scratch))
 
     with pytest.raises(TypedJudgerTransportError, match="scratch changed"):
@@ -328,7 +345,7 @@ def test_scratch_revalidation_does_not_mask_cancellation(tmp_path):
     state.mkdir()
     scratch = tmp_path / "typed-judger-scratch"
     scratch.mkdir(mode=0o500)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=str(state), restricted_judger_cwd=str(scratch))
 
     with pytest.raises(KeyboardInterrupt):
@@ -342,7 +359,7 @@ def test_bound_process_enters_open_directory_not_replacement(tmp_path):
     state.mkdir()
     scratch = tmp_path / "typed-judger-scratch"
     scratch.mkdir(mode=0o500)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=str(state), restricted_judger_cwd=str(scratch))
     bound = backend._restricted_judger_execution_cwd()
     original = tmp_path / "original-scratch"
@@ -364,13 +381,13 @@ def test_bound_scratch_must_be_disjoint_from_candidate_root(tmp_path):
     scratch.mkdir(mode=0o500)
 
     with pytest.raises(RoleError, match="must be disjoint"):
-        CodexBackend(
+        CodexRuntime(
             cwd=str(candidate), restricted_judger_cwd=str(scratch))
 
 
 def test_restricted_call_appends_complete_inert_packet_only(tmp_path, monkeypatch):
     state, _target, *_middle, packet = _fixture(tmp_path)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=str(state), model="gpt-5.6-luna", effort="medium",
         service_tier="standard", judger_prefetch=True)
     seen = {}
@@ -382,7 +399,7 @@ def test_restricted_call_appends_complete_inert_packet_only(tmp_path, monkeypatc
         })
         return dict(YES)
 
-    monkeypatch.setattr(CodexBackend, "complete", fake_complete)
+    monkeypatch.setattr(CodexRuntime, "complete", fake_complete)
     with restricted_typed_judger_backend(backend) as restricted:
         result = restricted.complete("judger", "ORIGINAL PROMPT", {
             "_typed_adapter_judger_packet": packet,
@@ -402,7 +419,7 @@ def test_typed_output_file_must_equal_last_message_in_sequence(
 ):
     state, _target, *_middle, packet = _fixture(tmp_path)
     role = AgentRole("judger", "fixed prompt", {"ok": bool}, system="fixed")
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"judger": role}, cwd=str(state), model="gpt-5.6-luna")
 
     def run(command, **_kwargs):
@@ -430,7 +447,7 @@ def test_typed_message_sequence_does_not_bypass_usage_protocol(
 ):
     state, _target, *_middle, packet = _fixture(tmp_path)
     role = AgentRole("judger", "fixed prompt", {"ok": bool}, system="fixed")
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"judger": role}, cwd=str(state), model="gpt-5.6-luna")
 
     def run(command, **_kwargs):
@@ -464,7 +481,7 @@ def test_typed_message_sequence_does_not_bypass_usage_protocol(
 def test_typed_output_file_requires_strict_utf8(tmp_path, monkeypatch):
     state, _target, *_middle, packet = _fixture(tmp_path)
     role = AgentRole("judger", "fixed prompt", {"ok": str}, system="fixed")
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"judger": role}, cwd=str(state), model="gpt-5.6-luna")
 
     def run(command, **_kwargs):
@@ -487,7 +504,7 @@ def test_native_and_observer_attempts_bind_one_packet_without_leaking(
 ):
     state, _target, *_middle, packet = _fixture(tmp_path)
     role = AgentRole("judger", "fixed prompt", {"ok": bool}, system="fixed")
-    backend = CodexBackend(
+    backend = CodexRuntime(
         roles={"judger": role}, cwd=str(state), model="gpt-5.6-luna",
         effort="medium", service_tier="standard")
     calls = []
@@ -557,7 +574,7 @@ def test_native_and_observer_attempts_bind_one_packet_without_leaking(
 
 
 def test_attempt_identity_is_context_local_and_nesting_fails_closed():
-    backend = CodexBackend()
+    backend = CodexRuntime()
     barrier = threading.Barrier(2)
 
     def scoped(digit):
@@ -612,17 +629,17 @@ def test_default_off_codex_path_is_exactly_the_existing_backend(
     fixture = _fixture(tmp_path)
     state, _target, log, artifacts, route, obligation, method, result, _packet = \
         fixture
-    backend = CodexBackend(cwd=str(state), model="gpt-5.6-luna")
+    backend = CodexRuntime(cwd=str(state), model="gpt-5.6-luna")
     calls = []
 
     def fake_complete(self, role_name, prompt, variables, **kwargs):
-        calls.append(type(self))
+        calls.append(_kind(self))
         return dict(YES)
 
     def forbidden(_backend):
         raise AssertionError("default-off run selected the restricted transport")
 
-    monkeypatch.setattr(CodexBackend, "_complete", fake_complete)
+    monkeypatch.setattr(CodexRuntime, "_complete", fake_complete)
     monkeypatch.setattr(
         game_module, "restricted_typed_judger_backend", forbidden)
     game = BindingGame(
@@ -632,46 +649,46 @@ def test_default_off_codex_path_is_exactly_the_existing_backend(
         method, discharge_artifact=result.artifact,
         discharge_outcome=result.outcome)
     assert game._judge(obligation, method, result, attempt) == YES
-    assert calls == [CodexBackend]
+    assert calls == [ORDINARY]
 
 
 def test_semantic_no_is_final_and_never_falls_back_to_toolful(tmp_path, monkeypatch):
     fixture = _fixture(tmp_path)
     state = fixture[0]
-    backend = CodexBackend(cwd=str(state), model="gpt-5.6-luna")
+    backend = CodexRuntime(cwd=str(state), model="gpt-5.6-luna")
     calls = []
 
     def fake_complete(self, role_name, prompt, variables, **kwargs):
-        calls.append((type(self), dict(variables)))
-        return dict(NO if type(self) is _TypedJudgerCodexBackend else YES)
+        calls.append((_kind(self), dict(variables)))
+        return dict(NO if _restricted(self) else YES)
 
-    monkeypatch.setattr(CodexBackend, "_complete", fake_complete)
+    monkeypatch.setattr(CodexRuntime, "_complete", fake_complete)
     game, obligation, method, result, attempt = _game(fixture, backend)
     assert game._judge(obligation, method, result, attempt) == NO
-    assert [kind for kind, _variables in calls] == [_TypedJudgerCodexBackend]
+    assert [kind for kind, _variables in calls] == [RESTRICTED]
 
 
 def test_tool_attempt_uses_only_existing_retry_for_toolful_fallback(
     tmp_path, monkeypatch,
 ):
     fixture = _fixture(tmp_path)
-    backend = CodexBackend(cwd=str(fixture[0]), model="gpt-5.6-luna")
+    backend = CodexRuntime(cwd=str(fixture[0]), model="gpt-5.6-luna")
     calls = []
 
     def fake_complete(self, role_name, prompt, variables, **kwargs):
-        calls.append((type(self), dict(variables)))
-        if type(self) is _TypedJudgerCodexBackend:
+        calls.append((_kind(self), dict(variables)))
+        if _restricted(self):
             raise TypedJudgerTransportError(
                 "typed Judger emitted a tool or unknown event")
         return dict(YES)
 
-    monkeypatch.setattr(CodexBackend, "_complete", fake_complete)
+    monkeypatch.setattr(CodexRuntime, "_complete", fake_complete)
     game, obligation, method, result, attempt = _game(fixture, backend)
     assert game._judge(obligation, method, result, attempt) == YES
     # AgentRole retains its pre-existing one schema/role retry inside the
     # first Judger call; BindingGame then spends its one existing call retry.
     assert [kind for kind, _variables in calls] == [
-        _TypedJudgerCodexBackend, _TypedJudgerCodexBackend, CodexBackend]
+        RESTRICTED, RESTRICTED, ORDINARY]
     assert "_typed_adapter_judger_packet" not in calls[-1][1]
 
 
@@ -681,7 +698,7 @@ def test_pre_call_replay_failure_falls_back_without_accepting_packet(
     fixture = _fixture(tmp_path)
     state, target = fixture[:2]
     packet = fixture[-1]
-    backend = CodexBackend(cwd=str(state), model="gpt-5.6-luna")
+    backend = CodexRuntime(cwd=str(state), model="gpt-5.6-luna")
     calls = []
 
     def stale_packet(*_args, **_kwargs):
@@ -689,29 +706,29 @@ def test_pre_call_replay_failure_falls_back_without_accepting_packet(
         return packet
 
     def fake_complete(self, role_name, prompt, variables, **kwargs):
-        calls.append(type(self))
+        calls.append(_kind(self))
         return dict(YES)
 
     monkeypatch.setattr(
         game_module, "build_typed_adapter_judger_packet", stale_packet)
-    monkeypatch.setattr(CodexBackend, "_complete", fake_complete)
+    monkeypatch.setattr(CodexRuntime, "_complete", fake_complete)
     game, obligation, method, result, attempt = _game(fixture, backend)
     assert game._judge(obligation, method, result, attempt) == YES
     # The stale packet is rejected before a restricted model process starts;
     # the next outer call is the unchanged toolful Judger.
-    assert calls == [CodexBackend]
+    assert calls == [ORDINARY]
 
 
 def test_no_retry_budget_fails_closed_after_restricted_transport_error(
     tmp_path, monkeypatch,
 ):
     fixture = _fixture(tmp_path)
-    backend = CodexBackend(cwd=str(fixture[0]), model="gpt-5.6-luna")
+    backend = CodexRuntime(cwd=str(fixture[0]), model="gpt-5.6-luna")
 
     def failed_transport(self, role_name, prompt, variables, **kwargs):
         raise TypedJudgerTransportError("synthetic restricted failure")
 
-    monkeypatch.setattr(CodexBackend, "_complete", failed_transport)
+    monkeypatch.setattr(CodexRuntime, "_complete", failed_transport)
     game, obligation, method, result, attempt = _game(
         fixture, backend, retries=0)
     verdict = game._judge(obligation, method, result, attempt)

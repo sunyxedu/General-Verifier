@@ -778,7 +778,7 @@ def run_worker(plan):
     failures, caught = [], None
     try:
         _clone(offline, inputs, state, plan["input_seal"])
-        backend = backend_module.CodexBackend(
+        backend = policy.codex_class(backend_module)(
             cwd=str(state), **RUNTIME,
             compact_inspection=plan["arm"] == "treatment",
             judger_prefetch=plan["arm"] == "treatment",

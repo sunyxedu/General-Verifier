@@ -3,9 +3,8 @@ are waited out there, never answered by the agent backend."""
 import pytest
 
 from verifier.llm import direct_backend as db
-from verifier.llm.direct_backend import (AwaitingCredit, DirectBackend,
-                                         RoutingBackend,
-                                         TransientTransportError)
+from verifier.llm.direct_backend import DirectRuntime, RoutingRuntime
+from verifier.llm.endpoints import AwaitingCredit, TransientTransportError
 from verifier.llm.schema import RoleError
 
 
@@ -29,7 +28,7 @@ class _FailingDirect:
 
 def test_a_direct_failure_is_not_answered_by_the_agent():
     agent = _Agent()
-    routing = RoutingBackend(_FailingDirect(), agent, {"screener"})
+    routing = RoutingRuntime(_FailingDirect(), agent, {"screener"})
     with pytest.raises(RoleError):
         routing.complete("screener", "p", {})
     assert agent.calls == []
@@ -37,7 +36,7 @@ def test_a_direct_failure_is_not_answered_by_the_agent():
 
 def test_non_direct_roles_run_on_the_agent():
     agent = _Agent()
-    routing = RoutingBackend(_FailingDirect(), agent, {"screener"})
+    routing = RoutingRuntime(_FailingDirect(), agent, {"screener"})
     assert routing.complete("oracles", "p", {}) == {"answer": "from-agent"}
     assert agent.calls == ["oracles"]
 
@@ -57,7 +56,7 @@ class _ScriptedTransport:
 
 def _call(transport, monkeypatch, slept):
     monkeypatch.setattr(db.time, "sleep", lambda s: slept.append(s))
-    backend = DirectBackend(transport)
+    backend = DirectRuntime(transport)
     role = next(iter(backend.roles.values()))
     attempts = []
     return backend._call(role, "sys", "prompt", {"type": "object"}, None,

@@ -9,7 +9,7 @@ import pytest
 
 from verifier.core.store import TRIGGER_LAZY
 from verifier.engine.certificate import CERTIFICATE_SCOPE_FINAL, request_certificate
-from verifier.engine.kernel import compile_roles_for_backend
+from verifier.engine.kernel import compile_roles_for_run
 from verifier.engine.precompile import PrecompiledFinalContract
 from verifier.config import final_contract_precompile_enabled
 from verifier.llm.schema import FixtureBackend, RoleError
@@ -33,8 +33,8 @@ def _state(tmp_path):
 
 def _start(state, backend, *, critic_rounds=3, contract_cache=None):
     roles = harness_roles(str(state))
-    compile_role, critic_role = compile_roles_for_backend(
-        backend, roles["obligations"], roles["critic"])
+    compile_role, critic_role = compile_roles_for_run(
+        backend.run_options, roles["obligations"], roles["critic"])
     return PrecompiledFinalContract.start(
         str(state), backend, compile_role, critic_role, critic_rounds,
         False, None, contract_cache=contract_cache)

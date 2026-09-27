@@ -8,8 +8,8 @@ import pytest
 
 from verifier.execution.adapters import AdapterRoutingDischarger
 from verifier.execution.discharge import AgentDischarger
-from verifier.llm.authority_backend import _AuthorityCodexBackend
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.authority_backend import authority_session
+from verifier.llm.codex_backend import CodexRuntime
 from verifier.llm.schema import FixtureBackend, RoleError
 from verifier.app.assembly import build_kernel
 from verifier.mcp_server import Service
@@ -42,7 +42,7 @@ def test_cold_toolchain_is_derived_with_judger_read_override_and_role_path(
     monkeypatch.delenv("GV_OFFLINE_RUNTIME_READ_ROOTS", raising=False)
     state = tmp_path / "state"
     state.mkdir()
-    backend = CodexBackend(cwd=os.fspath(state))
+    backend = CodexRuntime(cwd=os.fspath(state))
     toolchain = os.fspath(state / "work" / "_toolchains")
 
     discharge = _policy(backend, "discharge")
@@ -76,7 +76,7 @@ def test_shared_scope_is_write_for_discharge_read_for_judger_and_hidden_from_ora
     state.mkdir()
     toolchain.mkdir(parents=True)
     cache.mkdir(parents=True)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=os.fspath(state),
         offline_toolchain_dir=os.fspath(toolchain),
         offline_shared_cache_dir=os.fspath(cache),
@@ -116,7 +116,7 @@ def test_role_variables_cannot_replace_operator_scope(
     replacement = tmp_path / "replacement"
     for path in (state, toolchain, cache, replacement):
         path.mkdir(parents=True)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=os.fspath(state),
         offline_toolchain_dir=os.fspath(toolchain),
         offline_shared_cache_dir=os.fspath(cache),
@@ -136,7 +136,7 @@ def test_toolchain_and_cache_must_not_overlap(
     cache = toolchain / cache_relative
     state.mkdir()
     toolchain.mkdir(parents=True)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=os.fspath(state),
         offline_toolchain_dir=os.fspath(toolchain),
         offline_shared_cache_dir=os.fspath(cache),
@@ -157,7 +157,7 @@ def test_offline_kernel_rejects_service_backend_scope_mismatch(tmp_path):
         toolchain_dir=os.fspath(service_toolchain),
         kernel_factory=lambda _service: object(),
     )
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=os.fspath(state),
         offline_toolchain_dir=os.fspath(backend_toolchain),
     )
@@ -173,7 +173,7 @@ def test_offline_kernel_rejects_service_backend_state_mismatch(tmp_path):
         os.fspath(service_state), live_world=False,
         kernel_factory=lambda _service: object(),
     )
-    backend = CodexBackend(cwd=os.fspath(backend_state))
+    backend = CodexRuntime(cwd=os.fspath(backend_state))
 
     with pytest.raises(RoleError, match="state does not match"):
         build_kernel(service, model=None, backend=backend, critic_rounds=0)
@@ -187,7 +187,7 @@ def test_offline_score_rejects_unbound_shared_scope_before_model_call(
     different = tmp_path / "different" / "toolchain"
     state.mkdir()
     different.mkdir(parents=True)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=os.fspath(state),
         offline_toolchain_dir=os.fspath(different),
     )
@@ -211,7 +211,7 @@ def test_offline_kernel_gives_discharger_the_exact_bound_scope(tmp_path):
         shared_cache_dir=os.fspath(cache),
         kernel_factory=lambda _service: object(),
     )
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=os.fspath(state),
         offline_toolchain_dir=os.fspath(toolchain),
         offline_shared_cache_dir=os.fspath(cache),
@@ -256,7 +256,7 @@ def test_live_policy_ignores_offline_operator_scope_and_role_variables(tmp_path)
     replacement = tmp_path / "replacement"
     for path in (toolchain, cache, replacement):
         path.mkdir(parents=True)
-    backend = CodexBackend(
+    backend = CodexRuntime(
         cwd=os.fspath(tmp_path),
         offline_toolchain_dir=os.fspath(toolchain),
         offline_shared_cache_dir=os.fspath(cache),
@@ -275,12 +275,12 @@ def test_authority_backend_never_inherits_operator_tool_scope(tmp_path):
     toolchain.mkdir(parents=True)
     cache.mkdir(parents=True)
     scratch.mkdir()
-    backend = _AuthorityCodexBackend(
+    backend = CodexRuntime(
         cwd=os.fspath(tmp_path),
         offline_toolchain_dir=os.fspath(toolchain),
         offline_shared_cache_dir=os.fspath(cache),
+        session=authority_session(os.fspath(scratch)),
     )
-    backend._authority_scratch = os.fspath(scratch)
 
     config = _config(backend._execution_policy_args("obligations", {}))
     filesystem = config["permissions"]["gv-authority"]["filesystem"]

@@ -98,8 +98,10 @@ from .typed_judger_packet import build_typed_adapter_judger_packet
 from .source_evidence import bind_source_evidence_variables
 from ..config import (
     APPEND_ONLY_DELTA_PROTOCOL,
+    RunOptions,
     append_only_deltas_enabled,
 )
+from ..llm.runtime import capabilities_of
 
 
 def _method_strength(method: Dict[str, str]) -> str:
@@ -211,12 +213,16 @@ class BindingGame:
         typed_adapter_judger_packet: bool = False,
         sufficiency_role=None,
         packet_method_reuse: bool = False,
+        run_options: Optional[RunOptions] = None,
     ):
         if type(typed_adapter_judger_packet) is not bool:
             raise ValueError("typed_adapter_judger_packet must be a bool")
         if type(packet_method_reuse) is not bool:
             raise ValueError("packet_method_reuse must be a bool")
         self.backend = backend
+        # the run's evidence-presentation options (default: the runtime's)
+        self.run_options = (run_options if run_options is not None
+                            else capabilities_of(backend).run_options)
         # An operator's explicit reuse request also covers the packet
         # transports (prefetch, typed packet).  Default off: the packet
         # experiments alone never acquire authority to skip a signer.
@@ -523,7 +529,7 @@ class BindingGame:
         # semantic/result gates have passed.  It may reduce inspection turns;
         # it must not also acquire authority to skip either signer.
         if (not self.packet_method_reuse
-                and (getattr(self.backend, "judger_prefetch", False) is True
+                and (self.run_options.judger_prefetch
                      or self.typed_adapter_judger_packet)):
             return None
         state = os.path.dirname(os.path.abspath(self.log.path))
@@ -1703,8 +1709,7 @@ class BindingGame:
                 "world_manifest": manifest,
                 "world_map": world_map(state, live_world=self.live_world),
                 },
-                enabled=(getattr(self.backend, "compact_inspection", False)
-                         is True),
+                enabled=self.run_options.compact_inspection,
             )
             payload = self.oracles_role.call(self.backend, variables)
         prepare = getattr(self.discharger, "prepare_method", lambda method: method)
@@ -1801,8 +1806,7 @@ class BindingGame:
         variables = bind_source_evidence_variables(
             self.log,
             variables,
-            enabled=(getattr(self.backend, "compact_inspection", False)
-                     is True),
+            enabled=self.run_options.compact_inspection,
         )
         typed_packet = None
         if self.typed_adapter_judger_packet:
@@ -1811,14 +1815,11 @@ class BindingGame:
             # the same deterministic selector the backend will use and stay
             # on the original path whenever an image is present or the probe
             # itself cannot be established.
-            captured_images_present = False
-            image_probe = getattr(self.backend, "_captured_images", None)
-            if callable(image_probe):
-                try:
-                    captured_images_present = bool(
-                        image_probe("judger", variables))
-                except Exception:
-                    captured_images_present = True
+            try:
+                captured_images_present = bool(capabilities_of(
+                    self.backend).captured_images("judger", variables))
+            except Exception:
+                captured_images_present = True
             typed_packet = build_typed_adapter_judger_packet(
                 self.discharger,
                 self.artifacts,
@@ -1836,7 +1837,7 @@ class BindingGame:
                 # large-artifact transport failure must not force later calls
                 # back into an avoidable full-artifact dump.
                 packet = None
-                if getattr(self.backend, "judger_prefetch", False) is True:
+                if self.run_options.judger_prefetch:
                     packet = build_judger_evidence_packet(
                         self.artifacts,
                         _RecordLedger(
@@ -1885,7 +1886,7 @@ class BindingGame:
             except RoleError as err:
                 will_retry = call_no < total_calls
                 # This is the error audit.  Backends retain ownership of usage
-                # accounting (CodexBackend records exact usage before parsing
+                # accounting (CodexRuntime records exact usage before parsing
                 # its final JSON), so do not synthesize or duplicate token
                 # rows here.
                 self.log.append(

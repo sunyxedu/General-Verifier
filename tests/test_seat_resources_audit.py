@@ -26,6 +26,7 @@ from verifier.execution.discharge import AgentDischarger, _CappedReader
 from verifier.execution.instruments import ArtifactStore
 from verifier.llm import agents
 from verifier.llm import direct_backend as db
+from verifier.llm import endpoints
 from verifier.llm.agents import ALL_AGENT_ROLES, AgentRole, SeatResourceKilled
 from verifier.llm.schema import FixtureBackend, RoleError
 
@@ -267,7 +268,7 @@ def test_a_failure_before_any_session_is_read_whole():
 
 def _backend(tmp_path, schema=None):
     role = SimpleNamespace(system="", schema=schema or {"ok": bool})
-    return cb.CodexBackend(roles={"critic": role}, cwd=str(tmp_path))
+    return cb.CodexRuntime(roles={"critic": role}, cwd=str(tmp_path))
 
 
 def test_a_capacity_failure_behind_a_transcript_is_retried(tmp_path,
@@ -383,7 +384,7 @@ def test_a_raw_tls_error_is_retried_and_on_record(tmp_path, monkeypatch):
     transport = _Transport([
         ssl.SSLError("[SSL: UNEXPECTED_EOF_WHILE_READING] unexpected eof"),
         {"verdict": "open", "confidence": "low", "basis": "world", "grounds": "g", "reason": "r"}])
-    direct = db.DirectBackend(transport, cwd=str(tmp_path))
+    direct = db.DirectRuntime(transport, cwd=str(tmp_path))
     role = ALL_AGENT_ROLES["screener"]
     assert role.call(direct, _screener_vars(role))["confidence"] == "low"
     row = [json.loads(line) for line in open(tmp_path / "role_calls.jsonl")][-1]
@@ -394,7 +395,7 @@ def test_a_raw_tls_error_is_retried_and_on_record(tmp_path, monkeypatch):
 
 def test_a_failed_attempt_is_on_record_even_when_not_retried(tmp_path):
     transport = _Transport([RoleError("direct call failed: HTTP 400: bad")] * 2)
-    direct = db.DirectBackend(transport, cwd=str(tmp_path))
+    direct = db.DirectRuntime(transport, cwd=str(tmp_path))
     role = ALL_AGENT_ROLES["screener"]
     with pytest.raises(RoleError):
         role.call(direct, _screener_vars(role))
@@ -404,8 +405,8 @@ def test_a_failed_attempt_is_on_record_even_when_not_retried(tmp_path):
 
 
 @pytest.mark.parametrize("transport_class", [
-    db.AnthropicMessagesTransport, db.OpenAIResponsesTransport,
-    db.OpenAIChatTransport])
+    endpoints.AnthropicMessagesEndpoint, endpoints.OpenAIResponsesEndpoint,
+    endpoints.OpenAIChatEndpoint])
 def test_a_truncated_ok_body_is_a_transport_failure(monkeypatch,
                                                     transport_class):
     real_client = httpx.Client
@@ -414,7 +415,7 @@ def test_a_truncated_ok_body_is_a_transport_failure(monkeypatch,
             lambda request: httpx.Response(200, content=b'{"content": [')),
         **kw))
     transport = transport_class("key", "m", base_url="https://x.test")
-    with pytest.raises(db.TransientTransportError, match="unparseable"):
+    with pytest.raises(endpoints.TransientTransportError, match="unparseable"):
         transport.complete(system="s", prompt="p", schema={"type": "object"})
 
 

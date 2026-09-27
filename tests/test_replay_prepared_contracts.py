@@ -16,7 +16,7 @@ from verifier.engine.game import BindingGame
 from verifier.engine.kernel import Kernel
 from verifier.engine.method_cache import AcceptedMethodCache
 from verifier.execution.discharge import DischargeResult
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.codex_backend import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 from verifier.mcp_server import Service
 from verifier.llm.oracle_execution import raise_oracle_execution_payload
@@ -170,10 +170,10 @@ def test_process_stub_replays_only_oracle_executor_judger_and_accounts_context(
             stderr="",
         )
 
-    monkeypatch.setattr("verifier.llm.authority_backend.subprocess.run", version)
+    monkeypatch.setattr("verifier.llm.codex_backend.subprocess.run", version)
     monkeypatch.setattr("verifier.llm.codex_backend._run_codex_process", process)
     factory = _service_factory(
-        lambda state: CodexBackend(
+        lambda state: CodexRuntime(
             cwd=str(state), model="gpt-5.6-luna", effort="medium",
             service_tier="standard"),
         executors,
@@ -364,7 +364,7 @@ def test_usage_change_during_audit_cannot_publish_complete_cost(
     executors = []
 
     monkeypatch.setattr(
-        "verifier.llm.authority_backend.subprocess.run",
+        "verifier.llm.codex_backend.subprocess.run",
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0, stdout="codex-cli 0.153.4"),
     )
@@ -388,7 +388,7 @@ def test_usage_change_during_audit_cannot_publish_complete_cost(
 
     monkeypatch.setattr("verifier.llm.codex_backend._run_codex_process", process)
     factory = _service_factory(
-        lambda state: CodexBackend(cwd=str(state), model="gpt-5.6-luna"),
+        lambda state: CodexRuntime(cwd=str(state), model="gpt-5.6-luna"),
         executors,
     )
     source, identity, raw, rounds = _prepared(tmp_path, factory)

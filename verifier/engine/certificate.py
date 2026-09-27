@@ -94,7 +94,7 @@ def _certify(store: ClaimStore, kernel: Kernel, log: EventLog,
         immutable_compact_run = (
             not getattr(kernel, "live_world", True)
             and getattr(kernel, "memory", None) is None
-            and getattr(kernel.backend, "compact_inspection", False) is True
+            and kernel.run_options.compact_inspection
         )
         if immutable_compact_run and final_id in pending:
             pending.remove(final_id)

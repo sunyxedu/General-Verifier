@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.model import CLAIM_FINAL, content_hash
 from ..llm.model_spans import model_scope
+from ..llm.runtime import capabilities_of
 
 PRECOMPILE_LOCUS = "final_task"
 
@@ -58,9 +59,10 @@ class _CritiqueContext:
     """The slice of Kernel state the critique loop reads."""
 
     def __init__(self, log, store, critic_rounds, append_only_deltas,
-                 append_only_delta_protocol):
+                 append_only_delta_protocol, run_options):
         self.log = log
         self.store = store
+        self.run_options = run_options
         self.critic_rounds = critic_rounds
         self.append_only_deltas = append_only_deltas
         self.append_only_delta_protocol = append_only_delta_protocol
@@ -91,13 +93,16 @@ class PrecompiledFinalContract:
     def __init__(self, state_dir: str, backend, obligations_role, critic_role,
                  critic_rounds: int, append_only_deltas: bool,
                  append_only_delta_protocol: Optional[str],
-                 contract_cache=None):
+                 contract_cache=None, run_options=None):
         self.state_dir = os.path.abspath(state_dir)
         # With the process-local contract cache the thread compiles only
         # when nobody has published or started this key: the kernel's own
         # lookup is then a miss that adopts and publishes this result.
         self.contract_cache = contract_cache
         self.backend = backend
+        # the run's options, as the kernel that adopts this contract has them
+        self.run_options = (run_options if run_options is not None
+                            else capabilities_of(backend).run_options)
         self.obligations_role = obligations_role
         self.critic_role = critic_role
         self.critic_rounds = critic_rounds
@@ -169,7 +174,7 @@ class PrecompiledFinalContract:
                     context = _CritiqueContext(
                         buffer, store, self.critic_rounds,
                         self.append_only_deltas,
-                        self.append_only_delta_protocol)
+                        self.append_only_delta_protocol, self.run_options)
                     payload = Kernel._critique(
                         context, row, payload, variables,
                         backend=session.backend,

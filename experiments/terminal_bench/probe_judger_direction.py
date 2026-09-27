@@ -40,7 +40,8 @@ from verifier.execution.adapters import (
     default_adapter_registry,
 )
 from verifier.execution.instruments import ArtifactStore
-from verifier.llm.codex_backend import CodexBackend, codex_usage_ledger
+from verifier.llm.codex_backend import CodexRuntime, codex_usage_ledger
+from verifier.llm.runtime import capabilities_of
 from verifier.llm.model_spans import model_scope, span_sidecar_path
 
 
@@ -218,21 +219,21 @@ def _runtime_backend(
     judger_prefetch: bool = False,
 ) -> Any:
     backend = (backend_factory(state) if backend_factory is not None else
-               CodexBackend(cwd=os.fspath(state), **RUNTIME,
+               CodexRuntime(cwd=os.fspath(state), **RUNTIME,
                             compact_inspection=False,
                             judger_prefetch=judger_prefetch))
-    if getattr(backend, "compact_inspection", False) is not False:
+    options = capabilities_of(backend).run_options
+    if options.compact_inspection is not False:
         raise ReplaySetupError("backend differs from compact_inspection=false")
-    if getattr(backend, "judger_prefetch", False) is not judger_prefetch:
+    if options.judger_prefetch is not judger_prefetch:
         raise ReplaySetupError("backend differs from judger_prefetch profile")
     for field, expected in RUNTIME.items():
         if hasattr(backend, field) and getattr(backend, field) != expected:
             raise ReplaySetupError("backend differs from pinned Luna runtime")
     if getattr(backend, "model_overrides", {}) not in ({}, None):
         raise ReplaySetupError("role model overrides are not permitted")
-    validate = getattr(backend, "validate_offline_tool_scope", None)
-    if callable(validate):
-        validate(os.fspath(state), None, None)
+    capabilities_of(backend).validate_offline_tool_scope(
+        os.fspath(state), None, None)
     return backend
 
 

@@ -9,7 +9,7 @@ import pytest
 
 from experiments.terminal_bench import probe_judger_direction as probe
 from verifier.core.events import EventLog
-from verifier.llm.codex_backend import CodexBackend
+from verifier.llm.codex_backend import CodexRuntime
 from verifier.llm.schema import FixtureBackend
 
 
@@ -60,7 +60,7 @@ def _codex_factory(monkeypatch, responses, calls, *, on_call=None,
     monkeypatch.setattr("verifier.llm.codex_backend._run_codex_process", run)
 
     def factory(state):
-        return CodexBackend(
+        return CodexRuntime(
             cwd=str(state), model="gpt-5.6-luna", effort="medium",
             service_tier="standard", compact_inspection=False,
             judger_prefetch=judger_prefetch,

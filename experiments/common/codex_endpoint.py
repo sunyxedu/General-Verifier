@@ -44,8 +44,9 @@ from verifier.llm.codex_service import (                    # noqa: E402
     normalize_service_tier,
     service_tier_cli_args,
 )
+from verifier.llm.endpoints.presets import default_model  # noqa: E402
 
-DEFAULT_MODEL = "gpt-5.6-luna"
+DEFAULT_MODEL = default_model("codex")
 DEFAULT_EFFORT = "low"          # judging is short-form; keep latency sane
 
 

@@ -11,9 +11,16 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from ..config import RunOptions
+from .runtime import RuntimeCapabilities
+
 
 class RoleError(RuntimeError):
     pass
+
+
+class AuthorityBackendUnavailable(RoleError):
+    """The backend cannot provide the required authority-only boundary."""
 
 
 class SeatTimeout(RoleError):
@@ -75,8 +82,19 @@ def _check(spec: Any, value: Any, path: str) -> None:
 
 
 # fixture backend
-class FixtureBackend:
+class FixtureBackend(RuntimeCapabilities):
     """Deterministic backend: role name -> payload or callable(vars)->payload. Used as a seam."""
+
+    RUNTIME_IDENTITY = "verifier.llm.schema.FixtureBackend"
+    replays_fixtures = True
+    # a test sets these on a fixture to replay a run with that option
+    compact_inspection = False
+    judger_prefetch = False
+
+    @property
+    def run_options(self):
+        return RunOptions(compact_inspection=self.compact_inspection is True,
+                          judger_prefetch=self.judger_prefetch is True)
 
     def __init__(self, fixtures: Dict[str, Any], *, wire_output: bool = False):
         if type(wire_output) is not bool:

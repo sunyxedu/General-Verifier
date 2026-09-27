@@ -38,7 +38,7 @@ class _CaptureBackend:
         self.images = images
         self.mutate = mutate
 
-    def _captured_images(self, role_name, variables):
+    def captured_images(self, role_name, variables):
         assert role_name == "judger"
         return (object(),) if self.images else ()
 

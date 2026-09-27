@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from verifier.llm.agents import AgentBackend, AgentRole
+from verifier.llm.agents import ClaudeCodeRuntime, AgentRole
 
 ROLE = AgentRole(
     name="provider_smoke",
@@ -36,7 +36,7 @@ ROLE = AgentRole(
 
 
 def main() -> int:
-    backend = AgentBackend(roles={ROLE.name: ROLE})
+    backend = ClaudeCodeRuntime(roles={ROLE.name: ROLE})
     payload = ROLE.call(backend, {})
     if payload != {"answer": 42, "used_tool": True}:
         raise RuntimeError(f"unexpected structured result: {payload!r}")

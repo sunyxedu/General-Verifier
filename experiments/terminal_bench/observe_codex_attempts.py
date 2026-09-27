@@ -557,7 +557,9 @@ def observe_codex_attempts(
         raise TypeError("module must be an imported Python module")
     if seam not in _SEAMS:
         raise ValueError(f"unsupported Codex observer seam: {seam!r}")
-    backend = getattr(module, "CodexBackend", None)
+    # CodexRuntime in current source trees, CodexBackend in frozen ones
+    backend = (getattr(module, "CodexRuntime", None)
+               or getattr(module, "CodexBackend", None))
     original_complete = getattr(backend, "complete", None)
     if not isinstance(backend, type) or not callable(original_complete):
         raise TypeError("module must expose CodexBackend.complete")
