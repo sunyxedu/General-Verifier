@@ -416,7 +416,7 @@ ORACLES_TEMPLATE = (
     "  script: optional — the method in EXECUTABLE FORM (a complete "
     "command-interpreter script run verbatim), when the procedure is a "
     "fixed command sequence "
-    "whose printed observations decide the obligation"
+    "whose printed observations decide the obligation\n"
     "Before custom execution, compare its observation primitive with the "
     "catalog. If an adapter is an equally sufficient method at the required "
     "basis and strength, binding that adapter is mandatory; otherwise use the "
