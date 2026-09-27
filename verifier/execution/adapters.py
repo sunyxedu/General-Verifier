@@ -55,7 +55,7 @@ from ..core.world import (
     load_world_view,
 )
 from .discharge import DischargeResult
-from .discharger import Discharger
+from .discharger import Discharger, discharger_of
 from .browser import (
     BROWSER_DOCUMENT_POLICY,
     BROWSER_NETWORK_POLICY,
@@ -3886,6 +3886,12 @@ class AdapterRoutingDischarger(Discharger):
 
     runs_scripts = True
     reuses_adapters = True
+
+    @property
+    def workspace_dir(self) -> str:
+        """The wrapped executor's durable workspace: the router adds typed
+        adapters in front of it, the workspace stays the executor's."""
+        return discharger_of(self.fallback).workspace_dir
 
     def __init__(self, fallback, registry: AdapterRegistry,
                  artifacts: ArtifactStore, log: EventLog,

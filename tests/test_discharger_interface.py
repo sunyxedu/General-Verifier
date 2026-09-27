@@ -58,3 +58,17 @@ def test_the_shipped_dischargers_declare_their_capabilities():
     assert AgentDischarger.runs_scripts and not AgentDischarger.reuses_adapters
     assert AdapterRoutingDischarger.runs_scripts
     assert AdapterRoutingDischarger.reuses_adapters
+
+
+def test_the_router_reports_its_executors_workspace(tmp_path):
+    from verifier.core.events import EventLog
+    from verifier.execution.adapters import default_adapter_registry
+    from verifier.execution.instruments import ArtifactStore
+
+    executor = OnlyDischarges()
+    executor.workspace_dir = str(tmp_path / "workspace")
+    router = AdapterRoutingDischarger(
+        executor, default_adapter_registry(),
+        ArtifactStore(str(tmp_path / "art")),
+        EventLog(str(tmp_path / "events.jsonl")), str(tmp_path))
+    assert router.workspace_dir == executor.workspace_dir
