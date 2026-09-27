@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import threading
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from .core.model import content_hash
 

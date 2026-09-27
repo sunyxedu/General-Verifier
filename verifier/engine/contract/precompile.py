@@ -81,7 +81,6 @@ class PrecompiledFinalContract:
         self._outcome = PrecompileOutcome()
         self._thread = threading.Thread(
             target=self._run, name="gv-precompile-final", daemon=True)
-        self._adopted = False
 
     @classmethod
     def start(cls, *args, **kwargs) -> "PrecompiledFinalContract":

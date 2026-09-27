@@ -993,7 +993,6 @@ def _resolve_interpreter(interpreter: List[str], task_path: str,
     the toolchain's bin directories); unchanged when found nowhere, so the
     launch fails on record exactly as the shebang asked."""
     import shutil
-    import sys
     if not interpreter:
         return interpreter
     head, rest = interpreter[0], interpreter[1:]

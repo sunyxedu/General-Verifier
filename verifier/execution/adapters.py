@@ -51,7 +51,6 @@ from ..core.world import (
     MODE_CAPTURED,
     MODE_LIVE,
     SCHEME_FILESYSTEM,
-    WorldView,
     load_world_view,
 )
 from .discharge import DischargeResult

@@ -13,7 +13,6 @@ adds no verifier stage, and does not interpret event contents.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import errno
 import os
